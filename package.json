@@ -1,0 +1,9 @@
+{
+  "name": "cfw-render",
+  "private": true,
+  "description": "Decoupled render fleet for CFW Social — bash drainer, no JS runtime.",
+  "scripts": {
+    "lint": "scripts/lint.sh",
+    "test": "test/run-tests.sh"
+  }
+}

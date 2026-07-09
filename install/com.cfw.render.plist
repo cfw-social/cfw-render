@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.cfw.render.plist — launchd template (macOS dev box / macOS render host).
+  Placeholders {{PREFIX}}, {{ENV_FILE}}, {{HOME}} are substituted by
+  install/install.sh. NOT loaded by this task (AB-RNDR-WORKER is code-authoring
+  only) — a human loads it later per docs/deploy.md.
+
+  Cadence: every 15 min, offset :05/:20/:35/:50 to avoid stacking with
+  ab-hustler's :22/:52 schedule on the same Mac (plan §2).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.cfw.render</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{PREFIX}}/bin/cfw-render.sh</string>
+    <string>--once</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CFW_RENDER_ENV</key>
+    <string>{{ENV_FILE}}</string>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+  </dict>
+
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Minute</key><integer>5</integer></dict>
+    <dict><key>Minute</key><integer>20</integer></dict>
+    <dict><key>Minute</key><integer>35</integer></dict>
+    <dict><key>Minute</key><integer>50</integer></dict>
+  </array>
+
+  <key>StandardOutPath</key>
+  <string>{{HOME}}/Library/Logs/cfw-render.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>{{HOME}}/Library/Logs/cfw-render.err.log</string>
+
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>
