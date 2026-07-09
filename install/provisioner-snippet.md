@@ -1,0 +1,38 @@
+# cfw-provisioner snippet — reprovision survival for cfw-render
+
+**Status: documentation only.** This is not wired into cfw-provisioner by this
+task (AB-RNDR-WORKER is code-authoring only in `cfw-render/`, not
+`cfw-provisioner/`). It's the block a follow-up provisioner task should adopt
+so a reprovision of `hst` reinstalls the render worker the same way
+`cfw-gw@<slug>` gateway units survive today (`cfw-provisioner/src/core/gateway.ts`).
+
+## What to add to the box-provision flow
+
+1. **Clone/sync `cfw-render`** to the box (same pattern as other provisioned
+   repos under `cfw-provisioner/src/lib/tmpl/`).
+2. **Copy units:**
+   ```bash
+   cp cfw-render/install/cfw-render.service /etc/systemd/system/cfw-render.service
+   cp cfw-render/install/cfw-render.timer /etc/systemd/system/cfw-render.timer
+   # substitute {{PREFIX}}, {{ENV_FILE}}, {{USER}} the same way install.sh does
+   ```
+3. **Ensure the env file exists** at `/etc/cfw-render.env` — this is a secret
+   and must NOT be templated into the provisioner repo. Pull it from the vault
+   (`~/.gsai/secrets/cfw-render.env`) via whatever secret-sync mechanism the
+   provisioner already uses for other per-box `.env` files.
+4. **Enable + verify:**
+   ```bash
+   systemctl daemon-reload
+   systemctl enable --now cfw-render.timer
+   /opt/cfw-render/bin/cfw-render.sh --dry   # must report PASS
+   ```
+5. **Service pool isolation:** cfw-render must NOT share a unit name, tmux
+   session, or working directory with any `cfw-gw@<slug>` gateway — it is a
+   decoupled service pool per `cfw-render-worker-plan.md` §11's "Cutover"
+   step and the task's SUPERVISED FOLLOW-UP GATE.
+
+## Reference
+
+- Gateway unit survival pattern: `cfw-provisioner/src/core/gateway.ts`.
+- Worker install script this snippet wraps: `cfw-render/install/install.sh`.
+- Full deploy runbook (human-run, supervised): `cfw-render/docs/deploy.md`.
