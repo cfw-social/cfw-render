@@ -2,7 +2,7 @@
 task-id: "AB-RNDR-WORKER"
 epic: "AB-RNDR"
 title: "cfw-render drainer: claim → headless Claude CD + GLM/Kimi fan-out → CFW Media → writeback"
-status: coding_done
+status: complete
 priority: high
 story-points: 5
 model: sonnet
@@ -105,3 +105,66 @@ Code-authoring only, per the task's own scope note — nothing was run against
 **Not independently tested:** a real `claude` spawn, real Ollama Cloud failover, and the live cfw-social endpoint — `test/run-tests.sh` uses `CFW_RENDER_DIRECTOR_CMD` + a stubbed `claude` + a stdlib mock server by design (plan §10), consistent with "no live services" for this unattended lane.
 
 Status left at `coding_done` (not `complete`) because of the one PARTIAL criterion above — a human/QA pass should review before merge-to-main promotion.
+
+## QA Validation (2026-07-09, Opus reviewer — independent pass)
+
+Re-ran `pnpm lint` (clean) + `pnpm test` (21/21 PASS). Then verified every
+ground-truth the implementation leans on against the LIVE cfw-social source
+(`/Users/vasanth/Code/cfw/cfw-social/`) — not asserted, checked:
+
+- 4 worker tools present exactly as cited: `src/lib/mcp/tools/render-order-worker.ts:82,150,209,363`.
+- Claim CAS WHERE is `status: "queued"` ONLY (`:110`) → the "no expired-lease
+  reclaim" gap is REAL (not papered over); `requeue_render_order` does not exist
+  anywhere in `cfw-social/src/` (grep, 0 matches). `cfw-render-ctl.sh unblock`
+  correctly fails fast with the admin SQL.
+- Upload route shape (`src/app/api/v1/render/upload/route.ts`): `POST
+  /api/v1/render/upload`, multipart `files`+`orderId`+`workerId`, `cfw-render-key`
+  header, response `{assets:[{cdnUrl,mimeType}]}` — matches `cfw-render-upload.sh`;
+  R2 key is derived server-side as `brands/<brandId>/renders/<orderId>/...` so the
+  returned cdnUrl satisfies `complete_render_order`'s namespace guard.
+- MCP route is stateless (`src/app/api/v1/mcp/route.ts:52-54`
+  `sessionIdGenerator: undefined`, `enableJsonResponse: true`) → bare curl
+  JSON-RPC + the `--dry` tools/list probe work with no init handshake.
+- Test harness honesty: `test/mock-server.py` mirrors the real contracts
+  (tools/list, the 4 tools, namespace validation, `-32601` on the missing requeue
+  tool, upload response shape) and drives the REAL `bin/` scripts via
+  `CFW_RENDER_DIRECTOR_CMD`; the watchdog case exercises the genuine
+  TERM→KILL path. Not gamed to pass.
+
+### Per the AB-AC-SCOPING-RULE, the one PARTIAL is correctly classified
+
+The "timeout/crash → lease expiry reclaim" AC is unmet ONLY because reclaim
+needs a server-side change in **another repo** (cfw-social: extend the claim CAS
+WHERE or add `requeue_render_order` — filed as `AB-RNDR-REQUEUE`). That is NOT a
+code failure in THIS repo's bash worker and is not fixable in-pipeline. Per the
+scoping rule it does not block certification: the worker fully handles the
+dominant case (Director timeout/crash while the drainer is alive →
+`block_render_order`), and the drainer-death reclaim is a documented follow-up,
+recorded in `docs/deploy.md` §8, `README.md`, and the `unblock` verb's fail-fast
+error — never silently no-op'd.
+
+### Verdict: complete (this repo's code-authoring scope)
+
+| criterion | MET / PARTIAL / UNMET | artifact |
+|---|---|---|
+| drainer claim/heartbeat via scoped credential + box-local lock | MET | `bin/cfw-render.sh:272`, `bin/cfw-render-lib.sh:106-160,275-312`; `test/run-tests.sh` Case 2, Case 6 |
+| `cfw-render-ctl.sh` status/run-now/unblock/logs | MET | `bin/cfw-render-ctl.sh` (unblock fails fast with admin SQL — confirmed vs live source) |
+| Director spawn: Sonnet primary + GLM quota-failover, watchdog by `kind` | MET | `bin/cfw-render.sh:206-238`; `claude_native_or_ollama_quota_fallback` ported in `bin/cfw-render-lib.sh:238-266`; Case 4 |
+| GLM/Kimi fan-out + per-stage model recording | MET | `bin/cfw-render-subagent.sh`; Case 2 asserts `kind:subagent` event + `fanout:["glm-5.2"]` rollup |
+| Self-contained (order.json + skills only, CFW Media fetch) | MET (prompt-enforced) | `lib/director-prompt.md:3-9` |
+| Scratch structure, ephemeral, wiped after upload | MET | `bin/cfw-render.sh:162-164,246`; Case 2 (wiped) / Case 3 (retained on block) |
+| Eval gate / fail-cap 2 → block | MET | `lib/director-prompt.md:38-44`; `bin/cfw-render-report.sh block`; Case 3 |
+| Upload + writeback (`complete_render_order` w/ models) | MET | `bin/cfw-render-upload.sh`, `bin/cfw-render-report.sh:37-92`; Case 2 |
+| Timeout/crash → lease expiry reclaim / blocked | PARTIAL (out-of-repo follow-up) | alive-case MET `bin/cfw-render.sh:251-259`; drainer-death reclaim = `AB-RNDR-REQUEUE` (cfw-social) — documented, not fixable here |
+| `CFW_RENDER_CONCURRENCY` default 1 | MET | `config/cfw-render.env.example:22`, `bin/cfw-render-lib.sh:51` |
+| `install/` bundle (never run against hst) | MET | `install/{install.sh,com.cfw.render.plist,cfw-render.service,cfw-render.timer,provisioner-snippet.md}` |
+| `docs/deploy.md` supervised runbook | MET | `docs/deploy.md` (§2 live-box checks, §6 Bujji-first, §8 requeue gap) |
+| `pnpm`/bash lint clean + `--dry` mode | MET | `scripts/lint.sh`; `bin/cfw-render.sh:34-108` (zero tool calls, asserts the 4 tools); Case 1 |
+
+All in-repo code-authoring acceptance criteria MET with artifacts. The single
+PARTIAL is an out-of-repo server-side follow-up, correctly classified per the
+AC-scoping rule and not silently papered over. Status → `complete`.
+
+**Follow-ups (out of this repo):** `AB-RNDR-REQUEUE` (cfw-social — expired-lease
+reclaim); supervised deploy on `hst` per `docs/deploy.md` (scratch root + CFW
+Media path confirmation, Bujji-first flip, one real reel end-to-end).
