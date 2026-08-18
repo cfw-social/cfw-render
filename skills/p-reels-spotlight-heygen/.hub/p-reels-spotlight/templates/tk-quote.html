@@ -1,0 +1,130 @@
+<template id="{{ID}}-template">
+  <!--
+    p-reels-fmt3 v0.5 — takeover template: QUOTE / KEY LINE (filled, never authored).
+    Opaque full-frame card: an oversized quote mark, the line reveals word by
+    word, attribution underneath. Calmer energy than tk-stat / tk-keyword.
+    Content lives in the TOP ~55% (the caption band sits lower).
+
+    Placeholders: ID DURATION BG ACCENT FG
+                  QUOTE ATTR
+    ACCENT must be a 6-digit hex — alpha is appended as hex pairs below.
+  -->
+  <div
+    id="{{ID}}"
+    data-composition-id="{{ID}}"
+    data-width="1080"
+    data-height="1920"
+  >
+    <style>
+      #{{ID}} {
+        position: relative;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+        background: {{BG}};
+        font-family: 'Oswald', sans-serif;
+      }
+      #{{ID}} .glow {
+        position: absolute; left: 50%; top: 28%;
+        width: 1300px; height: 1300px;
+        transform: translate(-50%, -50%);
+        background: radial-gradient(circle, {{ACCENT}}1C 0%, transparent 62%);
+        will-change: transform, opacity;
+      }
+      #{{ID}} .qmark {
+        position: absolute; left: 64px; top: 4%;
+        font-weight: 700; font-size: 360px; line-height: 1;
+        color: {{ACCENT}}33;
+        will-change: transform, opacity;
+      }
+      #{{ID}} .content {
+        position: absolute; left: 0; right: 0; top: 15%;
+        max-height: 47%;
+        display: flex; flex-direction: column;
+        gap: 48px;
+        padding: 0 90px;
+        box-sizing: border-box;
+      }
+      #{{ID}} .quote {
+        font-weight: 600; font-size: 92px; line-height: 1.08;
+        letter-spacing: -0.01em; text-transform: uppercase;
+        color: {{FG}};
+      }
+      #{{ID}} .quote .word {
+        display: inline-block;
+        will-change: transform, opacity;
+      }
+      #{{ID}} .quote .accent { color: {{ACCENT}}; }
+      #{{ID}} .attr {
+        font-family: 'JetBrains Mono', monospace;
+        font-weight: 700; font-size: 34px;
+        letter-spacing: 0.16em; text-transform: uppercase;
+        color: {{ACCENT}};
+        will-change: transform, opacity;
+      }
+      #{{ID}} .attr::before {
+        content: "";
+        display: inline-block;
+        width: 52px; height: 3px;
+        background: {{ACCENT}};
+        vertical-align: middle;
+        margin-right: 20px;
+        transform: translateY(-4px);
+      }
+    </style>
+
+    <div class="glow js-glow"></div>
+    <div class="qmark js-qmark">&ldquo;</div>
+    <div class="content">
+      <div class="quote js-quote">{{QUOTE}}</div>
+      <div class="attr js-attr">{{ATTR}}</div>
+    </div>
+
+    <script src="gsap.min.js"></script>
+    <script>
+      window.__timelines = window.__timelines || {};
+      (function () {
+        var scope = '#{{ID}} ';
+        var DUR = parseFloat("{{DURATION}}");
+
+        // Word-split the quote DOM-safely so an inline <span class="accent">
+        // survives as one word unit (same approach as fmt5's motion-card).
+        var quote = document.querySelector(scope + ".js-quote");
+        var out = [];
+        Array.prototype.forEach.call(quote.childNodes, function (node) {
+          if (node.nodeType === 3) {
+            node.textContent.split(/(\s+)/).forEach(function (tok) {
+              if (tok === "") return;
+              if (/^\s+$/.test(tok)) { out.push(document.createTextNode(tok)); return; }
+              var s = document.createElement("span");
+              s.className = "word";
+              s.textContent = tok;
+              out.push(s);
+            });
+          } else if (node.nodeType === 1) {
+            node.classList.add("word");
+            out.push(node);
+          }
+        });
+        quote.innerHTML = "";
+        out.forEach(function (n) { quote.appendChild(n); });
+
+        var tl = gsap.timeline({ paused: true });
+
+        tl.fromTo(scope + ".js-glow", { scale: 0.95, opacity: 0.65 },
+          { scale: 1.08, opacity: 1, duration: DUR, ease: "sine.inOut" }, 0);
+        tl.fromTo(scope + ".js-qmark", { y: -50, opacity: 0 },
+          { y: 0, opacity: 1, duration: 0.7, ease: "power2.out" }, 0.1);
+
+        tl.fromTo(scope + ".js-quote .word", { y: 36, opacity: 0 },
+          { y: 0, opacity: 1, duration: 0.5, ease: "power3.out", stagger: 0.06 }, 0.3);
+
+        tl.fromTo(scope + ".js-attr", { x: -36, opacity: 0 },
+          { x: 0, opacity: 1, duration: 0.5, ease: "power2.out" },
+          Math.min(1.4, DUR - 0.8));
+
+        window.__timelines["{{ID}}"] = tl;
+      })();
+    </script>
+  </div>
+</template>

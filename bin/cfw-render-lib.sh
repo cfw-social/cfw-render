@@ -5,7 +5,158 @@
 # box); all JSON via python3 -c, same choice as ab-hustler.
 #
 # Design source: backlog/attachments/AB-RNDR-WORKER/implementation-plan.md §3.
+# Skills bundling (CFW-HST-BUNDLE, VPS-simplification epic Phase 2):
+# backlog/queue/CFW-HST-BUNDLE.md.
 set -u
+
+# ---------------------------------------------------------------------------
+# Repo root, computed once at source time from this file's own location
+# (bin/cfw-render-lib.sh -> repo root is one level up). This is also where
+# install.sh copies things, so it resolves correctly both in a dev checkout
+# and an installed $PREFIX tree (see install/install.sh).
+# ---------------------------------------------------------------------------
+_CR_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_CR_REPO_ROOT="$(cd "$_CR_LIB_DIR/.." && pwd)"
+
+# ---------------------------------------------------------------------------
+# cr_default_skills_dir — bundled skills/ (in-repo, pinned via git subtree +
+# config/skills-version.json) if present, else the legacy shared box path
+# from before the bundle (transition/rollback safety — CFW-HST-BUNDLE design
+# note 3 "no break"). This is ONLY the default; CFW_RENDER_SKILLS_DIR set via
+# env/config file always wins (see cr_load_config's preset-restore below).
+# ---------------------------------------------------------------------------
+cr_default_skills_dir() {
+  local bundled="$_CR_REPO_ROOT/skills"
+  local legacy="/data/shared/cfw-skills/cfw"
+  if [[ -d "$bundled" ]]; then
+    printf '%s' "$bundled"
+  else
+    printf '%s' "$legacy"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# cr_log_skills_version — best-effort, non-fatal. Logs the pinned skills bundle
+# version (config/skills-version.json) so a run's journal/log makes it obvious
+# which recipe closure served it. Missing manifest (e.g. CFW_RENDER_SKILLS_DIR
+# overridden to the legacy path, or a pre-bundle checkout) is a WARN, not a
+# failure — the worker still runs against whatever CFW_RENDER_SKILLS_DIR points
+# at.
+# ---------------------------------------------------------------------------
+cr_log_skills_version() {
+  local manifest="$_CR_REPO_ROOT/config/skills-version.json"
+  if [[ ! -r "$manifest" ]]; then
+    cr_log "skills version manifest not found at $manifest (ok if CFW_RENDER_SKILLS_DIR points at a non-bundled dir) — dir in use: $CFW_RENDER_SKILLS_DIR"
+    return 0
+  fi
+  local summary
+  summary="$(python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception as e:
+    print("unreadable (%s)" % e)
+    sys.exit(0)
+print("sourceCommit=%s recipeCount=%s bundledAt=%s" % (
+    d.get("sourceCommit", "?"), d.get("recipeCount", "?"), d.get("bundledAt", "?")))
+' "$manifest" 2>/dev/null)"
+  cr_log "skills bundle: ${summary:-unreadable} — dir in use: $CFW_RENDER_SKILLS_DIR"
+}
+
+# ---------------------------------------------------------------------------
+# cr_skills_pin_summary — one-line "<sourceSha-short> · N recipes" for the
+# --dry `skills:pinned` row (doc §5 last para). Reads config/skills-version.json.
+# Prints "unpinned" if the manifest is absent/unreadable. Never fails.
+# ---------------------------------------------------------------------------
+cr_skills_pin_summary() {
+  local manifest="$_CR_REPO_ROOT/config/skills-version.json"
+  [[ -r "$manifest" ]] || { printf 'unpinned (no manifest)'; return 0; }
+  python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print("unpinned (unreadable manifest)"); sys.exit(0)
+sha = (d.get("sourceSha") or "")[:12] or "?"
+n = d.get("recipeCount", len(d.get("recipes", {})))
+print("sourceSha=%s recipes=%s" % (sha, n))
+' "$manifest" 2>/dev/null || printf 'unpinned (manifest read error)'
+}
+
+# ---------------------------------------------------------------------------
+# cr_verify_skills_bundle <recipe>
+# Per-tick integrity gate (doc §5). Verifies ONLY the recipe(s) the claimed
+# order references (not the whole tree) against the per-file sha256 hashes in
+# $CFW_RENDER_SKILLS_DIR/index.json, via scripts/verify-skills-bundle.sh
+# (single source of truth for the checksum logic; installed to $PREFIX/scripts).
+#
+# Return contract (kept simple for the caller):
+#   0  → verified, OR unverifiable-and-safe-to-proceed (no index.json, or the
+#        recipe isn't pinned in this bundle). Both are LOGGED; neither is a
+#        block, because doing no verification is exactly today's behavior and
+#        over-blocking on missing-manifest would be strictly worse. This also
+#        keeps a non-bundle CFW_RENDER_SKILLS_DIR (legacy path / local dev
+#        override / bare test fixture) working.
+#   1  → genuine checksum MISMATCH (a pinned file differs on disk) — the
+#        "pull landed mid-tick / corrupted bundle" case. Caller MUST NOT spawn
+#        the Director; it blocks the order with an owner-safe reason.
+# Guard: CFW_RENDER_SKILLS_SOURCE=fetch is not built yet (CFW-V2-067) — the
+# caller errors on that before ever reaching here (see cr_guard_skills_source).
+# ---------------------------------------------------------------------------
+cr_verify_skills_bundle() {
+  local recipe="${1:-}"
+  if [[ -z "$recipe" ]]; then
+    cr_log "skills verify: no recipe on the order — skipping per-recipe checksum verification (Director resolves recipe from order.json)"
+    return 0
+  fi
+  local script="$_CR_REPO_ROOT/scripts/verify-skills-bundle.sh"
+  if [[ ! -x "$script" && ! -r "$script" ]]; then
+    cr_log "skills verify: verify-skills-bundle.sh not found at $script — skipping (proceeding, integrity unchecked for $recipe)"
+    return 0
+  fi
+  local out rc
+  out="$(CFW_RENDER_SKILLS_DIR="$CFW_RENDER_SKILLS_DIR" bash "$script" "$recipe" 2>&1)"
+  rc=$?
+  case "$rc" in
+    0)
+      cr_log "skills verify: $recipe OK — bundle matches index.json"
+      return 0
+      ;;
+    3)
+      cr_log "skills verify: no index.json in $CFW_RENDER_SKILLS_DIR — cannot verify $recipe (not a published bundle); proceeding (integrity unchecked)"
+      return 0
+      ;;
+    4)
+      cr_log "skills verify: recipe $recipe not pinned in $CFW_RENDER_SKILLS_DIR/index.json — cannot verify (worker may need a redeploy); proceeding (integrity unchecked)"
+      return 0
+      ;;
+    *)
+      # rc==1 (mismatch) or any unexpected non-zero — treat as corruption.
+      cr_log "skills verify: MISMATCH for $recipe — bundle does not match index.json. Detail: $(printf '%s' "$out" | tr '\n' '|')"
+      return 1
+      ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# cr_guard_skills_source — hard-stop if CFW_RENDER_SKILLS_SOURCE=fetch is set
+# before the BYOA fetch client exists (CFW-V2-067's byoa-fetch-plan is NOT
+# built yet — doc §4). Fail fast + explicit, never a silent fallback to bundle.
+# Returns non-zero on a misconfiguration the caller must surface.
+# ---------------------------------------------------------------------------
+cr_guard_skills_source() {
+  case "${CFW_RENDER_SKILLS_SOURCE:-bundle}" in
+    bundle) return 0 ;;
+    fetch)
+      printf 'cfw-render: CFW_RENDER_SKILLS_SOURCE=fetch is not implemented yet — the BYOA skills-fetch client (bin/cfw-render-fetch-skills.sh, a thin client of cfw-social CFW-V2-067 byoa-fetch-plan) has not been built. Set CFW_RENDER_SKILLS_SOURCE=bundle (the shipped default) or leave it unset. Refusing to run rather than silently using the bundle.\n' >&2
+      return 1
+      ;;
+    *)
+      printf 'cfw-render: CFW_RENDER_SKILLS_SOURCE=%s is invalid (expected bundle|fetch)\n' "${CFW_RENDER_SKILLS_SOURCE}" >&2
+      return 1
+      ;;
+  esac
+}
 
 # ---------------------------------------------------------------------------
 # cr_load_config — env cascade: /etc/cfw-render.env (Linux box) → $CFW_RENDER_ENV
@@ -23,6 +174,7 @@ cr_load_config() {
     CFW_RENDER_STATE_DIR CFW_RENDER_SKILLS_DIR CFW_RENDER_DIRECTOR_MODEL
     CFW_RENDER_FANOUT_MODELS CFW_RENDER_TIMEOUT_VIDEO CFW_RENDER_TIMEOUT_IMAGE
     CFW_RENDER_GATE_FAIL_CAP CFW_RENDER_OLLAMA_KEYS_FILE CFW_RENDER_DIRECTOR_CMD
+    CFW_RENDER_MODE CFW_RENDER_SKILLS_SOURCE CFW_RENDER_WORKER_ID_FILE
   )
   local _cr_preset=() _v
   for _v in "${_cr_vars[@]}"; do
@@ -51,7 +203,7 @@ cr_load_config() {
   : "${CFW_RENDER_CONCURRENCY:=1}"
   : "${CFW_RENDER_SCRATCH:=$HOME/cfw-render-scratch}"
   : "${CFW_RENDER_STATE_DIR:=$HOME/.cfw-render}"
-  : "${CFW_RENDER_SKILLS_DIR:=/data/shared/cfw-skills/cfw}"
+  : "${CFW_RENDER_SKILLS_DIR:=$(cr_default_skills_dir)}"
   : "${CFW_RENDER_DIRECTOR_MODEL:=sonnet}"
   : "${CFW_RENDER_FANOUT_MODELS:=glm-5.2,kimi-k2}"
   : "${CFW_RENDER_TIMEOUT_VIDEO:=1800}"
@@ -59,10 +211,18 @@ cr_load_config() {
   : "${CFW_RENDER_GATE_FAIL_CAP:=2}"
   : "${CFW_RENDER_OLLAMA_KEYS_FILE:=$HOME/.gsai/secrets/ollama-keys.env}"
   : "${CFW_RENDER_DIRECTOR_CMD:=}"
+  # Deploy mode + skills sourcing (doc §4) — operational only, NEVER the
+  # security boundary (the server enforces that via which credential family
+  # resolves). Both are set once at install time; defaults match today's only
+  # real deploy target (our fleet, bundled skills).
+  : "${CFW_RENDER_MODE:=server}"
+  : "${CFW_RENDER_SKILLS_SOURCE:=bundle}"
+  : "${CFW_RENDER_WORKER_ID_FILE:=$CFW_RENDER_STATE_DIR/worker-id}"
   export CFW_RENDER_CONCURRENCY CFW_RENDER_SCRATCH CFW_RENDER_STATE_DIR \
     CFW_RENDER_SKILLS_DIR CFW_RENDER_DIRECTOR_MODEL CFW_RENDER_FANOUT_MODELS \
     CFW_RENDER_TIMEOUT_VIDEO CFW_RENDER_TIMEOUT_IMAGE CFW_RENDER_GATE_FAIL_CAP \
-    CFW_RENDER_OLLAMA_KEYS_FILE CFW_RENDER_DIRECTOR_CMD
+    CFW_RENDER_OLLAMA_KEYS_FILE CFW_RENDER_DIRECTOR_CMD \
+    CFW_RENDER_MODE CFW_RENDER_SKILLS_SOURCE CFW_RENDER_WORKER_ID_FILE
 
   local missing=()
   [[ -z "${CFW_API_BASE:-}" ]] && missing+=("CFW_API_BASE")
@@ -76,13 +236,63 @@ cr_load_config() {
     printf 'cfw-render: CFW_RENDER_WORKER_KEY does not match expected shape ^cfw_render_ — refusing to run\n' >&2
     return 1
   fi
+  # Fail fast on an unbuilt skills source rather than silently using the bundle.
+  cr_guard_skills_source || return 1
 
   mkdir -p "$CFW_RENDER_STATE_DIR" "$CFW_RENDER_SCRATCH" 2>/dev/null
 
-  # workerId is computed, not configured (auth doc §2 — hygiene, not security).
-  CFW_WORKER_ID="${CFW_WORKER_ID:-$(hostname -s 2>/dev/null || hostname):$$}"
+  cr_log_skills_version
+
+  # workerId — STABLE per install, NOT per process (doc §6.3). The systemd
+  # oneshot fires a fresh PID every 15-min tick, so the old `hostname:$$`
+  # changed every tick and would defeat CFW-V2-068's per-workerId circuit
+  # breaker (consecutiveFailures never accumulates against a moving id).
+  # Order of precedence:
+  #   1. an explicitly exported CFW_WORKER_ID (tests / special ops) wins;
+  #   2. else the persisted install-identity file (seeded once by install.sh,
+  #      lazily seeded here too so a hand-run/dev worker is also stable);
+  #   3. hostname:$$ survives only as free-text forensic context in log/event
+  #      MESSAGES — never as the claim identity.
+  if [[ -z "${CFW_WORKER_ID:-}" ]]; then
+    local _wid_file="${CFW_RENDER_WORKER_ID_FILE:-$CFW_RENDER_STATE_DIR/worker-id}"
+    if [[ ! -s "$_wid_file" ]]; then
+      cr_seed_worker_id "$_wid_file"
+    fi
+    CFW_WORKER_ID="$(tr -d '[:space:]' < "$_wid_file" 2>/dev/null)"
+    # Last-ditch fallback if the file is unreadable/empty (never block a tick
+    # on this) — a per-process id is worse for the breaker but better than no
+    # claim identity at all; log it loudly.
+    if [[ -z "$CFW_WORKER_ID" ]]; then
+      CFW_WORKER_ID="$(hostname -s 2>/dev/null || hostname):$$"
+      cr_log "WARN: worker-id file $_wid_file empty/unreadable — falling back to unstable $CFW_WORKER_ID (circuit breaker will not accumulate; check install)"
+    fi
+  fi
   export CFW_WORKER_ID
   return 0
+}
+
+# ---------------------------------------------------------------------------
+# cr_seed_worker_id <file> — write a stable install identity once. uuidgen if
+# present, else the kernel uuid source, else python3 uuid4, else a
+# hostname+random fallback. Idempotent by the caller's `-s` guard; safe to call
+# from install.sh and lazily from cr_load_config.
+# ---------------------------------------------------------------------------
+cr_seed_worker_id() {
+  local file="$1" id=""
+  mkdir -p "$(dirname "$file")" 2>/dev/null
+  if command -v uuidgen >/dev/null 2>&1; then
+    id="$(uuidgen 2>/dev/null)"
+  fi
+  if [[ -z "$id" && -r /proc/sys/kernel/random/uuid ]]; then
+    id="$(cat /proc/sys/kernel/random/uuid 2>/dev/null)"
+  fi
+  if [[ -z "$id" ]] && command -v python3 >/dev/null 2>&1; then
+    id="$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null)"
+  fi
+  if [[ -z "$id" ]]; then
+    id="$(hostname -s 2>/dev/null || hostname)-$$-${RANDOM}${RANDOM}"
+  fi
+  printf '%s\n' "$id" > "$file" 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------

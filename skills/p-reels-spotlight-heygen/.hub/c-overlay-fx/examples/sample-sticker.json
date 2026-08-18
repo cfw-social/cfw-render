@@ -1,0 +1,8 @@
+{
+  "type": "sticker",
+  "icon": "$0",
+  "label": "FREE",
+  "brand": {
+    "accent": "#FF6B00"
+  }
+}

@@ -108,6 +108,40 @@ as `AB-RNDR-REQUEUE` (repo: cfw-social) — see that task file for the exact
 scope. Until it lands, `cfw-render-ctl.sh unblock <orderId>` fails fast with
 the admin SQL to run manually rather than silently no-opping.
 
+## 8b. Bundled skills — migration note (CFW-HST-BUNDLE)
+
+As of the CFW-HST-BUNDLE merge, this repo carries its own pinned `skills/`
+(see README "Bundled skills" + `config/skills-version.json`). `install.sh`
+now copies `skills/` into `$PREFIX/skills` alongside `bin/`/`lib/`, and the
+worker defaults `CFW_RENDER_SKILLS_DIR` to that bundled path when the var is
+left unset.
+
+**This is additive and non-breaking by design** — a box's existing
+`/etc/cfw-render.env` (or `~/.gsai/secrets/cfw-render.env`) with an explicit
+`CFW_RENDER_SKILLS_DIR=/data/shared/cfw-skills/cfw` keeps working exactly as
+before; nothing on the box changes until an operator either (a) removes that
+line so the new default takes over, or (b) points it at the bundled path
+explicitly.
+
+**Do NOT, as part of a routine deploy, touch the box's hourly skills-pull
+cron (`/usr/local/bin/cfw-skills-pull.sh`) or the `/data/shared/cfw-skills/cfw`
+checkout.** Per CFW-HST-BUNDLE's rollout gate, cutting a brand/box over to
+the bundle and retiring the standalone cron is a **separate, supervised,
+brand-by-brand step** a human runs later:
+
+1. Prove the bundle install on a scratch box (`install.sh` + `--dry` PASS
+   with `dir:skills` resolving to `$PREFIX/skills`).
+2. Cut one live box's `CFW_RENDER_SKILLS_DIR` to the bundled path (or unset
+   it) for one brand; verify a real cook renders end-to-end (§6 above).
+3. Repeat brand-by-brand.
+4. Only after every brand on a box is cut over: disable that box's
+   `cfw-skills-pull.sh` cron/timer. Leave `/data/shared/cfw-skills/cfw` on
+   disk (external BYO agents may still read it via the public repo's raw
+   URLs — that path is unaffected by this bundle).
+
+This repo change does not perform any of steps 1-4 — see "Supervised deploy
+gate" in the README.
+
 ## 9. Rotation
 
 Follow `render-worker-auth.md` §5.3 verbatim: mint → update Vercel env →

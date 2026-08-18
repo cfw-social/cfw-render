@@ -63,6 +63,20 @@ if (( DRY )); then
   else
     warn_row "dir:skills" "$CFW_RENDER_SKILLS_DIR not found (ok for local dev override)"
   fi
+
+  # Which pinned skills release is live (doc §5 last para) — informational.
+  row "skills:pinned" 0 "$(cr_skills_pin_summary)"
+
+  # Deploy mode + skills source (doc §4). mode=byoa && source=bundle is a
+  # visible-but-non-fatal misconfiguration (doc risk #4): a BYOA box would use
+  # the full pinned bundle instead of a curated fetch — wasted disk, not a
+  # security issue (the server-side brand filter is the real boundary).
+  if [[ "$CFW_RENDER_MODE" == "byoa" && "$CFW_RENDER_SKILLS_SOURCE" == "bundle" ]]; then
+    warn_row "mode:skills-source" "mode=byoa with skills-source=bundle — BYOA usually wants curated 'fetch' (CFW-V2-067). Using the full pinned bundle; wasted disk, not a security issue."
+  else
+    row "mode:skills-source" 0 "mode=$CFW_RENDER_MODE source=$CFW_RENDER_SKILLS_SOURCE"
+  fi
+
   if [[ -w "$CFW_RENDER_STATE_DIR" || ( ! -e "$CFW_RENDER_STATE_DIR" && -w "$(dirname "$CFW_RENDER_STATE_DIR")" ) ]]; then
     row "dir:state" 0 "$CFW_RENDER_STATE_DIR"
   else
@@ -162,6 +176,20 @@ print(brand.get("slug") or "")
   local order_dir="$CFW_RENDER_SCRATCH/$brand_slug/$order_id"
   mkdir -p "$order_dir/ingredients" "$order_dir/clips" "$order_dir/work" "$order_dir/final"
   printf '%s' "$order_json" > "$order_dir/order.json"
+
+  # Integrity gate (doc §5): verify ONLY this order's recipe against the
+  # bundle's index.json before spending a Director on it. A genuine checksum
+  # mismatch (a pinned file changed under us — e.g. a pull landed mid-tick)
+  # blocks the order with an owner-safe reason instead of rendering from a
+  # corrupted recipe. Missing/absent manifest = unverifiable = proceed (logged
+  # in the lib) — never a false block.
+  if ! cr_verify_skills_bundle "$recipe"; then
+    cr_log "spawn_director: order $order_id — skills bundle checksum MISMATCH for recipe '$recipe'; blocking instead of rendering from corrupted recipe files"
+    cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"this render'"'"'s recipe files are out of sync — a redeploy is needed"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
+      || cr_log "order $order_id — block_render_order (skills-mismatch) call failed; lease expiry is the backstop"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "blocked" "" "" >> "$JOURNAL"
+    return 1
+  fi
 
   local gate
   gate="$(python3 -c '

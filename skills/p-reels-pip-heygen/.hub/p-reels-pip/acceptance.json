@@ -1,0 +1,45 @@
+{
+  "recipe": "p-reels-pip",
+  "spec_version": 1,
+  "_note": "Strict, recipe-owned spec read by c-eval-runner. A brand may layer brand-overrides/<slug>/acceptance.json to TIGHTEN thresholds (same id wins; new ids appended). See cfw-skills-pack/docs/skills-audit.md §4.",
+  "checks": [
+    { "id": "qa_gate",          "kind": "mechanical", "type": "qa_gate", "format": "reel" },
+    { "id": "duration_window",  "kind": "mechanical", "type": "duration_window", "min_s": 20, "max_s": 62 },
+    { "id": "canvas_1080x1920", "kind": "geometry",   "type": "dims", "w": 1080, "h": 1920 },
+    { "id": "bg_not_black",     "kind": "geometry",   "type": "luma_floor",
+      "crop": "1080:1920:0:0", "floor": 16, "samples": [0.05, 0.20, 0.40, 0.60, 0.80, 0.95] },
+
+    { "id": "bg_has_content", "kind": "perceptual", "type": "perceptual",
+      "desc": "(a) Background behind/around the PIP is NOT black — real footage or motion graphics are visible on every sample frame." },
+    { "id": "face_complete_in_pip", "kind": "perceptual", "type": "perceptual",
+      "desc": "(b) Complete face shows in the PIP card — forehead to chin visible, not cropped at top or bottom, not stretched." },
+    { "id": "pip_on_screen_with_margin", "kind": "perceptual", "type": "perceptual",
+      "desc": "(c) PIP card is fully on-screen with a visible bottom margin — entire card inside the frame with a clear gap at the bottom (110px margin enforced)." },
+    { "id": "content_above_pip_only", "kind": "perceptual", "type": "perceptual",
+      "desc": "(d) Graphics and captions occupy the upper zone only (pip-safe variant); nothing invades the bottom band where the PIP sits." },
+    { "id": "bg_fills_full_width", "kind": "perceptual", "type": "perceptual",
+      "desc": "(e) Background fills the full frame width — no pillarbox bars, no letterbox bands, no distortion." },
+    { "id": "captions_legible_not_over_pip", "kind": "perceptual", "type": "perceptual",
+      "desc": "(f) Captions are legible with brand accent on emphasis words and do NOT overlap the PIP card." },
+    { "id": "cover_is_moneyshot", "kind": "perceptual", "type": "perceptual",
+      "desc": "(g) Frame 0 (cover) shows the money-shot from cover_at — not a black frame or hook-animation blank." }
+  ],
+  "steps": {
+    "voicebed": {
+      "artifact": "bed.mp4",
+      "checks": [
+        { "id": "bed_dims",      "kind": "geometry",   "type": "dims",         "w": 1080, "h": 1920 },
+        { "id": "bed_loudness",  "kind": "mechanical", "type": "loudness",     "target": -14, "tol": 1.5 },
+        { "id": "bed_has_speech","kind": "mechanical", "type": "mean_volume",  "min_db": -32, "max_db": -8 }
+      ]
+    },
+    "background": {
+      "artifact": "bg-all.mp4",
+      "checks": [
+        { "id": "bg_track_dims",      "kind": "geometry", "type": "dims",       "w": 1080, "h": 1920 },
+        { "id": "bg_track_not_black", "kind": "geometry", "type": "luma_floor",
+          "crop": "1080:1920:0:0", "floor": 16, "samples": [0.1, 0.3, 0.5, 0.7, 0.9] }
+      ]
+    }
+  }
+}

@@ -1,0 +1,224 @@
+<!--
+  c-typing-ui — HOOK SCENE template (sub-composition)
+
+  Usage:
+    - As a sub-composition: fill placeholders, copy alongside root index.html, reference via
+      data-composition-src="hook-scene.html". The <template> wrapper is required.
+    - For standalone render: strip the <template> wrapper and wrap in a full <!DOCTYPE html> document.
+
+  Placeholders (substitute ALL before use):
+    {{DURATION}}  — clip length in seconds (number, e.g. 2.5)
+    {{EYEBROW}}   — small label above the headline (mono, muted), e.g. "Day 13 · Prompt of the Day"
+    {{LINE1}}     — first big title line (white), e.g. "PROMPT 13."
+    {{LINE2}}     — second big title line (accent + glow), e.g. "COLD EMAIL"  (empty = hidden)
+    {{LINE3}}     — third big title line (accent), e.g. "OPENER."              (empty = hidden)
+    {{SUBHEAD}}   — optional mid-size subheading below the title stack         (empty = hidden)
+    {{ACCENT}}    — 6-digit hex accent colour WITHOUT # (e.g. F97316)
+
+  Design reference: MGG day13 Remotion SceneHook — 118px Oswald 900, coral/violet gradient accent.
+  The pulse animation matches the "scale(pulse)" Remotion has; accent glow matches textShadow.
+-->
+<template id="hook-scene-template">
+<div
+  data-composition-id="hook-scene"
+  data-start="0"
+  data-duration="{{DURATION}}"
+  data-width="1080"
+  data-height="1920"
+>
+  <style>
+    [data-composition-id="hook-scene"] {
+      --bg-navy:    #0F172A;
+      --accent:     #{{ACCENT}};
+      --coral:      #{{ACCENT}};
+      --text-white: #F8FAFC;
+      --text-muted: #94A3B8;
+      --text-dim:   #64748B;
+
+      position: relative;
+      width: 1080px;
+      height: 1920px;
+      overflow: hidden;
+      background: var(--bg-navy);
+      font-family: 'Oswald', sans-serif;
+    }
+
+    /* Background radial glow (accent-coloured, breathing) */
+    [data-composition-id="hook-scene"] .hs-glow {
+      position: absolute;
+      left: 50%; top: 55%;
+      width: 1400px; height: 1400px;
+      transform: translate(-50%, -50%);
+      background: radial-gradient(
+        circle,
+        color-mix(in srgb, var(--accent) 18%, transparent) 0%,
+        transparent 58%
+      );
+      pointer-events: none;
+      will-change: transform, opacity;
+    }
+
+    /* Subtle dot grid (same as motion-card.html) */
+    [data-composition-id="hook-scene"] .hs-grid {
+      position: absolute; inset: 0;
+      background-image:
+        linear-gradient(rgba(148,163,184,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(148,163,184,0.04) 1px, transparent 1px);
+      background-size: 120px 120px;
+    }
+
+    /* Top eyebrow label */
+    [data-composition-id="hook-scene"] .hs-eyebrow {
+      position: absolute;
+      top: 200px;
+      width: 100%;
+      text-align: center;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      will-change: transform, opacity;
+    }
+
+    /* Title stack */
+    [data-composition-id="hook-scene"] .hs-title-stack {
+      position: absolute;
+      top: 460px;
+      width: 100%;
+      text-align: center;
+      padding: 0 50px;
+      box-sizing: border-box;
+      will-change: transform;
+    }
+    [data-composition-id="hook-scene"] .hs-line {
+      font-family: 'Oswald', sans-serif;
+      font-weight: 900;
+      font-size: 118px;
+      line-height: 0.95;
+      letter-spacing: -0.025em;
+      text-transform: uppercase;
+      will-change: transform, opacity;
+      display: block;
+    }
+    [data-composition-id="hook-scene"] .hs-line-white  { color: var(--text-white); }
+    [data-composition-id="hook-scene"] .hs-line-accent {
+      color: var(--accent);
+      text-shadow: 0 0 32px color-mix(in srgb, var(--accent) 50%, transparent);
+    }
+
+    /* Subheading */
+    [data-composition-id="hook-scene"] .hs-subhead {
+      position: absolute;
+      top: 1060px;
+      width: 100%;
+      text-align: center;
+      padding: 0 60px;
+      box-sizing: border-box;
+      color: var(--text-white);
+      font-family: 'Inter', sans-serif;
+      font-size: 48px;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-height: 1.15;
+      will-change: transform, opacity;
+    }
+  </style>
+
+  <div class="hs-grid"></div>
+  <div class="hs-glow" id="hs-glow"></div>
+
+  <!-- Eyebrow -->
+  <div class="hs-eyebrow" id="hs-eyebrow">{{EYEBROW}}</div>
+
+  <!-- Title lines -->
+  <div class="hs-title-stack" id="hs-title-stack">
+    <span class="hs-line hs-line-white" id="hs-line1">{{LINE1}}</span>
+    <div style="height:10px"></div>
+    <span class="hs-line hs-line-accent" id="hs-line2">{{LINE2}}</span>
+    <div style="height:6px"></div>
+    <span class="hs-line hs-line-accent" id="hs-line3">{{LINE3}}</span>
+  </div>
+
+  <!-- Optional subheading -->
+  <div class="hs-subhead" id="hs-subhead">{{SUBHEAD}}</div>
+
+  <script src="gsap.min.js"></script>
+  <script>
+    window.__timelines = window.__timelines || {};
+
+    var DURATION = parseFloat("{{DURATION}}");
+    var LINE2    = "{{LINE2}}".trim();
+    var LINE3    = "{{LINE3}}".trim();
+    var SUBHEAD  = "{{SUBHEAD}}".trim();
+
+    // Hide empty optional elements
+    if (!LINE2) document.getElementById("hs-line2").style.display  = "none";
+    if (!LINE3) document.getElementById("hs-line3").style.display  = "none";
+    if (!SUBHEAD) document.getElementById("hs-subhead").style.display = "none";
+
+    // ── Timeline ─────────────────────────────────────────────────────────────
+    var tl = gsap.timeline({ paused: true });
+
+    // Glow breathes: scale 0.92→1.08 over full clip
+    tl.fromTo("#hs-glow",
+      { scale: 0.92, opacity: 0.6 },
+      { scale: 1.08, opacity: 1, duration: DURATION, ease: "sine.inOut" },
+      0
+    );
+
+    // Title stack: ambient pulse (same as Remotion's `scale(pulse)`)
+    // Mimics: 1 + 0.02 * Math.sin(frame/fps * π * 2) → scale cycles once per ~1s.
+    // Over the full clip, do one sine oscillation.
+    var pulseCycles = Math.max(1, Math.ceil(DURATION));
+    tl.fromTo("#hs-title-stack",
+      { scale: 0.98 },
+      { scale: 1.02, duration: DURATION / pulseCycles, ease: "sine.inOut",
+        repeat: pulseCycles - 1, yoyo: true },
+      0
+    );
+
+    // Eyebrow slides up + fades in
+    tl.fromTo("#hs-eyebrow",
+      { y: 22, opacity: 0 },
+      { y: 0, opacity: 1, duration: 0.45, ease: "power3.out" },
+      0.1
+    );
+
+    // Line 1 entrance (white)
+    tl.fromTo("#hs-line1",
+      { y: 22, opacity: 0, scale: 0.94 },
+      { y: 0, opacity: 1, scale: 1, duration: 0.45, ease: "power4.out" },
+      0.2
+    );
+
+    // Lines 2 & 3 entrance (staggered)
+    if (LINE2) {
+      tl.fromTo("#hs-line2",
+        { y: 22, opacity: 0, scale: 0.94 },
+        { y: 0, opacity: 1, scale: 1, duration: 0.45, ease: "power4.out" },
+        0.37
+      );
+    }
+    if (LINE3) {
+      tl.fromTo("#hs-line3",
+        { y: 22, opacity: 0, scale: 0.94 },
+        { y: 0, opacity: 1, scale: 1, duration: 0.45, ease: "power4.out" },
+        0.52
+      );
+    }
+
+    // Subheading
+    if (SUBHEAD) {
+      tl.fromTo("#hs-subhead",
+        { y: 20, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.5, ease: "power3.out" },
+        0.65
+      );
+    }
+
+    window.__timelines["hook-scene"] = tl;
+  </script>
+</div>
+</template>

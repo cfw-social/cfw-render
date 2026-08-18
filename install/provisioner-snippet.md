@@ -9,7 +9,13 @@ so a reprovision of `hst` reinstalls the render worker the same way
 ## What to add to the box-provision flow
 
 1. **Clone/sync `cfw-render`** to the box (same pattern as other provisioned
-   repos under `cfw-provisioner/src/lib/tmpl/`).
+   repos under `cfw-provisioner/src/lib/tmpl/`). As of CFW-HST-BUNDLE, this
+   checkout now includes the pinned `skills/` subtree — cloning the repo is
+   sufficient to get both the worker and its recipe closure; `install.sh`
+   copies `skills/` into `$PREFIX/skills` alongside `bin/`/`lib/`
+   automatically (see `cfw-render/README.md` "Bundled skills"). No separate
+   step is needed to fetch skills for a box that's cutting over to the
+   bundle — but see the note below before touching the existing hourly pull.
 2. **Copy units:**
    ```bash
    cp cfw-render/install/cfw-render.service /etc/systemd/system/cfw-render.service
@@ -30,6 +36,18 @@ so a reprovision of `hst` reinstalls the render worker the same way
    session, or working directory with any `cfw-gw@<slug>` gateway — it is a
    decoupled service pool per `cfw-render-worker-plan.md` §11's "Cutover"
    step and the task's SUPERVISED FOLLOW-UP GATE.
+
+## Bundled-skills transition note (do not act on this without a human decision)
+
+The box's existing hourly `cfw-skills-pull.sh` cron (`/data/shared/cfw-skills/cfw`,
+the standalone public `cfw-social/cfw-skills` checkout) is **NOT retired by
+this change** and this snippet does not touch it. Once a box is fully cut
+over to the bundled `skills/` model (all brands' `CFW_RENDER_SKILLS_DIR`
+pointing at the bundle, verified per `docs/deploy.md` §8b), a follow-up
+provisioner task can drop the cron install step for that box. Until then,
+provisioning should keep installing/enabling `cfw-skills-pull.sh` exactly as
+today — this is a supervised, brand-by-brand rollout gate, not a default
+behavior change.
 
 ## Reference
 

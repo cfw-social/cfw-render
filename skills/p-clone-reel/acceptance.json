@@ -1,0 +1,31 @@
+{
+  "recipe": "p-clone-reel",
+  "spec_version": 1,
+  "_note": "Strict, recipe-owned spec read by c-eval-runner. A brand may layer brand-overrides/<slug>/acceptance.json to TIGHTEN thresholds (same id wins; new ids appended). See c-eval-runner/SKILL.md for the spec format.",
+  "checks": [
+    { "id": "qa_gate",          "kind": "mechanical", "type": "qa_gate", "format": "reel",
+      "desc": "Mechanical gate (loudness ≈ -14 LUFS, frame-0 brightness, resolution 1080×1920, fps, audio present) delegated to c-shorts-qa-gate." },
+    { "id": "duration_window",  "kind": "mechanical", "type": "duration_window", "min_s": 27, "max_s": 63,
+      "desc": "Adapted viral reel: 30–60s nominal; 27–63s after outro ± encode rounding." },
+    { "id": "canvas_1080x1920", "kind": "geometry",   "type": "dims", "w": 1080, "h": 1920,
+      "desc": "Exact 9:16 portrait canvas. A landscape output (e.g. format=16:9 mis-applied) fails here." },
+
+    { "id": "avatar_pip_visible", "kind": "perceptual", "type": "perceptual",
+      "desc": "(a) HeyGen avatar PIP is clearly visible on every sampled frame — the circle overlay is present, sharp, and not blank or missing." },
+    { "id": "no_greenscreen_residue", "kind": "perceptual", "type": "perceptual",
+      "desc": "(b) Chroma-key is clean — no green fringe or halo around the avatar; the colorkey two-pass (0.25:0.05 + 0.40:0.01) has fully removed all green-screen residue." },
+    { "id": "source_content_visible", "kind": "perceptual", "type": "perceptual",
+      "desc": "(c) Source viral video content is visible as the background — the reel faithfully adapts the original format's visual rhythm and pacing, not a blank or solid-color background." },
+    { "id": "cover_is_moneyshot", "kind": "perceptual", "type": "perceptual",
+      "desc": "(d) Frame 0 (cover) is the brand card money-shot — not black, not a mid-transition frame, not the raw hook-in opener." }
+  ],
+  "steps": {
+    "composite": {
+      "artifact": "video/compositing/composite-v1.mp4",
+      "checks": [
+        { "id": "composite_dims", "kind": "geometry", "type": "dims", "w": 1080, "h": 1920,
+          "desc": "Composite must be full portrait canvas before outro append and final delivery." }
+      ]
+    }
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "recipe": "p-carousel",
+  "spec_version": 1,
+  "_note": "Gate runs per-slide — invoke eval-run.sh once per PNG (one image per invocation). Default spec assumes 4:5 (1080×1350). For 1:1 (1080×1080) runs, layer a brand-overrides/<slug>/acceptance.json that overrides canvas_1080x1350 (w/h) and slide_not_blank (crop). Perceptual checks return PENDING — resolve with a vision pass (c-vision-qa) before delivery. Strict, recipe-owned spec read by c-eval-runner.",
+  "checks": [
+    {
+      "id": "canvas_1080x1350",
+      "kind": "geometry",
+      "type": "dims",
+      "w": 1080,
+      "h": 1350
+    },
+    {
+      "id": "slide_not_blank",
+      "kind": "geometry",
+      "type": "luma_floor",
+      "crop": "1080:1350:0:0",
+      "floor": 16,
+      "samples": [0.1, 0.3, 0.5, 0.7, 0.9]
+    },
+    {
+      "id": "no_clipped_text",
+      "kind": "perceptual",
+      "type": "perceptual",
+      "desc": "(a) No text overflows the card edge — all headlines, body copy, and eyebrows are fully visible within the slide bounds with no truncation or overflow."
+    },
+    {
+      "id": "legible_contrast",
+      "kind": "perceptual",
+      "type": "perceptual",
+      "desc": "(b) Text-to-background contrast is legible — body copy reads clearly against the card surface; no dark-on-dark or light-on-light pairing anywhere on the slide."
+    },
+    {
+      "id": "consistent_margins",
+      "kind": "perceptual",
+      "type": "perceptual",
+      "desc": "(c) Margin rhythm matches the template — padding on all four sides is consistent with the recipe's spacing convention; no element is flush to the canvas edge."
+    },
+    {
+      "id": "on_brand_palette",
+      "kind": "perceptual",
+      "type": "perceptual",
+      "desc": "(d) Colors are on-brand — no generic placeholder colors (e.g. #3b82f6, #333, stock grey); accent, ink, and card-surface values match the brand palette injected into the CSS vars in Step 3."
+    },
+    {
+      "id": "premium_hierarchy",
+      "kind": "perceptual",
+      "type": "perceptual",
+      "desc": "(e) Visual hierarchy is premium — clear size/weight progression (heading > subhead > body) with real layout structure (step list, stat callout, diagram, window mock, or CTA block); not a bare title on a plain background."
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+[
+  {
+    "url": "https://media.cfw.social/skill-examples/p-reels-faceless/pipeline-overview.png",
+    "kind": "diagram",
+    "caption": "p-reels-faceless pipeline — script → TTS → c-broll-sync beat plan → parallel HyperFrames render (graphics) + b-roll slicing → c-reel-premium polish → cover prepend → R2"
+  },
+  {
+    "url": "https://media.cfw.social/skill-examples/p-reels-fmt4/faceless-explainer-reel-v4.mp4",
+    "kind": "video",
+    "caption": "Reference output (fmt4 all-graphics path, same pipeline as no-broll run) — 7 animated HyperFrames beats over ElevenLabs VO. 44s, 9:16. p-reels-faceless without broll_clips produces an identical result."
+  }
+]

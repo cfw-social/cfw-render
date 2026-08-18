@@ -1,0 +1,12 @@
+[
+  {
+    "url": "https://media.cfw.social/skill-examples/p-gfx-image-posts/how-it-works.png",
+    "kind": "diagram",
+    "caption": "How HTML-GFX Image Posts works"
+  },
+  {
+    "url": "https://media.cfw.social/skill-examples/p-gfx-image-posts/sample.png",
+    "kind": "image",
+    "caption": "1080x1080 brand-styled HTML-GFX explainer post — '5 signs your content is on-brand' as a numbered 5-card grid on navy with green accents (Mr. Growth Guide palette), rendered via c-html-gfx (headless Chrome -> PNG)."
+  }
+]
