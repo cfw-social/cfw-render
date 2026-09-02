@@ -5,7 +5,6 @@ kind: framework
 visibility: internal
 ---
 
-
 # GSAP
 
 ## Loading GSAP — local vendor, never a CDN

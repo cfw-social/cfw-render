@@ -12,7 +12,7 @@ produces:
   duration: 20-60s
 inputs: [script, voice, avatar_id, broll, broll_style, bottom_cutzoom, known_transcript]
 dependsOn: [c-heygen, p-reels-split]
-
+metadata:
   hermes:
     vendored:
       - c-heygen           # provider tier reference (MCP/API/browser fallbacks) — split-heygen
@@ -20,26 +20,7 @@ dependsOn: [c-heygen, p-reels-split]
       # NOTE: does NOT vendor p-reels-split's components — that core owns them.
       # This wrapper delegates to p-reels-split entirely; all rendering lives there.
     delegates_to: p-reels-split
-metadata:
-  hermes:
-    vendored:
-      - { name: c-audio, load: ".hub/c-audio/SKILL.md" }
-      - { name: c-broll-sync, load: ".hub/c-broll-sync/SKILL.md" }
-      - { name: c-eval-runner, load: ".hub/c-eval-runner/SKILL.md" }
-      - { name: c-ffmpeg, load: ".hub/c-ffmpeg/SKILL.md" }
-      - { name: c-heygen, load: ".hub/c-heygen/SKILL.md" }
-      - { name: c-overlay-fx, load: ".hub/c-overlay-fx/SKILL.md" }
-      - { name: c-reel-premium, load: ".hub/c-reel-premium/SKILL.md" }
-      - { name: c-shorts-qa-gate, load: ".hub/c-shorts-qa-gate/SKILL.md" }
-      - { name: c-typing-ui, load: ".hub/c-typing-ui/SKILL.md" }
-      - { name: f-gsap, load: ".hub/f-gsap/SKILL.md" }
-      - { name: f-hyperframes, load: ".hub/f-hyperframes/SKILL.md" }
-      - { name: f-hyperframes-cli, load: ".hub/f-hyperframes-cli/SKILL.md" }
-      - { name: p-reels-split, load: ".hub/p-reels-split/SKILL.md" }
-      - { name: wowx-motions, load: ".hub/wowx-motions/SKILL.md" }
-    progressive: true
 ---
-
 
 
 
@@ -116,7 +97,7 @@ else
 
   # Locate this skill dir (box deployments live under ~/.hermes/profiles/<slug>/skills/cfw/)
   SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" \
-    /Users/vasanth/Code/skills -maxdepth 5 -type d -name p-reels-split-heygen 2>/dev/null | head -1)
+    /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name p-reels-split-heygen 2>/dev/null | head -1)
 
   # Provider step — requires ELEVENLABS_API_KEY + HEYGEN_API_KEY in the environment.
   # Writes the finished avatar MP4 to $CACHED_VIDEO and prints the path on its last line.

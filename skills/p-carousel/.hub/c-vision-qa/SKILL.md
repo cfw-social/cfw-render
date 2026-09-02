@@ -8,7 +8,6 @@ visibility: internal
 requires: ffmpeg
 ---
 
-
 # c-vision-qa — Perceptual QA Gate for Still Images
 
 

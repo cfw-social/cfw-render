@@ -7,7 +7,6 @@ kind: component
 visibility: internal
 ---
 
-
 # Studio Script — Writing & Processing
 
 

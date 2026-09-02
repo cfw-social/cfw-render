@@ -8,7 +8,6 @@ dependsOn: [f-hyperframes, f-hyperframes-cli, f-gsap]
 requires: node, chromium, ffmpeg
 ---
 
-
 # c-typing-ui — HyperFrames chat/terminal typing scene
 
 Two scene variants, both 1080×1920 (9:16):

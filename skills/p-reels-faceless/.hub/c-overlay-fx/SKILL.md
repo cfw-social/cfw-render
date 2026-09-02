@@ -15,7 +15,6 @@ requires:
   - canvas ^3.2.3   # canvas 2.x has a black-frame fillRect bug — must be 3.x
 ---
 
-
 # c-overlay-fx
 
 Animated transparent overlay graphics for HyperFrames reel cores. Renders

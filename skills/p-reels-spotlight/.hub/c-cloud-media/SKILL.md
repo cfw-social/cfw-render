@@ -9,7 +9,6 @@ dependsOn: [c-broll]
 requires: python3
 ---
 
-
 # Cloud Media — Upload via CFW Social API & CFW Social API ops
 
 
@@ -24,17 +23,25 @@ requires: python3
 > **ARCHITECTURE (2026-06-05): R2 is NEVER exposed to this skill.** All uploads go
 > THROUGH cfw-social (`POST /api/v1/media/upload`), which performs the R2 PUT
 > server-side and returns a CDN URL. This skill holds **no R2/AWS credentials** — only
-> the brand key (`$CFW_API_KEY`) and the API base (`$CFW_API_BASE`). The old
+> the box/brand key and the API base (`$CFW_API_BASE`). The old
 > `rclone` / `_scripts/upload-to-recordings.sh` direct-to-R2 paths and the `R2_*` /
 > `AWS_*` env vars were removed. **Never fall back to direct R2** — if the API call
 > fails, report the exact error and stop.
+
+> **AUTH (2026-08-22): box-key preferred, brand key fallback.** cfw-social's
+> `requireApiBrand` accepts either a box-scoped key (`cfw-box-key` + `x-cfw-brand`
+> headers) or the legacy per-brand key (`x-api-key`). This skill prefers the box key
+> when the box provides one, and falls back to the brand key so boxes that haven't
+> been given a box key yet keep working unchanged.
 
 ## Caller Variables
 
 | Variable | Required | Source | Description |
 |----------|----------|--------|-------------|
 | `$LOCAL_FILE` | Yes | Caller | Absolute path to the `image/*` or `video/*` file to upload |
-| `$CFW_API_KEY` | Yes | brand vault / env (`x-api-key`) | CFW Social **brand key** — authenticates the upload + V2 API calls |
+| `$CFW_BOX_KEY` | Preferred | box env (`cfw-box-key`) | CFW Social **box-scoped key** — preferred auth for the upload; box-scoped + revocable. Used together with `$CFW_BRAND_ID` |
+| `$CFW_BRAND_ID` | Preferred (with `$CFW_BOX_KEY`) | box env (`x-cfw-brand`) | Brand ID to scope the box key to — required whenever `$CFW_BOX_KEY` is set |
+| `$CFW_API_KEY` | Fallback only | brand vault / env (`x-api-key`) | CFW Social **brand key** — used only when `$CFW_BOX_KEY` is unset; still required for the legacy V1 sections below |
 | `$CFW_API_BASE` | Yes | env | CFW Social V2 base URL (e.g. `https://app.cfw.social`) |
 | `$BRAND_ACCOUNT_ID` | Legacy | Caller / brand config | Only for the legacy V1 register/content sections below — NOT needed for upload (the API derives the R2 key from the authed brand) |
 | `$FOLDER_ID` | Legacy | Caller / brand config | As above — legacy V1 only |
@@ -49,7 +56,17 @@ does the R2 write; this skill only sends bytes + reads back the CDN URL.
 upload_media () {   # $1 = absolute path to an image/* or video/* file → prints the CDN URL
   local LOCAL_FILE="$1"
   [ -s "$LOCAL_FILE" ] || { echo "ERROR: file not found or empty: $LOCAL_FILE" >&2; return 1; }
-  : "${CFW_API_BASE:?set CFW_API_BASE}" "${CFW_API_KEY:?set CFW_API_KEY (brand key)}"
+  : "${CFW_API_BASE:?set CFW_API_BASE}"
+
+  # Auth: prefer the box-scoped key (cfw-box-key + x-cfw-brand); fall back to the
+  # legacy per-brand key (x-api-key) when the box hasn't been given a box key yet.
+  local AUTH=()
+  if [ -n "${CFW_BOX_KEY:-}" ] && [ -n "${CFW_BRAND_ID:-}" ]; then
+    AUTH=(-H "cfw-box-key: $CFW_BOX_KEY" -H "x-cfw-brand: $CFW_BRAND_ID")
+  else
+    : "${CFW_API_KEY:?set CFW_API_KEY (brand key) or CFW_BOX_KEY + CFW_BRAND_ID (box key)}"
+    AUTH=(-H "x-api-key: $CFW_API_KEY")
+  fi
 
   # The endpoint REQUIRES the part's content-type to start with image/ or video/.
   # curl sends application/octet-stream for -F @file by default, so derive + pin it.
@@ -63,7 +80,7 @@ upload_media () {   # $1 = absolute path to an image/* or video/* file → print
 
   local RESP
   RESP=$(curl -sf -X POST "$CFW_API_BASE/api/v1/media/upload" \
-           -H "x-api-key: $CFW_API_KEY" \
+           "${AUTH[@]}" \
            -F "files=@$LOCAL_FILE;type=$MIME") \
     || { echo "ERROR: media/upload failed for $LOCAL_FILE (auth? >100MB? mime?)" >&2; return 1; }
 
@@ -75,7 +92,8 @@ CDN_URL=$(upload_media "$LOCAL_FILE") || exit 1
 echo "$CDN_URL"
 ```
 
-> If `$CFW_API_KEY` / `$CFW_API_BASE` is unset, or the upload returns non-2xx, the
+> If `$CFW_API_BASE` is unset, or neither auth path is available (no `$CFW_BOX_KEY`
+> + `$CFW_BRAND_ID` pair AND no `$CFW_API_KEY`), or the upload returns non-2xx, the
 > function FAILS LOUD and returns non-zero — do not retry against R2 directly, and do
 > not invent a CDN URL. Report the exact error to the caller.
 

@@ -8,7 +8,6 @@ dependsOn: [f-hyperframes, f-hyperframes-cli, c-ffmpeg]
 requires: ffmpeg, node, chromium
 ---
 
-
 # c-reel-premium — captions + SFX + grade polish pass
 
 Takes an **already-assembled reel** (final audio mastered by the calling recipe) and returns the

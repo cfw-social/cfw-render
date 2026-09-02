@@ -9,7 +9,6 @@ providers: elevenlabs
 requires: ffmpeg, python3
 ---
 
-
 # Studio Audio — TTS, SFX, Transcription
 
 
@@ -33,7 +32,7 @@ requires: ffmpeg, python3
 | `$ELEVENLABS_API_KEY` | Fallback | `~/.gsai/secrets.env` | Direct ElevenLabs (backup only) |
 
 ## Priority Order
-1. **Check SFX library first** — `sfx/sfx-library.md` at `/Users/vasanth/Code/skills/sfx/`. Preview: `afplay /Users/vasanth/Code/skills/sfx/{category}/{file}.mp3`.
+1. **Check SFX library first** — `sfx/sfx-library.md` at `/Users/vasanth/ecosystem/skills/sfx/`. Preview: `afplay /Users/vasanth/ecosystem/skills/sfx/{category}/{file}.mp3`.
 2. **TTS via Floe API** (primary). Direct ElevenLabs API as fallback only.
 3. **MLX Whisper** for transcription — local, Apple Silicon, no API cost.
 
@@ -105,14 +104,14 @@ atempo: 0.5–2.0 only. Chain for values outside: 2.5x = `atempo=2.0,atempo=1.25
 ## SFX Library
 
 ```
-/Users/vasanth/Code/skills/sfx/: whoosh/ ding/ transition/ tension/ swell/ ambient/
+/Users/vasanth/ecosystem/skills/sfx/: whoosh/ ding/ transition/ tension/ swell/ ambient/
 ```
-Check `sfx-library.md` before generating. New SFX → `/Users/vasanth/Code/skills/sfx/{category}/` (NEVER in production `audio/`).
+Check `sfx-library.md` before generating. New SFX → `/Users/vasanth/ecosystem/skills/sfx/{category}/` (NEVER in production `audio/`).
 
 ## Output Paths
 
 - Voiceover: `{production}/interim/audio/{name}.mp3`
-- SFX: `/Users/vasanth/Code/skills/sfx/{category}/{name}.mp3`
+- SFX: `/Users/vasanth/ecosystem/skills/sfx/{category}/{name}.mp3`
 - Transcription: `{production}/interim/audio/{name}.srt`
 
 ## Self-Improvement Feedback Loop

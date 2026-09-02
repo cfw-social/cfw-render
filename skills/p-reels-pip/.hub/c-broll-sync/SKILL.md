@@ -8,7 +8,6 @@ dependsOn: []
 requires: node
 ---
 
-
 # c-broll-sync — Transcript-Matched B-Roll Beat Planner
 
 Produces an **ordered beat list** from a word-level transcript + optional b-roll clips. Every beat

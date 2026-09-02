@@ -18,7 +18,6 @@ metadata:
 
 
 
-
 > ## ⚡ Frame integrity + integrated CTA (MANDATORY — 2026-06-16)
 > - **Frame 0 is NEVER black.** The first frame must be a bright money-shot — the cover-freeze of the strongest illustrative beat (Step 10 cover rule). Verify `ffmpeg ... signalstats` → `YAVG > 30`. No black / hook-blank / fade-in opener.
 > - **The LAST frame is NEVER black.** The reel must end on content, not a fade-to-black or trailing blank. Verify the final frame `YAVG > 30`.
@@ -180,12 +179,12 @@ TH="<path to downloaded talking-head mp4>"
 W="<production>/interim/split" ; mkdir -p "$W" "$W/src" "$W/top_beats"
 OUT="<production>/final/split-reel-with-cover.mp4" ; mkdir -p "$(dirname "$OUT")"
 FF="ffmpeg"
-SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name p-reels-split 2>/dev/null | head -1)
+SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name p-reels-split 2>/dev/null | head -1)
 
-BROLL_SYNC_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name c-broll-sync 2>/dev/null | head -1)
-PREMIUM_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name c-reel-premium 2>/dev/null | head -1)
-TYPING_UI_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name c-typing-ui 2>/dev/null | head -1)
-WOWX_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name wowx-motions 2>/dev/null | head -1)
+BROLL_SYNC_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-broll-sync 2>/dev/null | head -1)
+PREMIUM_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-reel-premium 2>/dev/null | head -1)
+TYPING_UI_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-typing-ui 2>/dev/null | head -1)
+WOWX_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name wowx-motions 2>/dev/null | head -1)
 
 BROLL_COVERAGE_PCT="${broll_coverage_pct:-30}"
 BROLL_CLIP_SECS="${broll_clip_seconds:-4}"
@@ -808,7 +807,7 @@ HTML
 # Collapse any double-hash to single before lint/render.
 sed -i 's/##/#/g' "$W/cta/index.html"
 # Vendor GSAP into the CTA comp dir so the local <script src="gsap.min.js"> resolves at render.
-GSAP=$(for p in "$SKILL_DIR/.hub/f-gsap/vendor" "$SKILL_DIR/.hub/f-gsap/vendor"; do [ -f "$p/gsap.min.js" ] && echo "$p/gsap.min.js" && break; done)
+GSAP=$(for p in "$SKILL_DIR/.hub/f-gsap/vendor" "$SKILL_DIR/../f-gsap/vendor"; do [ -f "$p/gsap.min.js" ] && echo "$p/gsap.min.js" && break; done)
 [ -n "$GSAP" ] || { echo "[p-reels-split] FATAL: vendored gsap.min.js not found (expected under .hub/f-gsap/vendor/ or ../f-gsap/vendor/) — NEVER fall back to a CDN"; exit 1; }
 cp "$GSAP" "$W/cta/gsap.min.js"
 cd "$W/cta" && npx hyperframes@0.7.5 lint && npx hyperframes@0.7.5 render --output "$W/cta-card.mp4" --fps 30 --quality high
@@ -928,7 +927,7 @@ print(f"premium comp: {len(plan['caption_groups'])} groups, {dur}s, cap_top={CAP
 PY
   # Vendor GSAP into the premium comp dir (and the compositions/ subdir) so the local
   # <script src="gsap.min.js"> in root-shell-polish.html + caption-overlay.html resolves at render.
-  GSAP=$(for p in "$SKILL_DIR/.hub/f-gsap/vendor" "$SKILL_DIR/.hub/f-gsap/vendor"; do [ -f "$p/gsap.min.js" ] && echo "$p/gsap.min.js" && break; done)
+  GSAP=$(for p in "$SKILL_DIR/.hub/f-gsap/vendor" "$SKILL_DIR/../f-gsap/vendor"; do [ -f "$p/gsap.min.js" ] && echo "$p/gsap.min.js" && break; done)
   [ -n "$GSAP" ] || { echo "[p-reels-split] FATAL: vendored gsap.min.js not found (expected under .hub/f-gsap/vendor/ or ../f-gsap/vendor/) — NEVER fall back to a CDN"; exit 1; }
   cp "$GSAP" "$PW/comp/gsap.min.js"
   cp "$GSAP" "$PW/comp/compositions/gsap.min.js"
@@ -992,7 +991,7 @@ cover the face or the HyperFrames title/captions.
 # Each spec also carries brand context. Empty/unset → skip entirely (default).
 OVERLAY_BEATS="${overlay_beats:-[]}"
 if [ "$(echo "$OVERLAY_BEATS" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)" -gt 0 ]; then
-  OVERLAY_FX_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name c-overlay-fx 2>/dev/null | head -1)
+  OVERLAY_FX_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-overlay-fx 2>/dev/null | head -1)
   [ -z "$OVERLAY_FX_DIR" ] && { echo "[p-reels-split] overlay_beats set but c-overlay-fx not found — skipping"; OVERLAY_BEATS="[]"; }
 fi
 if [ "$(echo "$OVERLAY_BEATS" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)" -gt 0 ]; then

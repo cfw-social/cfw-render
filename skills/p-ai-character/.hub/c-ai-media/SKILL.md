@@ -10,7 +10,6 @@ dependsOn: [c-kie-ai]
 requires: python3
 ---
 
-
 # AI Media Generation
 
 > **SELF-IMPROVEMENT RULE — READ FIRST:**

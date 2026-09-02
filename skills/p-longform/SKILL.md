@@ -12,32 +12,7 @@ produces:
   duration: 5-20 min
 inputs: [script, format, broll_dir, talking_head_video, source, known_transcript, captions, outro]
 dependsOn: [c-script, c-heygen, c-broll, c-broll-sync, c-reel-premium, c-typing-ui, c-html-gfx, c-audio, c-production, c-ffmpeg, c-ai-media, f-remotion, f-hyperframes, f-hyperframes-cli, f-gsap, wowx-motions, c-shorts-qa-gate, c-eval-runner]
-metadata:
-  hermes:
-    vendored:
-      - { name: c-ai-media, load: ".hub/c-ai-media/SKILL.md" }
-      - { name: c-audio, load: ".hub/c-audio/SKILL.md" }
-      - { name: c-broll, load: ".hub/c-broll/SKILL.md" }
-      - { name: c-broll-sync, load: ".hub/c-broll-sync/SKILL.md" }
-      - { name: c-cloud-media, load: ".hub/c-cloud-media/SKILL.md" }
-      - { name: c-eval-runner, load: ".hub/c-eval-runner/SKILL.md" }
-      - { name: c-ffmpeg, load: ".hub/c-ffmpeg/SKILL.md" }
-      - { name: c-heygen, load: ".hub/c-heygen/SKILL.md" }
-      - { name: c-html-gfx, load: ".hub/c-html-gfx/SKILL.md" }
-      - { name: c-kie-ai, load: ".hub/c-kie-ai/SKILL.md" }
-      - { name: c-production, load: ".hub/c-production/SKILL.md" }
-      - { name: c-reel-premium, load: ".hub/c-reel-premium/SKILL.md" }
-      - { name: c-script, load: ".hub/c-script/SKILL.md" }
-      - { name: c-shorts-qa-gate, load: ".hub/c-shorts-qa-gate/SKILL.md" }
-      - { name: c-typing-ui, load: ".hub/c-typing-ui/SKILL.md" }
-      - { name: f-gsap, load: ".hub/f-gsap/SKILL.md" }
-      - { name: f-hyperframes, load: ".hub/f-hyperframes/SKILL.md" }
-      - { name: f-hyperframes-cli, load: ".hub/f-hyperframes-cli/SKILL.md" }
-      - { name: f-remotion, load: ".hub/f-remotion/SKILL.md" }
-      - { name: wowx-motions, load: ".hub/wowx-motions/SKILL.md" }
-    progressive: true
 ---
-
 
 
 
@@ -345,7 +320,7 @@ The steps below use labeled variants (V = vsl, D = demo, T = tutorial) where beh
 If `script` is a `.md` draft: present to user for review and approval.
 If `script` is a `.txt` TTS-clean: confirm word count and estimated duration (`c-script` duration calc).
 
-→ LOAD: skill_view("p-longform", ".hub/c-script/SKILL.md") — TTS preprocessing (remove stage directions, normalize punctuation)
+→ Skill: `c-script` → TTS preprocessing (remove stage directions, normalize punctuation)
 → Save TTS-clean to: `interim/scripts/{name}-tts.txt`
 
 **Gate: User approves script before any render.**
@@ -356,7 +331,7 @@ If `script` is a `.txt` TTS-clean: confirm word count and estimated duration (`c
 
 Skip if `source_video` is provided — jump to Step 3.
 
-→ LOAD: skill_view("p-longform", ".hub/c-heygen/SKILL.md") — browser render path
+→ Skill: `c-heygen` → browser render path
 → Background: `#00FF00` solid (green-screen)
 → Script: full TTS-clean script
 → Voice: brand-configured voice or user-specified
@@ -369,7 +344,7 @@ Skip if `source_video` is provided — jump to Step 3.
 
 ### Step 3 — Poll & Download Avatar
 
-→ LOAD: skill_view("p-longform", ".hub/c-heygen/SKILL.md") — poll via API (60s interval)
+→ Skill: `c-heygen` → poll via API (60s interval)
 → Download to: `interim/video/base/{name}-green-screen.mp4`
 → Verify green-screen quality (edge color uniformity)
 
@@ -379,7 +354,7 @@ If `speed != 1.0`: apply speed adjust → `interim/video/base/{name}-green-scree
 
 ### Step 4 — Transcription
 
-→ LOAD: skill_view("p-longform", ".hub/c-audio/SKILL.md") — MLX Whisper on downloaded avatar audio (or extracted audio from MP4)
+→ Skill: `c-audio` → MLX Whisper on downloaded avatar audio (or extracted audio from MP4)
 → Output: `interim/audio/{name}.srt` + `{name}.txt`
 
 The SRT is ground truth for all b-roll timecodes. All segment boundaries in the plan must use SRT timecodes.
@@ -393,40 +368,40 @@ The SRT is ground truth for all b-roll timecodes. All segment boundaries in the 
 Run in parallel:
 
 **5Va. HTML GFX Cards:**
-→ LOAD: skill_view("p-longform", ".hub/c-html-gfx/SKILL.md") — dark studio theme matching brand ref
+→ Skill: `c-html-gfx` → dark studio theme matching brand ref
 → `num_gfx` cards: stat reveals, quote cards, benefit bullets, CTA banner
 → Screenshot to PNG → convert to 5s clips with 1.15x Ken Burns (c-ffmpeg)
 → Output: `interim/broll/gfx/`
 
 **5Vb. AI Images:**
-→ LOAD: skill_view("p-longform", ".hub/c-ai-media/SKILL.md") — read `brand-ref.md` first
+→ Skill: `c-ai-media` → read `brand-ref.md` first
 → `num_images` lifestyle/aspiration/problem images
 → Output: `{brand_path}/creatives/brolls/images/`
 
 **5Vc. Contextual Background:**
-→ LOAD: skill_view("p-longform", ".hub/c-ai-media/SKILL.md") — generate contextual background matching brand/topic
+→ Skill: `c-ai-media` → generate contextual background matching brand/topic
 → Save to: `interim/video/base/{name}-bg.png`
 
 #### Step 5D (demo) — Screen Recording Processing + Callout Overlays
 
 **5Da. Trim screen recordings:**
-→ LOAD: skill_view("p-longform", ".hub/c-ffmpeg/SKILL.md") — trim dead air, normalize codec (H.264, 1920×1080, 30fps, no audio)
+→ Skill: `c-ffmpeg` → trim dead air, normalize codec (H.264, 1920×1080, 30fps, no audio)
 → Output: `interim/broll/segments/screen-{section}.mp4`
 
 **5Db. UI callout overlays:**
-→ LOAD: skill_view("p-longform", ".hub/c-html-gfx/SKILL.md") — generate transparent PNG annotation overlays per section
+→ Skill: `c-html-gfx` → generate transparent PNG annotation overlays per section
 → Arrow annotations, highlight boxes, tooltip labels
 → Output: `interim/broll/gfx/callout-{section}.png`
 
 **5Dc. GFX summary card:**
-→ LOAD: skill_view("p-longform", ".hub/c-html-gfx/SKILL.md") — 1 summary/recap GFX card for the final section
+→ Skill: `c-html-gfx` → 1 summary/recap GFX card for the final section
 → Output: `interim/broll/gfx/summary-card.mp4`
 
 #### Step 5T (tutorial) — Remotion Compositions + HTML Slides ⛔ CHECKPOINT
 
 **5Ta. Design Remotion compositions:**
 For each section marked `Remotion diagram` in the section map:
-→ LOAD: skill_view("p-longform", ".hub/c-html-gfx/SKILL.md") —+ f-remotion → design TSX component (Remotion + Tailwind)
+→ Skill: `c-html-gfx` + f-remotion → design TSX component (Remotion + Tailwind)
 → Composition types: animated diagram, stat reveal, step progression, flow chart
 → Palette: Poppins/Inter fonts, brand colors (dark bg, accent highlight)
 
@@ -434,12 +409,12 @@ For each section marked `Remotion diagram` in the section map:
 
 **5Tb. Build HTML explainer slides:**
 For conceptual sections (not Remotion, not demo):
-→ LOAD: skill_view("p-longform", ".hub/c-html-gfx/SKILL.md") — animated explainer slides
+→ Skill: `c-html-gfx` → animated explainer slides
 → Rules: progressive reveal, Poppins font, one idea per slide, dark background, animated entrance
 → Output: `interim/broll/slides/slide-{section}.html` + PNG screenshots
 
 **5Tc. Render Remotion:**
-→ LOAD: skill_view("p-longform", ".hub/f-remotion/SKILL.md") —(via c-html-gfx Remotion render path)
+→ Skill: f-remotion (via c-html-gfx Remotion render path)
 → Pre-flight: `npm ci --omit=optional` in the Remotion project dir
 → Shared Chromium: `$REMOTION_BROWSER_EXECUTABLE` (do not download a second browser)
 → Font gotcha: never use `var(--font-*)` inside `font-family` — the Remotion compiler resolves it literally and falls back to a generic face. Use a mapped name directly: `'Poppins'`, `'Inter'`, `'Oswald'`, `'JetBrains Mono'`.
@@ -448,9 +423,6 @@ For conceptual sections (not Remotion, not demo):
 **5Td. Extend GFX clips to section duration (freeze-frame):**
 If a Remotion clip is shorter than its section, freeze the last frame for the remainder:
 ```bash
-SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE:-$0}")" && pwd 2>/dev/null)"
-[ -d "$SKILL_DIR/.hub" ] || SKILL_DIR="$(find "$HOME/.hermes/skills" "$HOME/.claude/skills" \
-   -type d -name p-longform -print 2>/dev/null | head -1)"
 ffmpeg -i remotion-clip.mp4 \
   -vf "tpad=stop_mode=clone:stop_duration={extra_seconds}s" \
   -c:v libx264 -c:a aac -y extended-clip.mp4
@@ -469,7 +441,7 @@ Concat.txt must be written with `printf`; run `cd "$VIDEO_DIR"` before the ffmpe
 
 ### Step 6 — B-Roll Plan ⛔ CHECKPOINT
 
-→ LOAD: skill_view("p-longform", ".hub/c-broll/SKILL.md") — check library first for reusable assets
+→ Skill: `c-broll` → check library first for reusable assets
 → Use SRT timecodes for all segment boundaries
 → Build the b-roll plan — every row must have:
 
@@ -485,7 +457,7 @@ Concat.txt must be written with `printf`; run `cd "$VIDEO_DIR"` before the ffmpe
 
 ### Step 7 — Composite ⛔ CHECKPOINT
 
-→ LOAD: skill_view("p-longform", ".hub/c-ffmpeg/SKILL.md") — assemble per section map and b-roll plan
+→ Skill: `c-ffmpeg` → assemble per section map and b-roll plan
 
 **Pre-composite: process avatar background**
 Sample avatar edge pixels at a mid frame to detect background type:
@@ -523,7 +495,7 @@ If verify fails: fix and recomposite before proceeding — never carry a broken 
 ### Step 8 — Post-Processing
 
 **8a. SFX Mix** (if `sfx: true`):
-→ LOAD: skill_view("p-longform", ".hub/c-ffmpeg/SKILL.md") — reference `c-ffmpeg/references/audio-processing.md`
+→ Skill: `c-ffmpeg` → reference `c-ffmpeg/references/audio-processing.md`
 → Check SFX library first for brand intro sting and transition cues
 → Mix at -18 dB moderate (never drown VO)
 
@@ -541,7 +513,9 @@ ffmpeg -i composite.mp4 \
 
 **8c. Captions** (if `captions: true`):
 → Burn word-level captions from SRT → top-center, yellow active word
-→ LOAD: skill_view("p-longform", ".hub/c-ffmpeg/SKILL.md") —---
+→ Skill: `c-ffmpeg`
+
+---
 
 ### QA gate (MANDATORY — run before delivery)
 
@@ -583,7 +557,7 @@ See `.hub/c-eval-runner/SKILL.md` for the spec format + built-in check types, an
 
 ### Step 9 — Delivery ⛔ CHECKPOINT
 
-→ LOAD: skill_view("p-longform", ".hub/c-production/SKILL.md") — run 12-point delivery checklist
+→ Skill: `c-production` → run 12-point delivery checklist
 → Final naming: `ls-{category}01-{description}.mp4` → copy to `final/`
 
 **Gate: All 12 checks pass. User reviews final before marking done.**
@@ -592,7 +566,7 @@ See `.hub/c-eval-runner/SKILL.md` for the spec format + built-in check types, an
 
 ### Step 10 — Archive
 
-→ LOAD: skill_view("p-longform", ".hub/c-broll/SKILL.md") — archive reusable clips from `interim/broll/` to `{brand_path}/creatives/brolls/`
+→ Skill: `c-broll` → archive reusable clips from `interim/broll/` to `{brand_path}/creatives/brolls/`
 → Update library `.md` index files
 → Run `/deliver` to mark production complete
 

@@ -3,7 +3,6 @@ name: wowx-motions
 description: Apply a cinematic camera MOTION to a B-roll video clip — push-in/focus, pull-out, pans, ken-burns, plus pseudo-3D tilt, orbit, and idle sway. Use when an agent needs to make flat/static B-roll feel alive and premium. One command, pure FFmpeg (no browser/GPU/3D), works on any aspect ratio/fps, preserves audio, fully deterministic. Trigger on "add motion to this b-roll", "ken burns this clip", "make this footage cinematic", "punch in / zoom in on this video", "pan across this clip", "tilt / orbit this clip", "animate this still/clip".
 ---
 
-
 # wowx-motions
 
 A unified camera-motion library an AI agent can fire on arbitrary footage. Pick a motion, get a

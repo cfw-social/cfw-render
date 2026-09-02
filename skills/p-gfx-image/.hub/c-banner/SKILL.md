@@ -9,7 +9,6 @@ requires: ffmpeg, chromium
 dependsOn: [c-html-gfx, c-ffmpeg]
 ---
 
-
 # c-banner — Platform Banner Rendering
 
 HTML → headless Chrome screenshot → crop to exact spec → compress. The single

@@ -12,27 +12,10 @@ produces:
   duration: 20-60s
 inputs: [talking_head_video, broll, script]
 dependsOn: [c-reel-premium, c-broll-sync, c-typing-ui, f-hyperframes, f-hyperframes-cli, c-ffmpeg, c-cloud-media, c-overlay-fx, c-shorts-qa-gate, c-eval-runner]
-
-  hermes:
-    vendored: [c-overlay-fx, c-reel-premium, c-broll-sync, c-typing-ui, f-hyperframes, f-hyperframes-cli, c-ffmpeg, c-cloud-media, c-shorts-qa-gate]
 metadata:
   hermes:
-    vendored:
-      - { name: c-broll, load: ".hub/c-broll/SKILL.md" }
-      - { name: c-broll-sync, load: ".hub/c-broll-sync/SKILL.md" }
-      - { name: c-cloud-media, load: ".hub/c-cloud-media/SKILL.md" }
-      - { name: c-eval-runner, load: ".hub/c-eval-runner/SKILL.md" }
-      - { name: c-ffmpeg, load: ".hub/c-ffmpeg/SKILL.md" }
-      - { name: c-overlay-fx, load: ".hub/c-overlay-fx/SKILL.md" }
-      - { name: c-reel-premium, load: ".hub/c-reel-premium/SKILL.md" }
-      - { name: c-shorts-qa-gate, load: ".hub/c-shorts-qa-gate/SKILL.md" }
-      - { name: c-typing-ui, load: ".hub/c-typing-ui/SKILL.md" }
-      - { name: f-gsap, load: ".hub/f-gsap/SKILL.md" }
-      - { name: f-hyperframes, load: ".hub/f-hyperframes/SKILL.md" }
-      - { name: f-hyperframes-cli, load: ".hub/f-hyperframes-cli/SKILL.md" }
-    progressive: true
+    vendored: [c-overlay-fx, c-reel-premium, c-broll-sync, c-typing-ui, f-hyperframes, f-hyperframes-cli, c-ffmpeg, c-cloud-media, c-shorts-qa-gate]
 ---
-
 
 
 
@@ -122,10 +105,10 @@ OUT_RAW="$OUT_BASE.mp4"
 OUT="${OUT_BASE}-with-cover.mp4"
 COVER_PNG="{production}/final/spotlight-cover.png"
 mkdir -p "$(dirname "$OUT")"
-SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name p-reels-spotlight 2>/dev/null | head -1)
-BROLL_SYNC_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name c-broll-sync 2>/dev/null | head -1)
-PREMIUM_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name c-reel-premium 2>/dev/null | head -1)
-TYPING_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name c-typing-ui 2>/dev/null | head -1)
+SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name p-reels-spotlight 2>/dev/null | head -1)
+BROLL_SYNC_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-broll-sync 2>/dev/null | head -1)
+PREMIUM_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-reel-premium 2>/dev/null | head -1)
+TYPING_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-typing-ui 2>/dev/null | head -1)
 ```
 
 ### Step 1 — Source the speaker video (the voice bed)
@@ -794,7 +777,7 @@ the corners; the mid-frame is always the face.
 # Each spec also carries brand context. Empty/unset → skip entirely (default).
 OVERLAY_BEATS="${overlay_beats:-[]}"
 if [ "$(echo "$OVERLAY_BEATS" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)" -gt 0 ]; then
-  OVERLAY_FX_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name c-overlay-fx 2>/dev/null | head -1)
+  OVERLAY_FX_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-overlay-fx 2>/dev/null | head -1)
   [ -z "$OVERLAY_FX_DIR" ] && { echo "[spotlight] overlay_beats set but c-overlay-fx not found — skipping"; OVERLAY_BEATS="[]"; }
 fi
 if [ "$(echo "$OVERLAY_BEATS" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)" -gt 0 ]; then

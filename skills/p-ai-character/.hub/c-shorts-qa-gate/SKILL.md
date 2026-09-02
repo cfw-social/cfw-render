@@ -8,7 +8,6 @@ visibility: internal
 requires: ffmpeg
 ---
 
-
 # c-shorts-qa-gate — Short-Form Pre-Delivery QA Gate
 
 

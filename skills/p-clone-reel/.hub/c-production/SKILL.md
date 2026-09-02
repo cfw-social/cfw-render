@@ -9,7 +9,6 @@ dependsOn: [c-broll, c-ffmpeg]
 requires: ffmpeg, python3
 ---
 
-
 # Studio Production — Folder, Delivery & Dashboard
 
 
@@ -48,7 +47,7 @@ Create this structure at `{brand_local_path}/creatives/productions/{production-n
 ```
 
 **AI-generated images** → `{brand_local_path}/creatives/brolls/images/` (NEVER in interim/)
-**SFX** → `/Users/vasanth/Code/skills/sfx/` (NEVER in audio/)
+**SFX** → `/Users/vasanth/ecosystem/skills/sfx/` (NEVER in audio/)
 **Deliverables** → `final/` only — never copy to brand `creatives/` before delivery
 
 ```bash

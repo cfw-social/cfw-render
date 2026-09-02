@@ -8,7 +8,6 @@ visibility: internal
 requires: node
 ---
 
-
 # c-composio — Composio Integration Bridge
 
 > **SELF-IMPROVEMENT RULE — READ FIRST:**

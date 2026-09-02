@@ -12,21 +12,7 @@ produces:
   duration: n/a
 inputs: [prompt, count, provider]
 dependsOn: [c-ai-media, c-kie-ai, c-replicate, c-ffmpeg, c-thumbnail, c-eval-runner, c-vision-qa]
-metadata:
-  hermes:
-    vendored:
-      - { name: c-ai-media, load: ".hub/c-ai-media/SKILL.md" }
-      - { name: c-eval-runner, load: ".hub/c-eval-runner/SKILL.md" }
-      - { name: c-ffmpeg, load: ".hub/c-ffmpeg/SKILL.md" }
-      - { name: c-html-gfx, load: ".hub/c-html-gfx/SKILL.md" }
-      - { name: c-kie-ai, load: ".hub/c-kie-ai/SKILL.md" }
-      - { name: c-replicate, load: ".hub/c-replicate/SKILL.md" }
-      - { name: c-thumbnail, load: ".hub/c-thumbnail/SKILL.md" }
-      - { name: c-vision-qa, load: ".hub/c-vision-qa/SKILL.md" }
-      - { name: f-remotion, load: ".hub/f-remotion/SKILL.md" }
-    progressive: true
 ---
-
 
 # p-ai-image-posts — AI Image Post(s)
 
@@ -43,7 +29,7 @@ metadata:
 ## QA Gate (run per produced image — MANDATORY before delivery)
 
 ```bash
-SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name p-ai-image 2>/dev/null | head -1)
+SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name p-ai-image 2>/dev/null | head -1)
 bash .hub/c-eval-runner/scripts/eval-run.sh <OUTPUT_IMAGE.png> --recipe-dir "$SKILL_DIR" --brand "$BRAND_SLUG"
 ```
 

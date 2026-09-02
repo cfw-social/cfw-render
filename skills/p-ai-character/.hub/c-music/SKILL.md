@@ -8,7 +8,6 @@ visibility: internal
 requires: ffmpeg, curl
 ---
 
-
 # c-music — CFW Music Library Fetcher
 
 > **SELF-IMPROVEMENT RULE — READ FIRST:**

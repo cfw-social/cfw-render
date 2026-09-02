@@ -11,18 +11,7 @@ produces:
   duration: n/a
 inputs: [topic, count]
 dependsOn: [c-html-gfx, c-ffmpeg, c-banner, c-eval-runner, c-vision-qa]
-metadata:
-  hermes:
-    vendored:
-      - { name: c-banner, load: ".hub/c-banner/SKILL.md" }
-      - { name: c-eval-runner, load: ".hub/c-eval-runner/SKILL.md" }
-      - { name: c-ffmpeg, load: ".hub/c-ffmpeg/SKILL.md" }
-      - { name: c-html-gfx, load: ".hub/c-html-gfx/SKILL.md" }
-      - { name: c-vision-qa, load: ".hub/c-vision-qa/SKILL.md" }
-      - { name: f-remotion, load: ".hub/f-remotion/SKILL.md" }
-    progressive: true
 ---
-
 
 # p-gfx-image-posts — HTML-GFX Explainer Images
 
@@ -38,7 +27,7 @@ metadata:
 ## QA Gate (run per produced image — MANDATORY before delivery)
 
 ```bash
-SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name p-gfx-image 2>/dev/null | head -1)
+SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name p-gfx-image 2>/dev/null | head -1)
 bash .hub/c-eval-runner/scripts/eval-run.sh <OUTPUT_IMAGE.png> --recipe-dir "$SKILL_DIR" --brand "$BRAND_SLUG"
 ```
 

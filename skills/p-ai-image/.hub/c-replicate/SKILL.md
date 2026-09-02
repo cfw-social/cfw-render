@@ -8,7 +8,6 @@ visibility: internal
 providers: replicate
 ---
 
-
 # Replicate — Direct API
 
 

@@ -11,27 +11,10 @@ produces:
   duration: 20-60s
 inputs: [talking_head_video, broll, known_transcript, outro, broll_style, bottom_cutzoom]
 dependsOn: [c-ffmpeg, c-audio, c-reel-premium, c-broll-sync, c-typing-ui, f-hyperframes, f-hyperframes-cli, f-gsap, c-overlay-fx, wowx-motions, c-shorts-qa-gate, c-eval-runner]
-
-  hermes:
-    vendored: [c-reel-premium, c-broll-sync, c-typing-ui, c-ffmpeg, c-audio, f-hyperframes, f-hyperframes-cli, f-gsap, c-overlay-fx, wowx-motions, c-shorts-qa-gate]
 metadata:
   hermes:
-    vendored:
-      - { name: c-audio, load: ".hub/c-audio/SKILL.md" }
-      - { name: c-broll-sync, load: ".hub/c-broll-sync/SKILL.md" }
-      - { name: c-eval-runner, load: ".hub/c-eval-runner/SKILL.md" }
-      - { name: c-ffmpeg, load: ".hub/c-ffmpeg/SKILL.md" }
-      - { name: c-overlay-fx, load: ".hub/c-overlay-fx/SKILL.md" }
-      - { name: c-reel-premium, load: ".hub/c-reel-premium/SKILL.md" }
-      - { name: c-shorts-qa-gate, load: ".hub/c-shorts-qa-gate/SKILL.md" }
-      - { name: c-typing-ui, load: ".hub/c-typing-ui/SKILL.md" }
-      - { name: f-gsap, load: ".hub/f-gsap/SKILL.md" }
-      - { name: f-hyperframes, load: ".hub/f-hyperframes/SKILL.md" }
-      - { name: f-hyperframes-cli, load: ".hub/f-hyperframes-cli/SKILL.md" }
-      - { name: wowx-motions, load: ".hub/wowx-motions/SKILL.md" }
-    progressive: true
+    vendored: [c-reel-premium, c-broll-sync, c-typing-ui, c-ffmpeg, c-audio, f-hyperframes, f-hyperframes-cli, f-gsap, c-overlay-fx, wowx-motions, c-shorts-qa-gate]
 ---
-
 
 
 
@@ -196,12 +179,12 @@ TH="<path to downloaded talking-head mp4>"
 W="<production>/interim/split" ; mkdir -p "$W" "$W/src" "$W/top_beats"
 OUT="<production>/final/split-reel-with-cover.mp4" ; mkdir -p "$(dirname "$OUT")"
 FF="ffmpeg"
-SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name p-reels-split 2>/dev/null | head -1)
+SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name p-reels-split 2>/dev/null | head -1)
 
-BROLL_SYNC_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name c-broll-sync 2>/dev/null | head -1)
-PREMIUM_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name c-reel-premium 2>/dev/null | head -1)
-TYPING_UI_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name c-typing-ui 2>/dev/null | head -1)
-WOWX_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name wowx-motions 2>/dev/null | head -1)
+BROLL_SYNC_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-broll-sync 2>/dev/null | head -1)
+PREMIUM_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-reel-premium 2>/dev/null | head -1)
+TYPING_UI_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-typing-ui 2>/dev/null | head -1)
+WOWX_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name wowx-motions 2>/dev/null | head -1)
 
 BROLL_COVERAGE_PCT="${broll_coverage_pct:-30}"
 BROLL_CLIP_SECS="${broll_clip_seconds:-4}"
@@ -824,7 +807,7 @@ HTML
 # Collapse any double-hash to single before lint/render.
 sed -i 's/##/#/g' "$W/cta/index.html"
 # Vendor GSAP into the CTA comp dir so the local <script src="gsap.min.js"> resolves at render.
-GSAP=$(for p in "$SKILL_DIR/.hub/f-gsap/vendor" "$SKILL_DIR/.hub/f-gsap/vendor"; do [ -f "$p/gsap.min.js" ] && echo "$p/gsap.min.js" && break; done)
+GSAP=$(for p in "$SKILL_DIR/.hub/f-gsap/vendor" "$SKILL_DIR/../f-gsap/vendor"; do [ -f "$p/gsap.min.js" ] && echo "$p/gsap.min.js" && break; done)
 [ -n "$GSAP" ] || { echo "[p-reels-split] FATAL: vendored gsap.min.js not found (expected under .hub/f-gsap/vendor/ or ../f-gsap/vendor/) — NEVER fall back to a CDN"; exit 1; }
 cp "$GSAP" "$W/cta/gsap.min.js"
 cd "$W/cta" && npx hyperframes@0.7.5 lint && npx hyperframes@0.7.5 render --output "$W/cta-card.mp4" --fps 30 --quality high
@@ -944,7 +927,7 @@ print(f"premium comp: {len(plan['caption_groups'])} groups, {dur}s, cap_top={CAP
 PY
   # Vendor GSAP into the premium comp dir (and the compositions/ subdir) so the local
   # <script src="gsap.min.js"> in root-shell-polish.html + caption-overlay.html resolves at render.
-  GSAP=$(for p in "$SKILL_DIR/.hub/f-gsap/vendor" "$SKILL_DIR/.hub/f-gsap/vendor"; do [ -f "$p/gsap.min.js" ] && echo "$p/gsap.min.js" && break; done)
+  GSAP=$(for p in "$SKILL_DIR/.hub/f-gsap/vendor" "$SKILL_DIR/../f-gsap/vendor"; do [ -f "$p/gsap.min.js" ] && echo "$p/gsap.min.js" && break; done)
   [ -n "$GSAP" ] || { echo "[p-reels-split] FATAL: vendored gsap.min.js not found (expected under .hub/f-gsap/vendor/ or ../f-gsap/vendor/) — NEVER fall back to a CDN"; exit 1; }
   cp "$GSAP" "$PW/comp/gsap.min.js"
   cp "$GSAP" "$PW/comp/compositions/gsap.min.js"
@@ -1008,7 +991,7 @@ cover the face or the HyperFrames title/captions.
 # Each spec also carries brand context. Empty/unset → skip entirely (default).
 OVERLAY_BEATS="${overlay_beats:-[]}"
 if [ "$(echo "$OVERLAY_BEATS" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)" -gt 0 ]; then
-  OVERLAY_FX_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name c-overlay-fx 2>/dev/null | head -1)
+  OVERLAY_FX_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-overlay-fx 2>/dev/null | head -1)
   [ -z "$OVERLAY_FX_DIR" ] && { echo "[p-reels-split] overlay_beats set but c-overlay-fx not found — skipping"; OVERLAY_BEATS="[]"; }
 fi
 if [ "$(echo "$OVERLAY_BEATS" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)" -gt 0 ]; then

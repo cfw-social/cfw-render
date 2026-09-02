@@ -7,7 +7,6 @@ dependsOn: [f-hyperframes]
 requires: node, ffmpeg
 ---
 
-
 # HyperFrames CLI
 
 Everything runs through `npx hyperframes`. Requires Node.js >= 22 and FFmpeg.

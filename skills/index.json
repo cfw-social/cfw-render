@@ -1,12 +1,12 @@
 {
-  "generatedAt": "2026-07-08T14:00:07.415Z",
-  "release": "2026-07-08T14:00:06.656Z",
-  "sourceSha": "a5e59cee6ca9300ee89a1e86f2f60892edaa6f92",
-  "rawBase": "https://raw.githubusercontent.com/cfw-social/cfw-skills/main",
+  "generatedAt": "2026-09-01T06:11:24Z",
+  "release": null,
+  "sourceSha": null,
+  "rawBase": null,
   "recipes": {
     "p-ai-character": {
       "version": "1.0.0",
-      "checksum": "sha256:32132f8c5856f63d504fb99eda4bb9f1a767dc158299d2bae40be70e249f278d",
+      "checksum": "sha256:ec7f9f9bffb06fb0157438d2711f2a5e9294fdfbc45ea23c509c797aa42da268",
       "files": [
         ".hub/c-ai-media/LEARNINGS.md",
         ".hub/c-ai-media/SKILL.md",
@@ -37,76 +37,46 @@
       ],
       "fileHashes": {
         ".hub/c-ai-media/LEARNINGS.md": "sha256:bc65543cccd0aae138f9cdba79705d94e73c158b607b5c5aab56e810ba13fa76",
-        ".hub/c-ai-media/SKILL.md": "sha256:591bf657887d194fa9eeb5da2bd467c849826b664bcc5fc2100644d374364bb8",
+        ".hub/c-ai-media/SKILL.md": "sha256:1b4fe7ecf0246e33f08fd0d4e620c82850801cd265aa156607b08f1f69973d0a",
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
-        ".hub/c-eval-runner/SKILL.md": "sha256:f5e43470fc0b2bdff0b1b0a8bb07c5131fb03ab02af53120fc95391a11d65fde",
+        ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
         ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
-        ".hub/c-ffmpeg/SKILL.md": "sha256:63172ef4a98fc371ea0eab13f59d7cc10223c4c4149b4af0b1879d67991c611a",
+        ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
         ".hub/c-ffmpeg/references/audio-processing.md": "sha256:2a4f6df0225b4edba4261f44505cd2b707af55c4b3cfc47347d5975cc81467c3",
         ".hub/c-ffmpeg/references/delivery.md": "sha256:2da997a5b93ce4c59a9da84863341a3087ae7ef48a5ecc49a140c665e3749392",
         ".hub/c-ffmpeg/references/landscape-pip.md": "sha256:af42cbc01898b4480ce82754ba449d323fa07695ed91e843586deb7af3166e24",
         ".hub/c-ffmpeg/references/portrait-layouts.md": "sha256:1e9375ec6e57908c45a3f80a52a577fda58356d29be46b568662ff20e0910570",
         ".hub/c-kie-ai/LEARNINGS.md": "sha256:49b05e6e8d2197e4381f1e1045d061ab3ac6e33adc2d9fd689eb1ef24d0e9100",
-        ".hub/c-kie-ai/SKILL.md": "sha256:676ff65390eb12c3c0130a83a43b879d0e8455b4d7427c15daab16b6a2a4b7d7",
+        ".hub/c-kie-ai/SKILL.md": "sha256:c69e4134788fbcd5fc00ca469325aa55802596f70ed113c38745732b6e5fdb09",
         ".hub/c-kie-ai/models.jsonl": "sha256:433624341ba9072dc45897aef9ac7c5a836bc39602bbecd36da6389870614ab9",
-        ".hub/c-kie-ai/sync-models.sh": "sha256:52dedf5a5ccb8325cbe7e674bf98f68d33b98f1aca9d1725a97c15cf6cb27312",
+        ".hub/c-kie-ai/sync-models.sh": "sha256:7a2b6f0c8ecb9a4b421d3bf674bb271702c269f88870f5ac71d5484e29e1103f",
         ".hub/c-music/LEARNINGS.md": "sha256:6ce61e3b9ba4278fa11fed04b5794c3025883620bb65a0f6c9abfa2e162ac34e",
-        ".hub/c-music/SKILL.md": "sha256:88e72f8946553a04327960ab67a9a6df82ff589946f209d7edb83b7b6a96f243",
+        ".hub/c-music/SKILL.md": "sha256:8852f89b81dd2747c3eaf9d4aa7005a05aa3c729814896cf2e2f3721b322f679",
         ".hub/c-shorts-qa-gate/LEARNINGS.md": "sha256:16ce1043150babac85cab811b163224d489a1e93e8a0f0cdd1e55c22c4de9ced",
-        ".hub/c-shorts-qa-gate/SKILL.md": "sha256:3c1055b2ba2153a6b4b21f4c78ef6874db98df0fbc6a8f98f933679e83420c5f",
+        ".hub/c-shorts-qa-gate/SKILL.md": "sha256:b152740d4bcaba9060039e70781986976931789d17ecc938d7432e2c645ed929",
         ".hub/c-shorts-qa-gate/scripts/qa-gate.sh": "sha256:e03be35423cf4ba1e531db6e82d080b74ea29e3559478443a12265b5c027f13e",
         "LEARNINGS.md": "sha256:7c70aad420312edf08deed8329a52ef6167f2f2c20c1d41da480e8dd791e3a6d",
-        "SKILL.md": "sha256:18405dc1208a3ea19d33c4fb4cc8ca46f4161083b3693e135a896bed04aea8b6",
+        "SKILL.md": "sha256:903396450b7c39d74bc7491215c3a95e99dfd1d6cb96193da6303573a103f9a6",
         "acceptance.json": "sha256:c2f05c53b7a1f89787f849450f9c12a838fbada093b5687abd091083f7ee5ab9",
         "examples.json": "sha256:39c08c0f47baab2db3e1de5ea6f7b0cadd9cbaba29c4a25198160cef88b6bc9b"
       },
-      "providers": [
-        "kie"
-      ],
-      "systemRequires": [
-        {
-          "bin": "curl",
-          "label": "curl",
-          "why": null,
-          "check": null,
-          "install": {}
-        },
-        {
-          "bin": "ffmpeg",
-          "label": "FFmpeg",
-          "why": "Video/audio compositing, trimming, chroma key, loudness, ffprobe checks.",
-          "check": "ffmpeg -version",
-          "install": {
-            "macos": "brew install ffmpeg",
-            "debian": "apt-get update && apt-get install -y ffmpeg"
-          }
-        },
-        {
-          "bin": "python3",
-          "label": "Python 3",
-          "why": "JSON glue, transcription, and provider API helpers used by media components.",
-          "check": "python3 --version",
-          "install": {
-            "macos": "brew install python",
-            "debian": "apt-get update && apt-get install -y python3"
-          }
-        }
-      ],
+      "providers": [],
+      "systemRequires": [],
       "vendored": [
         "c-ai-media",
-        "c-eval-runner",
         "c-ffmpeg",
-        "c-kie-ai",
         "c-music",
-        "c-shorts-qa-gate"
+        "c-shorts-qa-gate",
+        "c-eval-runner",
+        "c-kie-ai"
       ]
     },
     "p-ai-image": {
       "version": "1.0.0",
-      "checksum": "sha256:85a6bf9e797463c3a96f281a203b604e9f56d7ffa4314b3d5a39f02c27d34266",
+      "checksum": "sha256:d992e03713afd172d233d75dc5ff75eac3ebd418cad61132ddba17997e083aae",
       "files": [
         ".hub/c-ai-media/LEARNINGS.md",
         ".hub/c-ai-media/SKILL.md",
@@ -187,37 +157,37 @@
       ],
       "fileHashes": {
         ".hub/c-ai-media/LEARNINGS.md": "sha256:bc65543cccd0aae138f9cdba79705d94e73c158b607b5c5aab56e810ba13fa76",
-        ".hub/c-ai-media/SKILL.md": "sha256:591bf657887d194fa9eeb5da2bd467c849826b664bcc5fc2100644d374364bb8",
+        ".hub/c-ai-media/SKILL.md": "sha256:1b4fe7ecf0246e33f08fd0d4e620c82850801cd265aa156607b08f1f69973d0a",
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
-        ".hub/c-eval-runner/SKILL.md": "sha256:f5e43470fc0b2bdff0b1b0a8bb07c5131fb03ab02af53120fc95391a11d65fde",
+        ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
         ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
-        ".hub/c-ffmpeg/SKILL.md": "sha256:63172ef4a98fc371ea0eab13f59d7cc10223c4c4149b4af0b1879d67991c611a",
+        ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
         ".hub/c-ffmpeg/references/audio-processing.md": "sha256:2a4f6df0225b4edba4261f44505cd2b707af55c4b3cfc47347d5975cc81467c3",
         ".hub/c-ffmpeg/references/delivery.md": "sha256:2da997a5b93ce4c59a9da84863341a3087ae7ef48a5ecc49a140c665e3749392",
         ".hub/c-ffmpeg/references/landscape-pip.md": "sha256:af42cbc01898b4480ce82754ba449d323fa07695ed91e843586deb7af3166e24",
         ".hub/c-ffmpeg/references/portrait-layouts.md": "sha256:1e9375ec6e57908c45a3f80a52a577fda58356d29be46b568662ff20e0910570",
         ".hub/c-html-gfx/LEARNINGS.md": "sha256:0402cc89f8f46509adc86540dbefe577239950648942f7aa8d7791b05fc7b109",
-        ".hub/c-html-gfx/SKILL.md": "sha256:0497d016dd4c670ef767f6607016154cd67094cf2e3dd11621abfaa86ca64403",
+        ".hub/c-html-gfx/SKILL.md": "sha256:63d993eeece01f3974230c2ad6426704829848e675c42bd5003d7743be945cdb",
         ".hub/c-kie-ai/LEARNINGS.md": "sha256:49b05e6e8d2197e4381f1e1045d061ab3ac6e33adc2d9fd689eb1ef24d0e9100",
-        ".hub/c-kie-ai/SKILL.md": "sha256:676ff65390eb12c3c0130a83a43b879d0e8455b4d7427c15daab16b6a2a4b7d7",
+        ".hub/c-kie-ai/SKILL.md": "sha256:c69e4134788fbcd5fc00ca469325aa55802596f70ed113c38745732b6e5fdb09",
         ".hub/c-kie-ai/models.jsonl": "sha256:433624341ba9072dc45897aef9ac7c5a836bc39602bbecd36da6389870614ab9",
-        ".hub/c-kie-ai/sync-models.sh": "sha256:52dedf5a5ccb8325cbe7e674bf98f68d33b98f1aca9d1725a97c15cf6cb27312",
+        ".hub/c-kie-ai/sync-models.sh": "sha256:7a2b6f0c8ecb9a4b421d3bf674bb271702c269f88870f5ac71d5484e29e1103f",
         ".hub/c-replicate/LEARNINGS.md": "sha256:dfc43300baace52a0498c660222160b7e3ade74b3549b718d08fd0fcf6e9a5b6",
-        ".hub/c-replicate/SKILL.md": "sha256:66551c68a248fe249422b495c69058e29092bf3a0a9e06ac8960e364fa88cb77",
+        ".hub/c-replicate/SKILL.md": "sha256:eb7e20f2c3b336aa6f8b7f889769615287ee6af9a8772d2c8c5c9c18ead27804",
         ".hub/c-replicate/models.jsonl": "sha256:58a800a630ea336f5e6f5135dc4ae3b70ed0fec90b011717258ff305a5ba55f9",
         ".hub/c-replicate/sync-models.sh": "sha256:e2a76ace13b3d4e704cb31a5acb288e928f5fe8f3f8116ddff1e2d548cbda509",
-        ".hub/c-thumbnail/SKILL.md": "sha256:41d18f2188389fe273e7e9f3d8682b2a4f9a9e2030e66d2bfa9de5de89b914da",
+        ".hub/c-thumbnail/SKILL.md": "sha256:12bf3fdad9c06e585ce61059430567c01527260e0a43af8de53d8509f8c96941",
         ".hub/c-thumbnail/references/avatar-greenscreen-split.md": "sha256:839f211dbee0f1d8d3c25a4d2fd5c8395e353626239664d59e88acee5af57511",
         ".hub/c-thumbnail/references/template-before-after-split.html": "sha256:6503575ad4fb08490214487b3d4e3f5ca5d3b48243f9e1c1257b11b126fd9455",
         ".hub/c-thumbnail/references/template-before-after-split.tmpl.html": "sha256:39e759e074e3fc6188deccf76d23bc39032e8080a5b1b9ed2916fccdc2907e8c",
         ".hub/c-thumbnail/scripts/build-thumbnail.sh": "sha256:091156dea0e4706d85ee8fccd38c143332ce263d8c41e02b644cefca9a34e5fc",
         ".hub/c-thumbnail/scripts/frame-from-avatar.sh": "sha256:ba59f23f400cb5ef355969b9cb9403daedf7181bf04accbc4ebde91d20d96df2",
-        ".hub/c-vision-qa/SKILL.md": "sha256:7b1509158aecca7b8ef9829889accd582f3fc5bd0db01f09bacdb92da81364ad",
+        ".hub/c-vision-qa/SKILL.md": "sha256:328c298e86f09327f3c6156218e32426b1653897d117e6b8057b50e15edeefc3",
         ".hub/c-vision-qa/scripts/precheck.sh": "sha256:fed240467d8c01c2b94893b272d539054fb9afad42a880f33b804e38d70a8fc8",
-        ".hub/f-remotion/SKILL.md": "sha256:ce55272d87d7e71a2df29e7318c4b80c53c1adbc4dcc4916ace922bf8e9e218a",
+        ".hub/f-remotion/SKILL.md": "sha256:6fe6ff7aeeaf473b1157ed1795d3af000d45764d1b54a9337cc71a0d3809d9d0",
         ".hub/f-remotion/rules/3d.md": "sha256:42cef6d68fb4a266ab495d35df0c60e03672b0d85c043f9b567f6aa7ff00dd0d",
         ".hub/f-remotion/rules/animations.md": "sha256:d9ee77603e83316355788b1418cde5cdb0370efe0be21bb0a66eaa26c3bd26d7",
         ".hub/f-remotion/rules/assets.md": "sha256:68b70928aaea682165f33dc8e98278d9dca8512b50e44abc2c884ee5f3ac78de",
@@ -259,72 +229,27 @@
         ".hub/f-remotion/rules/trimming.md": "sha256:ae00948f6a903e384c7c312896adba9b50ed592f24a5a090699b7345849b36b9",
         ".hub/f-remotion/rules/videos.md": "sha256:d9d3032a57f92c759daf0bd60b3282f6810ecc9958e9093a6b828de623b05328",
         ".hub/f-remotion/rules/voiceover.md": "sha256:60340034cf422052007183d031171b3c88422dd3fe85f0d915283dd8ec5df3e8",
-        "SKILL.md": "sha256:83b547f6be686066d2fb9b2331058ea34b82111a4655041c290178638b93add8",
+        "SKILL.md": "sha256:fb9443ea06147dcd1564aa1bdffa2c0be90d12d689bde64674a06083956b7aed",
         "acceptance.json": "sha256:b1b8d50c6a48377847a467660fb67c96c805e6c62b45535fea19691c25f51b5b",
         "examples.json": "sha256:8678eea85b6f5b61e1961348f9580e3538de6947cd5f6b6a3815e5276e76df32"
       },
-      "providers": [
-        "kie",
-        "fal",
-        "replicate"
-      ],
-      "systemRequires": [
-        {
-          "bin": "chromium",
-          "label": "Chromium / headless Chrome",
-          "why": "Headless rendering for HTML graphics, website b-roll capture, and Remotion/HyperFrames frames.",
-          "check": "chromium --version || google-chrome --version || npx playwright install --dry-run chromium",
-          "install": {
-            "macos": "brew install --cask chromium",
-            "debian": "npx playwright install --with-deps chromium"
-          }
-        },
-        {
-          "bin": "ffmpeg",
-          "label": "FFmpeg",
-          "why": "Video/audio compositing, trimming, chroma key, loudness, ffprobe checks.",
-          "check": "ffmpeg -version",
-          "install": {
-            "macos": "brew install ffmpeg",
-            "debian": "apt-get update && apt-get install -y ffmpeg"
-          }
-        },
-        {
-          "bin": "node",
-          "label": "Node.js ≥ 22",
-          "why": "Runs Remotion / HyperFrames CLIs and Playwright capture scripts.",
-          "check": "node -v",
-          "install": {
-            "macos": "brew install node",
-            "debian": "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs"
-          }
-        },
-        {
-          "bin": "python3",
-          "label": "Python 3",
-          "why": "JSON glue, transcription, and provider API helpers used by media components.",
-          "check": "python3 --version",
-          "install": {
-            "macos": "brew install python",
-            "debian": "apt-get update && apt-get install -y python3"
-          }
-        }
-      ],
+      "providers": [],
+      "systemRequires": [],
       "vendored": [
         "c-ai-media",
-        "c-eval-runner",
-        "c-ffmpeg",
-        "c-html-gfx",
         "c-kie-ai",
         "c-replicate",
+        "c-ffmpeg",
         "c-thumbnail",
+        "c-eval-runner",
         "c-vision-qa",
+        "c-html-gfx",
         "f-remotion"
       ]
     },
     "p-clone-reel": {
       "version": "1.0.0",
-      "checksum": "sha256:5d93f99ee7595745acad6ac1b7bd4b0679e27027f79b739fab28dc5a117b368a",
+      "checksum": "sha256:7a3ecff9d6271885e9d3c7db6c79f83a3fcfee157bdd3d7066a42e34576af9bb",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -404,35 +329,35 @@
       ],
       "fileHashes": {
         ".hub/c-audio/LEARNINGS.md": "sha256:9a291f50ecd31e3ff95aa82893aa688761d80f9c7b1f3eca9768279d09d15f8f",
-        ".hub/c-audio/SKILL.md": "sha256:3d80df8c2ec02c01c0b66212b9d74ce8c55ab2f684392213a038d66f50089a75",
+        ".hub/c-audio/SKILL.md": "sha256:e8cdf63463444f6e6b231a3abc035919d3f866ec6bcdd757d169d557d6eb1f8a",
         ".hub/c-broll/LEARNINGS.md": "sha256:2063aee967e5e0cb45e3093a2a6c593537a2b215657afe2c241dd694abc8a649",
-        ".hub/c-broll/SKILL.md": "sha256:59c018f6944662c9ee2e2ec20a18fe02118acc21f39287dc663581707179a68c",
+        ".hub/c-broll/SKILL.md": "sha256:b2d8f12b2548f0a829304354c73d1085bfb46152ec8c8e6b1d5f6ad8d1a6b5f8",
         ".hub/c-cloud-media/LEARNINGS.md": "sha256:bd3fc51f0d21c894bcf3a8bbbaab8d7c47165564aedd600b855a8633e0eabfd9",
-        ".hub/c-cloud-media/SKILL.md": "sha256:7aa425d39b5b3fa6944e90bad2b848125d03658b62088fc91fc8373532a47d67",
+        ".hub/c-cloud-media/SKILL.md": "sha256:25d158d9b050a68c4c9b5e078777a415850c72e85c50fe084da5166c7804b07c",
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
-        ".hub/c-eval-runner/SKILL.md": "sha256:f5e43470fc0b2bdff0b1b0a8bb07c5131fb03ab02af53120fc95391a11d65fde",
+        ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
         ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
-        ".hub/c-ffmpeg/SKILL.md": "sha256:63172ef4a98fc371ea0eab13f59d7cc10223c4c4149b4af0b1879d67991c611a",
+        ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
         ".hub/c-ffmpeg/references/audio-processing.md": "sha256:2a4f6df0225b4edba4261f44505cd2b707af55c4b3cfc47347d5975cc81467c3",
         ".hub/c-ffmpeg/references/delivery.md": "sha256:2da997a5b93ce4c59a9da84863341a3087ae7ef48a5ecc49a140c665e3749392",
         ".hub/c-ffmpeg/references/landscape-pip.md": "sha256:af42cbc01898b4480ce82754ba449d323fa07695ed91e843586deb7af3166e24",
         ".hub/c-ffmpeg/references/portrait-layouts.md": "sha256:1e9375ec6e57908c45a3f80a52a577fda58356d29be46b568662ff20e0910570",
         ".hub/c-heygen/LEARNINGS.md": "sha256:087ebf121db8d245829331e12948bab8b8e6b4d5b3bd948a3e3e8e1450f2a291",
-        ".hub/c-heygen/SKILL.md": "sha256:2110f9a0518177ee99ec3a0b93d38a9420df22ec14b18d5ab23823f28b4a428a",
+        ".hub/c-heygen/SKILL.md": "sha256:52039403ee7d0be460581466df107e10edeeb354563065d018e6ba62c1401119",
         ".hub/c-heygen/references/browser-render.md": "sha256:bece956f4fe835bd0045dcd1ed849e43e681176c3abe1132684864cf7009c330",
         ".hub/c-html-gfx/LEARNINGS.md": "sha256:0402cc89f8f46509adc86540dbefe577239950648942f7aa8d7791b05fc7b109",
-        ".hub/c-html-gfx/SKILL.md": "sha256:0497d016dd4c670ef767f6607016154cd67094cf2e3dd11621abfaa86ca64403",
+        ".hub/c-html-gfx/SKILL.md": "sha256:63d993eeece01f3974230c2ad6426704829848e675c42bd5003d7743be945cdb",
         ".hub/c-production/LEARNINGS.md": "sha256:3ac1f2a5de7b61ac81cd04352e4d3e1e2fe656ccaeb645f98e255a05b12fae1b",
-        ".hub/c-production/SKILL.md": "sha256:221217115d5b67fae75ded5e03048c2b8612d98608871c21e003cffa917620de",
+        ".hub/c-production/SKILL.md": "sha256:c145b72018413a836b33d263221cc745022eb5643dededa028ca4b8983c273d4",
         ".hub/c-script/LEARNINGS.md": "sha256:d2bad99665351c4ffe0a809ef7990875847febb2df9113b8c8ba200e67dbfe33",
-        ".hub/c-script/SKILL.md": "sha256:1f332fbcbaef2f2e1d7fd2420e4c0c46eef23ff805c087d687508036ef05c169",
+        ".hub/c-script/SKILL.md": "sha256:ba1d83d551ec02cd7ae634fe6b5fd9017f74433f54ada1a8b7b689d355efdf0c",
         ".hub/c-shorts-qa-gate/LEARNINGS.md": "sha256:16ce1043150babac85cab811b163224d489a1e93e8a0f0cdd1e55c22c4de9ced",
-        ".hub/c-shorts-qa-gate/SKILL.md": "sha256:3c1055b2ba2153a6b4b21f4c78ef6874db98df0fbc6a8f98f933679e83420c5f",
+        ".hub/c-shorts-qa-gate/SKILL.md": "sha256:b152740d4bcaba9060039e70781986976931789d17ecc938d7432e2c645ed929",
         ".hub/c-shorts-qa-gate/scripts/qa-gate.sh": "sha256:e03be35423cf4ba1e531db6e82d080b74ea29e3559478443a12265b5c027f13e",
-        ".hub/f-remotion/SKILL.md": "sha256:ce55272d87d7e71a2df29e7318c4b80c53c1adbc4dcc4916ace922bf8e9e218a",
+        ".hub/f-remotion/SKILL.md": "sha256:6fe6ff7aeeaf473b1157ed1795d3af000d45764d1b54a9337cc71a0d3809d9d0",
         ".hub/f-remotion/rules/3d.md": "sha256:42cef6d68fb4a266ab495d35df0c60e03672b0d85c043f9b567f6aa7ff00dd0d",
         ".hub/f-remotion/rules/animations.md": "sha256:d9ee77603e83316355788b1418cde5cdb0370efe0be21bb0a66eaa26c3bd26d7",
         ".hub/f-remotion/rules/assets.md": "sha256:68b70928aaea682165f33dc8e98278d9dca8512b50e44abc2c884ee5f3ac78de",
@@ -475,73 +400,29 @@
         ".hub/f-remotion/rules/videos.md": "sha256:d9d3032a57f92c759daf0bd60b3282f6810ecc9958e9093a6b828de623b05328",
         ".hub/f-remotion/rules/voiceover.md": "sha256:60340034cf422052007183d031171b3c88422dd3fe85f0d915283dd8ec5df3e8",
         "LEARNINGS.md": "sha256:a8aa1e7334ebafb5793678f5cc6f724065795c47e9c6e8119cda174988b9bd6e",
-        "SKILL.md": "sha256:0d59a012330dfcb22eca85b4fac251e8461d7c92c33b287add7b71204ad33453",
+        "SKILL.md": "sha256:d70fa6153ade84303f9525637667434f55d373c8e44538f65e3c0db9e0f6224b",
         "acceptance.json": "sha256:ac27c945f702e28bcc5e965d6d40766067c32416052eacba4212c08f62b729bd",
         "examples.json": "sha256:57c7d12c47e46532de2ffc7bf148f462d301abef2d939fa0f752092a81ab6207"
       },
-      "providers": [
-        "heygen",
-        "elevenlabs"
-      ],
-      "systemRequires": [
-        {
-          "bin": "chromium",
-          "label": "Chromium / headless Chrome",
-          "why": "Headless rendering for HTML graphics, website b-roll capture, and Remotion/HyperFrames frames.",
-          "check": "chromium --version || google-chrome --version || npx playwright install --dry-run chromium",
-          "install": {
-            "macos": "brew install --cask chromium",
-            "debian": "npx playwright install --with-deps chromium"
-          }
-        },
-        {
-          "bin": "ffmpeg",
-          "label": "FFmpeg",
-          "why": "Video/audio compositing, trimming, chroma key, loudness, ffprobe checks.",
-          "check": "ffmpeg -version",
-          "install": {
-            "macos": "brew install ffmpeg",
-            "debian": "apt-get update && apt-get install -y ffmpeg"
-          }
-        },
-        {
-          "bin": "node",
-          "label": "Node.js ≥ 22",
-          "why": "Runs Remotion / HyperFrames CLIs and Playwright capture scripts.",
-          "check": "node -v",
-          "install": {
-            "macos": "brew install node",
-            "debian": "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs"
-          }
-        },
-        {
-          "bin": "python3",
-          "label": "Python 3",
-          "why": "JSON glue, transcription, and provider API helpers used by media components.",
-          "check": "python3 --version",
-          "install": {
-            "macos": "brew install python",
-            "debian": "apt-get update && apt-get install -y python3"
-          }
-        }
-      ],
+      "providers": [],
+      "systemRequires": [],
       "vendored": [
-        "c-audio",
-        "c-broll",
-        "c-cloud-media",
-        "c-eval-runner",
-        "c-ffmpeg",
+        "c-script",
         "c-heygen",
         "c-html-gfx",
+        "c-audio",
         "c-production",
-        "c-script",
+        "c-ffmpeg",
         "c-shorts-qa-gate",
-        "f-remotion"
+        "c-eval-runner",
+        "f-remotion",
+        "c-broll",
+        "c-cloud-media"
       ]
     },
     "p-carousel": {
       "version": "1.0.0",
-      "checksum": "sha256:9fa7400b95dfd4bca17a6ca1eea9484fc2dc87e8b3ffb303b2d9cda77d7dc561",
+      "checksum": "sha256:8c5da21d5c2fe803b3d03a9632b91e01aa92d652f82b625dae47fe35044bd96a",
       "files": [
         ".hub/c-eval-runner/LEARNINGS.md",
         ".hub/c-eval-runner/SKILL.md",
@@ -561,73 +442,32 @@
       ],
       "fileHashes": {
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
-        ".hub/c-eval-runner/SKILL.md": "sha256:f5e43470fc0b2bdff0b1b0a8bb07c5131fb03ab02af53120fc95391a11d65fde",
+        ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
         ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-script/LEARNINGS.md": "sha256:d2bad99665351c4ffe0a809ef7990875847febb2df9113b8c8ba200e67dbfe33",
-        ".hub/c-script/SKILL.md": "sha256:1f332fbcbaef2f2e1d7fd2420e4c0c46eef23ff805c087d687508036ef05c169",
-        ".hub/c-vision-qa/SKILL.md": "sha256:7b1509158aecca7b8ef9829889accd582f3fc5bd0db01f09bacdb92da81364ad",
+        ".hub/c-script/SKILL.md": "sha256:ba1d83d551ec02cd7ae634fe6b5fd9017f74433f54ada1a8b7b689d355efdf0c",
+        ".hub/c-vision-qa/SKILL.md": "sha256:328c298e86f09327f3c6156218e32426b1653897d117e6b8057b50e15edeefc3",
         ".hub/c-vision-qa/scripts/precheck.sh": "sha256:fed240467d8c01c2b94893b272d539054fb9afad42a880f33b804e38d70a8fc8",
         "LEARNINGS.md": "sha256:b2fb03047716e66e7e0de9ce7cf303dff9dec21e0bd325be877f7008448213a5",
-        "SKILL.md": "sha256:96e92c8f56eed190b8b702f9173e41d6a0f05d326b836db31dc462927240112d",
+        "SKILL.md": "sha256:4591925e21c727d6403e0690d6521d1c4511a91df9be171353c4859bb43b52c9",
         "acceptance.json": "sha256:8c8750eaa27f126a24e1840c67f6b57413d6997d2ad613c41b37d94f726681dc",
         "examples.json": "sha256:6cbd143eaaa63653c29764993611f3633a35eb24faa3ee6c09bb0a6e6f0cf96d",
         "render.mjs": "sha256:f770776f1f491efe8f88c2e4a3cd4f59f1cbb83d7165497b3603bc7c708b7e31",
         "template.html": "sha256:c6260bca8cd6cc4009dc69ad664059fbd2ede417a4c1339099a81307746e2668"
       },
       "providers": [],
-      "systemRequires": [
-        {
-          "bin": "chromium",
-          "label": "Chromium / headless Chrome",
-          "why": "Headless rendering for HTML graphics, website b-roll capture, and Remotion/HyperFrames frames.",
-          "check": "chromium --version || google-chrome --version || npx playwright install --dry-run chromium",
-          "install": {
-            "macos": "brew install --cask chromium",
-            "debian": "npx playwright install --with-deps chromium"
-          }
-        },
-        {
-          "bin": "ffmpeg",
-          "label": "FFmpeg",
-          "why": "Video/audio compositing, trimming, chroma key, loudness, ffprobe checks.",
-          "check": "ffmpeg -version",
-          "install": {
-            "macos": "brew install ffmpeg",
-            "debian": "apt-get update && apt-get install -y ffmpeg"
-          }
-        },
-        {
-          "bin": "node",
-          "label": "Node.js ≥ 22",
-          "why": "Runs Remotion / HyperFrames CLIs and Playwright capture scripts.",
-          "check": "node -v",
-          "install": {
-            "macos": "brew install node",
-            "debian": "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs"
-          }
-        },
-        {
-          "bin": "python3",
-          "label": "Python 3",
-          "why": "JSON glue, transcription, and provider API helpers used by media components.",
-          "check": "python3 --version",
-          "install": {
-            "macos": "brew install python",
-            "debian": "apt-get update && apt-get install -y python3"
-          }
-        }
-      ],
+      "systemRequires": [],
       "vendored": [
-        "c-eval-runner",
         "c-script",
-        "c-vision-qa"
+        "c-vision-qa",
+        "c-eval-runner"
       ]
     },
     "p-gfx-image": {
       "version": "1.0.0",
-      "checksum": "sha256:40e69b9f91fb4d4345233e761d7b4ef43b4a4fe0ad6ddad5463a303175c4ccc5",
+      "checksum": "sha256:27af750e4fef6acce270ac80dd4ac77048339ed5344909456f04854d0cf6adb4",
       "files": [
         ".hub/c-banner/SKILL.md",
         ".hub/c-eval-runner/LEARNINGS.md",
@@ -692,23 +532,23 @@
         "examples.json"
       ],
       "fileHashes": {
-        ".hub/c-banner/SKILL.md": "sha256:5c230b48d7252ca8f0a873e72095ef26473048b76086c0bdd0053a9aae629462",
+        ".hub/c-banner/SKILL.md": "sha256:d3aa705957625ade6f34c55c7d9d671cd51f8db6bdda11fddc2686da1615130b",
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
-        ".hub/c-eval-runner/SKILL.md": "sha256:f5e43470fc0b2bdff0b1b0a8bb07c5131fb03ab02af53120fc95391a11d65fde",
+        ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
         ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
-        ".hub/c-ffmpeg/SKILL.md": "sha256:63172ef4a98fc371ea0eab13f59d7cc10223c4c4149b4af0b1879d67991c611a",
+        ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
         ".hub/c-ffmpeg/references/audio-processing.md": "sha256:2a4f6df0225b4edba4261f44505cd2b707af55c4b3cfc47347d5975cc81467c3",
         ".hub/c-ffmpeg/references/delivery.md": "sha256:2da997a5b93ce4c59a9da84863341a3087ae7ef48a5ecc49a140c665e3749392",
         ".hub/c-ffmpeg/references/landscape-pip.md": "sha256:af42cbc01898b4480ce82754ba449d323fa07695ed91e843586deb7af3166e24",
         ".hub/c-ffmpeg/references/portrait-layouts.md": "sha256:1e9375ec6e57908c45a3f80a52a577fda58356d29be46b568662ff20e0910570",
         ".hub/c-html-gfx/LEARNINGS.md": "sha256:0402cc89f8f46509adc86540dbefe577239950648942f7aa8d7791b05fc7b109",
-        ".hub/c-html-gfx/SKILL.md": "sha256:0497d016dd4c670ef767f6607016154cd67094cf2e3dd11621abfaa86ca64403",
-        ".hub/c-vision-qa/SKILL.md": "sha256:7b1509158aecca7b8ef9829889accd582f3fc5bd0db01f09bacdb92da81364ad",
+        ".hub/c-html-gfx/SKILL.md": "sha256:63d993eeece01f3974230c2ad6426704829848e675c42bd5003d7743be945cdb",
+        ".hub/c-vision-qa/SKILL.md": "sha256:328c298e86f09327f3c6156218e32426b1653897d117e6b8057b50e15edeefc3",
         ".hub/c-vision-qa/scripts/precheck.sh": "sha256:fed240467d8c01c2b94893b272d539054fb9afad42a880f33b804e38d70a8fc8",
-        ".hub/f-remotion/SKILL.md": "sha256:ce55272d87d7e71a2df29e7318c4b80c53c1adbc4dcc4916ace922bf8e9e218a",
+        ".hub/f-remotion/SKILL.md": "sha256:6fe6ff7aeeaf473b1157ed1795d3af000d45764d1b54a9337cc71a0d3809d9d0",
         ".hub/f-remotion/rules/3d.md": "sha256:42cef6d68fb4a266ab495d35df0c60e03672b0d85c043f9b567f6aa7ff00dd0d",
         ".hub/f-remotion/rules/animations.md": "sha256:d9ee77603e83316355788b1418cde5cdb0370efe0be21bb0a66eaa26c3bd26d7",
         ".hub/f-remotion/rules/assets.md": "sha256:68b70928aaea682165f33dc8e98278d9dca8512b50e44abc2c884ee5f3ac78de",
@@ -750,65 +590,24 @@
         ".hub/f-remotion/rules/trimming.md": "sha256:ae00948f6a903e384c7c312896adba9b50ed592f24a5a090699b7345849b36b9",
         ".hub/f-remotion/rules/videos.md": "sha256:d9d3032a57f92c759daf0bd60b3282f6810ecc9958e9093a6b828de623b05328",
         ".hub/f-remotion/rules/voiceover.md": "sha256:60340034cf422052007183d031171b3c88422dd3fe85f0d915283dd8ec5df3e8",
-        "SKILL.md": "sha256:6dc936d256b7225ff84b0c1889e25a8a7dc0bf1e21461a0cd606a5da7e499381",
+        "SKILL.md": "sha256:2655dbe29f155c868c74af74c3f8dc60b5ede579c4719520b7e1700e1d525509",
         "acceptance.json": "sha256:9dfc0ea8d8403e6a5e5f72741d4c808b1c5ff5ee79674867d0272d35543312dc",
         "examples.json": "sha256:8e0ea79168c7e60d0b4e5740ec5394bf34e8683849b0b8e6962c6eac20747414"
       },
       "providers": [],
-      "systemRequires": [
-        {
-          "bin": "chromium",
-          "label": "Chromium / headless Chrome",
-          "why": "Headless rendering for HTML graphics, website b-roll capture, and Remotion/HyperFrames frames.",
-          "check": "chromium --version || google-chrome --version || npx playwright install --dry-run chromium",
-          "install": {
-            "macos": "brew install --cask chromium",
-            "debian": "npx playwright install --with-deps chromium"
-          }
-        },
-        {
-          "bin": "ffmpeg",
-          "label": "FFmpeg",
-          "why": "Video/audio compositing, trimming, chroma key, loudness, ffprobe checks.",
-          "check": "ffmpeg -version",
-          "install": {
-            "macos": "brew install ffmpeg",
-            "debian": "apt-get update && apt-get install -y ffmpeg"
-          }
-        },
-        {
-          "bin": "node",
-          "label": "Node.js ≥ 22",
-          "why": "Runs Remotion / HyperFrames CLIs and Playwright capture scripts.",
-          "check": "node -v",
-          "install": {
-            "macos": "brew install node",
-            "debian": "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs"
-          }
-        },
-        {
-          "bin": "python3",
-          "label": "Python 3",
-          "why": "JSON glue, transcription, and provider API helpers used by media components.",
-          "check": "python3 --version",
-          "install": {
-            "macos": "brew install python",
-            "debian": "apt-get update && apt-get install -y python3"
-          }
-        }
-      ],
+      "systemRequires": [],
       "vendored": [
+        "c-html-gfx",
+        "c-ffmpeg",
         "c-banner",
         "c-eval-runner",
-        "c-ffmpeg",
-        "c-html-gfx",
         "c-vision-qa",
         "f-remotion"
       ]
     },
     "p-longform": {
       "version": "1.0.0",
-      "checksum": "sha256:08a8d0096466bb4aeb3d93598c80dbe5292e2aa7fa6a14a265cb7c8cd772c7fc",
+      "checksum": "sha256:da73d196383ff5f48b17c53eedb4e07d7f58657146ef361e10c74af15311ab3b",
       "files": [
         ".hub/c-ai-media/LEARNINGS.md",
         ".hub/c-ai-media/SKILL.md",
@@ -958,38 +757,38 @@
       ],
       "fileHashes": {
         ".hub/c-ai-media/LEARNINGS.md": "sha256:bc65543cccd0aae138f9cdba79705d94e73c158b607b5c5aab56e810ba13fa76",
-        ".hub/c-ai-media/SKILL.md": "sha256:591bf657887d194fa9eeb5da2bd467c849826b664bcc5fc2100644d374364bb8",
+        ".hub/c-ai-media/SKILL.md": "sha256:1b4fe7ecf0246e33f08fd0d4e620c82850801cd265aa156607b08f1f69973d0a",
         ".hub/c-audio/LEARNINGS.md": "sha256:9a291f50ecd31e3ff95aa82893aa688761d80f9c7b1f3eca9768279d09d15f8f",
-        ".hub/c-audio/SKILL.md": "sha256:3d80df8c2ec02c01c0b66212b9d74ce8c55ab2f684392213a038d66f50089a75",
-        ".hub/c-broll-sync/SKILL.md": "sha256:055b13330c662bd83d2f53d0b41c91feaa33b1041eaca231156afb2c107c70aa",
+        ".hub/c-audio/SKILL.md": "sha256:e8cdf63463444f6e6b231a3abc035919d3f866ec6bcdd757d169d557d6eb1f8a",
+        ".hub/c-broll-sync/SKILL.md": "sha256:a5d72389fb32fb4587f1749c440a1fbb67f8a5e2f623ba1058cc0b55731920f5",
         ".hub/c-broll-sync/scripts/plan.js": "sha256:eb2d4e507cf48c9c8f64f94743ad8e0fb1cdcc45b5e06752ffcd4507eabcfd12",
         ".hub/c-broll/LEARNINGS.md": "sha256:2063aee967e5e0cb45e3093a2a6c593537a2b215657afe2c241dd694abc8a649",
-        ".hub/c-broll/SKILL.md": "sha256:59c018f6944662c9ee2e2ec20a18fe02118acc21f39287dc663581707179a68c",
+        ".hub/c-broll/SKILL.md": "sha256:b2d8f12b2548f0a829304354c73d1085bfb46152ec8c8e6b1d5f6ad8d1a6b5f8",
         ".hub/c-cloud-media/LEARNINGS.md": "sha256:bd3fc51f0d21c894bcf3a8bbbaab8d7c47165564aedd600b855a8633e0eabfd9",
-        ".hub/c-cloud-media/SKILL.md": "sha256:7aa425d39b5b3fa6944e90bad2b848125d03658b62088fc91fc8373532a47d67",
+        ".hub/c-cloud-media/SKILL.md": "sha256:25d158d9b050a68c4c9b5e078777a415850c72e85c50fe084da5166c7804b07c",
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
-        ".hub/c-eval-runner/SKILL.md": "sha256:f5e43470fc0b2bdff0b1b0a8bb07c5131fb03ab02af53120fc95391a11d65fde",
+        ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
         ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
-        ".hub/c-ffmpeg/SKILL.md": "sha256:63172ef4a98fc371ea0eab13f59d7cc10223c4c4149b4af0b1879d67991c611a",
+        ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
         ".hub/c-ffmpeg/references/audio-processing.md": "sha256:2a4f6df0225b4edba4261f44505cd2b707af55c4b3cfc47347d5975cc81467c3",
         ".hub/c-ffmpeg/references/delivery.md": "sha256:2da997a5b93ce4c59a9da84863341a3087ae7ef48a5ecc49a140c665e3749392",
         ".hub/c-ffmpeg/references/landscape-pip.md": "sha256:af42cbc01898b4480ce82754ba449d323fa07695ed91e843586deb7af3166e24",
         ".hub/c-ffmpeg/references/portrait-layouts.md": "sha256:1e9375ec6e57908c45a3f80a52a577fda58356d29be46b568662ff20e0910570",
         ".hub/c-heygen/LEARNINGS.md": "sha256:087ebf121db8d245829331e12948bab8b8e6b4d5b3bd948a3e3e8e1450f2a291",
-        ".hub/c-heygen/SKILL.md": "sha256:2110f9a0518177ee99ec3a0b93d38a9420df22ec14b18d5ab23823f28b4a428a",
+        ".hub/c-heygen/SKILL.md": "sha256:52039403ee7d0be460581466df107e10edeeb354563065d018e6ba62c1401119",
         ".hub/c-heygen/references/browser-render.md": "sha256:bece956f4fe835bd0045dcd1ed849e43e681176c3abe1132684864cf7009c330",
         ".hub/c-html-gfx/LEARNINGS.md": "sha256:0402cc89f8f46509adc86540dbefe577239950648942f7aa8d7791b05fc7b109",
-        ".hub/c-html-gfx/SKILL.md": "sha256:0497d016dd4c670ef767f6607016154cd67094cf2e3dd11621abfaa86ca64403",
+        ".hub/c-html-gfx/SKILL.md": "sha256:63d993eeece01f3974230c2ad6426704829848e675c42bd5003d7743be945cdb",
         ".hub/c-kie-ai/LEARNINGS.md": "sha256:49b05e6e8d2197e4381f1e1045d061ab3ac6e33adc2d9fd689eb1ef24d0e9100",
-        ".hub/c-kie-ai/SKILL.md": "sha256:676ff65390eb12c3c0130a83a43b879d0e8455b4d7427c15daab16b6a2a4b7d7",
+        ".hub/c-kie-ai/SKILL.md": "sha256:c69e4134788fbcd5fc00ca469325aa55802596f70ed113c38745732b6e5fdb09",
         ".hub/c-kie-ai/models.jsonl": "sha256:433624341ba9072dc45897aef9ac7c5a836bc39602bbecd36da6389870614ab9",
-        ".hub/c-kie-ai/sync-models.sh": "sha256:52dedf5a5ccb8325cbe7e674bf98f68d33b98f1aca9d1725a97c15cf6cb27312",
+        ".hub/c-kie-ai/sync-models.sh": "sha256:7a2b6f0c8ecb9a4b421d3bf674bb271702c269f88870f5ac71d5484e29e1103f",
         ".hub/c-production/LEARNINGS.md": "sha256:3ac1f2a5de7b61ac81cd04352e4d3e1e2fe656ccaeb645f98e255a05b12fae1b",
-        ".hub/c-production/SKILL.md": "sha256:221217115d5b67fae75ded5e03048c2b8612d98608871c21e003cffa917620de",
-        ".hub/c-reel-premium/SKILL.md": "sha256:f588372632c035723f7b8bc8e2b79595e5b42f4b8165ae12aa58e2bfa4407d73",
+        ".hub/c-production/SKILL.md": "sha256:c145b72018413a836b33d263221cc745022eb5643dededa028ca4b8983c273d4",
+        ".hub/c-reel-premium/SKILL.md": "sha256:743df59e17707fced213e051d04290eb90fc8a2b730db86d5eec90fe4f91cafd",
         ".hub/c-reel-premium/assets/sfx/click.wav": "sha256:4fd295f33b4d942d0e66b92c94da7ac73b28e537ebb0bff351b8902bb6309d89",
         ".hub/c-reel-premium/assets/sfx/impact-punch.wav": "sha256:3e0c9c3e9747a01bf47508a636ae64dc365e9f0fef8ccbf09526d5dc124cb1b3",
         ".hub/c-reel-premium/assets/sfx/impact-sub.wav": "sha256:4a7b8799867e1025b4c9d643d8a1b510664c0dad43a083ea6e22a63775482d83",
@@ -1001,22 +800,22 @@
         ".hub/c-reel-premium/templates/caption-overlay.html": "sha256:3aca4cddc352fddc372ad5b5901f2099694174e805071279998fa4899fb5c892",
         ".hub/c-reel-premium/templates/root-shell-polish.html": "sha256:aa1e3b615a731398f67180f42ff9544c6eb664b5ba3292d520afd89fbeba0a71",
         ".hub/c-script/LEARNINGS.md": "sha256:d2bad99665351c4ffe0a809ef7990875847febb2df9113b8c8ba200e67dbfe33",
-        ".hub/c-script/SKILL.md": "sha256:1f332fbcbaef2f2e1d7fd2420e4c0c46eef23ff805c087d687508036ef05c169",
+        ".hub/c-script/SKILL.md": "sha256:ba1d83d551ec02cd7ae634fe6b5fd9017f74433f54ada1a8b7b689d355efdf0c",
         ".hub/c-shorts-qa-gate/LEARNINGS.md": "sha256:16ce1043150babac85cab811b163224d489a1e93e8a0f0cdd1e55c22c4de9ced",
-        ".hub/c-shorts-qa-gate/SKILL.md": "sha256:3c1055b2ba2153a6b4b21f4c78ef6874db98df0fbc6a8f98f933679e83420c5f",
+        ".hub/c-shorts-qa-gate/SKILL.md": "sha256:b152740d4bcaba9060039e70781986976931789d17ecc938d7432e2c645ed929",
         ".hub/c-shorts-qa-gate/scripts/qa-gate.sh": "sha256:e03be35423cf4ba1e531db6e82d080b74ea29e3559478443a12265b5c027f13e",
-        ".hub/c-typing-ui/SKILL.md": "sha256:9817d1e392be069f1a9815eaba6c1438e110a5041ef7dc6cdac44809daedf923",
+        ".hub/c-typing-ui/SKILL.md": "sha256:cef93c0576a0c94578cda8538445bc06a57ca6f1fc87ef6f64a29dc939205dd7",
         ".hub/c-typing-ui/scripts/render-sample.sh": "sha256:6eb8449a08c5055f9ae99bd6a3a138b3db15a1d329aee54b1003b963139ef559",
         ".hub/c-typing-ui/templates/hook-scene.html": "sha256:01a16ade084a855035c03195be776e00e338029fcc17d9316cae42e6f8d66599",
         ".hub/c-typing-ui/templates/typing-scene.html": "sha256:d6c4feb0ecdcd831ecfc58b6f74ee34191345ad1f96ef68bc7d3d5e04cf34077",
-        ".hub/f-gsap/SKILL.md": "sha256:dce9206aa633d55c183b6cc0227cf70adaba08ff29b6e96d75093373471e50fb",
+        ".hub/f-gsap/SKILL.md": "sha256:67a0c22fbd2f03ac726e6e048bd0e982ed2617412248f18d123dc9a8e08632f4",
         ".hub/f-gsap/references/effects.md": "sha256:b073b7a3af765c3df13cba3200c0feb8eda066998e961cd63f837eaf9d312384",
         ".hub/f-gsap/scripts/extract-audio-data.py": "sha256:7709b60d42730fc93a348c205ab565158d240b70051d109fcc844b215d56fa4f",
         ".hub/f-gsap/vendor/MotionPathPlugin.min.js": "sha256:aa5f955ca4ce3095ebe5726f43a46b72532230edb3501b28fb853f189f023cab",
         ".hub/f-gsap/vendor/TextPlugin.min.js": "sha256:14f3898c5e985cd5d985918e2368813d35e9629da4884f05d03bb3d0d10f170f",
         ".hub/f-gsap/vendor/gsap.min.js": "sha256:c174bfce53a729418d57a8ad8625e7247c793a22fef8e2851e3cfa3de9cd8280",
-        ".hub/f-hyperframes-cli/SKILL.md": "sha256:78548abd7b784079e0a2c84e02133020716a1d31effcfa7ef6036bae72a9e819",
-        ".hub/f-hyperframes/SKILL.md": "sha256:8e0526af3ff215f3f71f262f2a583469422fb44fe0ae6697a32d6d7b4c9b31fb",
+        ".hub/f-hyperframes-cli/SKILL.md": "sha256:8a92051add5824b38f35fb8e9a9ef6fb5d6cb21aed8d8dfbeb7d062d6d0dc95d",
+        ".hub/f-hyperframes/SKILL.md": "sha256:493734684680db81ec00ce9afb3cc7ab8e02a7afd0e36facd1e69281d5b45deb",
         ".hub/f-hyperframes/data-in-motion.md": "sha256:22084b4460a8f815d923b972a908f937c1e573bbbc7a865f6f2979ec2ae7ff15",
         ".hub/f-hyperframes/house-style.md": "sha256:e0719895b369d7ee5203850250e605b3a1c15dbe43a367dd54e396f2b439f838",
         ".hub/f-hyperframes/palettes/bold-energetic.md": "sha256:17bc6b7889302151b4e5c84c0c6a33df676647078011d9decb2b68810e3baa7f",
@@ -1055,7 +854,7 @@
         ".hub/f-hyperframes/scripts/animation-map.mjs": "sha256:44166b4bf1eb7fa03e3a51648df7c70838ccc9af7b63de8de1a7d93b764b28d2",
         ".hub/f-hyperframes/scripts/contrast-report.mjs": "sha256:a916382bd40f197ee0109160241f6e35f317158f281dc643d200eb006dff29be",
         ".hub/f-hyperframes/visual-styles.md": "sha256:d173663b4342d830e46c5cc14a1ffafe6dbc6daca0702b0a451db3ce914693cc",
-        ".hub/f-remotion/SKILL.md": "sha256:ce55272d87d7e71a2df29e7318c4b80c53c1adbc4dcc4916ace922bf8e9e218a",
+        ".hub/f-remotion/SKILL.md": "sha256:6fe6ff7aeeaf473b1157ed1795d3af000d45764d1b54a9337cc71a0d3809d9d0",
         ".hub/f-remotion/rules/3d.md": "sha256:42cef6d68fb4a266ab495d35df0c60e03672b0d85c043f9b567f6aa7ff00dd0d",
         ".hub/f-remotion/rules/animations.md": "sha256:d9ee77603e83316355788b1418cde5cdb0370efe0be21bb0a66eaa26c3bd26d7",
         ".hub/f-remotion/rules/assets.md": "sha256:68b70928aaea682165f33dc8e98278d9dca8512b50e44abc2c884ee5f3ac78de",
@@ -1097,85 +896,40 @@
         ".hub/f-remotion/rules/trimming.md": "sha256:ae00948f6a903e384c7c312896adba9b50ed592f24a5a090699b7345849b36b9",
         ".hub/f-remotion/rules/videos.md": "sha256:d9d3032a57f92c759daf0bd60b3282f6810ecc9958e9093a6b828de623b05328",
         ".hub/f-remotion/rules/voiceover.md": "sha256:60340034cf422052007183d031171b3c88422dd3fe85f0d915283dd8ec5df3e8",
-        ".hub/wowx-motions/SKILL.md": "sha256:2816ab3345e872cb7944c1b3debd53d5db2439a3a6208326cdcb7ab684d71c62",
+        ".hub/wowx-motions/SKILL.md": "sha256:00b169e24a271c774c50cade24e8e1e39f7bd7c3b298141942f039e97e9dcf59",
         ".hub/wowx-motions/wowx_motion.py": "sha256:72439824e3e73fc13dc00aaedd632f4aed0f31cefb1748a93a64147e9245423a",
-        "SKILL.md": "sha256:849c5d1988136746ebcd74e5a350da30bda1b63b1b6aa293e9c2ea9c29d51e8b",
+        "SKILL.md": "sha256:d1751a8a9f649b7a2250b9acf1b35d329a7e74ec66f68284eef000ed684e4a15",
         "acceptance.json": "sha256:2794110c5b380b87699e3c6fead523da5040fcbb257ca254a88428ab16c50b45",
         "examples.json": "sha256:50a5ce9affe598348697ae157f65725a4d04127a979dcfce8d764507fcf067e3"
       },
-      "providers": [
-        "heygen",
-        "elevenlabs",
-        "kie"
-      ],
-      "systemRequires": [
-        {
-          "bin": "chromium",
-          "label": "Chromium / headless Chrome",
-          "why": "Headless rendering for HTML graphics, website b-roll capture, and Remotion/HyperFrames frames.",
-          "check": "chromium --version || google-chrome --version || npx playwright install --dry-run chromium",
-          "install": {
-            "macos": "brew install --cask chromium",
-            "debian": "npx playwright install --with-deps chromium"
-          }
-        },
-        {
-          "bin": "ffmpeg",
-          "label": "FFmpeg",
-          "why": "Video/audio compositing, trimming, chroma key, loudness, ffprobe checks.",
-          "check": "ffmpeg -version",
-          "install": {
-            "macos": "brew install ffmpeg",
-            "debian": "apt-get update && apt-get install -y ffmpeg"
-          }
-        },
-        {
-          "bin": "node",
-          "label": "Node.js ≥ 22",
-          "why": "Runs Remotion / HyperFrames CLIs and Playwright capture scripts.",
-          "check": "node -v",
-          "install": {
-            "macos": "brew install node",
-            "debian": "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs"
-          }
-        },
-        {
-          "bin": "python3",
-          "label": "Python 3",
-          "why": "JSON glue, transcription, and provider API helpers used by media components.",
-          "check": "python3 --version",
-          "install": {
-            "macos": "brew install python",
-            "debian": "apt-get update && apt-get install -y python3"
-          }
-        }
-      ],
+      "providers": [],
+      "systemRequires": [],
       "vendored": [
-        "c-ai-media",
-        "c-audio",
+        "c-script",
+        "c-heygen",
         "c-broll",
         "c-broll-sync",
-        "c-cloud-media",
-        "c-eval-runner",
-        "c-ffmpeg",
-        "c-heygen",
-        "c-html-gfx",
-        "c-kie-ai",
-        "c-production",
         "c-reel-premium",
-        "c-script",
-        "c-shorts-qa-gate",
         "c-typing-ui",
-        "f-gsap",
+        "c-html-gfx",
+        "c-audio",
+        "c-production",
+        "c-ffmpeg",
+        "c-ai-media",
+        "f-remotion",
         "f-hyperframes",
         "f-hyperframes-cli",
-        "f-remotion",
-        "wowx-motions"
+        "f-gsap",
+        "wowx-motions",
+        "c-shorts-qa-gate",
+        "c-eval-runner",
+        "c-cloud-media",
+        "c-kie-ai"
       ]
     },
     "p-reels-pip": {
       "version": "1.0.0",
-      "checksum": "sha256:91431248ebbda626de00652b792e172c540b93e8b95e429b4883636e0d3b9c94",
+      "checksum": "sha256:b7f1e6b7fefb5513c06505f57059772ab075091c929ad2f94615b9f66890ca43",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1274,22 +1028,22 @@
       ],
       "fileHashes": {
         ".hub/c-audio/LEARNINGS.md": "sha256:9a291f50ecd31e3ff95aa82893aa688761d80f9c7b1f3eca9768279d09d15f8f",
-        ".hub/c-audio/SKILL.md": "sha256:3d80df8c2ec02c01c0b66212b9d74ce8c55ab2f684392213a038d66f50089a75",
-        ".hub/c-broll-sync/SKILL.md": "sha256:055b13330c662bd83d2f53d0b41c91feaa33b1041eaca231156afb2c107c70aa",
+        ".hub/c-audio/SKILL.md": "sha256:e8cdf63463444f6e6b231a3abc035919d3f866ec6bcdd757d169d557d6eb1f8a",
+        ".hub/c-broll-sync/SKILL.md": "sha256:a5d72389fb32fb4587f1749c440a1fbb67f8a5e2f623ba1058cc0b55731920f5",
         ".hub/c-broll-sync/scripts/plan.js": "sha256:eb2d4e507cf48c9c8f64f94743ad8e0fb1cdcc45b5e06752ffcd4507eabcfd12",
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
-        ".hub/c-eval-runner/SKILL.md": "sha256:f5e43470fc0b2bdff0b1b0a8bb07c5131fb03ab02af53120fc95391a11d65fde",
+        ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
         ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
-        ".hub/c-ffmpeg/SKILL.md": "sha256:63172ef4a98fc371ea0eab13f59d7cc10223c4c4149b4af0b1879d67991c611a",
+        ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
         ".hub/c-ffmpeg/references/audio-processing.md": "sha256:2a4f6df0225b4edba4261f44505cd2b707af55c4b3cfc47347d5975cc81467c3",
         ".hub/c-ffmpeg/references/delivery.md": "sha256:2da997a5b93ce4c59a9da84863341a3087ae7ef48a5ecc49a140c665e3749392",
         ".hub/c-ffmpeg/references/landscape-pip.md": "sha256:af42cbc01898b4480ce82754ba449d323fa07695ed91e843586deb7af3166e24",
         ".hub/c-ffmpeg/references/portrait-layouts.md": "sha256:1e9375ec6e57908c45a3f80a52a577fda58356d29be46b568662ff20e0910570",
         ".hub/c-overlay-fx/.gitignore": "sha256:4d56952b0fb13bf8f9b6c13a6d4c34a075bac3af447636a1df4335d7576e2f97",
-        ".hub/c-overlay-fx/SKILL.md": "sha256:9a22c0bcaa3700726066960bef79045bc9d8c686d5ce6ca745561e8b8f3560ec",
+        ".hub/c-overlay-fx/SKILL.md": "sha256:f298ef89c5f2e9f3078130955d16fec848702177a1913c2bf8560170465f57dc",
         ".hub/c-overlay-fx/examples/sample-flowchart.json": "sha256:3151d2531507ab9bdb80c15bc2cb368f1eeeaf2b31c5c58deb53cec6cb2bf6c9",
         ".hub/c-overlay-fx/examples/sample-pill.json": "sha256:37b3fa8995703d4604ec6e54379b376cca3a69bffc9a110bfae3e5070c065a88",
         ".hub/c-overlay-fx/examples/sample-stat-card.json": "sha256:d038b200f11b16ab959b2e3f53d2ab22270e321abbcbb9cc659a2592dcb9bd46",
@@ -1299,7 +1053,7 @@
         ".hub/c-overlay-fx/package-lock.json": "sha256:768439a44b21e2d87b7a97e6dd45cec1b8f3dbe603ec80de449f579aeddfc57d",
         ".hub/c-overlay-fx/package.json": "sha256:e599ff47c4a45741ab76f14c738dfa64f94fb3c50dfde63ba8eede8c146ccf94",
         ".hub/c-overlay-fx/render-overlay.cjs": "sha256:de38807337c425f6c727abb5ac0fa45b9a6b717fbd282f114be7122788da760f",
-        ".hub/c-reel-premium/SKILL.md": "sha256:f588372632c035723f7b8bc8e2b79595e5b42f4b8165ae12aa58e2bfa4407d73",
+        ".hub/c-reel-premium/SKILL.md": "sha256:743df59e17707fced213e051d04290eb90fc8a2b730db86d5eec90fe4f91cafd",
         ".hub/c-reel-premium/assets/sfx/click.wav": "sha256:4fd295f33b4d942d0e66b92c94da7ac73b28e537ebb0bff351b8902bb6309d89",
         ".hub/c-reel-premium/assets/sfx/impact-punch.wav": "sha256:3e0c9c3e9747a01bf47508a636ae64dc365e9f0fef8ccbf09526d5dc124cb1b3",
         ".hub/c-reel-premium/assets/sfx/impact-sub.wav": "sha256:4a7b8799867e1025b4c9d643d8a1b510664c0dad43a083ea6e22a63775482d83",
@@ -1311,20 +1065,20 @@
         ".hub/c-reel-premium/templates/caption-overlay.html": "sha256:3aca4cddc352fddc372ad5b5901f2099694174e805071279998fa4899fb5c892",
         ".hub/c-reel-premium/templates/root-shell-polish.html": "sha256:aa1e3b615a731398f67180f42ff9544c6eb664b5ba3292d520afd89fbeba0a71",
         ".hub/c-shorts-qa-gate/LEARNINGS.md": "sha256:16ce1043150babac85cab811b163224d489a1e93e8a0f0cdd1e55c22c4de9ced",
-        ".hub/c-shorts-qa-gate/SKILL.md": "sha256:3c1055b2ba2153a6b4b21f4c78ef6874db98df0fbc6a8f98f933679e83420c5f",
+        ".hub/c-shorts-qa-gate/SKILL.md": "sha256:b152740d4bcaba9060039e70781986976931789d17ecc938d7432e2c645ed929",
         ".hub/c-shorts-qa-gate/scripts/qa-gate.sh": "sha256:e03be35423cf4ba1e531db6e82d080b74ea29e3559478443a12265b5c027f13e",
-        ".hub/c-typing-ui/SKILL.md": "sha256:9817d1e392be069f1a9815eaba6c1438e110a5041ef7dc6cdac44809daedf923",
+        ".hub/c-typing-ui/SKILL.md": "sha256:cef93c0576a0c94578cda8538445bc06a57ca6f1fc87ef6f64a29dc939205dd7",
         ".hub/c-typing-ui/scripts/render-sample.sh": "sha256:6eb8449a08c5055f9ae99bd6a3a138b3db15a1d329aee54b1003b963139ef559",
         ".hub/c-typing-ui/templates/hook-scene.html": "sha256:01a16ade084a855035c03195be776e00e338029fcc17d9316cae42e6f8d66599",
         ".hub/c-typing-ui/templates/typing-scene.html": "sha256:d6c4feb0ecdcd831ecfc58b6f74ee34191345ad1f96ef68bc7d3d5e04cf34077",
-        ".hub/f-gsap/SKILL.md": "sha256:dce9206aa633d55c183b6cc0227cf70adaba08ff29b6e96d75093373471e50fb",
+        ".hub/f-gsap/SKILL.md": "sha256:67a0c22fbd2f03ac726e6e048bd0e982ed2617412248f18d123dc9a8e08632f4",
         ".hub/f-gsap/references/effects.md": "sha256:b073b7a3af765c3df13cba3200c0feb8eda066998e961cd63f837eaf9d312384",
         ".hub/f-gsap/scripts/extract-audio-data.py": "sha256:7709b60d42730fc93a348c205ab565158d240b70051d109fcc844b215d56fa4f",
         ".hub/f-gsap/vendor/MotionPathPlugin.min.js": "sha256:aa5f955ca4ce3095ebe5726f43a46b72532230edb3501b28fb853f189f023cab",
         ".hub/f-gsap/vendor/TextPlugin.min.js": "sha256:14f3898c5e985cd5d985918e2368813d35e9629da4884f05d03bb3d0d10f170f",
         ".hub/f-gsap/vendor/gsap.min.js": "sha256:c174bfce53a729418d57a8ad8625e7247c793a22fef8e2851e3cfa3de9cd8280",
-        ".hub/f-hyperframes-cli/SKILL.md": "sha256:78548abd7b784079e0a2c84e02133020716a1d31effcfa7ef6036bae72a9e819",
-        ".hub/f-hyperframes/SKILL.md": "sha256:8e0526af3ff215f3f71f262f2a583469422fb44fe0ae6697a32d6d7b4c9b31fb",
+        ".hub/f-hyperframes-cli/SKILL.md": "sha256:8a92051add5824b38f35fb8e9a9ef6fb5d6cb21aed8d8dfbeb7d062d6d0dc95d",
+        ".hub/f-hyperframes/SKILL.md": "sha256:493734684680db81ec00ce9afb3cc7ab8e02a7afd0e36facd1e69281d5b45deb",
         ".hub/f-hyperframes/data-in-motion.md": "sha256:22084b4460a8f815d923b972a908f937c1e573bbbc7a865f6f2979ec2ae7ff15",
         ".hub/f-hyperframes/house-style.md": "sha256:e0719895b369d7ee5203850250e605b3a1c15dbe43a367dd54e396f2b439f838",
         ".hub/f-hyperframes/palettes/bold-energetic.md": "sha256:17bc6b7889302151b4e5c84c0c6a33df676647078011d9decb2b68810e3baa7f",
@@ -1363,71 +1117,30 @@
         ".hub/f-hyperframes/scripts/animation-map.mjs": "sha256:44166b4bf1eb7fa03e3a51648df7c70838ccc9af7b63de8de1a7d93b764b28d2",
         ".hub/f-hyperframes/scripts/contrast-report.mjs": "sha256:a916382bd40f197ee0109160241f6e35f317158f281dc643d200eb006dff29be",
         ".hub/f-hyperframes/visual-styles.md": "sha256:d173663b4342d830e46c5cc14a1ffafe6dbc6daca0702b0a451db3ce914693cc",
-        "SKILL.md": "sha256:fd7f1bb0def6424dbe5cc46f79bac9550b6fe97c47aff8e73f3662e3271cb760",
+        "SKILL.md": "sha256:100b967c3a36ee6161647a584a02bee5f022dbdfd563a30d1d829c5697a441fa",
         "acceptance.json": "sha256:4349cb471c0294335ef2e09154c5c3f660c522fb1e3951b070e99f6460b31bc4",
-        "scripts/verify-skill.sh": "sha256:fba1ff68965ced9ab26c491cfbc4cc40efbf1775f4b933006f19f6690af24eb6",
+        "scripts/verify-skill.sh": "sha256:aaae6bfb125a1a73c07fdd90e9ed1f3f004d643870b7976d5f09a4744ccb5c28",
         "templates/motion-card.html": "sha256:81f0a62270ed98a5d5e75e26b715562c24d681fb72406cbdf75ffb4c9c44bd60"
       },
       "providers": [],
-      "systemRequires": [
-        {
-          "bin": "chromium",
-          "label": "Chromium / headless Chrome",
-          "why": "Headless rendering for HTML graphics, website b-roll capture, and Remotion/HyperFrames frames.",
-          "check": "chromium --version || google-chrome --version || npx playwright install --dry-run chromium",
-          "install": {
-            "macos": "brew install --cask chromium",
-            "debian": "npx playwright install --with-deps chromium"
-          }
-        },
-        {
-          "bin": "ffmpeg",
-          "label": "FFmpeg",
-          "why": "Video/audio compositing, trimming, chroma key, loudness, ffprobe checks.",
-          "check": "ffmpeg -version",
-          "install": {
-            "macos": "brew install ffmpeg",
-            "debian": "apt-get update && apt-get install -y ffmpeg"
-          }
-        },
-        {
-          "bin": "node",
-          "label": "Node.js ≥ 22",
-          "why": "Runs Remotion / HyperFrames CLIs and Playwright capture scripts.",
-          "check": "node -v",
-          "install": {
-            "macos": "brew install node",
-            "debian": "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs"
-          }
-        },
-        {
-          "bin": "python3",
-          "label": "Python 3",
-          "why": "JSON glue, transcription, and provider API helpers used by media components.",
-          "check": "python3 --version",
-          "install": {
-            "macos": "brew install python",
-            "debian": "apt-get update && apt-get install -y python3"
-          }
-        }
-      ],
+      "systemRequires": [],
       "vendored": [
-        "c-audio",
-        "c-broll-sync",
-        "c-eval-runner",
         "c-ffmpeg",
-        "c-overlay-fx",
+        "c-audio",
         "c-reel-premium",
-        "c-shorts-qa-gate",
+        "c-broll-sync",
         "c-typing-ui",
-        "f-gsap",
         "f-hyperframes",
-        "f-hyperframes-cli"
+        "f-hyperframes-cli",
+        "f-gsap",
+        "c-overlay-fx",
+        "c-shorts-qa-gate",
+        "c-eval-runner"
       ]
     },
     "p-reels-spotlight": {
       "version": "1.0.0",
-      "checksum": "sha256:46146ce8b9b51657cb5fbd968c4c80cf2b5357348938b2f5c49976a590272e30",
+      "checksum": "sha256:ca9cb995b912afb27a73467eabd49ab67f252a63be7d86512d385313e665de9c",
       "files": [
         ".hub/c-broll-sync/SKILL.md",
         ".hub/c-broll-sync/scripts/plan.js",
@@ -1540,25 +1253,25 @@
         "templates/tk-stat.html"
       ],
       "fileHashes": {
-        ".hub/c-broll-sync/SKILL.md": "sha256:055b13330c662bd83d2f53d0b41c91feaa33b1041eaca231156afb2c107c70aa",
+        ".hub/c-broll-sync/SKILL.md": "sha256:a5d72389fb32fb4587f1749c440a1fbb67f8a5e2f623ba1058cc0b55731920f5",
         ".hub/c-broll-sync/scripts/plan.js": "sha256:eb2d4e507cf48c9c8f64f94743ad8e0fb1cdcc45b5e06752ffcd4507eabcfd12",
         ".hub/c-broll/LEARNINGS.md": "sha256:2063aee967e5e0cb45e3093a2a6c593537a2b215657afe2c241dd694abc8a649",
-        ".hub/c-broll/SKILL.md": "sha256:59c018f6944662c9ee2e2ec20a18fe02118acc21f39287dc663581707179a68c",
+        ".hub/c-broll/SKILL.md": "sha256:b2d8f12b2548f0a829304354c73d1085bfb46152ec8c8e6b1d5f6ad8d1a6b5f8",
         ".hub/c-cloud-media/LEARNINGS.md": "sha256:bd3fc51f0d21c894bcf3a8bbbaab8d7c47165564aedd600b855a8633e0eabfd9",
-        ".hub/c-cloud-media/SKILL.md": "sha256:7aa425d39b5b3fa6944e90bad2b848125d03658b62088fc91fc8373532a47d67",
+        ".hub/c-cloud-media/SKILL.md": "sha256:25d158d9b050a68c4c9b5e078777a415850c72e85c50fe084da5166c7804b07c",
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
-        ".hub/c-eval-runner/SKILL.md": "sha256:f5e43470fc0b2bdff0b1b0a8bb07c5131fb03ab02af53120fc95391a11d65fde",
+        ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
         ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
-        ".hub/c-ffmpeg/SKILL.md": "sha256:63172ef4a98fc371ea0eab13f59d7cc10223c4c4149b4af0b1879d67991c611a",
+        ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
         ".hub/c-ffmpeg/references/audio-processing.md": "sha256:2a4f6df0225b4edba4261f44505cd2b707af55c4b3cfc47347d5975cc81467c3",
         ".hub/c-ffmpeg/references/delivery.md": "sha256:2da997a5b93ce4c59a9da84863341a3087ae7ef48a5ecc49a140c665e3749392",
         ".hub/c-ffmpeg/references/landscape-pip.md": "sha256:af42cbc01898b4480ce82754ba449d323fa07695ed91e843586deb7af3166e24",
         ".hub/c-ffmpeg/references/portrait-layouts.md": "sha256:1e9375ec6e57908c45a3f80a52a577fda58356d29be46b568662ff20e0910570",
         ".hub/c-overlay-fx/.gitignore": "sha256:4d56952b0fb13bf8f9b6c13a6d4c34a075bac3af447636a1df4335d7576e2f97",
-        ".hub/c-overlay-fx/SKILL.md": "sha256:9a22c0bcaa3700726066960bef79045bc9d8c686d5ce6ca745561e8b8f3560ec",
+        ".hub/c-overlay-fx/SKILL.md": "sha256:f298ef89c5f2e9f3078130955d16fec848702177a1913c2bf8560170465f57dc",
         ".hub/c-overlay-fx/examples/sample-flowchart.json": "sha256:3151d2531507ab9bdb80c15bc2cb368f1eeeaf2b31c5c58deb53cec6cb2bf6c9",
         ".hub/c-overlay-fx/examples/sample-pill.json": "sha256:37b3fa8995703d4604ec6e54379b376cca3a69bffc9a110bfae3e5070c065a88",
         ".hub/c-overlay-fx/examples/sample-stat-card.json": "sha256:d038b200f11b16ab959b2e3f53d2ab22270e321abbcbb9cc659a2592dcb9bd46",
@@ -1568,7 +1281,7 @@
         ".hub/c-overlay-fx/package-lock.json": "sha256:768439a44b21e2d87b7a97e6dd45cec1b8f3dbe603ec80de449f579aeddfc57d",
         ".hub/c-overlay-fx/package.json": "sha256:e599ff47c4a45741ab76f14c738dfa64f94fb3c50dfde63ba8eede8c146ccf94",
         ".hub/c-overlay-fx/render-overlay.cjs": "sha256:de38807337c425f6c727abb5ac0fa45b9a6b717fbd282f114be7122788da760f",
-        ".hub/c-reel-premium/SKILL.md": "sha256:f588372632c035723f7b8bc8e2b79595e5b42f4b8165ae12aa58e2bfa4407d73",
+        ".hub/c-reel-premium/SKILL.md": "sha256:743df59e17707fced213e051d04290eb90fc8a2b730db86d5eec90fe4f91cafd",
         ".hub/c-reel-premium/assets/sfx/click.wav": "sha256:4fd295f33b4d942d0e66b92c94da7ac73b28e537ebb0bff351b8902bb6309d89",
         ".hub/c-reel-premium/assets/sfx/impact-punch.wav": "sha256:3e0c9c3e9747a01bf47508a636ae64dc365e9f0fef8ccbf09526d5dc124cb1b3",
         ".hub/c-reel-premium/assets/sfx/impact-sub.wav": "sha256:4a7b8799867e1025b4c9d643d8a1b510664c0dad43a083ea6e22a63775482d83",
@@ -1580,20 +1293,20 @@
         ".hub/c-reel-premium/templates/caption-overlay.html": "sha256:3aca4cddc352fddc372ad5b5901f2099694174e805071279998fa4899fb5c892",
         ".hub/c-reel-premium/templates/root-shell-polish.html": "sha256:aa1e3b615a731398f67180f42ff9544c6eb664b5ba3292d520afd89fbeba0a71",
         ".hub/c-shorts-qa-gate/LEARNINGS.md": "sha256:16ce1043150babac85cab811b163224d489a1e93e8a0f0cdd1e55c22c4de9ced",
-        ".hub/c-shorts-qa-gate/SKILL.md": "sha256:3c1055b2ba2153a6b4b21f4c78ef6874db98df0fbc6a8f98f933679e83420c5f",
+        ".hub/c-shorts-qa-gate/SKILL.md": "sha256:b152740d4bcaba9060039e70781986976931789d17ecc938d7432e2c645ed929",
         ".hub/c-shorts-qa-gate/scripts/qa-gate.sh": "sha256:e03be35423cf4ba1e531db6e82d080b74ea29e3559478443a12265b5c027f13e",
-        ".hub/c-typing-ui/SKILL.md": "sha256:9817d1e392be069f1a9815eaba6c1438e110a5041ef7dc6cdac44809daedf923",
+        ".hub/c-typing-ui/SKILL.md": "sha256:cef93c0576a0c94578cda8538445bc06a57ca6f1fc87ef6f64a29dc939205dd7",
         ".hub/c-typing-ui/scripts/render-sample.sh": "sha256:6eb8449a08c5055f9ae99bd6a3a138b3db15a1d329aee54b1003b963139ef559",
         ".hub/c-typing-ui/templates/hook-scene.html": "sha256:01a16ade084a855035c03195be776e00e338029fcc17d9316cae42e6f8d66599",
         ".hub/c-typing-ui/templates/typing-scene.html": "sha256:d6c4feb0ecdcd831ecfc58b6f74ee34191345ad1f96ef68bc7d3d5e04cf34077",
-        ".hub/f-gsap/SKILL.md": "sha256:dce9206aa633d55c183b6cc0227cf70adaba08ff29b6e96d75093373471e50fb",
+        ".hub/f-gsap/SKILL.md": "sha256:67a0c22fbd2f03ac726e6e048bd0e982ed2617412248f18d123dc9a8e08632f4",
         ".hub/f-gsap/references/effects.md": "sha256:b073b7a3af765c3df13cba3200c0feb8eda066998e961cd63f837eaf9d312384",
         ".hub/f-gsap/scripts/extract-audio-data.py": "sha256:7709b60d42730fc93a348c205ab565158d240b70051d109fcc844b215d56fa4f",
         ".hub/f-gsap/vendor/MotionPathPlugin.min.js": "sha256:aa5f955ca4ce3095ebe5726f43a46b72532230edb3501b28fb853f189f023cab",
         ".hub/f-gsap/vendor/TextPlugin.min.js": "sha256:14f3898c5e985cd5d985918e2368813d35e9629da4884f05d03bb3d0d10f170f",
         ".hub/f-gsap/vendor/gsap.min.js": "sha256:c174bfce53a729418d57a8ad8625e7247c793a22fef8e2851e3cfa3de9cd8280",
-        ".hub/f-hyperframes-cli/SKILL.md": "sha256:78548abd7b784079e0a2c84e02133020716a1d31effcfa7ef6036bae72a9e819",
-        ".hub/f-hyperframes/SKILL.md": "sha256:8e0526af3ff215f3f71f262f2a583469422fb44fe0ae6697a32d6d7b4c9b31fb",
+        ".hub/f-hyperframes-cli/SKILL.md": "sha256:8a92051add5824b38f35fb8e9a9ef6fb5d6cb21aed8d8dfbeb7d062d6d0dc95d",
+        ".hub/f-hyperframes/SKILL.md": "sha256:493734684680db81ec00ce9afb3cc7ab8e02a7afd0e36facd1e69281d5b45deb",
         ".hub/f-hyperframes/data-in-motion.md": "sha256:22084b4460a8f815d923b972a908f937c1e573bbbc7a865f6f2979ec2ae7ff15",
         ".hub/f-hyperframes/house-style.md": "sha256:e0719895b369d7ee5203850250e605b3a1c15dbe43a367dd54e396f2b439f838",
         ".hub/f-hyperframes/palettes/bold-energetic.md": "sha256:17bc6b7889302151b4e5c84c0c6a33df676647078011d9decb2b68810e3baa7f",
@@ -1632,7 +1345,7 @@
         ".hub/f-hyperframes/scripts/animation-map.mjs": "sha256:44166b4bf1eb7fa03e3a51648df7c70838ccc9af7b63de8de1a7d93b764b28d2",
         ".hub/f-hyperframes/scripts/contrast-report.mjs": "sha256:a916382bd40f197ee0109160241f6e35f317158f281dc643d200eb006dff29be",
         ".hub/f-hyperframes/visual-styles.md": "sha256:d173663b4342d830e46c5cc14a1ffafe6dbc6daca0702b0a451db3ce914693cc",
-        "SKILL.md": "sha256:62455b6ad6ffe265ea2cc5003752289a7f1ac5ae7749c57f8a553d5594cee405",
+        "SKILL.md": "sha256:34e96dc80419edad840138790770a545e9f90ed5e5850ad1b738f5ce18a2247b",
         "acceptance.json": "sha256:5ba662b5add6a3a2a0575f6b7c361a91d5b1e71130f076ace32c8b0ddff3a3f8",
         "assets/sfx/click.wav": "sha256:4fd295f33b4d942d0e66b92c94da7ac73b28e537ebb0bff351b8902bb6309d89",
         "assets/sfx/impact-punch.wav": "sha256:3e0c9c3e9747a01bf47508a636ae64dc365e9f0fef8ccbf09526d5dc124cb1b3",
@@ -1650,69 +1363,26 @@
         "templates/tk-quote.html": "sha256:256ba1874637768165dcd639b79932d2abadaf07a9f342be65a68ee4abbd71a7",
         "templates/tk-stat.html": "sha256:3fbdbda611d7691ffad4836612ebcd9c90ddea7fe989ab2411e953c464d8f6aa"
       },
-      "providers": [
-        "heygen"
-      ],
-      "systemRequires": [
-        {
-          "bin": "chromium",
-          "label": "Chromium / headless Chrome",
-          "why": "Headless rendering for HTML graphics, website b-roll capture, and Remotion/HyperFrames frames.",
-          "check": "chromium --version || google-chrome --version || npx playwright install --dry-run chromium",
-          "install": {
-            "macos": "brew install --cask chromium",
-            "debian": "npx playwright install --with-deps chromium"
-          }
-        },
-        {
-          "bin": "ffmpeg",
-          "label": "FFmpeg",
-          "why": "Video/audio compositing, trimming, chroma key, loudness, ffprobe checks.",
-          "check": "ffmpeg -version",
-          "install": {
-            "macos": "brew install ffmpeg",
-            "debian": "apt-get update && apt-get install -y ffmpeg"
-          }
-        },
-        {
-          "bin": "node",
-          "label": "Node.js ≥ 22",
-          "why": "Runs Remotion / HyperFrames CLIs and Playwright capture scripts.",
-          "check": "node -v",
-          "install": {
-            "macos": "brew install node",
-            "debian": "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs"
-          }
-        },
-        {
-          "bin": "python3",
-          "label": "Python 3",
-          "why": "JSON glue, transcription, and provider API helpers used by media components.",
-          "check": "python3 --version",
-          "install": {
-            "macos": "brew install python",
-            "debian": "apt-get update && apt-get install -y python3"
-          }
-        }
-      ],
+      "providers": [],
+      "systemRequires": [],
       "vendored": [
-        "c-broll",
-        "c-broll-sync",
-        "c-cloud-media",
-        "c-eval-runner",
-        "c-ffmpeg",
-        "c-overlay-fx",
         "c-reel-premium",
-        "c-shorts-qa-gate",
+        "c-broll-sync",
         "c-typing-ui",
-        "f-gsap",
         "f-hyperframes",
-        "f-hyperframes-cli"
+        "f-hyperframes-cli",
+        "c-ffmpeg",
+        "c-cloud-media",
+        "c-overlay-fx",
+        "c-shorts-qa-gate",
+        "c-eval-runner",
+        "f-gsap",
+        "c-broll"
       ]
     },
     "p-reels-faceless": {
       "version": "1.0.0",
-      "checksum": "sha256:0dbf31572a156d47f24070659401134753237ca4af059828e530d267a83c37a6",
+      "checksum": "sha256:7134ddf3ce435fbd8df58e5a2e1d8d63ef3624f1f45b50a2fcf29b2a9acb5069",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1815,26 +1485,26 @@
       ],
       "fileHashes": {
         ".hub/c-audio/LEARNINGS.md": "sha256:9a291f50ecd31e3ff95aa82893aa688761d80f9c7b1f3eca9768279d09d15f8f",
-        ".hub/c-audio/SKILL.md": "sha256:3d80df8c2ec02c01c0b66212b9d74ce8c55ab2f684392213a038d66f50089a75",
-        ".hub/c-broll-sync/SKILL.md": "sha256:055b13330c662bd83d2f53d0b41c91feaa33b1041eaca231156afb2c107c70aa",
+        ".hub/c-audio/SKILL.md": "sha256:e8cdf63463444f6e6b231a3abc035919d3f866ec6bcdd757d169d557d6eb1f8a",
+        ".hub/c-broll-sync/SKILL.md": "sha256:a5d72389fb32fb4587f1749c440a1fbb67f8a5e2f623ba1058cc0b55731920f5",
         ".hub/c-broll-sync/scripts/plan.js": "sha256:eb2d4e507cf48c9c8f64f94743ad8e0fb1cdcc45b5e06752ffcd4507eabcfd12",
         ".hub/c-broll/LEARNINGS.md": "sha256:2063aee967e5e0cb45e3093a2a6c593537a2b215657afe2c241dd694abc8a649",
-        ".hub/c-broll/SKILL.md": "sha256:59c018f6944662c9ee2e2ec20a18fe02118acc21f39287dc663581707179a68c",
+        ".hub/c-broll/SKILL.md": "sha256:b2d8f12b2548f0a829304354c73d1085bfb46152ec8c8e6b1d5f6ad8d1a6b5f8",
         ".hub/c-cloud-media/LEARNINGS.md": "sha256:bd3fc51f0d21c894bcf3a8bbbaab8d7c47165564aedd600b855a8633e0eabfd9",
-        ".hub/c-cloud-media/SKILL.md": "sha256:7aa425d39b5b3fa6944e90bad2b848125d03658b62088fc91fc8373532a47d67",
+        ".hub/c-cloud-media/SKILL.md": "sha256:25d158d9b050a68c4c9b5e078777a415850c72e85c50fe084da5166c7804b07c",
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
-        ".hub/c-eval-runner/SKILL.md": "sha256:f5e43470fc0b2bdff0b1b0a8bb07c5131fb03ab02af53120fc95391a11d65fde",
+        ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
         ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
-        ".hub/c-ffmpeg/SKILL.md": "sha256:63172ef4a98fc371ea0eab13f59d7cc10223c4c4149b4af0b1879d67991c611a",
+        ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
         ".hub/c-ffmpeg/references/audio-processing.md": "sha256:2a4f6df0225b4edba4261f44505cd2b707af55c4b3cfc47347d5975cc81467c3",
         ".hub/c-ffmpeg/references/delivery.md": "sha256:2da997a5b93ce4c59a9da84863341a3087ae7ef48a5ecc49a140c665e3749392",
         ".hub/c-ffmpeg/references/landscape-pip.md": "sha256:af42cbc01898b4480ce82754ba449d323fa07695ed91e843586deb7af3166e24",
         ".hub/c-ffmpeg/references/portrait-layouts.md": "sha256:1e9375ec6e57908c45a3f80a52a577fda58356d29be46b568662ff20e0910570",
         ".hub/c-overlay-fx/.gitignore": "sha256:4d56952b0fb13bf8f9b6c13a6d4c34a075bac3af447636a1df4335d7576e2f97",
-        ".hub/c-overlay-fx/SKILL.md": "sha256:9a22c0bcaa3700726066960bef79045bc9d8c686d5ce6ca745561e8b8f3560ec",
+        ".hub/c-overlay-fx/SKILL.md": "sha256:f298ef89c5f2e9f3078130955d16fec848702177a1913c2bf8560170465f57dc",
         ".hub/c-overlay-fx/examples/sample-flowchart.json": "sha256:3151d2531507ab9bdb80c15bc2cb368f1eeeaf2b31c5c58deb53cec6cb2bf6c9",
         ".hub/c-overlay-fx/examples/sample-pill.json": "sha256:37b3fa8995703d4604ec6e54379b376cca3a69bffc9a110bfae3e5070c065a88",
         ".hub/c-overlay-fx/examples/sample-stat-card.json": "sha256:d038b200f11b16ab959b2e3f53d2ab22270e321abbcbb9cc659a2592dcb9bd46",
@@ -1844,7 +1514,7 @@
         ".hub/c-overlay-fx/package-lock.json": "sha256:768439a44b21e2d87b7a97e6dd45cec1b8f3dbe603ec80de449f579aeddfc57d",
         ".hub/c-overlay-fx/package.json": "sha256:e599ff47c4a45741ab76f14c738dfa64f94fb3c50dfde63ba8eede8c146ccf94",
         ".hub/c-overlay-fx/render-overlay.cjs": "sha256:de38807337c425f6c727abb5ac0fa45b9a6b717fbd282f114be7122788da760f",
-        ".hub/c-reel-premium/SKILL.md": "sha256:f588372632c035723f7b8bc8e2b79595e5b42f4b8165ae12aa58e2bfa4407d73",
+        ".hub/c-reel-premium/SKILL.md": "sha256:743df59e17707fced213e051d04290eb90fc8a2b730db86d5eec90fe4f91cafd",
         ".hub/c-reel-premium/assets/sfx/click.wav": "sha256:4fd295f33b4d942d0e66b92c94da7ac73b28e537ebb0bff351b8902bb6309d89",
         ".hub/c-reel-premium/assets/sfx/impact-punch.wav": "sha256:3e0c9c3e9747a01bf47508a636ae64dc365e9f0fef8ccbf09526d5dc124cb1b3",
         ".hub/c-reel-premium/assets/sfx/impact-sub.wav": "sha256:4a7b8799867e1025b4c9d643d8a1b510664c0dad43a083ea6e22a63775482d83",
@@ -1856,20 +1526,20 @@
         ".hub/c-reel-premium/templates/caption-overlay.html": "sha256:3aca4cddc352fddc372ad5b5901f2099694174e805071279998fa4899fb5c892",
         ".hub/c-reel-premium/templates/root-shell-polish.html": "sha256:aa1e3b615a731398f67180f42ff9544c6eb664b5ba3292d520afd89fbeba0a71",
         ".hub/c-shorts-qa-gate/LEARNINGS.md": "sha256:16ce1043150babac85cab811b163224d489a1e93e8a0f0cdd1e55c22c4de9ced",
-        ".hub/c-shorts-qa-gate/SKILL.md": "sha256:3c1055b2ba2153a6b4b21f4c78ef6874db98df0fbc6a8f98f933679e83420c5f",
+        ".hub/c-shorts-qa-gate/SKILL.md": "sha256:b152740d4bcaba9060039e70781986976931789d17ecc938d7432e2c645ed929",
         ".hub/c-shorts-qa-gate/scripts/qa-gate.sh": "sha256:e03be35423cf4ba1e531db6e82d080b74ea29e3559478443a12265b5c027f13e",
-        ".hub/c-typing-ui/SKILL.md": "sha256:9817d1e392be069f1a9815eaba6c1438e110a5041ef7dc6cdac44809daedf923",
+        ".hub/c-typing-ui/SKILL.md": "sha256:cef93c0576a0c94578cda8538445bc06a57ca6f1fc87ef6f64a29dc939205dd7",
         ".hub/c-typing-ui/scripts/render-sample.sh": "sha256:6eb8449a08c5055f9ae99bd6a3a138b3db15a1d329aee54b1003b963139ef559",
         ".hub/c-typing-ui/templates/hook-scene.html": "sha256:01a16ade084a855035c03195be776e00e338029fcc17d9316cae42e6f8d66599",
         ".hub/c-typing-ui/templates/typing-scene.html": "sha256:d6c4feb0ecdcd831ecfc58b6f74ee34191345ad1f96ef68bc7d3d5e04cf34077",
-        ".hub/f-gsap/SKILL.md": "sha256:dce9206aa633d55c183b6cc0227cf70adaba08ff29b6e96d75093373471e50fb",
+        ".hub/f-gsap/SKILL.md": "sha256:67a0c22fbd2f03ac726e6e048bd0e982ed2617412248f18d123dc9a8e08632f4",
         ".hub/f-gsap/references/effects.md": "sha256:b073b7a3af765c3df13cba3200c0feb8eda066998e961cd63f837eaf9d312384",
         ".hub/f-gsap/scripts/extract-audio-data.py": "sha256:7709b60d42730fc93a348c205ab565158d240b70051d109fcc844b215d56fa4f",
         ".hub/f-gsap/vendor/MotionPathPlugin.min.js": "sha256:aa5f955ca4ce3095ebe5726f43a46b72532230edb3501b28fb853f189f023cab",
         ".hub/f-gsap/vendor/TextPlugin.min.js": "sha256:14f3898c5e985cd5d985918e2368813d35e9629da4884f05d03bb3d0d10f170f",
         ".hub/f-gsap/vendor/gsap.min.js": "sha256:c174bfce53a729418d57a8ad8625e7247c793a22fef8e2851e3cfa3de9cd8280",
-        ".hub/f-hyperframes-cli/SKILL.md": "sha256:78548abd7b784079e0a2c84e02133020716a1d31effcfa7ef6036bae72a9e819",
-        ".hub/f-hyperframes/SKILL.md": "sha256:8e0526af3ff215f3f71f262f2a583469422fb44fe0ae6697a32d6d7b4c9b31fb",
+        ".hub/f-hyperframes-cli/SKILL.md": "sha256:8a92051add5824b38f35fb8e9a9ef6fb5d6cb21aed8d8dfbeb7d062d6d0dc95d",
+        ".hub/f-hyperframes/SKILL.md": "sha256:493734684680db81ec00ce9afb3cc7ab8e02a7afd0e36facd1e69281d5b45deb",
         ".hub/f-hyperframes/data-in-motion.md": "sha256:22084b4460a8f815d923b972a908f937c1e573bbbc7a865f6f2979ec2ae7ff15",
         ".hub/f-hyperframes/house-style.md": "sha256:e0719895b369d7ee5203850250e605b3a1c15dbe43a367dd54e396f2b439f838",
         ".hub/f-hyperframes/palettes/bold-energetic.md": "sha256:17bc6b7889302151b4e5c84c0c6a33df676647078011d9decb2b68810e3baa7f",
@@ -1909,74 +1579,31 @@
         ".hub/f-hyperframes/scripts/contrast-report.mjs": "sha256:a916382bd40f197ee0109160241f6e35f317158f281dc643d200eb006dff29be",
         ".hub/f-hyperframes/visual-styles.md": "sha256:d173663b4342d830e46c5cc14a1ffafe6dbc6daca0702b0a451db3ce914693cc",
         "LEARNINGS.md": "sha256:c1bf6a8b5993264dedfc055f426692d7e9d3f96ef81765f66456485876e011ed",
-        "SKILL.md": "sha256:ebe3c4f20c990cb4490f112e44880e742a157dcf2fe7afa9b5cb438c32412a6e",
+        "SKILL.md": "sha256:920b9fd79d2e4541e256c1a4fd8bf71c8ed2d4bba5abf17af42d173f060ee26d",
         "acceptance.json": "sha256:0d29eaf443e468d148e96f20d6e07966e963665bea7e020217d87757d44ab332",
         "examples.json": "sha256:3e2cf4a6af70a9cedd23df689f718890130bf5fd3196aac2f026436101952d62"
       },
-      "providers": [
-        "elevenlabs"
-      ],
-      "systemRequires": [
-        {
-          "bin": "chromium",
-          "label": "Chromium / headless Chrome",
-          "why": "Headless rendering for HTML graphics, website b-roll capture, and Remotion/HyperFrames frames.",
-          "check": "chromium --version || google-chrome --version || npx playwright install --dry-run chromium",
-          "install": {
-            "macos": "brew install --cask chromium",
-            "debian": "npx playwright install --with-deps chromium"
-          }
-        },
-        {
-          "bin": "ffmpeg",
-          "label": "FFmpeg",
-          "why": "Video/audio compositing, trimming, chroma key, loudness, ffprobe checks.",
-          "check": "ffmpeg -version",
-          "install": {
-            "macos": "brew install ffmpeg",
-            "debian": "apt-get update && apt-get install -y ffmpeg"
-          }
-        },
-        {
-          "bin": "node",
-          "label": "Node.js ≥ 22",
-          "why": "Runs Remotion / HyperFrames CLIs and Playwright capture scripts.",
-          "check": "node -v",
-          "install": {
-            "macos": "brew install node",
-            "debian": "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs"
-          }
-        },
-        {
-          "bin": "python3",
-          "label": "Python 3",
-          "why": "JSON glue, transcription, and provider API helpers used by media components.",
-          "check": "python3 --version",
-          "install": {
-            "macos": "brew install python",
-            "debian": "apt-get update && apt-get install -y python3"
-          }
-        }
-      ],
+      "providers": [],
+      "systemRequires": [],
       "vendored": [
         "c-audio",
-        "c-broll",
         "c-broll-sync",
-        "c-cloud-media",
-        "c-eval-runner",
-        "c-ffmpeg",
-        "c-overlay-fx",
-        "c-reel-premium",
-        "c-shorts-qa-gate",
         "c-typing-ui",
-        "f-gsap",
+        "c-reel-premium",
+        "c-ffmpeg",
+        "c-cloud-media",
         "f-hyperframes",
-        "f-hyperframes-cli"
+        "f-hyperframes-cli",
+        "f-gsap",
+        "c-overlay-fx",
+        "c-shorts-qa-gate",
+        "c-eval-runner",
+        "c-broll"
       ]
     },
     "p-reels-split": {
       "version": "1.0.0",
-      "checksum": "sha256:92ca4bc8287284cdc80fbcd62396d700d2d0e2303e007be10b6d75ed8ea094f3",
+      "checksum": "sha256:1ee46a89c54075c9901d2939fd7d258adea1735a849e8476505f58ecdf3624a4",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -2077,22 +1704,22 @@
       ],
       "fileHashes": {
         ".hub/c-audio/LEARNINGS.md": "sha256:9a291f50ecd31e3ff95aa82893aa688761d80f9c7b1f3eca9768279d09d15f8f",
-        ".hub/c-audio/SKILL.md": "sha256:3d80df8c2ec02c01c0b66212b9d74ce8c55ab2f684392213a038d66f50089a75",
-        ".hub/c-broll-sync/SKILL.md": "sha256:055b13330c662bd83d2f53d0b41c91feaa33b1041eaca231156afb2c107c70aa",
+        ".hub/c-audio/SKILL.md": "sha256:e8cdf63463444f6e6b231a3abc035919d3f866ec6bcdd757d169d557d6eb1f8a",
+        ".hub/c-broll-sync/SKILL.md": "sha256:a5d72389fb32fb4587f1749c440a1fbb67f8a5e2f623ba1058cc0b55731920f5",
         ".hub/c-broll-sync/scripts/plan.js": "sha256:eb2d4e507cf48c9c8f64f94743ad8e0fb1cdcc45b5e06752ffcd4507eabcfd12",
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
-        ".hub/c-eval-runner/SKILL.md": "sha256:f5e43470fc0b2bdff0b1b0a8bb07c5131fb03ab02af53120fc95391a11d65fde",
+        ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
         ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
-        ".hub/c-ffmpeg/SKILL.md": "sha256:63172ef4a98fc371ea0eab13f59d7cc10223c4c4149b4af0b1879d67991c611a",
+        ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
         ".hub/c-ffmpeg/references/audio-processing.md": "sha256:2a4f6df0225b4edba4261f44505cd2b707af55c4b3cfc47347d5975cc81467c3",
         ".hub/c-ffmpeg/references/delivery.md": "sha256:2da997a5b93ce4c59a9da84863341a3087ae7ef48a5ecc49a140c665e3749392",
         ".hub/c-ffmpeg/references/landscape-pip.md": "sha256:af42cbc01898b4480ce82754ba449d323fa07695ed91e843586deb7af3166e24",
         ".hub/c-ffmpeg/references/portrait-layouts.md": "sha256:1e9375ec6e57908c45a3f80a52a577fda58356d29be46b568662ff20e0910570",
         ".hub/c-overlay-fx/.gitignore": "sha256:4d56952b0fb13bf8f9b6c13a6d4c34a075bac3af447636a1df4335d7576e2f97",
-        ".hub/c-overlay-fx/SKILL.md": "sha256:9a22c0bcaa3700726066960bef79045bc9d8c686d5ce6ca745561e8b8f3560ec",
+        ".hub/c-overlay-fx/SKILL.md": "sha256:f298ef89c5f2e9f3078130955d16fec848702177a1913c2bf8560170465f57dc",
         ".hub/c-overlay-fx/examples/sample-flowchart.json": "sha256:3151d2531507ab9bdb80c15bc2cb368f1eeeaf2b31c5c58deb53cec6cb2bf6c9",
         ".hub/c-overlay-fx/examples/sample-pill.json": "sha256:37b3fa8995703d4604ec6e54379b376cca3a69bffc9a110bfae3e5070c065a88",
         ".hub/c-overlay-fx/examples/sample-stat-card.json": "sha256:d038b200f11b16ab959b2e3f53d2ab22270e321abbcbb9cc659a2592dcb9bd46",
@@ -2102,7 +1729,7 @@
         ".hub/c-overlay-fx/package-lock.json": "sha256:768439a44b21e2d87b7a97e6dd45cec1b8f3dbe603ec80de449f579aeddfc57d",
         ".hub/c-overlay-fx/package.json": "sha256:e599ff47c4a45741ab76f14c738dfa64f94fb3c50dfde63ba8eede8c146ccf94",
         ".hub/c-overlay-fx/render-overlay.cjs": "sha256:de38807337c425f6c727abb5ac0fa45b9a6b717fbd282f114be7122788da760f",
-        ".hub/c-reel-premium/SKILL.md": "sha256:f588372632c035723f7b8bc8e2b79595e5b42f4b8165ae12aa58e2bfa4407d73",
+        ".hub/c-reel-premium/SKILL.md": "sha256:743df59e17707fced213e051d04290eb90fc8a2b730db86d5eec90fe4f91cafd",
         ".hub/c-reel-premium/assets/sfx/click.wav": "sha256:4fd295f33b4d942d0e66b92c94da7ac73b28e537ebb0bff351b8902bb6309d89",
         ".hub/c-reel-premium/assets/sfx/impact-punch.wav": "sha256:3e0c9c3e9747a01bf47508a636ae64dc365e9f0fef8ccbf09526d5dc124cb1b3",
         ".hub/c-reel-premium/assets/sfx/impact-sub.wav": "sha256:4a7b8799867e1025b4c9d643d8a1b510664c0dad43a083ea6e22a63775482d83",
@@ -2114,20 +1741,20 @@
         ".hub/c-reel-premium/templates/caption-overlay.html": "sha256:3aca4cddc352fddc372ad5b5901f2099694174e805071279998fa4899fb5c892",
         ".hub/c-reel-premium/templates/root-shell-polish.html": "sha256:aa1e3b615a731398f67180f42ff9544c6eb664b5ba3292d520afd89fbeba0a71",
         ".hub/c-shorts-qa-gate/LEARNINGS.md": "sha256:16ce1043150babac85cab811b163224d489a1e93e8a0f0cdd1e55c22c4de9ced",
-        ".hub/c-shorts-qa-gate/SKILL.md": "sha256:3c1055b2ba2153a6b4b21f4c78ef6874db98df0fbc6a8f98f933679e83420c5f",
+        ".hub/c-shorts-qa-gate/SKILL.md": "sha256:b152740d4bcaba9060039e70781986976931789d17ecc938d7432e2c645ed929",
         ".hub/c-shorts-qa-gate/scripts/qa-gate.sh": "sha256:e03be35423cf4ba1e531db6e82d080b74ea29e3559478443a12265b5c027f13e",
-        ".hub/c-typing-ui/SKILL.md": "sha256:9817d1e392be069f1a9815eaba6c1438e110a5041ef7dc6cdac44809daedf923",
+        ".hub/c-typing-ui/SKILL.md": "sha256:cef93c0576a0c94578cda8538445bc06a57ca6f1fc87ef6f64a29dc939205dd7",
         ".hub/c-typing-ui/scripts/render-sample.sh": "sha256:6eb8449a08c5055f9ae99bd6a3a138b3db15a1d329aee54b1003b963139ef559",
         ".hub/c-typing-ui/templates/hook-scene.html": "sha256:01a16ade084a855035c03195be776e00e338029fcc17d9316cae42e6f8d66599",
         ".hub/c-typing-ui/templates/typing-scene.html": "sha256:d6c4feb0ecdcd831ecfc58b6f74ee34191345ad1f96ef68bc7d3d5e04cf34077",
-        ".hub/f-gsap/SKILL.md": "sha256:dce9206aa633d55c183b6cc0227cf70adaba08ff29b6e96d75093373471e50fb",
+        ".hub/f-gsap/SKILL.md": "sha256:67a0c22fbd2f03ac726e6e048bd0e982ed2617412248f18d123dc9a8e08632f4",
         ".hub/f-gsap/references/effects.md": "sha256:b073b7a3af765c3df13cba3200c0feb8eda066998e961cd63f837eaf9d312384",
         ".hub/f-gsap/scripts/extract-audio-data.py": "sha256:7709b60d42730fc93a348c205ab565158d240b70051d109fcc844b215d56fa4f",
         ".hub/f-gsap/vendor/MotionPathPlugin.min.js": "sha256:aa5f955ca4ce3095ebe5726f43a46b72532230edb3501b28fb853f189f023cab",
         ".hub/f-gsap/vendor/TextPlugin.min.js": "sha256:14f3898c5e985cd5d985918e2368813d35e9629da4884f05d03bb3d0d10f170f",
         ".hub/f-gsap/vendor/gsap.min.js": "sha256:c174bfce53a729418d57a8ad8625e7247c793a22fef8e2851e3cfa3de9cd8280",
-        ".hub/f-hyperframes-cli/SKILL.md": "sha256:78548abd7b784079e0a2c84e02133020716a1d31effcfa7ef6036bae72a9e819",
-        ".hub/f-hyperframes/SKILL.md": "sha256:8e0526af3ff215f3f71f262f2a583469422fb44fe0ae6697a32d6d7b4c9b31fb",
+        ".hub/f-hyperframes-cli/SKILL.md": "sha256:8a92051add5824b38f35fb8e9a9ef6fb5d6cb21aed8d8dfbeb7d062d6d0dc95d",
+        ".hub/f-hyperframes/SKILL.md": "sha256:493734684680db81ec00ce9afb3cc7ab8e02a7afd0e36facd1e69281d5b45deb",
         ".hub/f-hyperframes/data-in-motion.md": "sha256:22084b4460a8f815d923b972a908f937c1e573bbbc7a865f6f2979ec2ae7ff15",
         ".hub/f-hyperframes/house-style.md": "sha256:e0719895b369d7ee5203850250e605b3a1c15dbe43a367dd54e396f2b439f838",
         ".hub/f-hyperframes/palettes/bold-energetic.md": "sha256:17bc6b7889302151b4e5c84c0c6a33df676647078011d9decb2b68810e3baa7f",
@@ -2166,74 +1793,33 @@
         ".hub/f-hyperframes/scripts/animation-map.mjs": "sha256:44166b4bf1eb7fa03e3a51648df7c70838ccc9af7b63de8de1a7d93b764b28d2",
         ".hub/f-hyperframes/scripts/contrast-report.mjs": "sha256:a916382bd40f197ee0109160241f6e35f317158f281dc643d200eb006dff29be",
         ".hub/f-hyperframes/visual-styles.md": "sha256:d173663b4342d830e46c5cc14a1ffafe6dbc6daca0702b0a451db3ce914693cc",
-        ".hub/wowx-motions/SKILL.md": "sha256:2816ab3345e872cb7944c1b3debd53d5db2439a3a6208326cdcb7ab684d71c62",
+        ".hub/wowx-motions/SKILL.md": "sha256:00b169e24a271c774c50cade24e8e1e39f7bd7c3b298141942f039e97e9dcf59",
         ".hub/wowx-motions/wowx_motion.py": "sha256:72439824e3e73fc13dc00aaedd632f4aed0f31cefb1748a93a64147e9245423a",
-        "SKILL.md": "sha256:6ea42f1b3fc6d1e6bf6f03003163fe8cfbb0faaca9c4af555dec579fc9749318",
+        "SKILL.md": "sha256:355558c63577b05ce9b97ad64625e98ce8e400e659fc9afa67194bb1c4a36656",
         "acceptance.json": "sha256:f6119b3a0eddac0ea5c5ed104f3e11147cdc6e0ef80a220b5e880b7be165da1b",
-        "scripts/verify-skill.sh": "sha256:556f78526a870688f4f5a14d582d64a38ccfa8ce05e1e1e518579aad1551108b",
+        "scripts/verify-skill.sh": "sha256:1abe4fb10104233939e232950d35c4c9051ec497e0c996a497f9266d0b664ca2",
         "templates/split-motion-card.html": "sha256:b6e43527ccdef24fad2c0de6a14a9d24e012cdeabf37a0504fe248ce3cf00b4c"
       },
       "providers": [],
-      "systemRequires": [
-        {
-          "bin": "chromium",
-          "label": "Chromium / headless Chrome",
-          "why": "Headless rendering for HTML graphics, website b-roll capture, and Remotion/HyperFrames frames.",
-          "check": "chromium --version || google-chrome --version || npx playwright install --dry-run chromium",
-          "install": {
-            "macos": "brew install --cask chromium",
-            "debian": "npx playwright install --with-deps chromium"
-          }
-        },
-        {
-          "bin": "ffmpeg",
-          "label": "FFmpeg",
-          "why": "Video/audio compositing, trimming, chroma key, loudness, ffprobe checks.",
-          "check": "ffmpeg -version",
-          "install": {
-            "macos": "brew install ffmpeg",
-            "debian": "apt-get update && apt-get install -y ffmpeg"
-          }
-        },
-        {
-          "bin": "node",
-          "label": "Node.js ≥ 22",
-          "why": "Runs Remotion / HyperFrames CLIs and Playwright capture scripts.",
-          "check": "node -v",
-          "install": {
-            "macos": "brew install node",
-            "debian": "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs"
-          }
-        },
-        {
-          "bin": "python3",
-          "label": "Python 3",
-          "why": "JSON glue, transcription, and provider API helpers used by media components.",
-          "check": "python3 --version",
-          "install": {
-            "macos": "brew install python",
-            "debian": "apt-get update && apt-get install -y python3"
-          }
-        }
-      ],
+      "systemRequires": [],
       "vendored": [
-        "c-audio",
-        "c-broll-sync",
-        "c-eval-runner",
         "c-ffmpeg",
-        "c-overlay-fx",
+        "c-audio",
         "c-reel-premium",
-        "c-shorts-qa-gate",
+        "c-broll-sync",
         "c-typing-ui",
-        "f-gsap",
         "f-hyperframes",
         "f-hyperframes-cli",
-        "wowx-motions"
+        "f-gsap",
+        "c-overlay-fx",
+        "wowx-motions",
+        "c-shorts-qa-gate",
+        "c-eval-runner"
       ]
     },
     "p-reels-pip-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:bc21dc130d702f8c0e3e0c3ad2fe7059c17fa9a21f978a7bcc6299c9c9351abc",
+      "checksum": "sha256:bf57d99fd30a0c89402e29166817d9f76fa1cfe172b895bf4b1c56d9c3abfd6e",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -2336,25 +1922,25 @@
       ],
       "fileHashes": {
         ".hub/c-audio/LEARNINGS.md": "sha256:9a291f50ecd31e3ff95aa82893aa688761d80f9c7b1f3eca9768279d09d15f8f",
-        ".hub/c-audio/SKILL.md": "sha256:3d80df8c2ec02c01c0b66212b9d74ce8c55ab2f684392213a038d66f50089a75",
-        ".hub/c-broll-sync/SKILL.md": "sha256:055b13330c662bd83d2f53d0b41c91feaa33b1041eaca231156afb2c107c70aa",
+        ".hub/c-audio/SKILL.md": "sha256:e8cdf63463444f6e6b231a3abc035919d3f866ec6bcdd757d169d557d6eb1f8a",
+        ".hub/c-broll-sync/SKILL.md": "sha256:a5d72389fb32fb4587f1749c440a1fbb67f8a5e2f623ba1058cc0b55731920f5",
         ".hub/c-broll-sync/scripts/plan.js": "sha256:eb2d4e507cf48c9c8f64f94743ad8e0fb1cdcc45b5e06752ffcd4507eabcfd12",
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
-        ".hub/c-eval-runner/SKILL.md": "sha256:f5e43470fc0b2bdff0b1b0a8bb07c5131fb03ab02af53120fc95391a11d65fde",
+        ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
         ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
-        ".hub/c-ffmpeg/SKILL.md": "sha256:63172ef4a98fc371ea0eab13f59d7cc10223c4c4149b4af0b1879d67991c611a",
+        ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
         ".hub/c-ffmpeg/references/audio-processing.md": "sha256:2a4f6df0225b4edba4261f44505cd2b707af55c4b3cfc47347d5975cc81467c3",
         ".hub/c-ffmpeg/references/delivery.md": "sha256:2da997a5b93ce4c59a9da84863341a3087ae7ef48a5ecc49a140c665e3749392",
         ".hub/c-ffmpeg/references/landscape-pip.md": "sha256:af42cbc01898b4480ce82754ba449d323fa07695ed91e843586deb7af3166e24",
         ".hub/c-ffmpeg/references/portrait-layouts.md": "sha256:1e9375ec6e57908c45a3f80a52a577fda58356d29be46b568662ff20e0910570",
         ".hub/c-heygen/LEARNINGS.md": "sha256:087ebf121db8d245829331e12948bab8b8e6b4d5b3bd948a3e3e8e1450f2a291",
-        ".hub/c-heygen/SKILL.md": "sha256:2110f9a0518177ee99ec3a0b93d38a9420df22ec14b18d5ab23823f28b4a428a",
+        ".hub/c-heygen/SKILL.md": "sha256:52039403ee7d0be460581466df107e10edeeb354563065d018e6ba62c1401119",
         ".hub/c-heygen/references/browser-render.md": "sha256:bece956f4fe835bd0045dcd1ed849e43e681176c3abe1132684864cf7009c330",
         ".hub/c-overlay-fx/.gitignore": "sha256:4d56952b0fb13bf8f9b6c13a6d4c34a075bac3af447636a1df4335d7576e2f97",
-        ".hub/c-overlay-fx/SKILL.md": "sha256:9a22c0bcaa3700726066960bef79045bc9d8c686d5ce6ca745561e8b8f3560ec",
+        ".hub/c-overlay-fx/SKILL.md": "sha256:f298ef89c5f2e9f3078130955d16fec848702177a1913c2bf8560170465f57dc",
         ".hub/c-overlay-fx/examples/sample-flowchart.json": "sha256:3151d2531507ab9bdb80c15bc2cb368f1eeeaf2b31c5c58deb53cec6cb2bf6c9",
         ".hub/c-overlay-fx/examples/sample-pill.json": "sha256:37b3fa8995703d4604ec6e54379b376cca3a69bffc9a110bfae3e5070c065a88",
         ".hub/c-overlay-fx/examples/sample-stat-card.json": "sha256:d038b200f11b16ab959b2e3f53d2ab22270e321abbcbb9cc659a2592dcb9bd46",
@@ -2364,7 +1950,7 @@
         ".hub/c-overlay-fx/package-lock.json": "sha256:768439a44b21e2d87b7a97e6dd45cec1b8f3dbe603ec80de449f579aeddfc57d",
         ".hub/c-overlay-fx/package.json": "sha256:e599ff47c4a45741ab76f14c738dfa64f94fb3c50dfde63ba8eede8c146ccf94",
         ".hub/c-overlay-fx/render-overlay.cjs": "sha256:de38807337c425f6c727abb5ac0fa45b9a6b717fbd282f114be7122788da760f",
-        ".hub/c-reel-premium/SKILL.md": "sha256:f588372632c035723f7b8bc8e2b79595e5b42f4b8165ae12aa58e2bfa4407d73",
+        ".hub/c-reel-premium/SKILL.md": "sha256:743df59e17707fced213e051d04290eb90fc8a2b730db86d5eec90fe4f91cafd",
         ".hub/c-reel-premium/assets/sfx/click.wav": "sha256:4fd295f33b4d942d0e66b92c94da7ac73b28e537ebb0bff351b8902bb6309d89",
         ".hub/c-reel-premium/assets/sfx/impact-punch.wav": "sha256:3e0c9c3e9747a01bf47508a636ae64dc365e9f0fef8ccbf09526d5dc124cb1b3",
         ".hub/c-reel-premium/assets/sfx/impact-sub.wav": "sha256:4a7b8799867e1025b4c9d643d8a1b510664c0dad43a083ea6e22a63775482d83",
@@ -2376,20 +1962,20 @@
         ".hub/c-reel-premium/templates/caption-overlay.html": "sha256:3aca4cddc352fddc372ad5b5901f2099694174e805071279998fa4899fb5c892",
         ".hub/c-reel-premium/templates/root-shell-polish.html": "sha256:aa1e3b615a731398f67180f42ff9544c6eb664b5ba3292d520afd89fbeba0a71",
         ".hub/c-shorts-qa-gate/LEARNINGS.md": "sha256:16ce1043150babac85cab811b163224d489a1e93e8a0f0cdd1e55c22c4de9ced",
-        ".hub/c-shorts-qa-gate/SKILL.md": "sha256:3c1055b2ba2153a6b4b21f4c78ef6874db98df0fbc6a8f98f933679e83420c5f",
+        ".hub/c-shorts-qa-gate/SKILL.md": "sha256:b152740d4bcaba9060039e70781986976931789d17ecc938d7432e2c645ed929",
         ".hub/c-shorts-qa-gate/scripts/qa-gate.sh": "sha256:e03be35423cf4ba1e531db6e82d080b74ea29e3559478443a12265b5c027f13e",
-        ".hub/c-typing-ui/SKILL.md": "sha256:9817d1e392be069f1a9815eaba6c1438e110a5041ef7dc6cdac44809daedf923",
+        ".hub/c-typing-ui/SKILL.md": "sha256:cef93c0576a0c94578cda8538445bc06a57ca6f1fc87ef6f64a29dc939205dd7",
         ".hub/c-typing-ui/scripts/render-sample.sh": "sha256:6eb8449a08c5055f9ae99bd6a3a138b3db15a1d329aee54b1003b963139ef559",
         ".hub/c-typing-ui/templates/hook-scene.html": "sha256:01a16ade084a855035c03195be776e00e338029fcc17d9316cae42e6f8d66599",
         ".hub/c-typing-ui/templates/typing-scene.html": "sha256:d6c4feb0ecdcd831ecfc58b6f74ee34191345ad1f96ef68bc7d3d5e04cf34077",
-        ".hub/f-gsap/SKILL.md": "sha256:dce9206aa633d55c183b6cc0227cf70adaba08ff29b6e96d75093373471e50fb",
+        ".hub/f-gsap/SKILL.md": "sha256:67a0c22fbd2f03ac726e6e048bd0e982ed2617412248f18d123dc9a8e08632f4",
         ".hub/f-gsap/references/effects.md": "sha256:b073b7a3af765c3df13cba3200c0feb8eda066998e961cd63f837eaf9d312384",
         ".hub/f-gsap/scripts/extract-audio-data.py": "sha256:7709b60d42730fc93a348c205ab565158d240b70051d109fcc844b215d56fa4f",
         ".hub/f-gsap/vendor/MotionPathPlugin.min.js": "sha256:aa5f955ca4ce3095ebe5726f43a46b72532230edb3501b28fb853f189f023cab",
         ".hub/f-gsap/vendor/TextPlugin.min.js": "sha256:14f3898c5e985cd5d985918e2368813d35e9629da4884f05d03bb3d0d10f170f",
         ".hub/f-gsap/vendor/gsap.min.js": "sha256:c174bfce53a729418d57a8ad8625e7247c793a22fef8e2851e3cfa3de9cd8280",
-        ".hub/f-hyperframes-cli/SKILL.md": "sha256:78548abd7b784079e0a2c84e02133020716a1d31effcfa7ef6036bae72a9e819",
-        ".hub/f-hyperframes/SKILL.md": "sha256:8e0526af3ff215f3f71f262f2a583469422fb44fe0ae6697a32d6d7b4c9b31fb",
+        ".hub/f-hyperframes-cli/SKILL.md": "sha256:8a92051add5824b38f35fb8e9a9ef6fb5d6cb21aed8d8dfbeb7d062d6d0dc95d",
+        ".hub/f-hyperframes/SKILL.md": "sha256:493734684680db81ec00ce9afb3cc7ab8e02a7afd0e36facd1e69281d5b45deb",
         ".hub/f-hyperframes/data-in-motion.md": "sha256:22084b4460a8f815d923b972a908f937c1e573bbbc7a865f6f2979ec2ae7ff15",
         ".hub/f-hyperframes/house-style.md": "sha256:e0719895b369d7ee5203850250e605b3a1c15dbe43a367dd54e396f2b439f838",
         ".hub/f-hyperframes/palettes/bold-energetic.md": "sha256:17bc6b7889302151b4e5c84c0c6a33df676647078011d9decb2b68810e3baa7f",
@@ -2428,74 +2014,33 @@
         ".hub/f-hyperframes/scripts/animation-map.mjs": "sha256:44166b4bf1eb7fa03e3a51648df7c70838ccc9af7b63de8de1a7d93b764b28d2",
         ".hub/f-hyperframes/scripts/contrast-report.mjs": "sha256:a916382bd40f197ee0109160241f6e35f317158f281dc643d200eb006dff29be",
         ".hub/f-hyperframes/visual-styles.md": "sha256:d173663b4342d830e46c5cc14a1ffafe6dbc6daca0702b0a451db3ce914693cc",
-        ".hub/p-reels-pip/SKILL.md": "sha256:732a6798119ed437e410214bfd8517f30958894fa4681054a2ab9f4318b3f1fb",
+        ".hub/p-reels-pip/SKILL.md": "sha256:100b967c3a36ee6161647a584a02bee5f022dbdfd563a30d1d829c5697a441fa",
         ".hub/p-reels-pip/acceptance.json": "sha256:4349cb471c0294335ef2e09154c5c3f660c522fb1e3951b070e99f6460b31bc4",
-        ".hub/p-reels-pip/scripts/verify-skill.sh": "sha256:fba1ff68965ced9ab26c491cfbc4cc40efbf1775f4b933006f19f6690af24eb6",
+        ".hub/p-reels-pip/scripts/verify-skill.sh": "sha256:aaae6bfb125a1a73c07fdd90e9ed1f3f004d643870b7976d5f09a4744ccb5c28",
         ".hub/p-reels-pip/templates/motion-card.html": "sha256:81f0a62270ed98a5d5e75e26b715562c24d681fb72406cbdf75ffb4c9c44bd60",
-        "SKILL.md": "sha256:c3e5e375218974eb7ad0655f04130e9eea322f70b04021cc02697886b9ce923f"
+        "SKILL.md": "sha256:ada3886ea83bda9090a5a5b5e6a330d4692a5917e9c6e991076a3809c6ace525"
       },
       "providers": [],
-      "systemRequires": [
-        {
-          "bin": "chromium",
-          "label": "Chromium / headless Chrome",
-          "why": "Headless rendering for HTML graphics, website b-roll capture, and Remotion/HyperFrames frames.",
-          "check": "chromium --version || google-chrome --version || npx playwright install --dry-run chromium",
-          "install": {
-            "macos": "brew install --cask chromium",
-            "debian": "npx playwright install --with-deps chromium"
-          }
-        },
-        {
-          "bin": "ffmpeg",
-          "label": "FFmpeg",
-          "why": "Video/audio compositing, trimming, chroma key, loudness, ffprobe checks.",
-          "check": "ffmpeg -version",
-          "install": {
-            "macos": "brew install ffmpeg",
-            "debian": "apt-get update && apt-get install -y ffmpeg"
-          }
-        },
-        {
-          "bin": "node",
-          "label": "Node.js ≥ 22",
-          "why": "Runs Remotion / HyperFrames CLIs and Playwright capture scripts.",
-          "check": "node -v",
-          "install": {
-            "macos": "brew install node",
-            "debian": "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs"
-          }
-        },
-        {
-          "bin": "python3",
-          "label": "Python 3",
-          "why": "JSON glue, transcription, and provider API helpers used by media components.",
-          "check": "python3 --version",
-          "install": {
-            "macos": "brew install python",
-            "debian": "apt-get update && apt-get install -y python3"
-          }
-        }
-      ],
+      "systemRequires": [],
       "vendored": [
-        "c-audio",
-        "c-broll-sync",
-        "c-eval-runner",
-        "c-ffmpeg",
         "c-heygen",
-        "c-overlay-fx",
+        "p-reels-pip",
+        "c-ffmpeg",
+        "c-audio",
         "c-reel-premium",
-        "c-shorts-qa-gate",
+        "c-broll-sync",
         "c-typing-ui",
-        "f-gsap",
         "f-hyperframes",
         "f-hyperframes-cli",
-        "p-reels-pip"
+        "f-gsap",
+        "c-overlay-fx",
+        "c-shorts-qa-gate",
+        "c-eval-runner"
       ]
     },
     "p-reels-spotlight-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:e0ba2aaff9d6f2da62e82ec31f874885c236ece1bbc470887ccaa4c6ff4d8ca9",
+      "checksum": "sha256:f721c587ae91b2494bbb7330423c474aebb1e8350c2ab1c1ee5e96540a420144",
       "files": [
         ".hub/c-broll-sync/SKILL.md",
         ".hub/c-broll-sync/scripts/plan.js",
@@ -2612,28 +2157,28 @@
         "SKILL.md"
       ],
       "fileHashes": {
-        ".hub/c-broll-sync/SKILL.md": "sha256:055b13330c662bd83d2f53d0b41c91feaa33b1041eaca231156afb2c107c70aa",
+        ".hub/c-broll-sync/SKILL.md": "sha256:a5d72389fb32fb4587f1749c440a1fbb67f8a5e2f623ba1058cc0b55731920f5",
         ".hub/c-broll-sync/scripts/plan.js": "sha256:eb2d4e507cf48c9c8f64f94743ad8e0fb1cdcc45b5e06752ffcd4507eabcfd12",
         ".hub/c-broll/LEARNINGS.md": "sha256:2063aee967e5e0cb45e3093a2a6c593537a2b215657afe2c241dd694abc8a649",
-        ".hub/c-broll/SKILL.md": "sha256:59c018f6944662c9ee2e2ec20a18fe02118acc21f39287dc663581707179a68c",
+        ".hub/c-broll/SKILL.md": "sha256:b2d8f12b2548f0a829304354c73d1085bfb46152ec8c8e6b1d5f6ad8d1a6b5f8",
         ".hub/c-cloud-media/LEARNINGS.md": "sha256:bd3fc51f0d21c894bcf3a8bbbaab8d7c47165564aedd600b855a8633e0eabfd9",
-        ".hub/c-cloud-media/SKILL.md": "sha256:7aa425d39b5b3fa6944e90bad2b848125d03658b62088fc91fc8373532a47d67",
+        ".hub/c-cloud-media/SKILL.md": "sha256:25d158d9b050a68c4c9b5e078777a415850c72e85c50fe084da5166c7804b07c",
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
-        ".hub/c-eval-runner/SKILL.md": "sha256:f5e43470fc0b2bdff0b1b0a8bb07c5131fb03ab02af53120fc95391a11d65fde",
+        ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
         ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
-        ".hub/c-ffmpeg/SKILL.md": "sha256:63172ef4a98fc371ea0eab13f59d7cc10223c4c4149b4af0b1879d67991c611a",
+        ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
         ".hub/c-ffmpeg/references/audio-processing.md": "sha256:2a4f6df0225b4edba4261f44505cd2b707af55c4b3cfc47347d5975cc81467c3",
         ".hub/c-ffmpeg/references/delivery.md": "sha256:2da997a5b93ce4c59a9da84863341a3087ae7ef48a5ecc49a140c665e3749392",
         ".hub/c-ffmpeg/references/landscape-pip.md": "sha256:af42cbc01898b4480ce82754ba449d323fa07695ed91e843586deb7af3166e24",
         ".hub/c-ffmpeg/references/portrait-layouts.md": "sha256:1e9375ec6e57908c45a3f80a52a577fda58356d29be46b568662ff20e0910570",
         ".hub/c-heygen/LEARNINGS.md": "sha256:087ebf121db8d245829331e12948bab8b8e6b4d5b3bd948a3e3e8e1450f2a291",
-        ".hub/c-heygen/SKILL.md": "sha256:2110f9a0518177ee99ec3a0b93d38a9420df22ec14b18d5ab23823f28b4a428a",
+        ".hub/c-heygen/SKILL.md": "sha256:52039403ee7d0be460581466df107e10edeeb354563065d018e6ba62c1401119",
         ".hub/c-heygen/references/browser-render.md": "sha256:bece956f4fe835bd0045dcd1ed849e43e681176c3abe1132684864cf7009c330",
         ".hub/c-overlay-fx/.gitignore": "sha256:4d56952b0fb13bf8f9b6c13a6d4c34a075bac3af447636a1df4335d7576e2f97",
-        ".hub/c-overlay-fx/SKILL.md": "sha256:9a22c0bcaa3700726066960bef79045bc9d8c686d5ce6ca745561e8b8f3560ec",
+        ".hub/c-overlay-fx/SKILL.md": "sha256:f298ef89c5f2e9f3078130955d16fec848702177a1913c2bf8560170465f57dc",
         ".hub/c-overlay-fx/examples/sample-flowchart.json": "sha256:3151d2531507ab9bdb80c15bc2cb368f1eeeaf2b31c5c58deb53cec6cb2bf6c9",
         ".hub/c-overlay-fx/examples/sample-pill.json": "sha256:37b3fa8995703d4604ec6e54379b376cca3a69bffc9a110bfae3e5070c065a88",
         ".hub/c-overlay-fx/examples/sample-stat-card.json": "sha256:d038b200f11b16ab959b2e3f53d2ab22270e321abbcbb9cc659a2592dcb9bd46",
@@ -2643,7 +2188,7 @@
         ".hub/c-overlay-fx/package-lock.json": "sha256:768439a44b21e2d87b7a97e6dd45cec1b8f3dbe603ec80de449f579aeddfc57d",
         ".hub/c-overlay-fx/package.json": "sha256:e599ff47c4a45741ab76f14c738dfa64f94fb3c50dfde63ba8eede8c146ccf94",
         ".hub/c-overlay-fx/render-overlay.cjs": "sha256:de38807337c425f6c727abb5ac0fa45b9a6b717fbd282f114be7122788da760f",
-        ".hub/c-reel-premium/SKILL.md": "sha256:f588372632c035723f7b8bc8e2b79595e5b42f4b8165ae12aa58e2bfa4407d73",
+        ".hub/c-reel-premium/SKILL.md": "sha256:743df59e17707fced213e051d04290eb90fc8a2b730db86d5eec90fe4f91cafd",
         ".hub/c-reel-premium/assets/sfx/click.wav": "sha256:4fd295f33b4d942d0e66b92c94da7ac73b28e537ebb0bff351b8902bb6309d89",
         ".hub/c-reel-premium/assets/sfx/impact-punch.wav": "sha256:3e0c9c3e9747a01bf47508a636ae64dc365e9f0fef8ccbf09526d5dc124cb1b3",
         ".hub/c-reel-premium/assets/sfx/impact-sub.wav": "sha256:4a7b8799867e1025b4c9d643d8a1b510664c0dad43a083ea6e22a63775482d83",
@@ -2655,20 +2200,20 @@
         ".hub/c-reel-premium/templates/caption-overlay.html": "sha256:3aca4cddc352fddc372ad5b5901f2099694174e805071279998fa4899fb5c892",
         ".hub/c-reel-premium/templates/root-shell-polish.html": "sha256:aa1e3b615a731398f67180f42ff9544c6eb664b5ba3292d520afd89fbeba0a71",
         ".hub/c-shorts-qa-gate/LEARNINGS.md": "sha256:16ce1043150babac85cab811b163224d489a1e93e8a0f0cdd1e55c22c4de9ced",
-        ".hub/c-shorts-qa-gate/SKILL.md": "sha256:3c1055b2ba2153a6b4b21f4c78ef6874db98df0fbc6a8f98f933679e83420c5f",
+        ".hub/c-shorts-qa-gate/SKILL.md": "sha256:b152740d4bcaba9060039e70781986976931789d17ecc938d7432e2c645ed929",
         ".hub/c-shorts-qa-gate/scripts/qa-gate.sh": "sha256:e03be35423cf4ba1e531db6e82d080b74ea29e3559478443a12265b5c027f13e",
-        ".hub/c-typing-ui/SKILL.md": "sha256:9817d1e392be069f1a9815eaba6c1438e110a5041ef7dc6cdac44809daedf923",
+        ".hub/c-typing-ui/SKILL.md": "sha256:cef93c0576a0c94578cda8538445bc06a57ca6f1fc87ef6f64a29dc939205dd7",
         ".hub/c-typing-ui/scripts/render-sample.sh": "sha256:6eb8449a08c5055f9ae99bd6a3a138b3db15a1d329aee54b1003b963139ef559",
         ".hub/c-typing-ui/templates/hook-scene.html": "sha256:01a16ade084a855035c03195be776e00e338029fcc17d9316cae42e6f8d66599",
         ".hub/c-typing-ui/templates/typing-scene.html": "sha256:d6c4feb0ecdcd831ecfc58b6f74ee34191345ad1f96ef68bc7d3d5e04cf34077",
-        ".hub/f-gsap/SKILL.md": "sha256:dce9206aa633d55c183b6cc0227cf70adaba08ff29b6e96d75093373471e50fb",
+        ".hub/f-gsap/SKILL.md": "sha256:67a0c22fbd2f03ac726e6e048bd0e982ed2617412248f18d123dc9a8e08632f4",
         ".hub/f-gsap/references/effects.md": "sha256:b073b7a3af765c3df13cba3200c0feb8eda066998e961cd63f837eaf9d312384",
         ".hub/f-gsap/scripts/extract-audio-data.py": "sha256:7709b60d42730fc93a348c205ab565158d240b70051d109fcc844b215d56fa4f",
         ".hub/f-gsap/vendor/MotionPathPlugin.min.js": "sha256:aa5f955ca4ce3095ebe5726f43a46b72532230edb3501b28fb853f189f023cab",
         ".hub/f-gsap/vendor/TextPlugin.min.js": "sha256:14f3898c5e985cd5d985918e2368813d35e9629da4884f05d03bb3d0d10f170f",
         ".hub/f-gsap/vendor/gsap.min.js": "sha256:c174bfce53a729418d57a8ad8625e7247c793a22fef8e2851e3cfa3de9cd8280",
-        ".hub/f-hyperframes-cli/SKILL.md": "sha256:78548abd7b784079e0a2c84e02133020716a1d31effcfa7ef6036bae72a9e819",
-        ".hub/f-hyperframes/SKILL.md": "sha256:8e0526af3ff215f3f71f262f2a583469422fb44fe0ae6697a32d6d7b4c9b31fb",
+        ".hub/f-hyperframes-cli/SKILL.md": "sha256:8a92051add5824b38f35fb8e9a9ef6fb5d6cb21aed8d8dfbeb7d062d6d0dc95d",
+        ".hub/f-hyperframes/SKILL.md": "sha256:493734684680db81ec00ce9afb3cc7ab8e02a7afd0e36facd1e69281d5b45deb",
         ".hub/f-hyperframes/data-in-motion.md": "sha256:22084b4460a8f815d923b972a908f937c1e573bbbc7a865f6f2979ec2ae7ff15",
         ".hub/f-hyperframes/house-style.md": "sha256:e0719895b369d7ee5203850250e605b3a1c15dbe43a367dd54e396f2b439f838",
         ".hub/f-hyperframes/palettes/bold-energetic.md": "sha256:17bc6b7889302151b4e5c84c0c6a33df676647078011d9decb2b68810e3baa7f",
@@ -2707,7 +2252,7 @@
         ".hub/f-hyperframes/scripts/animation-map.mjs": "sha256:44166b4bf1eb7fa03e3a51648df7c70838ccc9af7b63de8de1a7d93b764b28d2",
         ".hub/f-hyperframes/scripts/contrast-report.mjs": "sha256:a916382bd40f197ee0109160241f6e35f317158f281dc643d200eb006dff29be",
         ".hub/f-hyperframes/visual-styles.md": "sha256:d173663b4342d830e46c5cc14a1ffafe6dbc6daca0702b0a451db3ce914693cc",
-        ".hub/p-reels-spotlight/SKILL.md": "sha256:80d6b7f4d1fa431d88aee7cc91f0a339aca5db0d7c16eb391a02f842316295f4",
+        ".hub/p-reels-spotlight/SKILL.md": "sha256:34e96dc80419edad840138790770a545e9f90ed5e5850ad1b738f5ce18a2247b",
         ".hub/p-reels-spotlight/acceptance.json": "sha256:5ba662b5add6a3a2a0575f6b7c361a91d5b1e71130f076ace32c8b0ddff3a3f8",
         ".hub/p-reels-spotlight/assets/sfx/click.wav": "sha256:4fd295f33b4d942d0e66b92c94da7ac73b28e537ebb0bff351b8902bb6309d89",
         ".hub/p-reels-spotlight/assets/sfx/impact-punch.wav": "sha256:3e0c9c3e9747a01bf47508a636ae64dc365e9f0fef8ccbf09526d5dc124cb1b3",
@@ -2724,71 +2269,30 @@
         ".hub/p-reels-spotlight/templates/tk-list.html": "sha256:79f149be9cdf876b6e314e2d42773902e5ca9c3c59b6d754cc13a49e8efdb5c7",
         ".hub/p-reels-spotlight/templates/tk-quote.html": "sha256:256ba1874637768165dcd639b79932d2abadaf07a9f342be65a68ee4abbd71a7",
         ".hub/p-reels-spotlight/templates/tk-stat.html": "sha256:3fbdbda611d7691ffad4836612ebcd9c90ddea7fe989ab2411e953c464d8f6aa",
-        "SKILL.md": "sha256:1d2cd7b7b7497b31e62cf19410cb73d6e6524d471b8f80c70b1179e9ddec43df"
+        "SKILL.md": "sha256:fbbfa9892658ab46fc1fcf33a7fc10467d94a4fe2d2d826dde07bdbfcc1c6544"
       },
       "providers": [],
-      "systemRequires": [
-        {
-          "bin": "chromium",
-          "label": "Chromium / headless Chrome",
-          "why": "Headless rendering for HTML graphics, website b-roll capture, and Remotion/HyperFrames frames.",
-          "check": "chromium --version || google-chrome --version || npx playwright install --dry-run chromium",
-          "install": {
-            "macos": "brew install --cask chromium",
-            "debian": "npx playwright install --with-deps chromium"
-          }
-        },
-        {
-          "bin": "ffmpeg",
-          "label": "FFmpeg",
-          "why": "Video/audio compositing, trimming, chroma key, loudness, ffprobe checks.",
-          "check": "ffmpeg -version",
-          "install": {
-            "macos": "brew install ffmpeg",
-            "debian": "apt-get update && apt-get install -y ffmpeg"
-          }
-        },
-        {
-          "bin": "node",
-          "label": "Node.js ≥ 22",
-          "why": "Runs Remotion / HyperFrames CLIs and Playwright capture scripts.",
-          "check": "node -v",
-          "install": {
-            "macos": "brew install node",
-            "debian": "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs"
-          }
-        },
-        {
-          "bin": "python3",
-          "label": "Python 3",
-          "why": "JSON glue, transcription, and provider API helpers used by media components.",
-          "check": "python3 --version",
-          "install": {
-            "macos": "brew install python",
-            "debian": "apt-get update && apt-get install -y python3"
-          }
-        }
-      ],
+      "systemRequires": [],
       "vendored": [
-        "c-broll",
-        "c-broll-sync",
-        "c-cloud-media",
-        "c-eval-runner",
-        "c-ffmpeg",
         "c-heygen",
-        "c-overlay-fx",
+        "p-reels-spotlight",
         "c-reel-premium",
-        "c-shorts-qa-gate",
+        "c-broll-sync",
         "c-typing-ui",
-        "f-gsap",
         "f-hyperframes",
         "f-hyperframes-cli",
-        "p-reels-spotlight"
+        "c-ffmpeg",
+        "c-cloud-media",
+        "c-overlay-fx",
+        "c-shorts-qa-gate",
+        "c-eval-runner",
+        "f-gsap",
+        "c-broll"
       ]
     },
     "p-reels-split-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:751e3edf6c3abd2569c5b12e1fd630b0ed09c77beac31026fa8ff0409932057d",
+      "checksum": "sha256:2a90a2f78b1ae96138b95e8c3051405b00b4f167f911e7d973eb8f31afd6ba1b",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -2895,25 +2399,25 @@
       ],
       "fileHashes": {
         ".hub/c-audio/LEARNINGS.md": "sha256:9a291f50ecd31e3ff95aa82893aa688761d80f9c7b1f3eca9768279d09d15f8f",
-        ".hub/c-audio/SKILL.md": "sha256:3d80df8c2ec02c01c0b66212b9d74ce8c55ab2f684392213a038d66f50089a75",
-        ".hub/c-broll-sync/SKILL.md": "sha256:055b13330c662bd83d2f53d0b41c91feaa33b1041eaca231156afb2c107c70aa",
+        ".hub/c-audio/SKILL.md": "sha256:e8cdf63463444f6e6b231a3abc035919d3f866ec6bcdd757d169d557d6eb1f8a",
+        ".hub/c-broll-sync/SKILL.md": "sha256:a5d72389fb32fb4587f1749c440a1fbb67f8a5e2f623ba1058cc0b55731920f5",
         ".hub/c-broll-sync/scripts/plan.js": "sha256:eb2d4e507cf48c9c8f64f94743ad8e0fb1cdcc45b5e06752ffcd4507eabcfd12",
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
-        ".hub/c-eval-runner/SKILL.md": "sha256:f5e43470fc0b2bdff0b1b0a8bb07c5131fb03ab02af53120fc95391a11d65fde",
+        ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
         ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
-        ".hub/c-ffmpeg/SKILL.md": "sha256:63172ef4a98fc371ea0eab13f59d7cc10223c4c4149b4af0b1879d67991c611a",
+        ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
         ".hub/c-ffmpeg/references/audio-processing.md": "sha256:2a4f6df0225b4edba4261f44505cd2b707af55c4b3cfc47347d5975cc81467c3",
         ".hub/c-ffmpeg/references/delivery.md": "sha256:2da997a5b93ce4c59a9da84863341a3087ae7ef48a5ecc49a140c665e3749392",
         ".hub/c-ffmpeg/references/landscape-pip.md": "sha256:af42cbc01898b4480ce82754ba449d323fa07695ed91e843586deb7af3166e24",
         ".hub/c-ffmpeg/references/portrait-layouts.md": "sha256:1e9375ec6e57908c45a3f80a52a577fda58356d29be46b568662ff20e0910570",
         ".hub/c-heygen/LEARNINGS.md": "sha256:087ebf121db8d245829331e12948bab8b8e6b4d5b3bd948a3e3e8e1450f2a291",
-        ".hub/c-heygen/SKILL.md": "sha256:2110f9a0518177ee99ec3a0b93d38a9420df22ec14b18d5ab23823f28b4a428a",
+        ".hub/c-heygen/SKILL.md": "sha256:52039403ee7d0be460581466df107e10edeeb354563065d018e6ba62c1401119",
         ".hub/c-heygen/references/browser-render.md": "sha256:bece956f4fe835bd0045dcd1ed849e43e681176c3abe1132684864cf7009c330",
         ".hub/c-overlay-fx/.gitignore": "sha256:4d56952b0fb13bf8f9b6c13a6d4c34a075bac3af447636a1df4335d7576e2f97",
-        ".hub/c-overlay-fx/SKILL.md": "sha256:9a22c0bcaa3700726066960bef79045bc9d8c686d5ce6ca745561e8b8f3560ec",
+        ".hub/c-overlay-fx/SKILL.md": "sha256:f298ef89c5f2e9f3078130955d16fec848702177a1913c2bf8560170465f57dc",
         ".hub/c-overlay-fx/examples/sample-flowchart.json": "sha256:3151d2531507ab9bdb80c15bc2cb368f1eeeaf2b31c5c58deb53cec6cb2bf6c9",
         ".hub/c-overlay-fx/examples/sample-pill.json": "sha256:37b3fa8995703d4604ec6e54379b376cca3a69bffc9a110bfae3e5070c065a88",
         ".hub/c-overlay-fx/examples/sample-stat-card.json": "sha256:d038b200f11b16ab959b2e3f53d2ab22270e321abbcbb9cc659a2592dcb9bd46",
@@ -2923,7 +2427,7 @@
         ".hub/c-overlay-fx/package-lock.json": "sha256:768439a44b21e2d87b7a97e6dd45cec1b8f3dbe603ec80de449f579aeddfc57d",
         ".hub/c-overlay-fx/package.json": "sha256:e599ff47c4a45741ab76f14c738dfa64f94fb3c50dfde63ba8eede8c146ccf94",
         ".hub/c-overlay-fx/render-overlay.cjs": "sha256:de38807337c425f6c727abb5ac0fa45b9a6b717fbd282f114be7122788da760f",
-        ".hub/c-reel-premium/SKILL.md": "sha256:f588372632c035723f7b8bc8e2b79595e5b42f4b8165ae12aa58e2bfa4407d73",
+        ".hub/c-reel-premium/SKILL.md": "sha256:743df59e17707fced213e051d04290eb90fc8a2b730db86d5eec90fe4f91cafd",
         ".hub/c-reel-premium/assets/sfx/click.wav": "sha256:4fd295f33b4d942d0e66b92c94da7ac73b28e537ebb0bff351b8902bb6309d89",
         ".hub/c-reel-premium/assets/sfx/impact-punch.wav": "sha256:3e0c9c3e9747a01bf47508a636ae64dc365e9f0fef8ccbf09526d5dc124cb1b3",
         ".hub/c-reel-premium/assets/sfx/impact-sub.wav": "sha256:4a7b8799867e1025b4c9d643d8a1b510664c0dad43a083ea6e22a63775482d83",
@@ -2935,20 +2439,20 @@
         ".hub/c-reel-premium/templates/caption-overlay.html": "sha256:3aca4cddc352fddc372ad5b5901f2099694174e805071279998fa4899fb5c892",
         ".hub/c-reel-premium/templates/root-shell-polish.html": "sha256:aa1e3b615a731398f67180f42ff9544c6eb664b5ba3292d520afd89fbeba0a71",
         ".hub/c-shorts-qa-gate/LEARNINGS.md": "sha256:16ce1043150babac85cab811b163224d489a1e93e8a0f0cdd1e55c22c4de9ced",
-        ".hub/c-shorts-qa-gate/SKILL.md": "sha256:3c1055b2ba2153a6b4b21f4c78ef6874db98df0fbc6a8f98f933679e83420c5f",
+        ".hub/c-shorts-qa-gate/SKILL.md": "sha256:b152740d4bcaba9060039e70781986976931789d17ecc938d7432e2c645ed929",
         ".hub/c-shorts-qa-gate/scripts/qa-gate.sh": "sha256:e03be35423cf4ba1e531db6e82d080b74ea29e3559478443a12265b5c027f13e",
-        ".hub/c-typing-ui/SKILL.md": "sha256:9817d1e392be069f1a9815eaba6c1438e110a5041ef7dc6cdac44809daedf923",
+        ".hub/c-typing-ui/SKILL.md": "sha256:cef93c0576a0c94578cda8538445bc06a57ca6f1fc87ef6f64a29dc939205dd7",
         ".hub/c-typing-ui/scripts/render-sample.sh": "sha256:6eb8449a08c5055f9ae99bd6a3a138b3db15a1d329aee54b1003b963139ef559",
         ".hub/c-typing-ui/templates/hook-scene.html": "sha256:01a16ade084a855035c03195be776e00e338029fcc17d9316cae42e6f8d66599",
         ".hub/c-typing-ui/templates/typing-scene.html": "sha256:d6c4feb0ecdcd831ecfc58b6f74ee34191345ad1f96ef68bc7d3d5e04cf34077",
-        ".hub/f-gsap/SKILL.md": "sha256:dce9206aa633d55c183b6cc0227cf70adaba08ff29b6e96d75093373471e50fb",
+        ".hub/f-gsap/SKILL.md": "sha256:67a0c22fbd2f03ac726e6e048bd0e982ed2617412248f18d123dc9a8e08632f4",
         ".hub/f-gsap/references/effects.md": "sha256:b073b7a3af765c3df13cba3200c0feb8eda066998e961cd63f837eaf9d312384",
         ".hub/f-gsap/scripts/extract-audio-data.py": "sha256:7709b60d42730fc93a348c205ab565158d240b70051d109fcc844b215d56fa4f",
         ".hub/f-gsap/vendor/MotionPathPlugin.min.js": "sha256:aa5f955ca4ce3095ebe5726f43a46b72532230edb3501b28fb853f189f023cab",
         ".hub/f-gsap/vendor/TextPlugin.min.js": "sha256:14f3898c5e985cd5d985918e2368813d35e9629da4884f05d03bb3d0d10f170f",
         ".hub/f-gsap/vendor/gsap.min.js": "sha256:c174bfce53a729418d57a8ad8625e7247c793a22fef8e2851e3cfa3de9cd8280",
-        ".hub/f-hyperframes-cli/SKILL.md": "sha256:78548abd7b784079e0a2c84e02133020716a1d31effcfa7ef6036bae72a9e819",
-        ".hub/f-hyperframes/SKILL.md": "sha256:8e0526af3ff215f3f71f262f2a583469422fb44fe0ae6697a32d6d7b4c9b31fb",
+        ".hub/f-hyperframes-cli/SKILL.md": "sha256:8a92051add5824b38f35fb8e9a9ef6fb5d6cb21aed8d8dfbeb7d062d6d0dc95d",
+        ".hub/f-hyperframes/SKILL.md": "sha256:493734684680db81ec00ce9afb3cc7ab8e02a7afd0e36facd1e69281d5b45deb",
         ".hub/f-hyperframes/data-in-motion.md": "sha256:22084b4460a8f815d923b972a908f937c1e573bbbc7a865f6f2979ec2ae7ff15",
         ".hub/f-hyperframes/house-style.md": "sha256:e0719895b369d7ee5203850250e605b3a1c15dbe43a367dd54e396f2b439f838",
         ".hub/f-hyperframes/palettes/bold-energetic.md": "sha256:17bc6b7889302151b4e5c84c0c6a33df676647078011d9decb2b68810e3baa7f",
@@ -2987,82 +2491,38 @@
         ".hub/f-hyperframes/scripts/animation-map.mjs": "sha256:44166b4bf1eb7fa03e3a51648df7c70838ccc9af7b63de8de1a7d93b764b28d2",
         ".hub/f-hyperframes/scripts/contrast-report.mjs": "sha256:a916382bd40f197ee0109160241f6e35f317158f281dc643d200eb006dff29be",
         ".hub/f-hyperframes/visual-styles.md": "sha256:d173663b4342d830e46c5cc14a1ffafe6dbc6daca0702b0a451db3ce914693cc",
-        ".hub/p-reels-split/SKILL.md": "sha256:fdc141bfcfdfea74877925d9862fa436566cf026b3f65bd175d40d352ec897c3",
+        ".hub/p-reels-split/SKILL.md": "sha256:355558c63577b05ce9b97ad64625e98ce8e400e659fc9afa67194bb1c4a36656",
         ".hub/p-reels-split/acceptance.json": "sha256:f6119b3a0eddac0ea5c5ed104f3e11147cdc6e0ef80a220b5e880b7be165da1b",
-        ".hub/p-reels-split/scripts/verify-skill.sh": "sha256:556f78526a870688f4f5a14d582d64a38ccfa8ce05e1e1e518579aad1551108b",
+        ".hub/p-reels-split/scripts/verify-skill.sh": "sha256:1abe4fb10104233939e232950d35c4c9051ec497e0c996a497f9266d0b664ca2",
         ".hub/p-reels-split/templates/split-motion-card.html": "sha256:b6e43527ccdef24fad2c0de6a14a9d24e012cdeabf37a0504fe248ce3cf00b4c",
-        ".hub/wowx-motions/SKILL.md": "sha256:2816ab3345e872cb7944c1b3debd53d5db2439a3a6208326cdcb7ab684d71c62",
+        ".hub/wowx-motions/SKILL.md": "sha256:00b169e24a271c774c50cade24e8e1e39f7bd7c3b298141942f039e97e9dcf59",
         ".hub/wowx-motions/wowx_motion.py": "sha256:72439824e3e73fc13dc00aaedd632f4aed0f31cefb1748a93a64147e9245423a",
-        "SKILL.md": "sha256:da22f273624af6c72cbdea0663d461b59453a9221e5bffed076eb5509faebc71",
+        "SKILL.md": "sha256:79add355e8b91a3c9653fdf154e5953403033c74bf3245e50e1fb171635ffb6d",
         "scripts/voice-to-reel.idempotency.test.sh": "sha256:8be71b5d4f98b24573d1ae41b5d6257d4a18373031796cde88a3977886264f79",
         "scripts/voice-to-reel.sh": "sha256:86c8e1bf792ba7eb4cf7525055f6d9304f5bfe7ab2c2a5d185a3e4fe9cff3a1e"
       },
-      "providers": [
-        "heygen",
-        "elevenlabs"
-      ],
-      "systemRequires": [
-        {
-          "bin": "chromium",
-          "label": "Chromium / headless Chrome",
-          "why": "Headless rendering for HTML graphics, website b-roll capture, and Remotion/HyperFrames frames.",
-          "check": "chromium --version || google-chrome --version || npx playwright install --dry-run chromium",
-          "install": {
-            "macos": "brew install --cask chromium",
-            "debian": "npx playwright install --with-deps chromium"
-          }
-        },
-        {
-          "bin": "ffmpeg",
-          "label": "FFmpeg",
-          "why": "Video/audio compositing, trimming, chroma key, loudness, ffprobe checks.",
-          "check": "ffmpeg -version",
-          "install": {
-            "macos": "brew install ffmpeg",
-            "debian": "apt-get update && apt-get install -y ffmpeg"
-          }
-        },
-        {
-          "bin": "node",
-          "label": "Node.js ≥ 22",
-          "why": "Runs Remotion / HyperFrames CLIs and Playwright capture scripts.",
-          "check": "node -v",
-          "install": {
-            "macos": "brew install node",
-            "debian": "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs"
-          }
-        },
-        {
-          "bin": "python3",
-          "label": "Python 3",
-          "why": "JSON glue, transcription, and provider API helpers used by media components.",
-          "check": "python3 --version",
-          "install": {
-            "macos": "brew install python",
-            "debian": "apt-get update && apt-get install -y python3"
-          }
-        }
-      ],
+      "providers": [],
+      "systemRequires": [],
       "vendored": [
-        "c-audio",
-        "c-broll-sync",
-        "c-eval-runner",
-        "c-ffmpeg",
         "c-heygen",
-        "c-overlay-fx",
+        "p-reels-split",
+        "c-ffmpeg",
+        "c-audio",
         "c-reel-premium",
-        "c-shorts-qa-gate",
+        "c-broll-sync",
         "c-typing-ui",
-        "f-gsap",
         "f-hyperframes",
         "f-hyperframes-cli",
-        "p-reels-split",
-        "wowx-motions"
+        "f-gsap",
+        "c-overlay-fx",
+        "wowx-motions",
+        "c-shorts-qa-gate",
+        "c-eval-runner"
       ]
     },
     "c-composio": {
       "version": "1.0.0",
-      "checksum": "sha256:533f30114b0ae961e9e3e3490394ee2e1570d5801421040d22528a808a49b8db",
+      "checksum": "sha256:333a1fa3d8e2ff644137c4c2ed0c1d1c00a291ff7883bdc23b924369e30c7491",
       "files": [
         "LEARNINGS.md",
         "SKILL.md",
@@ -3070,22 +2530,11 @@
       ],
       "fileHashes": {
         "LEARNINGS.md": "sha256:59fae3603bcfc6e00bda26249aef48d5db4d16979b979d5e7dc6b9d3cb7c0363",
-        "SKILL.md": "sha256:29847841bd74874aad48ce46add584427fa347aeaa3efb0d41e6d6bb4a0e5c10",
+        "SKILL.md": "sha256:83f2d43d5c72817a971803735a375e4133f617be4f77e4b645961c16a319ea51",
         "composio-exec.mjs": "sha256:edc573d33e2b59a9e46862902caca95f018360c65c79083253facbab6c0fd20f"
       },
       "providers": [],
-      "systemRequires": [
-        {
-          "bin": "node",
-          "label": "Node.js ≥ 22",
-          "why": "Runs Remotion / HyperFrames CLIs and Playwright capture scripts.",
-          "check": "node -v",
-          "install": {
-            "macos": "brew install node",
-            "debian": "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs"
-          }
-        }
-      ],
+      "systemRequires": [],
       "vendored": []
     }
   }

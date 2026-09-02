@@ -13,18 +13,7 @@ produces:
   duration: 30-60s
 inputs: [story_concept]
 dependsOn: [c-ai-media, c-ffmpeg, c-music, c-shorts-qa-gate, c-eval-runner]
-metadata:
-  hermes:
-    vendored:
-      - { name: c-ai-media, load: ".hub/c-ai-media/SKILL.md" }
-      - { name: c-eval-runner, load: ".hub/c-eval-runner/SKILL.md" }
-      - { name: c-ffmpeg, load: ".hub/c-ffmpeg/SKILL.md" }
-      - { name: c-kie-ai, load: ".hub/c-kie-ai/SKILL.md" }
-      - { name: c-music, load: ".hub/c-music/SKILL.md" }
-      - { name: c-shorts-qa-gate, load: ".hub/c-shorts-qa-gate/SKILL.md" }
-    progressive: true
 ---
-
 
 # pipeline-ai-character — AI Character Short (9:16)
 
@@ -106,7 +95,7 @@ For `--type plush`: keep emotional register toylike and playful. Physical moveme
 
 ## Step 2 — Character Reference
 
-→ LOAD: skill_view("p-ai-character", ".hub/c-ai-media/SKILL.md") — `gemini-character-ref` (`--model pro` — never flash, consistency issues)
+→ Skill: `c-ai-media` → `gemini-character-ref` (`--model pro` — never flash, consistency issues)
 → Prompt: full `character_description` + "product photography, white background, full body, clean studio lighting"
 → Output: `interim/broll/gfx/char-ref.png`
 
@@ -117,7 +106,7 @@ This reference image MUST be passed to every scene generation call. Never skip i
 ## Step 3 — Scene Images ⛔ CHECKPOINT
 
 For each scene (generate in order):
-→ LOAD: skill_view("p-ai-character", ".hub/c-ai-media/SKILL.md") — `gemini-character-scene`
+→ Skill: `c-ai-media` → `gemini-character-scene`
 → Pass `char-ref.png` to EVERY call — no exceptions
 → Motion prompts: 1–2 sentences, gentle words (slow, subtle, still, drifting)
 → Output: `interim/broll/segments/scene-{N}.png`
@@ -146,7 +135,7 @@ If `$audio_track` is a `https://media.cfw.social/...` library URL (the normal ca
 Director picks it via `list_music_tracks`), fetch it to disk first; recipes mux a local
 file, not a URL.
 
-→ LOAD: skill_view("p-ai-character", ".hub/c-music/SKILL.md") —(with `MUSIC_CDN_URL=$audio_track`, `MUSIC_TRACK_ID=$music_track_id`)
+→ Skill: `c-music` (with `MUSIC_CDN_URL=$audio_track`, `MUSIC_TRACK_ID=$music_track_id`)
 - Set `$audio_track` to the returned `AUDIO_PATH` for the mux below.
 - Carry `MUSIC_TRACK_ID` through to `attach_output_to_composition(musicTrackId)` at
   delivery so CC-BY attribution auto-appends to the caption.
@@ -157,7 +146,7 @@ If `$audio_track` is already a local path, skip this step.
 
 ## Step 5 — Trim + Assemble
 
-→ LOAD: skill_view("p-ai-character", ".hub/c-ffmpeg/SKILL.md") —:
+→ Skill: `c-ffmpeg`:
 1. Trim each clip to match audio track pacing
 2. Scale to 1080×1920 if not already portrait
 3. Crossfade concat with `$crossfade` duration
@@ -176,7 +165,7 @@ runs geometry and luma checks, and writes a structured `scorecard.json`.
 **Do NOT deliver if it exits non-zero (verdict FAIL).**
 
 ```bash
-SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" /Users/vasanth/Code/skills -maxdepth 5 -type d -name p-ai-character 2>/dev/null | head -1)
+SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name p-ai-character 2>/dev/null | head -1)
 bash .hub/c-eval-runner/scripts/eval-run.sh <FINAL_MP4> --recipe-dir "$SKILL_DIR" --brand "$BRAND_SLUG"
 # scorecard → <video_dir>/eval/scorecard.json ; frame sweep → <video_dir>/eval/
 ```
@@ -197,7 +186,7 @@ bash .hub/c-eval-runner/scripts/eval-run.sh video/compositing/composite-v1.mp4 -
 
 ## Step 6 — Delivery ⛔ CHECKPOINT
 
-→ LOAD: skill_view("p-ai-character", ".hub/c-ffmpeg/SKILL.md") — 12-point delivery checklist
+→ Skill: `c-ffmpeg` → 12-point delivery checklist
 → Verify output: codec, resolution, audio
 → Move to: `final/pr-aimg01-{desc}.mp4`
 

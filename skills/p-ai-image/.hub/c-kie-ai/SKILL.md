@@ -9,7 +9,6 @@ providers: fal, kie
 deprecated: kie.ai flows superseded by kie-studio 2026-07-03
 ---
 
-
 # AI Media Generation — kie.ai + fal.ai
 
 > **⚠ DEPRECATED for kie.ai (2026-07-03).** kie-studio is the successor for ALL

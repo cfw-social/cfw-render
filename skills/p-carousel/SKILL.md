@@ -13,15 +13,7 @@ produces:
 inputs: [topic]
 dependsOn: [c-script, c-vision-qa, c-eval-runner]
 requires: node, chromium
-metadata:
-  hermes:
-    vendored:
-      - { name: c-eval-runner, load: ".hub/c-eval-runner/SKILL.md" }
-      - { name: c-script, load: ".hub/c-script/SKILL.md" }
-      - { name: c-vision-qa, load: ".hub/c-vision-qa/SKILL.md" }
-    progressive: true
 ---
-
 
 
 
@@ -89,9 +81,6 @@ Write full copy per slide:
 ### Step 4 — Render to PNG
 
 ```bash
-SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE:-$0}")" && pwd 2>/dev/null)"
-[ -d "$SKILL_DIR/.hub" ] || SKILL_DIR="$(find "$HOME/.hermes/skills" "$HOME/.claude/skills" \
-   -type d -name p-carousel -print 2>/dev/null | head -1)"
 cd <production>
 [ -d node_modules/playwright ] || npm i playwright >/dev/null 2>&1
 # render.mjs auto-discovers every <section class="slide" id="sN"> and shoots each at 2x.
@@ -101,7 +90,7 @@ WIDTH=1080 HEIGHT=1350 SCALE=2 node render.mjs        # HEIGHT=1080 for 1:1
 
 ### Step 5 — Vision QA gate ⛔ (MANDATORY look-and-fix loop)
 
-→ LOAD: skill_view("p-carousel", ".hub/c-vision-qa/SKILL.md") —— run it on the rendered slides:
+→ Skill: `c-vision-qa` — run it on the rendered slides:
 ```bash
 bash .hub/c-vision-qa/scripts/precheck.sh slides/*.png --aspect 1080x1350
 ```
@@ -131,7 +120,7 @@ convert $(ls -v slides/slide-*.png) "final/carousel-<topic-slug>.pdf"
 
 ### Step 7 — Caption
 
-→ LOAD: skill_view("p-carousel", ".hub/c-script/SKILL.md") —— write the post copy:
+→ Skill: `c-script` — write the post copy:
 - Hook line (matches the cover slide)
 - Tease slides 2–3 (don't give it all away)
 - CTA: "Save this + follow for more"

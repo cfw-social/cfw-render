@@ -12,28 +12,10 @@ produces:
   duration: 30-90s
 inputs: [script]
 dependsOn: [c-audio, c-broll-sync, c-typing-ui, c-reel-premium, c-ffmpeg, c-cloud-media, f-hyperframes, f-hyperframes-cli, f-gsap, c-overlay-fx, c-shorts-qa-gate, c-eval-runner]
-
-  hermes:
-    vendored: [c-audio, c-reel-premium, c-broll-sync, c-typing-ui, c-ffmpeg, f-hyperframes, f-hyperframes-cli, f-gsap, c-overlay-fx, c-shorts-qa-gate]
 metadata:
   hermes:
-    vendored:
-      - { name: c-audio, load: ".hub/c-audio/SKILL.md" }
-      - { name: c-broll, load: ".hub/c-broll/SKILL.md" }
-      - { name: c-broll-sync, load: ".hub/c-broll-sync/SKILL.md" }
-      - { name: c-cloud-media, load: ".hub/c-cloud-media/SKILL.md" }
-      - { name: c-eval-runner, load: ".hub/c-eval-runner/SKILL.md" }
-      - { name: c-ffmpeg, load: ".hub/c-ffmpeg/SKILL.md" }
-      - { name: c-overlay-fx, load: ".hub/c-overlay-fx/SKILL.md" }
-      - { name: c-reel-premium, load: ".hub/c-reel-premium/SKILL.md" }
-      - { name: c-shorts-qa-gate, load: ".hub/c-shorts-qa-gate/SKILL.md" }
-      - { name: c-typing-ui, load: ".hub/c-typing-ui/SKILL.md" }
-      - { name: f-gsap, load: ".hub/f-gsap/SKILL.md" }
-      - { name: f-hyperframes, load: ".hub/f-hyperframes/SKILL.md" }
-      - { name: f-hyperframes-cli, load: ".hub/f-hyperframes-cli/SKILL.md" }
-    progressive: true
+    vendored: [c-audio, c-reel-premium, c-broll-sync, c-typing-ui, c-ffmpeg, f-hyperframes, f-hyperframes-cli, f-gsap, c-overlay-fx, c-shorts-qa-gate]
 ---
-
 
 
 
@@ -161,12 +143,12 @@ These rules are LOAD-BEARING. Violating any one of them is a HARD FAILURE.
 source ~/.gsai/secrets.env
 FF=/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg
 W="$OUT_DIR/work" ; mkdir -p "$W/gfx"
-SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name p-reels-faceless 2>/dev/null | head -1)
-BROLL_SYNC_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name c-broll-sync 2>/dev/null | head -1)
+SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name p-reels-faceless 2>/dev/null | head -1)
+BROLL_SYNC_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-broll-sync 2>/dev/null | head -1)
 [ -n "$BROLL_SYNC_DIR" ] || BROLL_SYNC_DIR="$SKILL_DIR/.hub/c-broll-sync"
-TYPING_UI_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name c-typing-ui 2>/dev/null | head -1)
+TYPING_UI_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-typing-ui 2>/dev/null | head -1)
 [ -n "$TYPING_UI_DIR" ] || TYPING_UI_DIR="$SKILL_DIR/.hub/c-typing-ui"
-PREMIUM_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name c-reel-premium 2>/dev/null | head -1)
+PREMIUM_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-reel-premium 2>/dev/null | head -1)
 
 VOICE_ID="${VOICE_ID:-${ELEVENLABS_DEFAULT_VOICE_ID}}"
 BROLL_CLIPS="${BROLL_CLIPS:-}"
@@ -423,7 +405,7 @@ delegate_task({
   "tasks": [
     {
       "goal": "Author + render ONE 1080x1920 animated HyperFrames composition for beat 0 (hook); return its MP4 path.",
-      "context": "WORK_GFX=<abs_path>/work/gfx | index=0 slug=hook | start=0.0 end=4.2 | data-duration=4.2 | script_line=<this beat VO line> | scene_type=hook | BRAND (verbatim JSON): <brand.json contents> | typing_ui_dir=<TYPING_UI_DIR> | gsap_vendor_dir=<absolute path to f-gsap/vendor — i.e. $SKILL_DIR/.hub/f-gsap/vendor in the pack or $SKILL_DIR/.hub/f-gsap/vendor in the source repo, whichever exists> | RULES: read f-hyperframes/SKILL.md, follow p-reels-faceless Visual doctrine (FOREGROUND HERO; gsap.from() ends-visible; AMBIENT MOTION full window; SVG-only icons; ghost=beat index; Oswald+JetBrains Mono; no remote URLs). The composition's <head> loads GSAP via a LOCAL relative tag <script src=\"gsap.min.js\"></script> — NEVER a CDN URL (the render box blocks outbound library fetches). For scene_type=hook or scene_type=typing-ui: use c-typing-ui templates from typing_ui_dir (standalone render — strip <template> wrapper, wrap in full HTML doc; use FULL variant for faceless). For scene_type=standard or omitted: author a brand motion-graphic (chart/terminal/checklist/stat/diagram). RUN: npx hyperframes@0.7.5 init beatN-slug --non-interactive -> author index.html -> cp \"$gsap_vendor_dir/gsap.min.js\" beatN-slug/gsap.min.js (REQUIRED before render so the local <script src=\"gsap.min.js\"> resolves; if it references TextPlugin/MotionPathPlugin copy those too) -> npx hyperframes@0.7.5 lint (0 errors REQUIRED) -> npx hyperframes@0.7.5 render --output beatN-slug.mp4 --fps 30 --quality high. RETURN: absolute MP4 path + confirm lint=0. ONLY touch your own beat folder.",
+      "context": "WORK_GFX=<abs_path>/work/gfx | index=0 slug=hook | start=0.0 end=4.2 | data-duration=4.2 | script_line=<this beat VO line> | scene_type=hook | BRAND (verbatim JSON): <brand.json contents> | typing_ui_dir=<TYPING_UI_DIR> | gsap_vendor_dir=<absolute path to f-gsap/vendor — i.e. $SKILL_DIR/.hub/f-gsap/vendor in the pack or $SKILL_DIR/../f-gsap/vendor in the source repo, whichever exists> | RULES: read f-hyperframes/SKILL.md, follow p-reels-faceless Visual doctrine (FOREGROUND HERO; gsap.from() ends-visible; AMBIENT MOTION full window; SVG-only icons; ghost=beat index; Oswald+JetBrains Mono; no remote URLs). The composition's <head> loads GSAP via a LOCAL relative tag <script src=\"gsap.min.js\"></script> — NEVER a CDN URL (the render box blocks outbound library fetches). For scene_type=hook or scene_type=typing-ui: use c-typing-ui templates from typing_ui_dir (standalone render — strip <template> wrapper, wrap in full HTML doc; use FULL variant for faceless). For scene_type=standard or omitted: author a brand motion-graphic (chart/terminal/checklist/stat/diagram). RUN: npx hyperframes@0.7.5 init beatN-slug --non-interactive -> author index.html -> cp \"$gsap_vendor_dir/gsap.min.js\" beatN-slug/gsap.min.js (REQUIRED before render so the local <script src=\"gsap.min.js\"> resolves; if it references TextPlugin/MotionPathPlugin copy those too) -> npx hyperframes@0.7.5 lint (0 errors REQUIRED) -> npx hyperframes@0.7.5 render --output beatN-slug.mp4 --fps 30 --quality high. RETURN: absolute MP4 path + confirm lint=0. ONLY touch your own beat folder.",
       "toolsets": ["terminal", "skills", "web"]
     }
   ]
@@ -501,7 +483,7 @@ sed -i 's/##/#/g' "$WORK_GFX/beatN-typing/index.html"
 # f-gsap is vendored under .hub/ in the pack and a sibling dir in the source repo.
 # NEVER fall back to a CDN — the render box blocks outbound library fetches.
 # Prefer the child-passed $gsap_vendor_dir; else resolve from $SKILL_DIR.
-GSAP=$(for p in "$gsap_vendor_dir" "$SKILL_DIR/.hub/f-gsap/vendor" "$SKILL_DIR/.hub/f-gsap/vendor"; do [ -n "$p" ] && [ -f "$p/gsap.min.js" ] && echo "$p/gsap.min.js" && break; done)
+GSAP=$(for p in "$gsap_vendor_dir" "$SKILL_DIR/.hub/f-gsap/vendor" "$SKILL_DIR/../f-gsap/vendor"; do [ -n "$p" ] && [ -f "$p/gsap.min.js" ] && echo "$p/gsap.min.js" && break; done)
 [ -n "$GSAP" ] || { echo "[p-reels-faceless] FATAL: vendored gsap.min.js not found (expected under .hub/f-gsap/vendor/ or ../f-gsap/vendor/)"; exit 1; }
 cp "$GSAP" "$WORK_GFX/beatN-typing/gsap.min.js"
 # Lint + render
@@ -634,7 +616,7 @@ AFTER the last content beat. Sequence it at the END of `seglist.txt` before the 
 ```bash
 # Before `npx hyperframes@0.7.5 render` in the outro comp dir (e.g. $W/gfx/outro-brand):
 OUTRO_DIR="$W/gfx/outro-brand"
-GSAP=$(for p in "$SKILL_DIR/.hub/f-gsap/vendor" "$SKILL_DIR/.hub/f-gsap/vendor"; do [ -f "$p/gsap.min.js" ] && echo "$p/gsap.min.js" && break; done)
+GSAP=$(for p in "$SKILL_DIR/.hub/f-gsap/vendor" "$SKILL_DIR/../f-gsap/vendor"; do [ -f "$p/gsap.min.js" ] && echo "$p/gsap.min.js" && break; done)
 [ -n "$GSAP" ] || { echo "[p-reels-faceless] FATAL: vendored gsap.min.js not found (expected under .hub/f-gsap/vendor/ or ../f-gsap/vendor/)"; exit 1; }
 cp "$GSAP" "$OUTRO_DIR/gsap.min.js"
 # then: cd "$OUTRO_DIR" && npx hyperframes@0.7.5 lint && npx hyperframes@0.7.5 render --output outro-brand.mp4 --fps 30 --quality high
@@ -731,7 +713,7 @@ the current beat's layout and keep the overlay clear of its hero element.
 # Each spec also carries brand context. Empty/unset → skip entirely (default).
 OVERLAY_BEATS="${overlay_beats:-[]}"
 if [ "$(echo "$OVERLAY_BEATS" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)" -gt 0 ]; then
-  OVERLAY_FX_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/Code/skills -maxdepth 5 -type d -name c-overlay-fx 2>/dev/null | head -1)
+  OVERLAY_FX_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-overlay-fx 2>/dev/null | head -1)
   [ -z "$OVERLAY_FX_DIR" ] && { echo "[p-reels-faceless] overlay_beats set but c-overlay-fx not found — skipping"; OVERLAY_BEATS="[]"; }
 fi
 if [ "$(echo "$OVERLAY_BEATS" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)" -gt 0 ]; then

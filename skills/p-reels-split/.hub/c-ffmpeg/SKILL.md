@@ -8,7 +8,6 @@ visibility: internal
 requires: ffmpeg
 ---
 
-
 # FFmpeg — Creative Studio Video Engine
 
 

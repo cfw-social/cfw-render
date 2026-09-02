@@ -9,7 +9,6 @@ dependsOn: [f-remotion]
 requires: ffmpeg, chromium
 ---
 
-
 # HTML GFX — Graphics for Video
 
 

@@ -11,33 +11,14 @@ produces:
   duration: 20-60s
 inputs: [script, broll, avatar_id, voice_id, known_transcript]
 dependsOn: [c-heygen, p-reels-spotlight]
-
+metadata:
   hermes:
     vendored:
       - c-heygen           # provider step — generates avatar MP4 from script
       # NOTE: does NOT vendor p-reels-spotlight's components — that core owns them.
       # This wrapper delegates to p-reels-spotlight entirely; all rendering lives there.
     delegates_to: p-reels-spotlight
-metadata:
-  hermes:
-    vendored:
-      - { name: c-broll, load: ".hub/c-broll/SKILL.md" }
-      - { name: c-broll-sync, load: ".hub/c-broll-sync/SKILL.md" }
-      - { name: c-cloud-media, load: ".hub/c-cloud-media/SKILL.md" }
-      - { name: c-eval-runner, load: ".hub/c-eval-runner/SKILL.md" }
-      - { name: c-ffmpeg, load: ".hub/c-ffmpeg/SKILL.md" }
-      - { name: c-heygen, load: ".hub/c-heygen/SKILL.md" }
-      - { name: c-overlay-fx, load: ".hub/c-overlay-fx/SKILL.md" }
-      - { name: c-reel-premium, load: ".hub/c-reel-premium/SKILL.md" }
-      - { name: c-shorts-qa-gate, load: ".hub/c-shorts-qa-gate/SKILL.md" }
-      - { name: c-typing-ui, load: ".hub/c-typing-ui/SKILL.md" }
-      - { name: f-gsap, load: ".hub/f-gsap/SKILL.md" }
-      - { name: f-hyperframes, load: ".hub/f-hyperframes/SKILL.md" }
-      - { name: f-hyperframes-cli, load: ".hub/f-hyperframes-cli/SKILL.md" }
-      - { name: p-reels-spotlight, load: ".hub/p-reels-spotlight/SKILL.md" }
-    progressive: true
 ---
-
 
 
 
@@ -76,9 +57,6 @@ This wrapper proves the `<layout>-<source>` pattern: the *same* `c-heygen` outpu
 **Reuse rule: never burn HeyGen credits for a script that has already been rendered.**
 
 ```bash
-SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE:-$0}")" && pwd 2>/dev/null)"
-[ -d "$SKILL_DIR/.hub" ] || SKILL_DIR="$(find "$HOME/.hermes/skills" "$HOME/.claude/skills" \
-   -type d -name p-reels-spotlight-heygen -print 2>/dev/null | head -1)"
 SCRIPT="<the narration script text>"
 PRODUCTION="{production}"
 CACHE_DIR="$PRODUCTION/interim/heygen-cache"

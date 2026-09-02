@@ -7,7 +7,6 @@ dependsOn: [f-gsap, f-hyperframes-cli]
 requires: node, chromium
 ---
 
-
 # HyperFrames
 
 HTML is the source of truth for video. A composition is an HTML file with `data-*` attributes for timing, a GSAP timeline for animation, and CSS for appearance. The framework handles clip visibility, media playback, and timeline sync.

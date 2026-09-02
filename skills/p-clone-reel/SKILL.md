@@ -13,23 +13,7 @@ produces:
   duration: 30-60s
 inputs: [source_url]
 dependsOn: [c-script, c-heygen, c-html-gfx, c-audio, c-production, c-ffmpeg, c-shorts-qa-gate, c-eval-runner]
-metadata:
-  hermes:
-    vendored:
-      - { name: c-audio, load: ".hub/c-audio/SKILL.md" }
-      - { name: c-broll, load: ".hub/c-broll/SKILL.md" }
-      - { name: c-cloud-media, load: ".hub/c-cloud-media/SKILL.md" }
-      - { name: c-eval-runner, load: ".hub/c-eval-runner/SKILL.md" }
-      - { name: c-ffmpeg, load: ".hub/c-ffmpeg/SKILL.md" }
-      - { name: c-heygen, load: ".hub/c-heygen/SKILL.md" }
-      - { name: c-html-gfx, load: ".hub/c-html-gfx/SKILL.md" }
-      - { name: c-production, load: ".hub/c-production/SKILL.md" }
-      - { name: c-script, load: ".hub/c-script/SKILL.md" }
-      - { name: c-shorts-qa-gate, load: ".hub/c-shorts-qa-gate/SKILL.md" }
-      - { name: f-remotion, load: ".hub/f-remotion/SKILL.md" }
-    progressive: true
 ---
-
 
 # p-clone-reel — Viral Reel Recreation
 
@@ -63,7 +47,7 @@ Take a viral format → adapt to brand → deliver 9:16 short (avatar PIP).
 yt-dlp -f "bestvideo[height<=1080]+bestaudio/best" \
   --merge-output-format mp4 -o "source.mp4" "$SOURCE_URL"
 ```
-→ LOAD: skill_view("p-clone-reel", ".hub/c-audio/SKILL.md") — MLX Whisper → `interim/audio/source.srt`
+→ Skill: `c-audio` → MLX Whisper → `interim/audio/source.srt`
 
 Identify viral format type: hook structure, pacing, visual rhythm.
 
@@ -71,7 +55,7 @@ Identify viral format type: hook structure, pacing, visual rhythm.
 
 ## Step 2 — Script Adaptation ⛔ CHECKPOINT
 
-→ LOAD: skill_view("p-clone-reel", ".hub/c-script/SKILL.md") — voice adaptation
+→ Skill: `c-script` → voice adaptation
 → Match word count ±10% to preserve timing (150 wpm baseline)
 → Apply brand vocabulary, CTA swap, phonetic readiness
 → Output: `interim/scripts/{name}-adapted.txt`
@@ -82,10 +66,10 @@ Identify viral format type: hook structure, pacing, visual rhythm.
 
 ## Step 3 — Footage Generation
 
-→ LOAD: skill_view("p-clone-reel", ".hub/c-heygen/SKILL.md") — browser render or human delegation
+→ Skill: `c-heygen` → browser render or human delegation
 → Script: adapted `.txt`, background: `#00FF00` solid
 
-→ LOAD: skill_view("p-clone-reel", ".hub/c-production/SKILL.md") — circle PIP detection
+→ Skill: `c-production` → circle PIP detection
 → Identify PIP position in source video (size, center, overlay_diameter at 115%)
 
 → Cover frame: `c-html-gfx` → brand card at 1080×1920 (`$cover_style`)
@@ -94,14 +78,14 @@ Identify viral format type: hook structure, pacing, visual rhythm.
 
 ## Step 4 — TTS Voiceover (if no HeyGen)
 
-→ LOAD: skill_view("p-clone-reel", ".hub/c-audio/SKILL.md") — ElevenLabs TTS
+→ Skill: `c-audio` → ElevenLabs TTS
 → `interim/audio/{name}-vo.mp3`
 
 ---
 
 ## Step 5 — Assembly
 
-→ LOAD: skill_view("p-clone-reel", ".hub/c-ffmpeg/SKILL.md") — composite-split-screen (source top + avatar bottom, or PIP at detected position)
+→ Skill: `c-ffmpeg` → composite-split-screen (source top + avatar bottom, or PIP at detected position)
 → Two-pass colorkey: `0x00FF00:0.25:0.05,colorkey=0x00FF00:0.40:0.01`
 
 → Output: `video/compositing/composite-v1.mp4`
@@ -116,7 +100,7 @@ runs geometry checks, and writes a structured `scorecard.json`.
 **Do NOT deliver if it exits non-zero (verdict FAIL).**
 
 ```bash
-SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" /Users/vasanth/Code/skills -maxdepth 5 -type d -name p-clone-reel 2>/dev/null | head -1)
+SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name p-clone-reel 2>/dev/null | head -1)
 bash .hub/c-eval-runner/scripts/eval-run.sh <FINAL_MP4> --recipe-dir "$SKILL_DIR" --brand "$BRAND_SLUG"
 # scorecard → <video_dir>/eval/scorecard.json ; frame sweep → <video_dir>/eval/
 ```
@@ -137,7 +121,7 @@ bash .hub/c-eval-runner/scripts/eval-run.sh video/compositing/composite-v1.mp4 -
 ## Step 6 — Outro + Delivery ⛔ CHECKPOINT
 
 → Append brand outro
-→ LOAD: skill_view("p-clone-reel", ".hub/c-ffmpeg/SKILL.md") — 12-point delivery checklist
+→ Skill: `c-ffmpeg` → 12-point delivery checklist
 → Output: `final/pr-viral01-{desc}.mp4`
 
 **Gate: All delivery checks pass.**

@@ -9,7 +9,6 @@ requires: ffmpeg, chromium
 dependsOn: [c-html-gfx, c-ffmpeg]
 ---
 
-
 # c-thumbnail — Thumbnail Rendering
 
 Bold, high-contrast HTML-GFX thumbnails from a face/avatar frame + topic. Renders
