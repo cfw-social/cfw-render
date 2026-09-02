@@ -1,0 +1,10 @@
+{
+  "type": "stat-card",
+  "stat": "2h",
+  "stat_label": "saved per week",
+  "brand": {
+    "accent": "#10B981",
+    "bg": "#F8F9FA",
+    "fg": "#111827"
+  }
+}

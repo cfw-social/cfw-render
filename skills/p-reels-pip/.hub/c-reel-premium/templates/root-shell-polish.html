@@ -1,0 +1,98 @@
+<!doctype html>
+<!--
+  c-reel-premium — POLISH-PASS root shell (FILLED, never authored).
+
+  Plays the ALREADY-ASSEMBLED reel full-frame on track 0 and rides the kinetic
+  caption overlay on track 9. Rendered SILENT — the reel's own (already
+  mastered) audio + SFX are muxed back in ffmpeg afterward, so the pass never
+  touches the recipe's audio mastering.
+
+  MUST stay a full HTML document (doctype + html/head/body) — a bare
+  composition div is a fragment the bundler cannot inject runtime scripts into.
+
+  Placeholders:
+    DURATION   — reel duration in seconds
+    VIDEO_SRC  — relative path to the assembled reel (reel-in.mp4)
+  (Keep this comment free of literal angle-bracket tags and of double-brace
+  tokens — the linter's tag scanner does not skip comments, and the assembler
+  fills tokens anywhere.)
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1080, height=1920" />
+    <script src="gsap.min.js"></script>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+        background: #000;
+      }
+      #root {
+        position: relative;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+        background: #000;
+      }
+      #root > video {
+        position: absolute;
+        inset: 0;
+        width: 1080px;
+        height: 1920px;
+        object-fit: cover;
+        z-index: 0;
+      }
+      #root .caption-slot {
+        position: absolute;
+        inset: 0;
+        z-index: 100;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="premium-polish"
+      data-start="0"
+      data-duration="{{DURATION}}"
+      data-width="1080"
+      data-height="1920"
+    >
+      <video
+        id="reel"
+        data-start="0"
+        data-duration="{{DURATION}}"
+        data-track-index="0"
+        src="{{VIDEO_SRC}}"
+        muted
+        playsinline
+      ></video>
+
+      <div
+        id="captions"
+        class="caption-slot"
+        data-composition-id="caption-overlay"
+        data-composition-src="compositions/caption-overlay.html"
+        data-start="0"
+        data-duration="{{DURATION}}"
+        data-width="1080"
+        data-height="1920"
+        data-track-index="9"
+      ></div>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      window.__timelines["premium-polish"] = gsap.timeline({ paused: true });
+    </script>
+  </body>
+</html>

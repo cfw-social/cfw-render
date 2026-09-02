@@ -1,0 +1,129 @@
+<template id="{{ID}}-template">
+  <!--
+    p-reels-fmt3 v0.5 — takeover template: BIG STAT SLAM (filled, never authored).
+    Opaque full-frame card: eyebrow → giant stat slams in → label staggers up.
+    Content lives in the TOP ~55% (the caption band sits lower).
+
+    Placeholders: ID DURATION BG ACCENT FG
+                  EYEBROW STAT LABEL
+    ACCENT must be a 6-digit hex — alpha is appended as hex pairs below.
+  -->
+  <div
+    id="{{ID}}"
+    data-composition-id="{{ID}}"
+    data-width="1080"
+    data-height="1920"
+  >
+    <style>
+      #{{ID}} {
+        position: relative;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+        background: {{BG}};
+        font-family: 'Oswald', sans-serif;
+      }
+      #{{ID}} .grid {
+        position: absolute; inset: 0;
+        background-image:
+          linear-gradient(rgba(148,163,184,0.06) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(148,163,184,0.06) 1px, transparent 1px);
+        background-size: 120px 120px;
+        opacity: 0.6;
+      }
+      #{{ID}} .glow {
+        position: absolute; left: 50%; top: 38%;
+        width: 1400px; height: 1400px;
+        transform: translate(-50%, -50%);
+        background: radial-gradient(circle, {{ACCENT}}2E 0%, transparent 62%);
+        will-change: transform, opacity;
+      }
+      #{{ID}} .ring {
+        position: absolute; left: 50%; top: 34%;
+        width: 760px; height: 760px;
+        margin: -380px 0 0 -380px;
+        border: 3px solid {{ACCENT}}73;
+        border-radius: 50%;
+        will-change: transform, opacity;
+      }
+      #{{ID}} .content {
+        position: absolute; left: 0; right: 0; top: 7%;
+        max-height: 55%;
+        display: flex; flex-direction: column; align-items: center;
+        gap: 36px;
+        padding: 0 72px;
+        text-align: center;
+        box-sizing: border-box;
+      }
+      #{{ID}} .eyebrow {
+        font-family: 'JetBrains Mono', monospace;
+        font-weight: 700; font-size: 30px;
+        letter-spacing: 0.2em; text-transform: uppercase;
+        color: {{ACCENT}};
+        will-change: transform, opacity;
+      }
+      #{{ID}} .stat {
+        font-weight: 700; font-size: 340px; line-height: 0.9;
+        letter-spacing: -0.02em; text-transform: uppercase;
+        color: {{ACCENT}};
+        text-shadow: 0 0 60px {{ACCENT}}73;
+        will-change: transform, opacity;
+      }
+      #{{ID}} .label {
+        font-weight: 600; font-size: 84px; line-height: 1.0;
+        letter-spacing: -0.01em; text-transform: uppercase;
+        color: {{FG}};
+        max-width: 900px;
+      }
+      #{{ID}} .label .word {
+        display: inline-block;
+        will-change: transform, opacity;
+      }
+    </style>
+
+    <div class="grid"></div>
+    <div class="glow js-glow"></div>
+    <div class="ring js-ring"></div>
+    <div class="content">
+      <div class="eyebrow js-eyebrow">{{EYEBROW}}</div>
+      <div class="stat js-stat">{{STAT}}</div>
+      <div class="label js-label">{{LABEL}}</div>
+    </div>
+
+    <script src="gsap.min.js"></script>
+    <script>
+      window.__timelines = window.__timelines || {};
+      (function () {
+        var scope = '#{{ID}} ';
+        var DUR = parseFloat("{{DURATION}}");
+
+        // Split label into word spans for the stagger.
+        var label = document.querySelector(scope + ".js-label");
+        label.innerHTML = label.textContent.split(/\s+/).filter(Boolean)
+          .map(function (w) { return '<span class="word">' + w + "</span>"; }).join(" ");
+
+        var tl = gsap.timeline({ paused: true });
+
+        // Ambient — glow breathes; ring expands and fades out once. Nothing static.
+        tl.fromTo(scope + ".js-glow", { scale: 0.92, opacity: 0.6 },
+          { scale: 1.1, opacity: 1, duration: DUR, ease: "sine.inOut" }, 0);
+        tl.fromTo(scope + ".js-ring", { scale: 0.4, opacity: 0.75 },
+          { scale: 1.35, opacity: 0, duration: 1.4, ease: "power2.out" }, 0.18);
+
+        tl.fromTo(scope + ".js-eyebrow", { y: 34, opacity: 0 },
+          { y: 0, opacity: 1, duration: 0.4, ease: "power3.out" }, 0.1);
+
+        // The slam: stat punches in oversized then settles with a soft breathe.
+        tl.fromTo(scope + ".js-stat", { scale: 2.4, opacity: 0 },
+          { scale: 1, opacity: 1, duration: 0.45, ease: "power4.out" }, 0.25);
+        tl.to(scope + ".js-stat", { scale: 1.03, duration: 0.6, ease: "sine.inOut" }, 0.9);
+        tl.to(scope + ".js-stat", { scale: 1.0, duration: Math.max(0.4, DUR - 2.0), ease: "sine.inOut" }, 1.55);
+
+        tl.fromTo(scope + ".js-label .word", { yPercent: 110, opacity: 0 },
+          { yPercent: 0, opacity: 1, duration: 0.5, ease: "back.out(1.6)", stagger: 0.07 }, 0.55);
+
+        window.__timelines["{{ID}}"] = tl;
+      })();
+    </script>
+  </div>
+</template>

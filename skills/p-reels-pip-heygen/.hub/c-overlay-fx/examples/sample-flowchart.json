@@ -1,0 +1,5 @@
+{
+  "type": "flowchart",
+  "nodes": ["Capture", "Cook", "Post"],
+  "caption": "your content system"
+}

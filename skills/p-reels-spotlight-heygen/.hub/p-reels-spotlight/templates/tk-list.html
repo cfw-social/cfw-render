@@ -1,0 +1,121 @@
+<template id="{{ID}}-template">
+  <!--
+    p-reels-fmt3 v0.5 — takeover template: 3-ITEM LIST / FLOW (filled, never authored).
+    Opaque full-frame card: title, then three numbered items cascade in with
+    accent ticks. Content lives in the TOP ~55% (the caption band sits lower).
+
+    Placeholders: ID DURATION BG ACCENT FG
+                  TITLE {{ITEM1}} {{ITEM2}} {{ITEM3}}
+    ACCENT must be a 6-digit hex — alpha is appended as hex pairs below.
+  -->
+  <div
+    id="{{ID}}"
+    data-composition-id="{{ID}}"
+    data-width="1080"
+    data-height="1920"
+  >
+    <style>
+      #{{ID}} {
+        position: relative;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+        background: {{BG}};
+        font-family: 'Oswald', sans-serif;
+      }
+      #{{ID}} .grid {
+        position: absolute; inset: 0;
+        background-image:
+          linear-gradient(rgba(148,163,184,0.06) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(148,163,184,0.06) 1px, transparent 1px);
+        background-size: 120px 120px;
+        opacity: 0.6;
+      }
+      #{{ID}} .glow {
+        position: absolute; left: 50%; top: 30%;
+        width: 1200px; height: 1200px;
+        transform: translate(-50%, -50%);
+        background: radial-gradient(circle, {{ACCENT}}21 0%, transparent 60%);
+        will-change: transform, opacity;
+      }
+      #{{ID}} .content {
+        position: absolute; left: 0; right: 0; top: 7%;
+        max-height: 55%;
+        display: flex; flex-direction: column;
+        gap: 40px;
+        padding: 0 84px;
+        box-sizing: border-box;
+      }
+      #{{ID}} .title {
+        font-weight: 700; font-size: 96px; line-height: 0.95;
+        letter-spacing: -0.01em; text-transform: uppercase;
+        color: {{FG}};
+        will-change: transform, opacity;
+      }
+      #{{ID}} .title .accent { color: {{ACCENT}}; }
+      #{{ID}} .item {
+        display: flex; align-items: center; gap: 30px;
+        will-change: transform, opacity;
+      }
+      #{{ID}} .num {
+        flex: 0 0 auto;
+        width: 84px; height: 84px;
+        display: flex; align-items: center; justify-content: center;
+        border: 3px solid {{ACCENT}};
+        border-radius: 18px;
+        font-family: 'JetBrains Mono', monospace;
+        font-weight: 700; font-size: 40px;
+        color: {{ACCENT}};
+        will-change: transform;
+      }
+      #{{ID}} .item-text {
+        font-family: 'Inter', sans-serif;
+        font-weight: 700; font-size: 52px; line-height: 1.12;
+        color: {{FG}};
+      }
+      #{{ID}} .bar {
+        position: absolute; left: 84px; bottom: -22px;
+        height: 5px; width: 320px;
+        background: {{ACCENT}};
+        transform-origin: left center;
+        will-change: transform;
+      }
+    </style>
+
+    <div class="grid"></div>
+    <div class="glow js-glow"></div>
+    <div class="content">
+      <div class="title js-title" style="position:relative;">{{TITLE}}<div class="bar js-bar"></div></div>
+      <div class="item js-item"><div class="num js-num">1</div><div class="item-text">{{ITEM1}}</div></div>
+      <div class="item js-item"><div class="num js-num">2</div><div class="item-text">{{ITEM2}}</div></div>
+      <div class="item js-item"><div class="num js-num">3</div><div class="item-text">{{ITEM3}}</div></div>
+    </div>
+
+    <script src="gsap.min.js"></script>
+    <script>
+      window.__timelines = window.__timelines || {};
+      (function () {
+        var scope = '#{{ID}} ';
+        var DUR = parseFloat("{{DURATION}}");
+
+        var tl = gsap.timeline({ paused: true });
+
+        tl.fromTo(scope + ".js-glow", { scale: 0.94, opacity: 0.6 },
+          { scale: 1.08, opacity: 1, duration: DUR, ease: "sine.inOut" }, 0);
+
+        tl.fromTo(scope + ".js-title", { y: 46, opacity: 0 },
+          { y: 0, opacity: 1, duration: 0.5, ease: "power4.out" }, 0.12);
+        tl.fromTo(scope + ".js-bar", { scaleX: 0 },
+          { scaleX: 1, duration: 0.55, ease: "power3.inOut" }, 0.4);
+
+        // Items cascade — slide from the left, numbers tick with a back-pop.
+        tl.fromTo(scope + ".js-item", { x: -70, opacity: 0 },
+          { x: 0, opacity: 1, duration: 0.45, ease: "power3.out", stagger: 0.3 }, 0.6);
+        tl.fromTo(scope + ".js-num", { scale: 0.4 },
+          { scale: 1, duration: 0.4, ease: "back.out(2.4)", stagger: 0.3 }, 0.68);
+
+        window.__timelines["{{ID}}"] = tl;
+      })();
+    </script>
+  </div>
+</template>

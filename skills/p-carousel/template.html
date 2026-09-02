@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<!--
+  p-carousel PREMIUM TEMPLATE — the quality floor.
+  The agent: (1) overwrites the :root brand tokens from get_brand_dna,
+             (2) edits copy, (3) adds one <section class="slide" id="sN"> per slide
+                 using the component classes below, (4) renders with render.mjs,
+             (5) passes every slide through c-vision-qa before assembly.
+  Premium = depth (shadows, rounded cards), generous margins, clear type hierarchy,
+  on-brand color. A flat title-on-plain-background card is a defect.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  /* ── BRAND TOKENS — overwrite these from get_brand_dna ───────────────────── */
+  :root{
+    --accent:#F97316;          /* brand accent */
+    --accent-soft:#FFD9BF;     /* light accent for borders/wash */
+    --ink:#1A1A1A;             /* primary text */
+    --muted:#6B6256;           /* secondary text */
+    --bg:#3A352E;              /* page background (behind the card) */
+    --cream:#FBF7F0;           /* card surface */
+    --card:#FFFFFF;            /* inner card / chrome */
+    --line:#ECE5D8;            /* hairlines */
+    --shadow:0 24px 60px rgba(40,30,15,.16);
+    --w:1080px; --h:1350px;    /* 4:5 — use 1080px/1080px for 1:1 */
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--bg);font-family:'Poppins',system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+  .mono{font-family:'JetBrains Mono',monospace}
+
+  /* ── SLIDE SHELL ─────────────────────────────────────────────────────────── */
+  .slide{
+    position:relative;width:var(--w);height:var(--h);
+    background:var(--cream);overflow:hidden;
+    display:flex;flex-direction:column;padding:70px 72px 64px;
+  }
+  .slide::before{content:"";position:absolute;top:0;left:0;right:0;height:10px;background:var(--accent)}
+  .slide::after{ /* subtle dot texture for depth */
+    content:"";position:absolute;inset:0;pointer-events:none;opacity:.5;
+    background-image:radial-gradient(rgba(160,140,110,.10) 1.4px,transparent 1.4px);
+    background-size:34px 34px;
+  }
+  .slide > *{position:relative;z-index:1}
+
+  /* ── HEADER + PAGER ──────────────────────────────────────────────────────── */
+  .brandtag{display:flex;align-items:center;gap:16px;margin-bottom:6px}
+  .brandtag .dot{width:46px;height:46px;border-radius:13px;background:var(--accent);display:grid;place-items:center;color:#fff;font-weight:800;font-size:24px;box-shadow:0 6px 14px rgba(249,115,22,.4)}
+  .brandtag .name{font-weight:700;font-size:26px;color:var(--ink)}
+  .pager{margin-left:auto;font-weight:700;font-size:22px;color:var(--muted)}
+  .pager b{color:var(--ink)}
+  .topbar{display:flex;align-items:center;width:100%}
+
+  /* ── TYPE ────────────────────────────────────────────────────────────────── */
+  .kicker{font-family:'JetBrains Mono',monospace;font-size:24px;font-weight:500;color:var(--accent);text-transform:uppercase;letter-spacing:3px;margin-bottom:20px}
+  .headline{font-size:88px;line-height:1.04;font-weight:800;color:var(--ink);letter-spacing:-1.5px}
+  .headline .hl{color:var(--accent)}
+  .sub{font-size:30px;line-height:1.45;color:var(--muted);font-weight:500;margin-top:24px;max-width:84%}
+  .grow{flex:1}
+
+  /* ── COMPONENTS (give slides real layout + depth) ────────────────────────── */
+  .window{background:var(--card);border-radius:24px;box-shadow:var(--shadow);overflow:hidden;border:1px solid var(--line)}
+  .titlebar{height:62px;background:linear-gradient(#fdfdfd,#f1ede6);display:flex;align-items:center;padding:0 24px;gap:10px;border-bottom:1px solid var(--line)}
+  .lights{display:flex;gap:9px}.lights span{width:15px;height:15px;border-radius:50%}
+  .lights .r{background:#ff5f57}.lights .y{background:#febc2e}.lights .g{background:#28c840}
+  .titlebar .t{margin-left:14px;font-family:'JetBrains Mono',monospace;font-size:20px;color:var(--muted)}
+
+  .pill{background:#fff;border:1px solid var(--line);border-radius:999px;padding:14px 24px;font-size:23px;font-weight:600;box-shadow:0 4px 10px rgba(40,30,15,.06)}
+  .pills{display:flex;flex-wrap:wrap;gap:14px}
+
+  .steps{display:flex;flex-direction:column;gap:22px}
+  .step{display:flex;align-items:flex-start;gap:24px;background:#fff;border:1px solid var(--line);border-radius:20px;padding:28px 32px;box-shadow:0 6px 16px rgba(40,30,15,.06)}
+  .step .n{flex:none;width:58px;height:58px;border-radius:15px;background:var(--accent);color:#fff;font-weight:800;font-size:28px;display:grid;place-items:center;box-shadow:0 6px 14px rgba(249,115,22,.35)}
+  .step .h{font-size:30px;font-weight:700;color:var(--ink)}
+  .step .b{font-size:24px;color:var(--muted);margin-top:4px;line-height:1.4}
+
+  .callout{background:var(--ink);color:#f3eee5;border-radius:20px;padding:34px 38px;font-size:29px;line-height:1.4;font-weight:500}
+  .callout b{color:var(--accent-soft)}
+
+  .cta-key{display:inline-flex;align-items:center;gap:14px;background:var(--accent);color:#fff;font-weight:800;font-size:38px;padding:22px 40px;border-radius:18px;box-shadow:0 12px 26px rgba(249,115,22,.4)}
+  .node{display:inline-block;background:#fff;border:2px solid var(--accent-soft);border-radius:16px;padding:18px 26px;font-size:27px;font-weight:700;color:var(--ink)}
+  .node.live{background:var(--accent);color:#fff;border-color:var(--accent)}
+</style>
+</head>
+<body>
+
+<!-- ── SLIDE 1 — COVER (the strongest, brightest beat) ───────────────────────── -->
+<section class="slide" id="s1">
+  <div class="topbar">
+    <div class="brandtag"><div class="dot">B</div><div class="name">Brand Name</div></div>
+    <div class="pager"><b>01</b> / 05</div>
+  </div>
+  <div class="grow"></div>
+  <div class="kicker">the hook · one line</div>
+  <h1 class="headline">The big <span class="hl">promise</span> headline goes here</h1>
+  <p class="sub">One supporting sentence that earns the swipe. Keep it short and specific.</p>
+  <div class="grow"></div>
+  <div class="pills"><div class="pill">point one</div><div class="pill">point two</div><div class="pill">point three</div></div>
+</section>
+
+<!-- ── SLIDE 2 — CONTENT (steps example — swap for stat / diagram / window mock) ─ -->
+<section class="slide" id="s2">
+  <div class="topbar">
+    <div class="brandtag"><div class="dot">B</div><div class="name">Brand Name</div></div>
+    <div class="pager"><b>02</b> / 05</div>
+  </div>
+  <div class="kicker">section label</div>
+  <h2 class="headline" style="font-size:62px;margin-bottom:38px">A clear insight, one per slide</h2>
+  <div class="steps">
+    <div class="step"><div class="n">1</div><div><div class="h">First move</div><div class="b">What to do and why it matters, in plain language.</div></div></div>
+    <div class="step"><div class="n">2</div><div><div class="h">Second move</div><div class="b">Concrete, not generic — the reader should be able to act on it.</div></div></div>
+    <div class="step"><div class="n">3</div><div><div class="h">Third move</div><div class="b">End the slide on the payoff.</div></div></div>
+  </div>
+  <div class="grow"></div>
+  <div class="callout">Pull-quote or <b>key takeaway</b> for this slide.</div>
+</section>
+
+<!-- ── SLIDE N — CTA (offer + handle/URL — never black/blank) ─────────────────── -->
+<section class="slide" id="s5">
+  <div class="topbar">
+    <div class="brandtag"><div class="dot">B</div><div class="name">Brand Name</div></div>
+    <div class="pager"><b>05</b> / 05</div>
+  </div>
+  <div class="grow"></div>
+  <div class="kicker">your turn</div>
+  <h2 class="headline" style="font-size:72px">Save this &amp; <span class="hl">follow</span> for more</h2>
+  <p class="sub">A one-line offer or next step.</p>
+  <div style="margin-top:40px"><span class="cta-key">@yourhandle &rarr;</span></div>
+  <div class="grow"></div>
+</section>
+
+</body>
+</html>

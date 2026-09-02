@@ -1,0 +1,122 @@
+<!doctype html>
+<!--
+  p-reels-spotlight — ROOT composition shell (premium edit).
+
+  This file is FILLED by the assembler (Step 5 of SKILL.md), never authored at
+  runtime. It MUST stay a full HTML document (doctype + html/head/body) — a
+  bare composition div is a fragment the bundler cannot inject runtime
+  scripts into ("Unexpected token" errors at validate/render).
+
+  The speaker bed plays full-frame on track 0; opaque takeover
+  sub-compositions cover the picture during their windows on tracks 1+i
+  (one track each).
+
+  BUG FIX (bake-off 2026-06-12): caption overlay is NOT included here.
+  Step 5 renders graphics takeovers only. Step 6b overlays b-roll AFTER the
+  HyperFrames render. Step 7 (c-reel-premium) is the SOLE caption burn pass —
+  it runs on the output of Step 6b (which already has b-roll composited).
+  This ensures captions appear ON TOP of b-roll, not burned under it.
+  The CAPTION_DIV placeholder is passed as an empty string by Step 5.
+  (See SKILL.md Step 5 + Step 7 for the enforced step order.)
+
+  Placeholders:
+    DURATION      — full reel duration in seconds (= bed duration)
+    VIDEO_SRC     — relative path to the normalized speaker bed (base.mp4)
+    BG            — brand canvas color (hex)
+    TAKEOVER_DIVS — one sub-composition loader div per takeover window,
+                    generated from plan.json (see assembler). Each takeover
+                    gets its OWN track index (1+i) and explicit
+                    data-width/data-height.
+    CAPTION_DIV   — ALWAYS pass empty string "" from the assembler (Step 5).
+                    Caption burn is delegated to c-reel-premium (Step 7).
+                    (Keep this comment free of literal angle-bracket tags and
+                    of double-brace tokens — the linter's tag scanner does not
+                    skip comments, and the assembler fills tokens anywhere.)
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1080, height=1920" />
+    <script src="gsap.min.js"></script>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+        background: #000;
+      }
+      #root {
+        position: relative;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+        background: {{BG}};
+      }
+      #root > video {
+        position: absolute;
+        inset: 0;
+        width: 1080px;
+        height: 1920px;
+        object-fit: cover;
+        z-index: 0;
+      }
+      #root .takeover-slot {
+        position: absolute;
+        inset: 0;
+        z-index: 50;
+      }
+      #root .caption-slot {
+        position: absolute;
+        inset: 0;
+        z-index: 100;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="premium-reel"
+      data-start="0"
+      data-duration="{{DURATION}}"
+      data-width="1080"
+      data-height="1920"
+    >
+      <!-- Track 0 — the speaker bed, full-frame, full-length. muted: audio is muxed later. -->
+      <video
+        id="bed"
+        data-start="0"
+        data-duration="{{DURATION}}"
+        data-track-index="0"
+        src="{{VIDEO_SRC}}"
+        muted
+        playsinline
+      ></video>
+
+      {{TAKEOVER_DIVS}}
+
+      {{CAPTION_DIV}}
+    </div>
+    <!--
+      CAPTION_DIV is intentionally empty ("") when assembled by Step 5.
+      Captions are burned by c-reel-premium in Step 7, which runs AFTER the
+      b-roll overlay in Step 6b. This guarantees captions appear on top of
+      b-roll frames (not hidden underneath them). Do NOT add a caption
+      sub-composition here — doing so causes double-burn and invisible
+      captions during b-roll windows.
+    -->
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      // Root carries no tweens of its own — the framework auto-nests the
+      // takeover + caption sub-timelines.
+      window.__timelines["premium-reel"] = gsap.timeline({ paused: true });
+    </script>
+  </body>
+</html>

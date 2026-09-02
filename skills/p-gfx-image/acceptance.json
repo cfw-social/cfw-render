@@ -1,0 +1,20 @@
+{
+  "recipe": "p-gfx-image",
+  "spec_version": 1,
+  "_note": "Gate runs per produced image (one file at a time). Default canvas is 1080x1080 (square post); portrait variant 1080x1920 may override via brand-overrides/<slug>/acceptance.json.",
+  "checks": [
+    { "id": "canvas_1080x1080",   "kind": "geometry",   "type": "dims", "w": 1080, "h": 1080 },
+    { "id": "frame_not_black",    "kind": "geometry",   "type": "luma_floor",
+      "crop": "1080:1080:0:0", "floor": 16, "samples": [0.5] },
+    { "id": "no_text_clipping",   "kind": "perceptual", "type": "perceptual",
+      "desc": "(a) No text is clipped, cut at an edge, or overflowing its container — every headline, body line, eyebrow, and label is fully visible." },
+    { "id": "legible_contrast",   "kind": "perceptual", "type": "perceptual",
+      "desc": "(b) Text-to-background contrast is strong and legible at thumbnail size — no light-grey-on-dark, no same-hue collisions, no color-on-busy-image failures." },
+    { "id": "on_brand_palette",   "kind": "perceptual", "type": "perceptual",
+      "desc": "(c) Palette matches the brand navy/green scheme — not generic stock-template colors (#3b82f6, #333, plain white/grey)." },
+    { "id": "premium_hierarchy",  "kind": "perceptual", "type": "perceptual",
+      "desc": "(d) Clear premium visual hierarchy — one dominant focal element (headline, stat, or illustration), supporting copy clearly subordinate; depth present (shadows, elevation, rounded cards, deliberate spacing) — not a bare title on a plain background." },
+    { "id": "consistent_margins", "kind": "perceptual", "type": "perceptual",
+      "desc": "(e) Consistent, generous margins and padding — content is not crammed to an edge and not floating in dead space; layout is intentionally aligned to a shared grid." }
+  ]
+}

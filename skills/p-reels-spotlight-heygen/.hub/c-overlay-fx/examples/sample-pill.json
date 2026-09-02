@@ -1,0 +1,9 @@
+{
+  "type": "pill",
+  "text": "Watch now →",
+  "brand": {
+    "accent": "#6366F1",
+    "bg": "rgba(255,255,255,0.93)",
+    "fg": "#1a1a2e"
+  }
+}

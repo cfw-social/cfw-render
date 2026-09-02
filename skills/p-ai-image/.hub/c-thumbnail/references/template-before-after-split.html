@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<!--
+  c-thumbnail · before/after split with green-screen avatar cutout (1280x720)
+  See avatar-greenscreen-split.md. SWAP per use:
+    - .num.b / .num.a            -> the two numbers (e.g. 3  /  45)
+    - .cap.b / .cap.a            -> caption under each number (e.g. POSTS / MONTH)
+    - .tag.b / .tag.a            -> BEFORE / AFTER (rename if not a time comparison)
+    - .banner .pre / .hi         -> audience / payoff line (e.g. FOR FOOD | BUSINESSES)
+    - img.avatar src             -> your trimmed rembg cutout (avatar-trim.png)
+    - .brand                     -> brand wordmark (or delete)
+    - JS loop count (45)         -> number of squares in the "after" grid
+  Render: Chrome --headless=new --window-size=1280,720 --virtual-time-budget=5000 --screenshot
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Anton&family=Oswald:wght@500;600;700&family=Inter:wght@600;700;800&display=swap');
+
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:1280px;height:720px;overflow:hidden}
+.stage{position:relative;width:1280px;height:720px;overflow:hidden;background:#0F172A;
+  font-family:'Inter','Helvetica Neue',Arial,sans-serif}
+
+.before{position:absolute;inset:0;width:54%;
+  background:linear-gradient(135deg,#161d2e 0%,#0b1120 100%);
+  clip-path:polygon(0 0, 100% 0, 86% 100%, 0 100%)}
+.before::after{content:"";position:absolute;inset:0;background:rgba(2,6,16,.35)}
+
+.after{position:absolute;inset:0;left:auto;right:0;width:54%;
+  background:radial-gradient(120% 90% at 100% 30%, rgba(124,92,252,.55) 0%, rgba(124,92,252,0) 60%),
+             linear-gradient(135deg,#5b34e8 0%,#2a1466 100%);
+  clip-path:polygon(14% 0, 100% 0, 100% 100%, 0 100%)}
+.after::before{content:"";position:absolute;inset:0;opacity:.18;
+  background-image:linear-gradient(rgba(255,255,255,.5) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(255,255,255,.5) 1px,transparent 1px);
+  background-size:46px 46px;
+  -webkit-mask-image:radial-gradient(80% 80% at 70% 40%,#000 30%,transparent 75%);
+          mask-image:radial-gradient(80% 80% at 70% 40%,#000 30%,transparent 75%)}
+
+.seam{position:absolute;top:-40px;bottom:-40px;left:50%;width:8px;
+  transform:translateX(-50%) rotate(7deg);
+  background:linear-gradient(#a78bfa,#7C5CFC);box-shadow:0 0 40px 10px rgba(124,92,252,.7);
+  border-radius:8px;z-index:3}
+
+.tag{position:absolute;top:46px;font-family:'Oswald',sans-serif;font-weight:700;
+  letter-spacing:.18em;font-size:30px;padding:8px 22px;border-radius:999px;z-index:6}
+.tag.b{left:62px;color:#cbd5e1;border:2px solid rgba(148,163,184,.55);background:rgba(15,23,42,.4)}
+.tag.a{right:62px;color:#fff;background:rgba(255,255,255,.16);border:2px solid rgba(255,255,255,.5)}
+
+.numwrap{position:absolute;top:170px;text-align:center;z-index:6;width:300px}
+.numwrap.b{left:34px}.numwrap.a{right:30px}
+.num{font-family:'Anton','Arial Black',sans-serif;line-height:.82;font-size:280px}
+.num.b{color:#5b6b85;text-shadow:0 6px 0 rgba(0,0,0,.35)}
+.num.a{color:#fff;text-shadow:0 0 38px rgba(124,92,252,.9),0 8px 0 #1c0f47}
+.cap{font-family:'Oswald',sans-serif;font-weight:600;letter-spacing:.16em;font-size:30px;margin-top:4px}
+.cap.b{color:#7c8aa3}.cap.a{color:#e7deff}
+
+.dots{display:flex;gap:9px;justify-content:center;margin-top:22px}
+.dots span{width:24px;height:24px;border-radius:6px}
+.dots.b span{background:#445072}
+.dots.b span.empty{background:transparent;border:2px solid #2c3650}
+.grid45{display:grid;grid-template-columns:repeat(9,1fr);gap:6px;width:230px;margin:20px auto 0}
+.grid45 span{height:18px;border-radius:4px;background:#c7b8ff;box-shadow:0 0 8px rgba(199,184,255,.6)}
+
+.trend{position:absolute;font-family:'Anton',sans-serif;font-size:54px;z-index:6}
+.trend.down{left:250px;top:300px;color:#f87171}
+.trend.up{right:250px;top:235px;color:#4ade80}
+
+.avatar-glow{position:absolute;left:50%;bottom:-30px;transform:translateX(-50%);
+  width:560px;height:560px;border-radius:50%;
+  background:radial-gradient(circle,rgba(124,92,252,.65) 0%,rgba(124,92,252,0) 65%);
+  z-index:4;filter:blur(4px)}
+.avatar{position:absolute;left:50%;bottom:0;transform:translateX(-50%);height:680px;z-index:5;
+  filter:drop-shadow(0 18px 26px rgba(0,0,0,.55));object-fit:contain;object-position:bottom}
+
+.banner{position:absolute;left:50%;bottom:30px;transform:translateX(-50%);z-index:8;display:flex}
+.banner .pre,.banner .hi{font-family:'Anton','Arial Black',sans-serif;font-size:62px;
+  padding:10px 22px;text-transform:uppercase}
+.banner .pre{color:#fff;background:#0b1120;border-radius:14px 0 0 14px;border:3px solid #7C5CFC;border-right:none}
+.banner .hi{color:#0b1120;background:#7C5CFC;border-radius:0 14px 14px 0;border:3px solid #7C5CFC;padding:10px 24px}
+
+.brand{position:absolute;left:50%;top:30px;transform:translateX(-50%);z-index:9;
+  font-family:'Oswald',sans-serif;font-weight:700;letter-spacing:.34em;font-size:20px;
+  color:#cbd5e1;text-transform:uppercase;opacity:.9}
+.brand b{color:#a78bfa}
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="before"></div>
+  <div class="after"></div>
+  <div class="seam"></div>
+
+  <div class="brand">Content&nbsp;Flywheel&nbsp;<b>Social</b></div>
+
+  <div class="tag b">BEFORE</div>
+  <div class="numwrap b">
+    <div class="num b">3</div>
+    <div class="cap b">POSTS / MONTH</div>
+    <div class="dots b"><span></span><span></span><span></span><span class="empty"></span><span class="empty"></span></div>
+  </div>
+  <div class="trend down">↓</div>
+
+  <div class="tag a">AFTER</div>
+  <div class="numwrap a">
+    <div class="num a">45</div>
+    <div class="cap a">POSTS / MONTH</div>
+    <div class="grid45" id="g45"></div>
+  </div>
+  <div class="trend up">↑</div>
+
+  <div class="avatar-glow"></div>
+  <img class="avatar" src="avatar-trim.png" alt="host"/>
+
+  <div class="banner"><span class="pre">FOR&nbsp;FOOD</span><span class="hi">BUSINESSES</span></div>
+</div>
+<script>
+  const g=document.getElementById('g45');
+  for(let i=0;i<45;i++){g.appendChild(document.createElement('span'));}
+</script>
+</body>
+</html>

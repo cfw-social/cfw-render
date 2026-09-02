@@ -1,0 +1,20 @@
+{
+  "recipe": "p-ai-image",
+  "spec_version": 1,
+  "_note": "Gate runs per produced image (one file at a time). Canonical canvas is 1080x1080 square; portrait or landscape brand variants may override via brand-overrides/<slug>/acceptance.json.",
+  "checks": [
+    { "id": "canvas_1080x1080",    "kind": "geometry",   "type": "dims", "w": 1080, "h": 1080 },
+    { "id": "frame_not_black",     "kind": "geometry",   "type": "luma_floor",
+      "crop": "1080:1080:0:0", "floor": 16, "samples": [0.5] },
+    { "id": "subject_rendered",    "kind": "perceptual", "type": "perceptual",
+      "desc": "(a) The subject described by the prompt is clearly present and correctly rendered — no missing elements, no generation failures (distorted limbs, incoherent content, broken anatomy)." },
+    { "id": "no_artifacts",        "kind": "perceptual", "type": "perceptual",
+      "desc": "(b) No visible AI artifacts — no blurry patches, visible watermarks, corrupted regions, or obvious seams." },
+    { "id": "legible_text",        "kind": "perceptual", "type": "perceptual",
+      "desc": "(c) Any text present in the image is legible and correctly spelled — no garbled characters, no Lorem ipsum, no unintended language." },
+    { "id": "palette_premium",     "kind": "perceptual", "type": "perceptual",
+      "desc": "(d) Color palette reads as premium and intentional — not washed-out, oversaturated, or off-brand." },
+    { "id": "composition_quality", "kind": "perceptual", "type": "perceptual",
+      "desc": "(e) Composition is strong — clear focal point, well-framed subject with appropriate headroom, not cluttered or awkwardly cropped at edges." }
+  ]
+}

@@ -1,0 +1,12 @@
+[
+  {
+    "url": "https://media.cfw.social/skill-examples/p-reels-spotlight/spotlight-diagram.png",
+    "kind": "diagram",
+    "caption": "p-reels-spotlight pipeline — continuous speaker bed, graphics + optional b-roll takeovers, kinetic captions, cover freeze prepend"
+  },
+  {
+    "url": "https://media.cfw.social/skill-examples/p-reels-fmt3/avatar-animation-reel-v4.mp4",
+    "kind": "video",
+    "caption": "Baseline: p-reels-fmt3 v4 sample (graphics-only, no b-roll) — identical output path when broll[] is omitted. 37s, 9:16."
+  }
+]

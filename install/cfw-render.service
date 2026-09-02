@@ -1,0 +1,23 @@
+# cfw-render.service — systemd oneshot unit (Linux — hst).
+# Placeholders {{PREFIX}}, {{ENV_FILE}}, {{USER}} substituted by
+# install/install.sh. NOT installed by this task (AB-RNDR-WORKER is
+# code-authoring only) — a human installs it later per docs/deploy.md, as a
+# SEPARATE service pool decoupled from the cfw-gw@<slug> gateway units.
+[Unit]
+Description=cfw-render drainer (one tick)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User={{USER}}
+EnvironmentFile={{ENV_FILE}}
+ExecStart={{PREFIX}}/bin/cfw-render.sh --once
+TimeoutStartSec=2100
+
+# Hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths={{PREFIX}} %h/.cfw-render %h/cfw-render-scratch
+ProtectHome=read-only

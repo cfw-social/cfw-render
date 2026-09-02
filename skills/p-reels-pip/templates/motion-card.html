@@ -1,0 +1,166 @@
+<template id="motion-card">
+<!--
+  p-reels-pip motion-card template
+  9:16 (1080×1920) — PIP-SAFE: all content stays above --pip-band (680px from bottom).
+  Placeholders filled by p-reels-pip Step 6 before standalone render.
+
+  Gotchas (do NOT re-derive):
+  - This template lives inside <template> as a source fragment. Step 6 strips the
+    <template> wrapper and wraps the content in a full HTML doc for standalone render.
+    The caller also adds data-composition-id="root" data-start="0" data-duration="N"
+    to the .mc-root div before writing index.html. See Step 6 in SKILL.md.
+  - --pip-band: 680px reserves the bottom zone. Content ends at (1920 - 680) = 1240px.
+  - ACCENT must be a 6-digit hex (no leading #) — template prepends '#'.
+  - TITLE_HTML may carry <span class="accent">WORD</span> — it is NOT html-escaped.
+  - EYEBROW and GHOST are html.escape()'d by the caller.
+  - window.getComputedStyle(el) throws in sandbox — use bare getComputedStyle(el).
+  - GSAP repeat is always finite.
+  - Never Math.random() — use seeded PRNG if noise is needed.
+  - HyperFrames timeline registration: window.__timelines["root"] = tl (dict, NOT .push()).
+    The .push() array form is the OLD API and fails npx hyperframes lint.
+-->
+<style>
+  :root {
+    --bg:       #{{BG}};
+    --accent:   #{{ACCENT}};
+    --fg:       #{{FG}};
+    --pip-band: 680px;    /* reserved bottom zone — nothing enters this area */
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  .mc-root {
+    position: absolute;
+    inset: 0;
+    width: 1080px;
+    height: 1920px;
+    background: var(--bg);
+    overflow: hidden;
+    font-family: Inter, sans-serif;
+  }
+
+  /* Ambient grid */
+  .mc-grid {
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+    background-size: 120px 120px;
+    pointer-events: none;
+  }
+
+  /* Glow bleed from bottom-left */
+  .mc-glow {
+    position: absolute;
+    bottom: calc(var(--pip-band) + 40px);  /* sits just above the PIP band */
+    left: -80px;
+    width: 560px;
+    height: 560px;
+    background: radial-gradient(circle, color-mix(in srgb, var(--accent) 18%, transparent) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  /* Content zone: y=0 → (1920 - pip-band) = y=1240 */
+  .mc-content {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: var(--pip-band);  /* hard stop above PIP zone */
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 140px 80px 60px;
+    gap: 32px;
+    overflow: hidden;
+  }
+
+  .mc-eyebrow {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    opacity: 0;
+    transform: translateY(12px);
+  }
+
+  .mc-ghost {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-family: Oswald, sans-serif;
+    font-size: 320px;
+    font-weight: 900;
+    text-transform: uppercase;
+    color: var(--fg);
+    opacity: 0.04;
+    letter-spacing: -0.04em;
+    white-space: nowrap;
+    pointer-events: none;
+    max-width: 1080px;
+    overflow: hidden;
+  }
+
+  .mc-title {
+    font-family: Oswald, sans-serif;
+    font-size: 96px;
+    font-weight: 900;
+    line-height: 1.0;
+    text-transform: uppercase;
+    color: var(--fg);
+    opacity: 0;
+    transform: translateY(24px);
+  }
+
+  .mc-title .accent {
+    color: var(--accent);
+  }
+
+  /* Accent rule under the title */
+  .mc-rule {
+    width: 0;
+    height: 4px;
+    background: var(--accent);
+    border-radius: 2px;
+  }
+</style>
+
+<div class="mc-root">
+  <div class="mc-grid"></div>
+  <div class="mc-glow"></div>
+  <div class="mc-ghost">{{GHOST}}</div>
+  <div class="mc-content">
+    <div class="mc-eyebrow" id="mc-eyebrow">{{EYEBROW}}</div>
+    <div class="mc-title" id="mc-title">{{TITLE_HTML}}</div>
+    <div class="mc-rule" id="mc-rule"></div>
+  </div>
+</div>
+
+<script src="gsap.min.js"></script>
+<script>
+(function() {
+  var gsap = window.__gsap || window.gsap;
+  if (!gsap) { console.error('[motion-card] gsap not found'); return; }
+
+  var dur = parseFloat("{{DURATION}}") || 4.0;
+  var tl = gsap.timeline({ paused: true });
+
+  tl
+    .to("#mc-eyebrow", { opacity: 1, y: 0, duration: 0.45, ease: "power2.out" }, 0.1)
+    .to("#mc-title",   { opacity: 1, y: 0, duration: 0.55, ease: "power3.out" }, 0.25)
+    .to("#mc-rule",    { width: 140, duration: 0.4, ease: "power2.out" },         0.55)
+    .to(".mc-glow",    { opacity: 0.8, duration: 0.6, ease: "power1.out" },       0.0);
+
+  // BUG FIX: use dict form window.__timelines["root"] = tl, NOT the old .push() array form.
+  // The .push({tl, duration}) API is retired and fails npx hyperframes lint.
+  // The composition-id "root" must match data-composition-id on the root div
+  // (Step 6 adds data-composition-id="root" when wrapping in the standalone HTML doc).
+  if (!window.__timelines) window.__timelines = {};
+  window.__timelines["root"] = tl;
+})();
+</script>
+</template>

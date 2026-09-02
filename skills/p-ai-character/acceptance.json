@@ -1,0 +1,39 @@
+{
+  "recipe": "p-ai-character",
+  "spec_version": 1,
+  "_note": "Strict, recipe-owned spec read by c-eval-runner. A brand may layer brand-overrides/<slug>/acceptance.json to TIGHTEN thresholds (same id wins; new ids appended). See c-eval-runner/SKILL.md for the spec format.",
+  "checks": [
+    { "id": "qa_gate",          "kind": "mechanical", "type": "qa_gate", "format": "reel",
+      "desc": "Mechanical gate (loudness ≈ -14 LUFS, frame-0 brightness, resolution 1080×1920, fps, audio present) delegated to c-shorts-qa-gate." },
+    { "id": "duration_window",  "kind": "mechanical", "type": "duration_window", "min_s": 27, "max_s": 63,
+      "desc": "AI character short: 30–60s nominal; 27–63s allows ±3s for crossfade trim and encode rounding." },
+    { "id": "canvas_1080x1920", "kind": "geometry",   "type": "dims", "w": 1080, "h": 1920,
+      "desc": "Exact 9:16 portrait canvas — scenes must be scaled to 1080×1920 before assembly." },
+    { "id": "scenes_not_dark",  "kind": "geometry",   "type": "luma_floor",
+      "crop": "1080:960:0:480", "floor": 16, "samples": [0.05, 0.20, 0.40, 0.60, 0.80, 0.95],
+      "desc": "Center zone (middle 960px of height) must have YAVG ≥ 16 at every sample — ensures AI-generated scenes have visible content and none of the animated clips failed to render." },
+
+    { "id": "character_consistency", "kind": "perceptual", "type": "perceptual",
+      "desc": "(a) Character maintains all 6 locked attributes across every scene — face shape, hair, eyes, clothing, distinctive feature, and color palette do not drift between scenes. The 6-attribute lock audit must be satisfied from Step 0." },
+    { "id": "no_diverged_frames", "kind": "perceptual", "type": "perceptual",
+      "desc": "(b) No diverged character frames — the character looks identical to char-ref across all scenes; any frame where face, outfit, or distinctive feature has changed is a defect that must be regenerated before delivery." },
+    { "id": "scene_crossfades_smooth", "kind": "perceptual", "type": "perceptual",
+      "desc": "(c) Scene crossfades are smooth and natural — no jump cuts or abrupt hard-cuts between animated clips; the crossfade duration parameter is visibly present at each scene boundary." },
+    { "id": "character_fills_frame", "kind": "perceptual", "type": "perceptual",
+      "desc": "(d) The character occupies a substantial portion of each scene frame — not a tiny figure lost in the environment; full body or upper-body close-up fills the composition." },
+    { "id": "cover_is_moneyshot", "kind": "perceptual", "type": "perceptual",
+      "desc": "(e) Frame 0 (cover) shows the character clearly in a compelling composition — not black, not mid-crossfade, not a blurred or partially-loaded frame." }
+  ],
+  "steps": {
+    "composite": {
+      "artifact": "video/compositing/composite-v1.mp4",
+      "checks": [
+        { "id": "composite_dims",      "kind": "geometry", "type": "dims", "w": 1080, "h": 1920,
+          "desc": "Assembled composite must be full portrait canvas before delivery." },
+        { "id": "composite_not_dark",  "kind": "geometry", "type": "luma_floor",
+          "crop": "1080:960:0:480", "floor": 16, "samples": [0.1, 0.5, 0.9],
+          "desc": "Center zone of assembled composite must have visible content at beginning, middle, and end — catches a failed scene clip that produced a black segment." }
+      ]
+    }
+  }
+}

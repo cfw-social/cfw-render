@@ -1,0 +1,17 @@
+{
+  "name": "c-overlay-fx",
+  "version": "1.0.0",
+  "description": "Animated transparent overlay graphics for HyperFrames reel cores",
+  "private": true,
+  "scripts": {
+    "check": "node --check render-overlay.cjs && node --check illustrations.cjs",
+    "sample": "node render-overlay.cjs examples/sample-pill.json /tmp/c-overlay-fx-sample/"
+  },
+  "dependencies": {
+    "canvas": "^3.2.3",
+    "konva": "^9.3.6"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

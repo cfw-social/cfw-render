@@ -1,0 +1,48 @@
+{
+  "recipe": "p-reels-faceless",
+  "spec_version": 1,
+  "_note": "Strict, recipe-owned spec read by c-eval-runner. A brand may layer brand-overrides/<slug>/acceptance.json to TIGHTEN thresholds (same id wins; new ids appended). See cfw-skills-pack/docs/skills-audit.md §4.",
+  "checks": [
+    { "id": "qa_gate",          "kind": "mechanical", "type": "qa_gate", "format": "reel" },
+    { "id": "duration_window",  "kind": "mechanical", "type": "duration_window", "min_s": 30, "max_s": 90 },
+    { "id": "canvas_1080x1920", "kind": "geometry",   "type": "dims", "w": 1080, "h": 1920 },
+    { "id": "frame_not_black",  "kind": "geometry",   "type": "luma_floor",
+      "crop": "1080:1920:0:0", "floor": 16, "samples": [0.05, 0.20, 0.40, 0.60, 0.80, 0.95] },
+
+    { "id": "no_overlapping_text", "kind": "perceptual", "type": "perceptual",
+      "desc": "(a) No overlapping or jumbled text — one beat's text visible at a time, beats are strictly sequential." },
+    { "id": "beat_content_correct", "kind": "perceptual", "type": "perceptual",
+      "desc": "(b) Graphics beats show a brand motion graphic (not a photo or blank rectangle); b-roll beats show real footage scaled-to-cover with no black bars." },
+    { "id": "text_legible_mobile", "kind": "perceptual", "type": "perceptual",
+      "desc": "(c) Text is legible at mobile size — 60px+ headlines, AA contrast, no tiny or illegible copy." },
+    { "id": "brand_colors_correct", "kind": "perceptual", "type": "perceptual",
+      "desc": "(d) Brand colors are correct per the Visual Identity Gate — not defaulted to white-on-black or any non-brand palette." },
+    { "id": "no_tofu_boxes", "kind": "perceptual", "type": "perceptual",
+      "desc": "(e) No □ tofu boxes anywhere — all icons are inline SVG or CSS, zero unicode glyphs that the headless renderer cannot resolve." },
+    { "id": "ghost_glyph_thematic", "kind": "perceptual", "type": "perceptual",
+      "desc": "(f) Ghost glyph on every graphics beat is a thematic number or single letter (beat index, listicle total, or deliberate initial) — never a placeholder word like 'CTA', 'TITLE', or 'HEADER'." },
+    { "id": "foreground_hero_present", "kind": "perceptual", "type": "perceptual",
+      "desc": "(g) FOREGROUND HERO is present and dominant on every graphics beat — bright headline + animated diagram/chart/checklist visible, not a ghost-glyph-only frame." },
+    { "id": "brand_outro_at_end", "kind": "perceptual", "type": "perceptual",
+      "desc": "(h) Brand outro appears at approximately the final 3% of the reel (brand name + CTA, not a content beat)." },
+    { "id": "cover_is_moneyshot", "kind": "perceptual", "type": "perceptual",
+      "desc": "(i) Cover freeze at t≈0 shows the money-shot — not a black frame or hook-animation blank." }
+  ],
+  "steps": {
+    "voicebed": {
+      "artifact": "vo-normed.aac",
+      "checks": [
+        { "id": "vo_loudness",   "kind": "mechanical", "type": "loudness",    "target": -16, "tol": 1.5 },
+        { "id": "vo_has_speech", "kind": "mechanical", "type": "mean_volume", "min_db": -32, "max_db": -8 }
+      ]
+    },
+    "assembled": {
+      "artifact": "body.mp4",
+      "checks": [
+        { "id": "body_dims",      "kind": "geometry", "type": "dims",       "w": 1080, "h": 1920 },
+        { "id": "body_not_black", "kind": "geometry", "type": "luma_floor",
+          "crop": "1080:1920:0:0", "floor": 16, "samples": [0.1, 0.3, 0.5, 0.7, 0.9] }
+      ]
+    }
+  }
+}

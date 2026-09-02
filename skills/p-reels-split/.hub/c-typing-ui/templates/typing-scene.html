@@ -1,0 +1,349 @@
+<!--
+  c-typing-ui — TYPING SCENE template (sub-composition)
+
+  Usage:
+    - As a sub-composition: copy this filled file alongside the root index.html and reference via
+      data-composition-src="typing-scene.html". The <template> wrapper is required.
+    - For standalone render: strip the <template> wrapper and wrap in a full <!DOCTYPE html> document.
+
+  Placeholders (substitute ALL before use):
+    {{DURATION}}      — clip length in seconds (number, e.g. 9.0)
+    {{LABEL}}         — title bar label text (plain text, e.g. "claude.ai")
+    {{PROMPT}}        — the prompt text to type, HTML-escaped, with &#10; for newlines
+    {{TYPING_SPEED}}  — typing speed multiplier (float, e.g. 1.0; 0.5=slow, 2.0=fast)
+    {{ACCENT}}        — 6-digit hex accent colour WITHOUT # (e.g. F97316)
+    {{VARIANT}}       — "full" (centred) or "pip-safe" (content in top 55% only)
+    {{BOTTOM_TAG}}    — optional mono tag below the card (empty string to hide)
+
+  Design reference: MGG day13 Remotion ScenePromptReveal + SceneClaudeUiIdle.
+-->
+<template id="typing-scene-template">
+<div
+  data-composition-id="typing-scene"
+  data-start="0"
+  data-duration="{{DURATION}}"
+  data-width="1080"
+  data-height="1920"
+>
+  <style>
+    [data-composition-id="typing-scene"] {
+      --bg-navy:       #0F172A;
+      --bg-card:       #0B1220;
+      --bg-card-hdr:   #141A2A;
+      --bg-card-bdr:   #334155;
+      --bg-bubble:     #121A2C;
+      --accent:        #{{ACCENT}};
+      --violet:        #8B5CF6;
+      --text-white:    #F8FAFC;
+      --text-muted:    #94A3B8;
+      --text-dim:      #64748B;
+
+      position: relative;
+      width: 1080px;
+      height: 1920px;
+      overflow: hidden;
+      background: var(--bg-navy);
+      font-family: 'Inter', system-ui, sans-serif;
+    }
+
+    /* Radial glow behind the card */
+    [data-composition-id="typing-scene"] .ts-glow {
+      position: absolute;
+      left: 50%; top: 42%;
+      width: 1200px; height: 1200px;
+      transform: translate(-50%, -50%);
+      background: radial-gradient(
+        circle,
+        color-mix(in srgb, var(--accent) 14%, transparent) 0%,
+        transparent 60%
+      );
+      pointer-events: none;
+      will-change: opacity;
+    }
+
+    /* Instruction label (above the card) */
+    [data-composition-id="typing-scene"] .ts-label {
+      position: absolute;
+      top: 100px;
+      width: 100%;
+      text-align: center;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      will-change: transform, opacity;
+    }
+
+    /* The main claude-style card */
+    [data-composition-id="typing-scene"] .ts-card {
+      position: absolute;
+      top: 200px;
+      left: 50px;
+      right: 50px;
+      background: var(--bg-card);
+      border: 2px solid var(--bg-card-bdr);
+      border-radius: 28px;
+      overflow: hidden;
+      box-shadow: 0 24px 80px rgba(0,0,0,0.6);
+      will-change: transform, opacity;
+    }
+
+    /* PIP-safe variant — move card up so all content is in top 54% of frame */
+    [data-composition-id="typing-scene"].ts-pip-safe .ts-card {
+      top: 130px;
+    }
+    [data-composition-id="typing-scene"].ts-pip-safe .ts-label {
+      top: 60px;
+      font-size: 24px;
+    }
+    [data-composition-id="typing-scene"].ts-pip-safe .ts-bottom-tag {
+      bottom: auto;
+      top: 980px; /* still above PIP zone at 1040 */
+    }
+
+    /* Title bar: [logo] Claude … new chat */
+    [data-composition-id="typing-scene"] .ts-titlebar {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 20px 24px;
+      background: var(--bg-card-hdr);
+      border-bottom: 1px solid var(--bg-card-bdr);
+    }
+    [data-composition-id="typing-scene"] .ts-logo {
+      width: 40px; height: 40px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--violet), var(--accent));
+      display: flex; align-items: center; justify-content: center;
+      color: var(--text-white);
+      font-size: 22px; font-weight: 900;
+      font-family: 'Inter', sans-serif;
+      flex-shrink: 0;
+    }
+    [data-composition-id="typing-scene"] .ts-app-name {
+      color: var(--text-white);
+      font-size: 28px; font-weight: 800;
+      letter-spacing: -0.5px;
+      font-family: 'Inter', sans-serif;
+    }
+    [data-composition-id="typing-scene"] .ts-new-chat {
+      margin-left: auto;
+      color: var(--text-muted);
+      font-size: 20px; font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* User bubble header */
+    [data-composition-id="typing-scene"] .ts-body {
+      padding: 28px 28px 34px;
+    }
+    [data-composition-id="typing-scene"] .ts-user-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    [data-composition-id="typing-scene"] .ts-avatar {
+      width: 44px; height: 44px;
+      border-radius: 50%;
+      background: #06B6D4;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px; font-weight: 900;
+      color: var(--bg-navy);
+      font-family: 'Inter', sans-serif;
+      flex-shrink: 0;
+    }
+    [data-composition-id="typing-scene"] .ts-username {
+      color: var(--text-muted);
+      font-size: 22px; font-weight: 700;
+      font-family: 'Inter', sans-serif;
+    }
+
+    /* Prompt bubble */
+    [data-composition-id="typing-scene"] .ts-bubble {
+      padding: 28px 30px;
+      background: var(--bg-bubble);
+      border: 1px solid var(--bg-card-bdr);
+      border-radius: 22px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 30px;
+      color: var(--text-white);
+      line-height: 1.45;
+      letter-spacing: -0.5px;
+      min-height: 440px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    /* PIP-safe: smaller font so more text fits in the top half */
+    [data-composition-id="typing-scene"].ts-pip-safe .ts-bubble {
+      font-size: 26px;
+      min-height: 300px;
+    }
+
+    /* Cursor */
+    [data-composition-id="typing-scene"] .ts-cursor {
+      display: inline-block;
+      color: var(--violet);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 32px;
+      will-change: opacity;
+    }
+
+    /* Bottom tag */
+    [data-composition-id="typing-scene"] .ts-bottom-tag {
+      position: absolute;
+      bottom: 80px;
+      width: 100%;
+      text-align: center;
+      color: var(--text-dim);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      will-change: opacity;
+    }
+  </style>
+
+  <!-- background glow -->
+  <div class="ts-glow" id="ts-glow"></div>
+
+  <!-- Instruction label above card -->
+  <div class="ts-label" id="ts-label">The prompt · paste this</div>
+
+  <!-- Main card -->
+  <div class="ts-card" id="ts-card">
+    <!-- Title bar -->
+    <div class="ts-titlebar">
+      <div class="ts-logo">C</div>
+      <div class="ts-app-name">{{LABEL}}</div>
+      <div class="ts-new-chat">new chat</div>
+    </div>
+
+    <!-- Body: user avatar + typed bubble -->
+    <div class="ts-body">
+      <div class="ts-user-row">
+        <div class="ts-avatar">@</div>
+        <div class="ts-username">you</div>
+      </div>
+      <div class="ts-bubble" id="ts-bubble">
+        <span id="ts-typed"></span><span class="ts-cursor" id="ts-cursor">▋</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom tag (hidden when blank) -->
+  <div class="ts-bottom-tag" id="ts-bottom-tag" style="{{BOTTOM_TAG_DISPLAY}}">{{BOTTOM_TAG}}</div>
+
+  <script src="gsap.min.js"></script>
+  <script>
+    window.__timelines = window.__timelines || {};
+
+    // ── Data from template substitution ──────────────────────────────────────
+    var DURATION      = parseFloat("{{DURATION}}");
+    var TYPING_SPEED  = parseFloat("{{TYPING_SPEED}}" || "1.0");
+    var PROMPT_TEXT   = "{{PROMPT}}";    // HTML-escaped, &#10; for newlines — decoded below
+    var VARIANT       = "{{VARIANT}}";   // "full" | "pip-safe"
+    var BOTTOM_TAG    = "{{BOTTOM_TAG}}";
+
+    // Decode HTML entities from the template substitution
+    // (&#10; → \n, &amp; → &, etc.) using a temporary textarea trick.
+    // Synchronous — no async.
+    ;(function() {
+      var tmp = document.createElement("textarea");
+      tmp.innerHTML = PROMPT_TEXT;
+      PROMPT_TEXT = tmp.value;
+    })();
+
+    // Apply pip-safe variant class
+    if (VARIANT === "pip-safe") {
+      var comp = document.querySelector('[data-composition-id="typing-scene"]');
+      if (comp) comp.classList.add("ts-pip-safe");
+    }
+
+    // Hide bottom tag when empty
+    var tagEl = document.getElementById("ts-bottom-tag");
+    if (tagEl && BOTTOM_TAG.trim() === "") tagEl.style.display = "none";
+
+    // ── Typing counter proxy ──────────────────────────────────────────────────
+    // We tween a plain JS object { n: 0 } and read .n at each scrub tick.
+    // This avoids TextPlugin and is 100% deterministic under headless chromium.
+    var proxy = { n: 0 };
+
+    var typedEl   = document.getElementById("ts-typed");
+    var cursorEl  = document.getElementById("ts-cursor");
+
+    // Update the typed span from the proxy counter (called by GSAP onUpdate).
+    function updateTyped() {
+      if (!typedEl) return;
+      var count = Math.round(proxy.n);
+      typedEl.textContent = PROMPT_TEXT.slice(0, count);
+    }
+
+    // ── Timeline ─────────────────────────────────────────────────────────────
+    var tl = gsap.timeline({ paused: true });
+
+    // Card entrance (0–0.6s): slide up + fade in
+    tl.fromTo("#ts-card",
+      { y: 30, opacity: 0 },
+      { y: 0, opacity: 1, duration: 0.6, ease: "power3.out" },
+      0.1
+    );
+
+    // Label entrance (offset slightly)
+    tl.fromTo("#ts-label",
+      { y: 14, opacity: 0 },
+      { y: 0, opacity: 1, duration: 0.5, ease: "power2.out" },
+      0.05
+    );
+
+    // Glow breathes in gently
+    tl.fromTo("#ts-glow",
+      { scale: 0.85, opacity: 0 },
+      { scale: 1.0, opacity: 1, duration: 0.8, ease: "power2.out" },
+      0
+    );
+
+    // Typing: starts at 0.5s, finishes at DURATION * 0.88 (settled before clip ends)
+    var typeStart = 0.5;
+    var typeEnd   = Math.max(typeStart + 0.5, DURATION * 0.88 / TYPING_SPEED);
+    // Clamp typeEnd so it doesn't exceed clip duration
+    typeEnd = Math.min(typeEnd, DURATION - 0.4);
+
+    tl.to(proxy, {
+      n: PROMPT_TEXT.length,
+      duration: typeEnd - typeStart,
+      ease: "none",
+      onUpdate: updateTyped,
+    }, typeStart);
+
+    // Cursor blink: opacity 1→0 yoyo, repeat for full duration.
+    // Period = 0.7s (≈ 21 frames at 30fps — matches the frame/10 blink in Remotion).
+    var blinkPeriod = 0.35;
+    var blinkCycles = Math.ceil(DURATION / blinkPeriod) - 1;
+    tl.to("#ts-cursor", {
+      opacity: 0,
+      duration: blinkPeriod,
+      ease: "steps(1)",
+      repeat: blinkCycles,
+      yoyo: true,
+    }, 0.5);
+
+    // Bottom tag fades in once the card is visible
+    if (tagEl && BOTTOM_TAG.trim() !== "") {
+      tl.fromTo("#ts-bottom-tag",
+        { opacity: 0 },
+        { opacity: 1, duration: 0.4, ease: "power2.out" },
+        0.7
+      );
+    }
+
+    window.__timelines["typing-scene"] = tl;
+  </script>
+</div>
+</template>

@@ -1,0 +1,161 @@
+<template id="split-motion-card">
+<!--
+  p-reels-split split-motion-card template
+  9:16 TOP ZONE ONLY: 1080×960 — all content stays within the top half.
+  Placeholders filled by p-reels-split Step 6 before standalone render.
+
+  Gotchas (do NOT re-derive):
+  - This template lives inside <template> as a source fragment. Step 6 strips the
+    <template> wrapper and wraps the content in a full HTML doc (1080×960 viewport)
+    for standalone HyperFrames render (--width 1080 --height 960).
+  - The caller also adds data-composition-id="root" data-start="0" data-duration="N"
+    data-width="1080" data-height="960" to the .sc-root div. See Step 6 in SKILL.md.
+  - There is NO --pip-band / reserved bottom zone here — this IS the top zone.
+    Content may fill all 960px of height. Do not add bottom padding for a "pip band".
+  - ACCENT must be a 6-digit hex (no leading #) — template prepends '#'.
+  - TITLE_HTML may carry <span class="accent">WORD</span> — it is NOT html-escaped.
+  - EYEBROW and GHOST are html.escape()'d by the caller.
+  - window.getComputedStyle(el) throws in sandbox — use bare getComputedStyle(el).
+  - GSAP repeat is always finite.
+  - Never Math.random() — use seeded PRNG if noise is needed.
+  - HyperFrames timeline registration: window.__timelines["root"] = tl (dict, NOT .push()).
+-->
+<style>
+  :root {
+    --bg:     #{{BG}};
+    --accent: #{{ACCENT}};
+    --fg:     #{{FG}};
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  .sc-root {
+    position: absolute;
+    inset: 0;
+    width: 1080px;
+    height: 960px;
+    background: var(--bg);
+    overflow: hidden;
+    font-family: Inter, sans-serif;
+  }
+
+  /* Ambient grid — same as motion-card but only 960px tall */
+  .sc-grid {
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+    background-size: 120px 120px;
+    pointer-events: none;
+  }
+
+  /* Accent glow — anchored to bottom of the top zone (the split seam) */
+  .sc-glow {
+    position: absolute;
+    bottom: -40px;
+    left: -80px;
+    width: 560px;
+    height: 400px;
+    background: radial-gradient(circle, color-mix(in srgb, var(--accent) 18%, transparent) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  /* Content zone: fills the full 960px top zone. Vertically centered. */
+  .sc-content {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 80px 80px 60px;
+    gap: 28px;
+    overflow: hidden;
+  }
+
+  .sc-eyebrow {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    opacity: 0;
+    transform: translateY(12px);
+  }
+
+  .sc-ghost {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-family: Oswald, sans-serif;
+    font-size: 240px;
+    font-weight: 900;
+    text-transform: uppercase;
+    color: var(--fg);
+    opacity: 0.04;
+    letter-spacing: -0.04em;
+    white-space: nowrap;
+    pointer-events: none;
+    max-width: 1080px;
+    overflow: hidden;
+  }
+
+  .sc-title {
+    font-family: Oswald, sans-serif;
+    font-size: 84px;
+    font-weight: 900;
+    line-height: 1.0;
+    text-transform: uppercase;
+    color: var(--fg);
+    opacity: 0;
+    transform: translateY(24px);
+  }
+
+  .sc-title .accent {
+    color: var(--accent);
+  }
+
+  .sc-rule {
+    width: 0;
+    height: 4px;
+    background: var(--accent);
+    border-radius: 2px;
+  }
+</style>
+
+<div class="sc-root">
+  <div class="sc-grid"></div>
+  <div class="sc-glow"></div>
+  <div class="sc-ghost">{{GHOST}}</div>
+  <div class="sc-content">
+    <div class="sc-eyebrow" id="sc-eyebrow">{{EYEBROW}}</div>
+    <div class="sc-title" id="sc-title">{{TITLE_HTML}}</div>
+    <div class="sc-rule" id="sc-rule"></div>
+  </div>
+</div>
+
+<script src="gsap.min.js"></script>
+<script>
+(function() {
+  var gsap = window.__gsap || window.gsap;
+  if (!gsap) { console.error('[split-motion-card] gsap not found'); return; }
+
+  var dur = parseFloat("{{DURATION}}") || 4.0;
+  var tl = gsap.timeline({ paused: true });
+
+  tl
+    .to("#sc-eyebrow", { opacity: 1, y: 0, duration: 0.45, ease: "power2.out" }, 0.1)
+    .to("#sc-title",   { opacity: 1, y: 0, duration: 0.55, ease: "power3.out" }, 0.25)
+    .to("#sc-rule",    { width: 140, duration: 0.4, ease: "power2.out" },         0.55)
+    .to(".sc-glow",    { opacity: 0.8, duration: 0.6, ease: "power1.out" },       0.0);
+
+  if (!window.__timelines) window.__timelines = {};
+  window.__timelines["root"] = tl;
+})();
+</script>
+</template>

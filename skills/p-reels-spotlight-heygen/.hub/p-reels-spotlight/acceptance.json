@@ -1,0 +1,39 @@
+{
+  "recipe": "p-reels-spotlight",
+  "spec_version": 1,
+  "_note": "Strict, recipe-owned spec read by c-eval-runner. A brand may layer brand-overrides/<slug>/acceptance.json to TIGHTEN thresholds (same id wins; new ids appended). See cfw-skills-pack/docs/skills-audit.md §4.",
+  "checks": [
+    { "id": "qa_gate",          "kind": "mechanical", "type": "qa_gate", "format": "reel" },
+    { "id": "duration_window",  "kind": "mechanical", "type": "duration_window", "min_s": 20, "max_s": 62 },
+    { "id": "canvas_1080x1920", "kind": "geometry",   "type": "dims", "w": 1080, "h": 1920 },
+    { "id": "frame_not_black",  "kind": "geometry",   "type": "luma_floor",
+      "crop": "1080:1920:0:0", "floor": 16, "samples": [0.05, 0.20, 0.40, 0.60, 0.80, 0.95] },
+
+    { "id": "captions_legible_not_on_face", "kind": "perceptual", "type": "perceptual",
+      "desc": "(a) Captions are visible + legible in the lower band, brand accent on emphasis word, NOT overlapping the speaker face." },
+    { "id": "latin_script_only", "kind": "perceptual", "type": "perceptual",
+      "desc": "(b) Latin script only — zero Devanagari or other non-Latin glyphs in the caption band." },
+    { "id": "takeover_frames_not_blank", "kind": "perceptual", "type": "perceptual",
+      "desc": "(c) All takeover-window frames show an opaque full-frame motion-graphics card OR a b-roll clip — no blank or partially-rendered frames." },
+    { "id": "grade_is_subtle", "kind": "perceptual", "type": "perceptual",
+      "desc": "(d) Cinematic grade is subtle — skin tones look natural, no blown-out highlights or crushed shadows." },
+    { "id": "no_black_empty_frames", "kind": "perceptual", "type": "perceptual",
+      "desc": "(e) No black or empty frame anywhere in the reel including during graphics/b-roll takeovers." },
+    { "id": "broll_beats_correct", "kind": "perceptual", "type": "perceptual",
+      "desc": "(f) B-roll beats show the correct clip trimmed to the planned window; no incorrect footage, no bleed from adjacent beats." },
+    { "id": "vo_continuous_bed", "kind": "perceptual", "type": "perceptual",
+      "desc": "VO audio is audible (non-silent) during EVERY takeover window (both graphics and b-roll) — the speaker narration is the single never-cut voice bed." },
+    { "id": "cover_is_moneyshot", "kind": "perceptual", "type": "perceptual",
+      "desc": "Frame 0 (cover) shows the money-shot from cover_at — not black, not a hook-animation blank, not a faded-in opener." }
+  ],
+  "steps": {
+    "speakerbed": {
+      "artifact": "base.mp4",
+      "checks": [
+        { "id": "bed_dims",      "kind": "geometry", "type": "dims",       "w": 1080, "h": 1920 },
+        { "id": "bed_not_black", "kind": "geometry", "type": "luma_floor",
+          "crop": "1080:1920:0:0", "floor": 16, "samples": [0.1, 0.3, 0.5, 0.7, 0.9] }
+      ]
+    }
+  }
+}

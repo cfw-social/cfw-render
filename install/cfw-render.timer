@@ -1,0 +1,13 @@
+# cfw-render.timer — systemd timer, 15-min cadence (Linux — hst).
+# NOT installed by this task (AB-RNDR-WORKER is code-authoring only) — a
+# human installs it later per docs/deploy.md.
+[Unit]
+Description=Run cfw-render drainer every 15 minutes
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target
