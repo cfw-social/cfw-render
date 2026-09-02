@@ -1,6 +1,10 @@
 # cfw-render ⊕ cfw-skills — Packaging & Distribution Design
 
-> **Status:** design recommendation, not yet implemented. Read-only research doc for
+> **Status:** ✅ IMPLEMENTED (shipped `CFW-HST-BUNDLE`, 2026-08). The vendored-bundle model
+> below is live in `cfw-render/skills/` (pinned via `config/skills-version.json`, verified by
+> `scripts/verify-skills-bundle.sh`). As of 2026-09-01 the bundle is source-synced directly
+> from `ecosystem/skills` via `scripts/sync-skills.sh` — the git-subtree step this doc weighed
+> is retired. Originally the read-only research doc for
 > `CFW-HST-BUNDLE` (this repo, `backlog/queue/CFW-HST-BUNDLE.md`) and the cfw-social-side
 > half `CFW-V2-073` (`cfw-social/backlog/blocked/CFW-V2-073.md`). Fulfils Phase 2 of
 > `cfw-social/docs/v2-vps-simplification-epic.md`: *"Bundle cfw-render ⊕ cfw-skills as one
