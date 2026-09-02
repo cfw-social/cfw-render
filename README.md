@@ -137,11 +137,23 @@ test seam). Load order: `/etc/cfw-render.env` → `$CFW_RENDER_ENV` (default
 
 ## `workerId` semantics
 
-Computed, not configured: `"$(hostname -s):$$"` (host+pid). Per
-`render-worker-auth.md` §2, this is **concurrency hygiene, not a security
-boundary** — the credential itself (`CFW_RENDER_WORKER_KEY`) is the auth
-principal; `workerId` only stops two processes holding that same key from
-stomping each other's claims.
+**Stable per install, not per process** (doc §6.3 — see "Deploy mode + stable
+worker identity" above). The claim identity is a per-install UUID persisted at
+`$CFW_RENDER_STATE_DIR/worker-id` (`CFW_RENDER_WORKER_ID_FILE`), seeded once by
+`install.sh` and reused by every 15-min oneshot tick — **not** the old
+`"$(hostname -s):$$"` (host+pid), which changed every tick and would defeat
+CFW-V2-068's per-`workerId` circuit breaker. Resolution order (`cr_load_config`
+in `bin/cfw-render-lib.sh`, seeded by `cr_seed_worker_id`): an explicitly
+exported `CFW_WORKER_ID` wins (tests / special ops) → else the `worker-id` file
+(lazily seeded here too, so a hand-run/dev worker is also stable) → else, only
+if that file is empty/unreadable, an unstable `hostname:$$` fallback (logged as
+a WARN, since the breaker won't accumulate against it).
+
+Per `render-worker-auth.md` §2, `workerId` is **concurrency hygiene, not a
+security boundary** — the credential itself (`CFW_RENDER_WORKER_KEY`) is the
+auth principal; `workerId` only stops two processes holding that same key from
+stomping each other's claims (and now gives CFW-V2-068's breaker a stable key
+to accumulate against).
 
 ## Ollama keys vs `zai.env` (read before chasing a "missing key")
 
