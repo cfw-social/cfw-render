@@ -6,7 +6,7 @@ set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "$0")" && pwd)"
 MODELS_FILE="$SKILL_DIR/models.jsonl"
-FLOE_REGISTRY="/Users/vasanth/Code/video-apps/floe/src/integrations/ai/kie-ai/models/index.ts"
+FLOE_REGISTRY="/Users/vasanth/initiatives/growthsystems/video-apps/floe/src/integrations/ai/kie-ai/models/index.ts"
 
 # Check freshness — skip if < 4 days old
 if [ -f "$MODELS_FILE" ]; then
@@ -31,7 +31,7 @@ echo "[kie-ai] Syncing model list from Floe registry..." >&2
 python3 - <<'PYEOF'
 import json, re, datetime, sys
 
-registry_path = "/Users/vasanth/Code/video-apps/floe/src/integrations/ai/kie-ai/models/index.ts"
+registry_path = "/Users/vasanth/initiatives/growthsystems/video-apps/floe/src/integrations/ai/kie-ai/models/index.ts"
 try:
     with open(registry_path) as f:
         content = f.read()

@@ -67,15 +67,9 @@ if (( DRY )); then
   # Which pinned skills release is live (doc §5 last para) — informational.
   row "skills:pinned" 0 "$(cr_skills_pin_summary)"
 
-  # Deploy mode + skills source (doc §4). mode=byoa && source=bundle is a
-  # visible-but-non-fatal misconfiguration (doc risk #4): a BYOA box would use
-  # the full pinned bundle instead of a curated fetch — wasted disk, not a
-  # security issue (the server-side brand filter is the real boundary).
-  if [[ "$CFW_RENDER_MODE" == "byoa" && "$CFW_RENDER_SKILLS_SOURCE" == "bundle" ]]; then
-    warn_row "mode:skills-source" "mode=byoa with skills-source=bundle — BYOA usually wants curated 'fetch' (CFW-V2-067). Using the full pinned bundle; wasted disk, not a security issue."
-  else
-    row "mode:skills-source" 0 "mode=$CFW_RENDER_MODE source=$CFW_RENDER_SKILLS_SOURCE"
-  fi
+  # Deploy mode (doc §4) — operational only. Skills always come from the in-repo
+  # bundle; server and BYOA use the same source (BYOA git-pulls to update).
+  row "mode" 0 "mode=$CFW_RENDER_MODE (skills: in-repo bundle)"
 
   if [[ -w "$CFW_RENDER_STATE_DIR" || ( ! -e "$CFW_RENDER_STATE_DIR" && -w "$(dirname "$CFW_RENDER_STATE_DIR")" ) ]]; then
     row "dir:state" 0 "$CFW_RENDER_STATE_DIR"

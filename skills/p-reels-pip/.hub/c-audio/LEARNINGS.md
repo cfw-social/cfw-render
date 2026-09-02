@@ -6,7 +6,7 @@
 
 ## Active Feedback (apply on every run)
 
-- [ACTIVE] ELEVENLABS_API_KEY lives in `~/.gsai/secrets.env` — always `source ~/.gsai/secrets.env` before checking if the key is missing. FLOE_API_KEY may not be set; fall back to direct ElevenLabs immediately.
+- [ACTIVE] ELEVENLABS_API_KEY lives in `~/ecosystem/vault/secrets.env` — always `source ~/ecosystem/vault/secrets.env` before checking if the key is missing. FLOE_API_KEY may not be set; fall back to direct ElevenLabs immediately.
 - [ACTIVE] Single-pass `loudnorm` undershoots target by ~1.5 LUFS on speech. Use two-pass approach: first pass with `print_format=json` to get measured values, second pass with `linear=true` + measured values, then apply a `volume=+Xdb` trim if still short. ±0.5 LUFS from target is acceptable.
 
 ---

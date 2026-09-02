@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # scripts/verify-skills-bundle.sh — checksum-verify the on-disk skills bundle
 # against the per-file sha256 hashes that ship inside the bundle's own
-# index.json (cfw-social/cfw-skills' index.json.recipes[<recipe>].fileHashes —
-# raw-bytes sha256 of each file, per cfw-skills-pack/scripts/publish-github.mjs).
+# index.json (skills/index.json.recipes[<recipe>].fileHashes — raw-bytes sha256
+# of each file, written by scripts/sync-skills.py when the bundle is synced).
 #
 # Runtime-free repo: pure bash + shasum/sha256sum + python3 (all already hard
 # deps of the worker). NO node, NO npm.

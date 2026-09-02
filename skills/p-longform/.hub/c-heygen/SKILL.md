@@ -28,8 +28,8 @@ requires: python3
 | `$VOICE_ID` | Yes | Caller / brand config | HeyGen voice ID |
 | `$SCRIPT` | Yes | Caller | TTS-clean script text |
 | `{production}` | Yes | Caller | Absolute path to production folder |
-| `$HEYGEN_API_KEY` | Yes | `~/.gsai/secrets.env` | HeyGen API key |
-| `$FLOE_API_KEY` | Conditional | `~/.gsai/secrets.env` | Required for Floe poll/download path |
+| `$HEYGEN_API_KEY` | Yes | `~/ecosystem/vault/secrets.env` | HeyGen API key |
+| `$FLOE_API_KEY` | Conditional | `~/ecosystem/vault/secrets.env` | Required for Floe poll/download path |
 
 ## Render Path Priority
 
@@ -56,7 +56,7 @@ Two-pass colorkey: `colorkey=0x00FF00:0.25:0.05,colorkey=0x00FF00:0.40:0.01`
 
 Full script as ONE request (hook through CTA). TTS-clean only.
 
-Channel routing (`~/.gsai/openclaw-routing.json`): VAS→`#personal`, CFW→`#cfw`, GRO→`#gsai`
+Channel routing (`~/ecosystem/openclaw-routing.json`): VAS→`#personal`, CFW→`#cfw`, GRO→`#gsai`
 
 ## Path 2: HeyGen MCP
 

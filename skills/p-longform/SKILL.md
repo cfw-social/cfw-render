@@ -80,7 +80,7 @@ Also useful (ask if not obvious from context):
 
 ## Setup
 
-Read brand path from `~/.gsai/ecosystem.yaml`. Create production folder:
+Read brand path from `~/ecosystem/ecosystem.yaml`. Create production folder:
 
 ```
 {brand_path}/creatives/productions/{production_name}/

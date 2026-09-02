@@ -28,8 +28,8 @@ requires: ffmpeg, python3
 | `$VOICE_ID` | Yes | Caller / brand config | ElevenLabs voice ID |
 | `$OUTPUT_PATH` | Yes | Caller | Target `.mp3` path |
 | `{production}` | Yes | Caller | Absolute path to production folder |
-| `$FLOE_API_KEY` | Yes | `~/.gsai/secrets.env` | Floe API key for TTS |
-| `$ELEVENLABS_API_KEY` | Fallback | `~/.gsai/secrets.env` | Direct ElevenLabs (backup only) |
+| `$FLOE_API_KEY` | Yes | `~/ecosystem/vault/secrets.env` | Floe API key for TTS |
+| `$ELEVENLABS_API_KEY` | Fallback | `~/ecosystem/vault/secrets.env` | Direct ElevenLabs (backup only) |
 
 ## Priority Order
 1. **Check SFX library first** — `sfx/sfx-library.md` at `/Users/vasanth/ecosystem/skills/sfx/`. Preview: `afplay /Users/vasanth/ecosystem/skills/sfx/{category}/{file}.mp3`.

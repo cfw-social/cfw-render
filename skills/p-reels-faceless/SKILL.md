@@ -124,7 +124,7 @@ These rules are LOAD-BEARING. Violating any one of them is a HARD FAILURE.
 
 ## Tooling
 
-- **TTS:** ElevenLabs `eleven_turbo_v2_5` via `c-audio`. Key: `ELEVENLABS_API_KEY` in `~/.gsai/secrets.env`.
+- **TTS:** ElevenLabs `eleven_turbo_v2_5` via `c-audio`. Key: `ELEVENLABS_API_KEY` in `~/ecosystem/vault/secrets.env`.
 - **Transcription:** `cfw-transcribe` (Gemini cloud default; MLX fast-path on macOS) → word-level SRT/JSON.
 - **Beat planning:** `c-broll-sync` Node script (`plan.js`). OPUS sub-call for `transcript-match`.
 - **Graphics (PRIMARY):** HyperFrames CLI (`npx hyperframes`) — `init` / `lint` / `render --quality high`.
@@ -140,7 +140,7 @@ These rules are LOAD-BEARING. Violating any one of them is a HARD FAILURE.
 ### 0 — Setup
 
 ```bash
-source ~/.gsai/secrets.env
+source ~/ecosystem/vault/secrets.env
 FF=/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg
 W="$OUT_DIR/work" ; mkdir -p "$W/gfx"
 SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name p-reels-faceless 2>/dev/null | head -1)
@@ -174,7 +174,7 @@ Count beats and check estimated duration fits `$TARGET`. Aim for 6–10 beats at
 ### 2 — Generate voiceover (c-audio)
 
 ```bash
-source ~/.gsai/secrets.env
+source ~/ecosystem/vault/secrets.env
 curl -s -X POST "https://api.elevenlabs.io/v1/text-to-speech/$VOICE_ID" \
   -H "xi-api-key: $ELEVENLABS_API_KEY" -H "Content-Type: application/json" \
   -d "$(python3 -c "import json; print(json.dumps({'text':open('$W/vo-script.txt').read().strip(),'model_id':'eleven_turbo_v2_5','voice_settings':{'stability':0.5,'similarity_boost':0.75,'style':0.0}}))")" \

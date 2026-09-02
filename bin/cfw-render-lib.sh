@@ -19,20 +19,15 @@ _CR_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _CR_REPO_ROOT="$(cd "$_CR_LIB_DIR/.." && pwd)"
 
 # ---------------------------------------------------------------------------
-# cr_default_skills_dir — bundled skills/ (in-repo, pinned via git subtree +
-# config/skills-version.json) if present, else the legacy shared box path
-# from before the bundle (transition/rollback safety — CFW-HST-BUNDLE design
-# note 3 "no break"). This is ONLY the default; CFW_RENDER_SKILLS_DIR set via
-# env/config file always wins (see cr_load_config's preset-restore below).
+# cr_default_skills_dir — the in-repo bundled skills/ (pinned via
+# config/skills-version.json, source-synced by scripts/sync-skills.sh). This is
+# cfw-render's ONLY skills source: the old /data/shared/cfw-skills/cfw shared-box
+# path (a Hermes-assistant bundle, never cfw-render's) was dropped 2026-09-01 —
+# cfw-render no longer shares skills with Hermes. This is ONLY the default;
+# CFW_RENDER_SKILLS_DIR set via env/config file always wins (local-dev override).
 # ---------------------------------------------------------------------------
 cr_default_skills_dir() {
-  local bundled="$_CR_REPO_ROOT/skills"
-  local legacy="/data/shared/cfw-skills/cfw"
-  if [[ -d "$bundled" ]]; then
-    printf '%s' "$bundled"
-  else
-    printf '%s' "$legacy"
-  fi
+  printf '%s' "$_CR_REPO_ROOT/skills"
 }
 
 # ---------------------------------------------------------------------------
@@ -100,8 +95,7 @@ print("sourceSha=%s recipes=%s" % (sha, n))
 #   1  → genuine checksum MISMATCH (a pinned file differs on disk) — the
 #        "pull landed mid-tick / corrupted bundle" case. Caller MUST NOT spawn
 #        the Director; it blocks the order with an owner-safe reason.
-# Guard: CFW_RENDER_SKILLS_SOURCE=fetch is not built yet (CFW-V2-067) — the
-# caller errors on that before ever reaching here (see cr_guard_skills_source).
+# cfw-render has exactly one skills source: the in-repo bundle (skills/).
 # ---------------------------------------------------------------------------
 cr_verify_skills_bundle() {
   local recipe="${1:-}"
@@ -139,26 +133,6 @@ cr_verify_skills_bundle() {
 }
 
 # ---------------------------------------------------------------------------
-# cr_guard_skills_source — hard-stop if CFW_RENDER_SKILLS_SOURCE=fetch is set
-# before the BYOA fetch client exists (CFW-V2-067's byoa-fetch-plan is NOT
-# built yet — doc §4). Fail fast + explicit, never a silent fallback to bundle.
-# Returns non-zero on a misconfiguration the caller must surface.
-# ---------------------------------------------------------------------------
-cr_guard_skills_source() {
-  case "${CFW_RENDER_SKILLS_SOURCE:-bundle}" in
-    bundle) return 0 ;;
-    fetch)
-      printf 'cfw-render: CFW_RENDER_SKILLS_SOURCE=fetch is not implemented yet — the BYOA skills-fetch client (bin/cfw-render-fetch-skills.sh, a thin client of cfw-social CFW-V2-067 byoa-fetch-plan) has not been built. Set CFW_RENDER_SKILLS_SOURCE=bundle (the shipped default) or leave it unset. Refusing to run rather than silently using the bundle.\n' >&2
-      return 1
-      ;;
-    *)
-      printf 'cfw-render: CFW_RENDER_SKILLS_SOURCE=%s is invalid (expected bundle|fetch)\n' "${CFW_RENDER_SKILLS_SOURCE}" >&2
-      return 1
-      ;;
-  esac
-}
-
-# ---------------------------------------------------------------------------
 # cr_load_config — env cascade: /etc/cfw-render.env (Linux box) → $CFW_RENDER_ENV
 # (default ~/.gsai/secrets/cfw-render.env) → process env wins over both files
 # (a file only fills vars that are still unset). Fails fast on missing
@@ -174,7 +148,7 @@ cr_load_config() {
     CFW_RENDER_STATE_DIR CFW_RENDER_SKILLS_DIR CFW_RENDER_DIRECTOR_MODEL
     CFW_RENDER_FANOUT_MODELS CFW_RENDER_TIMEOUT_VIDEO CFW_RENDER_TIMEOUT_IMAGE
     CFW_RENDER_GATE_FAIL_CAP CFW_RENDER_OLLAMA_KEYS_FILE CFW_RENDER_DIRECTOR_CMD
-    CFW_RENDER_MODE CFW_RENDER_SKILLS_SOURCE CFW_RENDER_WORKER_ID_FILE
+    CFW_RENDER_MODE CFW_RENDER_WORKER_ID_FILE
   )
   local _cr_preset=() _v
   for _v in "${_cr_vars[@]}"; do
@@ -211,18 +185,18 @@ cr_load_config() {
   : "${CFW_RENDER_GATE_FAIL_CAP:=2}"
   : "${CFW_RENDER_OLLAMA_KEYS_FILE:=$HOME/.gsai/secrets/ollama-keys.env}"
   : "${CFW_RENDER_DIRECTOR_CMD:=}"
-  # Deploy mode + skills sourcing (doc §4) — operational only, NEVER the
-  # security boundary (the server enforces that via which credential family
-  # resolves). Both are set once at install time; defaults match today's only
-  # real deploy target (our fleet, bundled skills).
+  # Deploy mode (doc §4) — operational only, NEVER the security boundary (the
+  # server enforces that via which credential family resolves). Set once at
+  # install time; default matches our fleet. Skills always come from the in-repo
+  # bundle (there is no longer a bundle-vs-fetch switch — cfw-render carries its
+  # own skills/, git-pull to update; BYOA and server use the same source).
   : "${CFW_RENDER_MODE:=server}"
-  : "${CFW_RENDER_SKILLS_SOURCE:=bundle}"
   : "${CFW_RENDER_WORKER_ID_FILE:=$CFW_RENDER_STATE_DIR/worker-id}"
   export CFW_RENDER_CONCURRENCY CFW_RENDER_SCRATCH CFW_RENDER_STATE_DIR \
     CFW_RENDER_SKILLS_DIR CFW_RENDER_DIRECTOR_MODEL CFW_RENDER_FANOUT_MODELS \
     CFW_RENDER_TIMEOUT_VIDEO CFW_RENDER_TIMEOUT_IMAGE CFW_RENDER_GATE_FAIL_CAP \
     CFW_RENDER_OLLAMA_KEYS_FILE CFW_RENDER_DIRECTOR_CMD \
-    CFW_RENDER_MODE CFW_RENDER_SKILLS_SOURCE CFW_RENDER_WORKER_ID_FILE
+    CFW_RENDER_MODE CFW_RENDER_WORKER_ID_FILE
 
   local missing=()
   [[ -z "${CFW_API_BASE:-}" ]] && missing+=("CFW_API_BASE")
@@ -236,9 +210,6 @@ cr_load_config() {
     printf 'cfw-render: CFW_RENDER_WORKER_KEY does not match expected shape ^cfw_render_ — refusing to run\n' >&2
     return 1
   fi
-  # Fail fast on an unbuilt skills source rather than silently using the bundle.
-  cr_guard_skills_source || return 1
-
   mkdir -p "$CFW_RENDER_STATE_DIR" "$CFW_RENDER_SCRATCH" 2>/dev/null
 
   cr_log_skills_version

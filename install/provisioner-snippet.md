@@ -9,13 +9,12 @@ so a reprovision of `hst` reinstalls the render worker the same way
 ## What to add to the box-provision flow
 
 1. **Clone/sync `cfw-render`** to the box (same pattern as other provisioned
-   repos under `cfw-provisioner/src/lib/tmpl/`). As of CFW-HST-BUNDLE, this
-   checkout now includes the pinned `skills/` subtree — cloning the repo is
-   sufficient to get both the worker and its recipe closure; `install.sh`
-   copies `skills/` into `$PREFIX/skills` alongside `bin/`/`lib/`
-   automatically (see `cfw-render/README.md` "Bundled skills"). No separate
-   step is needed to fetch skills for a box that's cutting over to the
-   bundle — but see the note below before touching the existing hourly pull.
+   repos under `cfw-provisioner/src/lib/tmpl/`). The checkout includes the
+   pinned `skills/` bundle — cloning the repo is sufficient to get both the
+   worker and its recipe closure; `install.sh` copies `skills/` into
+   `$PREFIX/skills` alongside `bin/`/`lib/` automatically (see
+   `cfw-render/README.md` "Bundled skills"). Updating skills = `git pull` this
+   repo + restart the timer (below); there is no separate skills download.
 2. **Copy units:**
    ```bash
    cp cfw-render/install/cfw-render.service /etc/systemd/system/cfw-render.service
@@ -37,17 +36,26 @@ so a reprovision of `hst` reinstalls the render worker the same way
    decoupled service pool per `cfw-render-worker-plan.md` §11's "Cutover"
    step and the task's SUPERVISED FOLLOW-UP GATE.
 
-## Bundled-skills transition note (do not act on this without a human decision)
+## Skills update = git pull + restart (old pull cron retired)
 
-The box's existing hourly `cfw-skills-pull.sh` cron (`/data/shared/cfw-skills/cfw`,
-the standalone public `cfw-social/cfw-skills` checkout) is **NOT retired by
-this change** and this snippet does not touch it. Once a box is fully cut
-over to the bundled `skills/` model (all brands' `CFW_RENDER_SKILLS_DIR`
-pointing at the bundle, verified per `docs/deploy.md` §8b), a follow-up
-provisioner task can drop the cron install step for that box. Until then,
-provisioning should keep installing/enabling `cfw-skills-pull.sh` exactly as
-today — this is a supervised, brand-by-brand rollout gate, not a default
-behavior change.
+The old hourly `cfw-skills-pull.sh` cron — which pulled the standalone public
+`cfw-social/cfw-skills` checkout into `/data/shared/cfw-skills/cfw` — is
+**retired** for cfw-render. cfw-render reads **only** its own in-repo `skills/`
+bundle; it no longer touches `/data/shared/cfw-skills/cfw` (that path was a
+Hermes-assistant bundle, never cfw-render's). Provisioning should **not** install
+`cfw-skills-pull.sh` for the render worker.
+
+To refresh a box's recipes, update the repo and restart the worker timer:
+
+```bash
+git -C <cfw-render-checkout> pull
+install/install.sh --mode <server|byoa>   # re-copies skills/ into $PREFIX/skills
+systemctl restart cfw-render.timer
+```
+
+> If a box still runs `cfw-skills-pull.sh` for the **Hermes assistant** (a
+> separate consumer of `/data/shared/cfw-skills/cfw`), that is out of scope here
+> — decouple it under the Hermes profile, not this worker.
 
 ## Reference
 

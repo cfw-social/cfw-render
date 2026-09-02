@@ -65,9 +65,10 @@ if [[ -d "$REPO_DIR/skills" ]]; then
   rm -rf "$PREFIX/skills"
   cp -a "$REPO_DIR/skills" "$PREFIX/skills"
 else
-  echo "install.sh: WARNING — $REPO_DIR/skills not found (this checkout predates the CFW-HST-BUNDLE" >&2
-  echo "  merge, or the subtree wasn't pulled). The worker will fall back to the legacy shared" >&2
-  echo "  path /data/shared/cfw-skills/cfw unless CFW_RENDER_SKILLS_DIR overrides it." >&2
+  echo "install.sh: ERROR — $REPO_DIR/skills not found. cfw-render carries its skills bundle" >&2
+  echo "  in-repo; a checkout without skills/ is broken. Re-clone/pull the repo (or run" >&2
+  echo "  CFW_SKILLS_SRC=<source> scripts/sync-skills.sh) before installing." >&2
+  exit 1
 fi
 [[ -f "$REPO_DIR/config/skills-version.json" ]] && cp -a "$REPO_DIR/config/skills-version.json" "$PREFIX/config/skills-version.json"
 
@@ -99,10 +100,9 @@ else
   echo "install.sh: NOTE — add 'CFW_RENDER_MODE=$MODE' to $ENV_FILE when you create it (default 'server' applies if omitted)." >&2
 fi
 if [[ "$MODE" == "byoa" ]]; then
-  echo "install.sh: mode=byoa — BYOA skills 'fetch' path (CFW_RENDER_SKILLS_SOURCE=fetch) is NOT built yet" >&2
-  echo "  (waits on CFW-V2-067 byoa-fetch-plan). Leave CFW_RENDER_SKILLS_SOURCE=bundle for now; the" >&2
-  echo "  bundled skills/ is used (wasted disk vs a curated fetch, not a security issue). See" >&2
-  echo "  install/byoa-installer-notes.md." >&2
+  echo "install.sh: mode=byoa — skills come from this repo's in-repo bundle (skills/), same as" >&2
+  echo "  server mode. To update a BYOA box: 'git pull' this repo and restart the skills cron/" >&2
+  echo "  service (it re-copies skills/ on run). See install/byoa-installer-notes.md." >&2
 fi
 
 # ── Stable worker identity (doc §6.3) — seed ONCE, never regenerate on re-run.

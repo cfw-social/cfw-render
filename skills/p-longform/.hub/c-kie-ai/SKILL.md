@@ -1,6 +1,6 @@
 ---
 name: c-kie-ai
-description: "⚠ DEPRECATED (2026-07-03) for kie.ai work — superseded by kie-studio (~/Code/video-hub/kie-studio): use the kie-studio MCP server (mcp__kie-studio__* tools) or its skills (kie-image / kie-motion / kie-product / kie-ugc-ad / kie-cinematic-broll). kie-studio adds wire-contract validation (no silent field drops), live schema drift checks, and the human-approved video gate — raw curl calls here have NONE of those rails. This skill remains ONLY for fal.ai flows (FLUX via fal, fal queue) and for kie.ai models kie-studio has no contract for yet (add the contract instead when possible)."
+description: "⚠ DEPRECATED (2026-07-03) for kie.ai work — superseded by kie-studio (~/initiatives/growthsystems/kie-studio): use the kie-studio MCP server (mcp__kie-studio__* tools) or its skills (kie-image / kie-motion / kie-product / kie-ugc-ad / kie-cinematic-broll). kie-studio adds wire-contract validation (no silent field drops), live schema drift checks, and the human-approved video gate — raw curl calls here have NONE of those rails. This skill remains ONLY for fal.ai flows (FLUX via fal, fal queue) and for kie.ai models kie-studio has no contract for yet (add the contract instead when possible)."
 when_to_use: fal.ai, FAL_KEY, FLUX via fal, fal queue. For kie.ai / KIE_AI_API_KEY / Seedance / Veo / GPT Image / nano-banana etc. use kie-studio instead (MCP mcp__kie-studio__* or its skills).
 allowed-tools: Bash
 kind: component
@@ -18,7 +18,7 @@ deprecated: kie.ai flows superseded by kie-studio 2026-07-03
 > no spend"), live drift checks against kie.ai, and the video approval gate.
 > Use THIS skill only for **fal.ai** — or, exceptionally, a kie.ai model that has
 > no kie-studio contract yet (prefer adding the contract to
-> `~/Code/video-hub/kie-studio/data/model-contracts.yaml` over calling raw).
+> `~/initiatives/growthsystems/kie-studio/data/model-contracts.yaml` over calling raw).
 
 
 > **SELF-IMPROVEMENT RULE — READ FIRST:**
@@ -30,7 +30,7 @@ deprecated: kie.ai flows superseded by kie-studio 2026-07-03
 > 6. If feedback is critical (affects correctness or quality), add it to the **Active Feedback** section so it applies on every future run.
 
 > **🚦 SPEND-SAFETY RULES (2026-07-03 — apply to EVERY paid call, both providers):**
-> 1. **Prefer kie-studio when it covers the model** (`~/Code/video-hub/kie-studio`,
+> 1. **Prefer kie-studio when it covers the model** (`~/initiatives/growthsystems/kie-studio`,
 >    `node bin/kie-studio.mjs`): it validates every input against per-model wire
 >    contracts (`data/model-contracts.yaml` — wrong key = hard error, because Kie
 >    SILENTLY IGNORES unknown input keys) and gates video behind user approval.
@@ -81,10 +81,10 @@ for line in sys.stdin:
 
 **Base:** `https://api.kie.ai/api/v1`
 **Auth:** `Authorization: Bearer $KIE_AI_API_KEY`
-**Key source:** `~/.gsai/secrets.env` → `KIE_AI_API_KEY`
+**Key source:** `~/ecosystem/vault/secrets.env` → `KIE_AI_API_KEY`
 
 ```bash
-source ~/.gsai/secrets.env
+source ~/ecosystem/vault/secrets.env
 ```
 
 ⚠️ **kie.ai cannot fetch external URLs.** All `image_url` fields must be base64 data URIs:
@@ -181,10 +181,10 @@ echo "Task: $TASK_ID"
 **Use when:** you need FLUX image gen, or prefer queue-based async for video.
 **Base:** `https://fal.run` (sync image) / `https://queue.fal.run` (async video)
 **Auth:** `Authorization: Key $FAL_KEY`
-**Key source:** `~/.gsai/secrets.env` → `FAL_KEY`
+**Key source:** `~/ecosystem/vault/secrets.env` → `FAL_KEY`
 
 ```bash
-source ~/.gsai/secrets.env
+source ~/ecosystem/vault/secrets.env
 ```
 
 ### Image Generation (synchronous)

@@ -52,10 +52,10 @@ for line in sys.stdin:
 
 **Base:** `https://api.c-replicate.com/v1`
 **Auth:** `Authorization: Token $REPLICATE_API_TOKEN`
-**Key source:** `~/.gsai/secrets.env` → `REPLICATE_API_TOKEN` — ⚠️ **Not provisioned yet.** Get at c-replicate.com/account/api-tokens, then uncomment the line in `secrets.env`.
+**Key source:** `~/ecosystem/vault/secrets.env` → `REPLICATE_API_TOKEN` — ⚠️ **Not provisioned yet.** Get at c-replicate.com/account/api-tokens, then uncomment the line in `secrets.env`.
 
 ```bash
-source ~/.gsai/secrets.env
+source ~/ecosystem/vault/secrets.env
 ```
 
 ---
@@ -130,7 +130,7 @@ curl -s "https://api.c-replicate.com/v1/models/$OWNER/$NAME/versions" \
 - Status flow: `starting` → `processing` → `succeeded` | `failed` | `canceled`
 - Version SHA is the specific model checkpoint hash — use the named-model endpoint to avoid pinning to a specific SHA
 - Cost is per-second of compute — video models can be expensive; check pricing at c-replicate.com/pricing
-- ⚠️ `REPLICATE_API_TOKEN` not yet in `~/.gsai/ecosystem.yaml` — provision before first use
+- ⚠️ `REPLICATE_API_TOKEN` not yet in `~/ecosystem/ecosystem.yaml` — provision before first use
 
 ## Self-Improvement Feedback Loop
 

@@ -8,10 +8,10 @@ SKILL_DIR="$(cd "$(dirname "$0")" && pwd)"
 MODELS_FILE="$SKILL_DIR/models.jsonl"
 
 # Load API key
-source ~/.gsai/secrets.env 2>/dev/null || true
+source ~/ecosystem/vault/secrets.env 2>/dev/null || true
 
 if [ -z "${REPLICATE_API_TOKEN:-}" ]; then
-  echo "[replicate] REPLICATE_API_TOKEN not set — skipping model sync. Add key to ~/.gsai/secrets.env" >&2
+  echo "[replicate] REPLICATE_API_TOKEN not set — skipping model sync. Add key to ~/ecosystem/vault/secrets.env" >&2
   exit 0
 fi
 

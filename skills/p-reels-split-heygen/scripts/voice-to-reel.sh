@@ -27,7 +27,7 @@
 # FORCE_RENDER=1 to bypass the cache and force a fresh render.
 #
 # Keys: ELEVENLABS_API_KEY, HEYGEN_API_KEY — taken from the environment, else auto-loaded
-#       from ~/.gsai/secrets.env (override path with SECRETS_FILE=...).
+#       from ~/ecosystem/vault/secrets.env (override path with SECRETS_FILE=...).
 # Usage:
 #   bash voice-to-reel.sh "Script text here" /path/to/out/th.mp4
 #   SCRIPT="..." OUT=/path/th.mp4 bash voice-to-reel.sh
@@ -37,8 +37,8 @@
 set -euo pipefail
 
 # Load keys from the canonical secrets file if not already in the environment.
-# Single source of truth: ~/.gsai/secrets.env (also feeds heygen-credit-check.sh).
-SECRETS_FILE="${SECRETS_FILE:-${HOME}/.gsai/secrets.env}"
+# Single source of truth: ~/ecosystem/vault/secrets.env (also feeds heygen-credit-check.sh).
+SECRETS_FILE="${SECRETS_FILE:-${HOME}/ecosystem/vault/secrets.env}"
 if { [ -z "${ELEVENLABS_API_KEY:-}" ] || [ -z "${HEYGEN_API_KEY:-}" ]; } && [ -f "$SECRETS_FILE" ]; then
   # shellcheck source=/dev/null
   set +u; source "$SECRETS_FILE"; set -u

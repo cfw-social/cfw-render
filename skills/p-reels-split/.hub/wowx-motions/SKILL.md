@@ -95,7 +95,7 @@ true volumetric orbit/tilt with real depth, parallax, lighting, and reflections.
 
 A *true* 3D orbit/tilt (the TiltIt look: footage on a 3D plane, HDRI reflections, a real camera
 circling it) requires the **Wowx 3D engine** (React Three Fiber + WebGL). That is the roadmap path,
-not something pure FFmpeg can do. See `/Users/vasanth/Code/Wowx/05-implementation-plan.md`.
+not something pure FFmpeg can do. See `/Users/vasanth/Code/_scratch/Wowx/05-implementation-plan.md`.
 
 When the 3D engine exists, these same motion names map onto real R3F camera paths — the registry and
 the eased-parameter math in `wowx_motion.py` are the spec for that port.

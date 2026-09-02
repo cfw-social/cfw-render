@@ -2,8 +2,8 @@
 """
 sync-skills.py — worker for scripts/sync-skills.sh.
 
-Reads the recipe allowlist from cfw-skills-pack's pack.config.json, copies each
-enabled recipe PLUS the transitive closure of its dependsOn graph (cycle-safe)
+Reads the recipe allowlist from cfw-render's own config/recipes.json, copies each
+listed recipe PLUS the transitive closure of its dependsOn graph (cycle-safe)
 from the private source skills repo into <out-dir>/<recipe>/ (own files) and
 <out-dir>/<recipe>/.hub/<dep>/ (each dependency, flattened — not nested), then
 writes <out-dir>/index.json in the shape scripts/verify-skills-bundle.sh and
@@ -105,7 +105,7 @@ def list_files(root: Path) -> list[str]:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", required=True, help="private source skills repo root")
-    ap.add_argument("--pack-config", required=True, help="path to pack.config.json")
+    ap.add_argument("--recipes", required=True, help="path to cfw-render's config/recipes.json (allowlist)")
     ap.add_argument("--out-dir", required=True, help="output skills/ dir")
     args = ap.parse_args()
 
@@ -113,10 +113,10 @@ def main():
     out_root = Path(args.out_dir)
     out_root.mkdir(parents=True, exist_ok=True)
 
-    pack_config = json.loads(Path(args.pack_config).read_text(encoding="utf-8"))
-    allowlist = [r["name"] for r in pack_config.get("recipes", []) if r.get("enabled")]
+    recipes_config = json.loads(Path(args.recipes).read_text(encoding="utf-8"))
+    allowlist = [r["name"] for r in recipes_config.get("recipes", [])]
     if not allowlist:
-        print("sync-skills.py: ERROR — no enabled recipes found in pack.config.json", file=sys.stderr)
+        print("sync-skills.py: ERROR — no recipes found in config/recipes.json", file=sys.stderr)
         sys.exit(1)
 
     print(f"sync-skills.py: {len(allowlist)} enabled recipe(s): {', '.join(allowlist)}")
@@ -157,7 +157,7 @@ def main():
         agg_src = "\n".join(f"{f}={file_hashes[f]}" for f in sorted(files))
         checksum = "sha256:" + hashlib.sha256(agg_src.encode("utf-8")).hexdigest()
 
-        entry = next((r for r in pack_config["recipes"] if r["name"] == recipe), {})
+        entry = next((r for r in recipes_config["recipes"] if r["name"] == recipe), {})
         index["recipes"][recipe] = {
             "version": entry.get("version", "1.0.0"),
             "checksum": checksum,

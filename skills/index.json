@@ -1,12 +1,12 @@
 {
-  "generatedAt": "2026-09-01T06:11:24Z",
+  "generatedAt": "2026-09-02T04:03:32Z",
   "release": null,
   "sourceSha": null,
   "rawBase": null,
   "recipes": {
     "p-ai-character": {
       "version": "1.0.0",
-      "checksum": "sha256:ec7f9f9bffb06fb0157438d2711f2a5e9294fdfbc45ea23c509c797aa42da268",
+      "checksum": "sha256:d02f38f7cb0e44637c65fdec96da0e83a76bef43a302ccf7c44cfff4f46050ba",
       "files": [
         ".hub/c-ai-media/LEARNINGS.md",
         ".hub/c-ai-media/SKILL.md",
@@ -50,9 +50,9 @@
         ".hub/c-ffmpeg/references/landscape-pip.md": "sha256:af42cbc01898b4480ce82754ba449d323fa07695ed91e843586deb7af3166e24",
         ".hub/c-ffmpeg/references/portrait-layouts.md": "sha256:1e9375ec6e57908c45a3f80a52a577fda58356d29be46b568662ff20e0910570",
         ".hub/c-kie-ai/LEARNINGS.md": "sha256:49b05e6e8d2197e4381f1e1045d061ab3ac6e33adc2d9fd689eb1ef24d0e9100",
-        ".hub/c-kie-ai/SKILL.md": "sha256:c69e4134788fbcd5fc00ca469325aa55802596f70ed113c38745732b6e5fdb09",
+        ".hub/c-kie-ai/SKILL.md": "sha256:efc423c5ef47ed3d17d1ff529d4d6cc429c7491442de3d77998c00e12ba1706d",
         ".hub/c-kie-ai/models.jsonl": "sha256:433624341ba9072dc45897aef9ac7c5a836bc39602bbecd36da6389870614ab9",
-        ".hub/c-kie-ai/sync-models.sh": "sha256:7a2b6f0c8ecb9a4b421d3bf674bb271702c269f88870f5ac71d5484e29e1103f",
+        ".hub/c-kie-ai/sync-models.sh": "sha256:10e877c6f819be60b391d9188ca685df284f995cafd11a4048b94c9a888b9c34",
         ".hub/c-music/LEARNINGS.md": "sha256:6ce61e3b9ba4278fa11fed04b5794c3025883620bb65a0f6c9abfa2e162ac34e",
         ".hub/c-music/SKILL.md": "sha256:8852f89b81dd2747c3eaf9d4aa7005a05aa3c729814896cf2e2f3721b322f679",
         ".hub/c-shorts-qa-gate/LEARNINGS.md": "sha256:16ce1043150babac85cab811b163224d489a1e93e8a0f0cdd1e55c22c4de9ced",
@@ -76,7 +76,7 @@
     },
     "p-ai-image": {
       "version": "1.0.0",
-      "checksum": "sha256:d992e03713afd172d233d75dc5ff75eac3ebd418cad61132ddba17997e083aae",
+      "checksum": "sha256:7a6d2417d10eeb8c33d0f244d3a2f1f4c52ef13b0e050e46a9e002bdcfeee427",
       "files": [
         ".hub/c-ai-media/LEARNINGS.md",
         ".hub/c-ai-media/SKILL.md",
@@ -172,13 +172,13 @@
         ".hub/c-html-gfx/LEARNINGS.md": "sha256:0402cc89f8f46509adc86540dbefe577239950648942f7aa8d7791b05fc7b109",
         ".hub/c-html-gfx/SKILL.md": "sha256:63d993eeece01f3974230c2ad6426704829848e675c42bd5003d7743be945cdb",
         ".hub/c-kie-ai/LEARNINGS.md": "sha256:49b05e6e8d2197e4381f1e1045d061ab3ac6e33adc2d9fd689eb1ef24d0e9100",
-        ".hub/c-kie-ai/SKILL.md": "sha256:c69e4134788fbcd5fc00ca469325aa55802596f70ed113c38745732b6e5fdb09",
+        ".hub/c-kie-ai/SKILL.md": "sha256:efc423c5ef47ed3d17d1ff529d4d6cc429c7491442de3d77998c00e12ba1706d",
         ".hub/c-kie-ai/models.jsonl": "sha256:433624341ba9072dc45897aef9ac7c5a836bc39602bbecd36da6389870614ab9",
-        ".hub/c-kie-ai/sync-models.sh": "sha256:7a2b6f0c8ecb9a4b421d3bf674bb271702c269f88870f5ac71d5484e29e1103f",
+        ".hub/c-kie-ai/sync-models.sh": "sha256:10e877c6f819be60b391d9188ca685df284f995cafd11a4048b94c9a888b9c34",
         ".hub/c-replicate/LEARNINGS.md": "sha256:dfc43300baace52a0498c660222160b7e3ade74b3549b718d08fd0fcf6e9a5b6",
-        ".hub/c-replicate/SKILL.md": "sha256:eb7e20f2c3b336aa6f8b7f889769615287ee6af9a8772d2c8c5c9c18ead27804",
+        ".hub/c-replicate/SKILL.md": "sha256:b9b6e3419c5af887db481f8081e0b9014b44600f0c8c28c085a52c3636a42fd8",
         ".hub/c-replicate/models.jsonl": "sha256:58a800a630ea336f5e6f5135dc4ae3b70ed0fec90b011717258ff305a5ba55f9",
-        ".hub/c-replicate/sync-models.sh": "sha256:e2a76ace13b3d4e704cb31a5acb288e928f5fe8f3f8116ddff1e2d548cbda509",
+        ".hub/c-replicate/sync-models.sh": "sha256:d7ce51d52b58e09bf9c2f404d0e6311bb9012c2830f8cd99f5a646492bf85403",
         ".hub/c-thumbnail/SKILL.md": "sha256:12bf3fdad9c06e585ce61059430567c01527260e0a43af8de53d8509f8c96941",
         ".hub/c-thumbnail/references/avatar-greenscreen-split.md": "sha256:839f211dbee0f1d8d3c25a4d2fd5c8395e353626239664d59e88acee5af57511",
         ".hub/c-thumbnail/references/template-before-after-split.html": "sha256:6503575ad4fb08490214487b3d4e3f5ca5d3b48243f9e1c1257b11b126fd9455",
@@ -249,7 +249,7 @@
     },
     "p-clone-reel": {
       "version": "1.0.0",
-      "checksum": "sha256:7a3ecff9d6271885e9d3c7db6c79f83a3fcfee157bdd3d7066a42e34576af9bb",
+      "checksum": "sha256:b2bf65e02c24d0b064235e22a66a59d5b44bc87b4e907b6f04d03b2bc337374b",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -328,8 +328,8 @@
         "examples.json"
       ],
       "fileHashes": {
-        ".hub/c-audio/LEARNINGS.md": "sha256:9a291f50ecd31e3ff95aa82893aa688761d80f9c7b1f3eca9768279d09d15f8f",
-        ".hub/c-audio/SKILL.md": "sha256:e8cdf63463444f6e6b231a3abc035919d3f866ec6bcdd757d169d557d6eb1f8a",
+        ".hub/c-audio/LEARNINGS.md": "sha256:f825c32045ac152b4065393c92d7589936b38ca89c92ebfd25a4b8d1ad1054aa",
+        ".hub/c-audio/SKILL.md": "sha256:a4cd2c7fbabb12763726cfb4b52b8a9d8b8645e6b64417ec530b7e8626941879",
         ".hub/c-broll/LEARNINGS.md": "sha256:2063aee967e5e0cb45e3093a2a6c593537a2b215657afe2c241dd694abc8a649",
         ".hub/c-broll/SKILL.md": "sha256:b2d8f12b2548f0a829304354c73d1085bfb46152ec8c8e6b1d5f6ad8d1a6b5f8",
         ".hub/c-cloud-media/LEARNINGS.md": "sha256:bd3fc51f0d21c894bcf3a8bbbaab8d7c47165564aedd600b855a8633e0eabfd9",
@@ -345,13 +345,13 @@
         ".hub/c-ffmpeg/references/delivery.md": "sha256:2da997a5b93ce4c59a9da84863341a3087ae7ef48a5ecc49a140c665e3749392",
         ".hub/c-ffmpeg/references/landscape-pip.md": "sha256:af42cbc01898b4480ce82754ba449d323fa07695ed91e843586deb7af3166e24",
         ".hub/c-ffmpeg/references/portrait-layouts.md": "sha256:1e9375ec6e57908c45a3f80a52a577fda58356d29be46b568662ff20e0910570",
-        ".hub/c-heygen/LEARNINGS.md": "sha256:087ebf121db8d245829331e12948bab8b8e6b4d5b3bd948a3e3e8e1450f2a291",
-        ".hub/c-heygen/SKILL.md": "sha256:52039403ee7d0be460581466df107e10edeeb354563065d018e6ba62c1401119",
+        ".hub/c-heygen/LEARNINGS.md": "sha256:4e5a4bbce917fa8a3b075b2f0d54caa811991b99b51a8f6f2595350e449c58c1",
+        ".hub/c-heygen/SKILL.md": "sha256:921af48d1fc8966570e0efa230da2153f5974680c35d6670c06cbc386f783073",
         ".hub/c-heygen/references/browser-render.md": "sha256:bece956f4fe835bd0045dcd1ed849e43e681176c3abe1132684864cf7009c330",
         ".hub/c-html-gfx/LEARNINGS.md": "sha256:0402cc89f8f46509adc86540dbefe577239950648942f7aa8d7791b05fc7b109",
         ".hub/c-html-gfx/SKILL.md": "sha256:63d993eeece01f3974230c2ad6426704829848e675c42bd5003d7743be945cdb",
         ".hub/c-production/LEARNINGS.md": "sha256:3ac1f2a5de7b61ac81cd04352e4d3e1e2fe656ccaeb645f98e255a05b12fae1b",
-        ".hub/c-production/SKILL.md": "sha256:c145b72018413a836b33d263221cc745022eb5643dededa028ca4b8983c273d4",
+        ".hub/c-production/SKILL.md": "sha256:3609b1d1cf6405a43bdcc3e2b5689cfe6b2a004b7e4503b41df06fe4d225439a",
         ".hub/c-script/LEARNINGS.md": "sha256:d2bad99665351c4ffe0a809ef7990875847febb2df9113b8c8ba200e67dbfe33",
         ".hub/c-script/SKILL.md": "sha256:ba1d83d551ec02cd7ae634fe6b5fd9017f74433f54ada1a8b7b689d355efdf0c",
         ".hub/c-shorts-qa-gate/LEARNINGS.md": "sha256:16ce1043150babac85cab811b163224d489a1e93e8a0f0cdd1e55c22c4de9ced",
@@ -607,7 +607,7 @@
     },
     "p-longform": {
       "version": "1.0.0",
-      "checksum": "sha256:da73d196383ff5f48b17c53eedb4e07d7f58657146ef361e10c74af15311ab3b",
+      "checksum": "sha256:3152517d96aa49569ddd0d31cd89dff2fbfb3152a7378644d56a1c936cad6dd6",
       "files": [
         ".hub/c-ai-media/LEARNINGS.md",
         ".hub/c-ai-media/SKILL.md",
@@ -758,8 +758,8 @@
       "fileHashes": {
         ".hub/c-ai-media/LEARNINGS.md": "sha256:bc65543cccd0aae138f9cdba79705d94e73c158b607b5c5aab56e810ba13fa76",
         ".hub/c-ai-media/SKILL.md": "sha256:1b4fe7ecf0246e33f08fd0d4e620c82850801cd265aa156607b08f1f69973d0a",
-        ".hub/c-audio/LEARNINGS.md": "sha256:9a291f50ecd31e3ff95aa82893aa688761d80f9c7b1f3eca9768279d09d15f8f",
-        ".hub/c-audio/SKILL.md": "sha256:e8cdf63463444f6e6b231a3abc035919d3f866ec6bcdd757d169d557d6eb1f8a",
+        ".hub/c-audio/LEARNINGS.md": "sha256:f825c32045ac152b4065393c92d7589936b38ca89c92ebfd25a4b8d1ad1054aa",
+        ".hub/c-audio/SKILL.md": "sha256:a4cd2c7fbabb12763726cfb4b52b8a9d8b8645e6b64417ec530b7e8626941879",
         ".hub/c-broll-sync/SKILL.md": "sha256:a5d72389fb32fb4587f1749c440a1fbb67f8a5e2f623ba1058cc0b55731920f5",
         ".hub/c-broll-sync/scripts/plan.js": "sha256:eb2d4e507cf48c9c8f64f94743ad8e0fb1cdcc45b5e06752ffcd4507eabcfd12",
         ".hub/c-broll/LEARNINGS.md": "sha256:2063aee967e5e0cb45e3093a2a6c593537a2b215657afe2c241dd694abc8a649",
@@ -777,17 +777,17 @@
         ".hub/c-ffmpeg/references/delivery.md": "sha256:2da997a5b93ce4c59a9da84863341a3087ae7ef48a5ecc49a140c665e3749392",
         ".hub/c-ffmpeg/references/landscape-pip.md": "sha256:af42cbc01898b4480ce82754ba449d323fa07695ed91e843586deb7af3166e24",
         ".hub/c-ffmpeg/references/portrait-layouts.md": "sha256:1e9375ec6e57908c45a3f80a52a577fda58356d29be46b568662ff20e0910570",
-        ".hub/c-heygen/LEARNINGS.md": "sha256:087ebf121db8d245829331e12948bab8b8e6b4d5b3bd948a3e3e8e1450f2a291",
-        ".hub/c-heygen/SKILL.md": "sha256:52039403ee7d0be460581466df107e10edeeb354563065d018e6ba62c1401119",
+        ".hub/c-heygen/LEARNINGS.md": "sha256:4e5a4bbce917fa8a3b075b2f0d54caa811991b99b51a8f6f2595350e449c58c1",
+        ".hub/c-heygen/SKILL.md": "sha256:921af48d1fc8966570e0efa230da2153f5974680c35d6670c06cbc386f783073",
         ".hub/c-heygen/references/browser-render.md": "sha256:bece956f4fe835bd0045dcd1ed849e43e681176c3abe1132684864cf7009c330",
         ".hub/c-html-gfx/LEARNINGS.md": "sha256:0402cc89f8f46509adc86540dbefe577239950648942f7aa8d7791b05fc7b109",
         ".hub/c-html-gfx/SKILL.md": "sha256:63d993eeece01f3974230c2ad6426704829848e675c42bd5003d7743be945cdb",
         ".hub/c-kie-ai/LEARNINGS.md": "sha256:49b05e6e8d2197e4381f1e1045d061ab3ac6e33adc2d9fd689eb1ef24d0e9100",
-        ".hub/c-kie-ai/SKILL.md": "sha256:c69e4134788fbcd5fc00ca469325aa55802596f70ed113c38745732b6e5fdb09",
+        ".hub/c-kie-ai/SKILL.md": "sha256:efc423c5ef47ed3d17d1ff529d4d6cc429c7491442de3d77998c00e12ba1706d",
         ".hub/c-kie-ai/models.jsonl": "sha256:433624341ba9072dc45897aef9ac7c5a836bc39602bbecd36da6389870614ab9",
-        ".hub/c-kie-ai/sync-models.sh": "sha256:7a2b6f0c8ecb9a4b421d3bf674bb271702c269f88870f5ac71d5484e29e1103f",
+        ".hub/c-kie-ai/sync-models.sh": "sha256:10e877c6f819be60b391d9188ca685df284f995cafd11a4048b94c9a888b9c34",
         ".hub/c-production/LEARNINGS.md": "sha256:3ac1f2a5de7b61ac81cd04352e4d3e1e2fe656ccaeb645f98e255a05b12fae1b",
-        ".hub/c-production/SKILL.md": "sha256:c145b72018413a836b33d263221cc745022eb5643dededa028ca4b8983c273d4",
+        ".hub/c-production/SKILL.md": "sha256:3609b1d1cf6405a43bdcc3e2b5689cfe6b2a004b7e4503b41df06fe4d225439a",
         ".hub/c-reel-premium/SKILL.md": "sha256:743df59e17707fced213e051d04290eb90fc8a2b730db86d5eec90fe4f91cafd",
         ".hub/c-reel-premium/assets/sfx/click.wav": "sha256:4fd295f33b4d942d0e66b92c94da7ac73b28e537ebb0bff351b8902bb6309d89",
         ".hub/c-reel-premium/assets/sfx/impact-punch.wav": "sha256:3e0c9c3e9747a01bf47508a636ae64dc365e9f0fef8ccbf09526d5dc124cb1b3",
@@ -896,9 +896,9 @@
         ".hub/f-remotion/rules/trimming.md": "sha256:ae00948f6a903e384c7c312896adba9b50ed592f24a5a090699b7345849b36b9",
         ".hub/f-remotion/rules/videos.md": "sha256:d9d3032a57f92c759daf0bd60b3282f6810ecc9958e9093a6b828de623b05328",
         ".hub/f-remotion/rules/voiceover.md": "sha256:60340034cf422052007183d031171b3c88422dd3fe85f0d915283dd8ec5df3e8",
-        ".hub/wowx-motions/SKILL.md": "sha256:00b169e24a271c774c50cade24e8e1e39f7bd7c3b298141942f039e97e9dcf59",
+        ".hub/wowx-motions/SKILL.md": "sha256:d48efdbc956ef474b7f6c3fcaddf2ee157737258dc8cab17247373f5895b6950",
         ".hub/wowx-motions/wowx_motion.py": "sha256:72439824e3e73fc13dc00aaedd632f4aed0f31cefb1748a93a64147e9245423a",
-        "SKILL.md": "sha256:d1751a8a9f649b7a2250b9acf1b35d329a7e74ec66f68284eef000ed684e4a15",
+        "SKILL.md": "sha256:240fc8dd831085c6634884b389108d42f3410135922ac90c4fb1152a65dfe627",
         "acceptance.json": "sha256:2794110c5b380b87699e3c6fead523da5040fcbb257ca254a88428ab16c50b45",
         "examples.json": "sha256:50a5ce9affe598348697ae157f65725a4d04127a979dcfce8d764507fcf067e3"
       },
@@ -929,7 +929,7 @@
     },
     "p-reels-pip": {
       "version": "1.0.0",
-      "checksum": "sha256:b7f1e6b7fefb5513c06505f57059772ab075091c929ad2f94615b9f66890ca43",
+      "checksum": "sha256:50815a0c4d7bc716c0731552f47dbad7792a06360698f55938cc2c00e43a3746",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1027,8 +1027,8 @@
         "templates/motion-card.html"
       ],
       "fileHashes": {
-        ".hub/c-audio/LEARNINGS.md": "sha256:9a291f50ecd31e3ff95aa82893aa688761d80f9c7b1f3eca9768279d09d15f8f",
-        ".hub/c-audio/SKILL.md": "sha256:e8cdf63463444f6e6b231a3abc035919d3f866ec6bcdd757d169d557d6eb1f8a",
+        ".hub/c-audio/LEARNINGS.md": "sha256:f825c32045ac152b4065393c92d7589936b38ca89c92ebfd25a4b8d1ad1054aa",
+        ".hub/c-audio/SKILL.md": "sha256:a4cd2c7fbabb12763726cfb4b52b8a9d8b8645e6b64417ec530b7e8626941879",
         ".hub/c-broll-sync/SKILL.md": "sha256:a5d72389fb32fb4587f1749c440a1fbb67f8a5e2f623ba1058cc0b55731920f5",
         ".hub/c-broll-sync/scripts/plan.js": "sha256:eb2d4e507cf48c9c8f64f94743ad8e0fb1cdcc45b5e06752ffcd4507eabcfd12",
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
@@ -1382,7 +1382,7 @@
     },
     "p-reels-faceless": {
       "version": "1.0.0",
-      "checksum": "sha256:7134ddf3ce435fbd8df58e5a2e1d8d63ef3624f1f45b50a2fcf29b2a9acb5069",
+      "checksum": "sha256:34e9682d4bce6f9761c20ed463df4b8c38400d144c863a4d679a3e79f7bd1cda",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1484,8 +1484,8 @@
         "examples.json"
       ],
       "fileHashes": {
-        ".hub/c-audio/LEARNINGS.md": "sha256:9a291f50ecd31e3ff95aa82893aa688761d80f9c7b1f3eca9768279d09d15f8f",
-        ".hub/c-audio/SKILL.md": "sha256:e8cdf63463444f6e6b231a3abc035919d3f866ec6bcdd757d169d557d6eb1f8a",
+        ".hub/c-audio/LEARNINGS.md": "sha256:f825c32045ac152b4065393c92d7589936b38ca89c92ebfd25a4b8d1ad1054aa",
+        ".hub/c-audio/SKILL.md": "sha256:a4cd2c7fbabb12763726cfb4b52b8a9d8b8645e6b64417ec530b7e8626941879",
         ".hub/c-broll-sync/SKILL.md": "sha256:a5d72389fb32fb4587f1749c440a1fbb67f8a5e2f623ba1058cc0b55731920f5",
         ".hub/c-broll-sync/scripts/plan.js": "sha256:eb2d4e507cf48c9c8f64f94743ad8e0fb1cdcc45b5e06752ffcd4507eabcfd12",
         ".hub/c-broll/LEARNINGS.md": "sha256:2063aee967e5e0cb45e3093a2a6c593537a2b215657afe2c241dd694abc8a649",
@@ -1579,7 +1579,7 @@
         ".hub/f-hyperframes/scripts/contrast-report.mjs": "sha256:a916382bd40f197ee0109160241f6e35f317158f281dc643d200eb006dff29be",
         ".hub/f-hyperframes/visual-styles.md": "sha256:d173663b4342d830e46c5cc14a1ffafe6dbc6daca0702b0a451db3ce914693cc",
         "LEARNINGS.md": "sha256:c1bf6a8b5993264dedfc055f426692d7e9d3f96ef81765f66456485876e011ed",
-        "SKILL.md": "sha256:920b9fd79d2e4541e256c1a4fd8bf71c8ed2d4bba5abf17af42d173f060ee26d",
+        "SKILL.md": "sha256:6b11eb045a4c2c49c1fefe450a672b6414ffb837734a08b4e99a194ba8d51024",
         "acceptance.json": "sha256:0d29eaf443e468d148e96f20d6e07966e963665bea7e020217d87757d44ab332",
         "examples.json": "sha256:3e2cf4a6af70a9cedd23df689f718890130bf5fd3196aac2f026436101952d62"
       },
@@ -1603,7 +1603,7 @@
     },
     "p-reels-split": {
       "version": "1.0.0",
-      "checksum": "sha256:1ee46a89c54075c9901d2939fd7d258adea1735a849e8476505f58ecdf3624a4",
+      "checksum": "sha256:7292b5896c04871b765b9c1379d81d518e9d5aba084bf52b3153c798c113df96",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1703,8 +1703,8 @@
         "templates/split-motion-card.html"
       ],
       "fileHashes": {
-        ".hub/c-audio/LEARNINGS.md": "sha256:9a291f50ecd31e3ff95aa82893aa688761d80f9c7b1f3eca9768279d09d15f8f",
-        ".hub/c-audio/SKILL.md": "sha256:e8cdf63463444f6e6b231a3abc035919d3f866ec6bcdd757d169d557d6eb1f8a",
+        ".hub/c-audio/LEARNINGS.md": "sha256:f825c32045ac152b4065393c92d7589936b38ca89c92ebfd25a4b8d1ad1054aa",
+        ".hub/c-audio/SKILL.md": "sha256:a4cd2c7fbabb12763726cfb4b52b8a9d8b8645e6b64417ec530b7e8626941879",
         ".hub/c-broll-sync/SKILL.md": "sha256:a5d72389fb32fb4587f1749c440a1fbb67f8a5e2f623ba1058cc0b55731920f5",
         ".hub/c-broll-sync/scripts/plan.js": "sha256:eb2d4e507cf48c9c8f64f94743ad8e0fb1cdcc45b5e06752ffcd4507eabcfd12",
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
@@ -1793,7 +1793,7 @@
         ".hub/f-hyperframes/scripts/animation-map.mjs": "sha256:44166b4bf1eb7fa03e3a51648df7c70838ccc9af7b63de8de1a7d93b764b28d2",
         ".hub/f-hyperframes/scripts/contrast-report.mjs": "sha256:a916382bd40f197ee0109160241f6e35f317158f281dc643d200eb006dff29be",
         ".hub/f-hyperframes/visual-styles.md": "sha256:d173663b4342d830e46c5cc14a1ffafe6dbc6daca0702b0a451db3ce914693cc",
-        ".hub/wowx-motions/SKILL.md": "sha256:00b169e24a271c774c50cade24e8e1e39f7bd7c3b298141942f039e97e9dcf59",
+        ".hub/wowx-motions/SKILL.md": "sha256:d48efdbc956ef474b7f6c3fcaddf2ee157737258dc8cab17247373f5895b6950",
         ".hub/wowx-motions/wowx_motion.py": "sha256:72439824e3e73fc13dc00aaedd632f4aed0f31cefb1748a93a64147e9245423a",
         "SKILL.md": "sha256:355558c63577b05ce9b97ad64625e98ce8e400e659fc9afa67194bb1c4a36656",
         "acceptance.json": "sha256:f6119b3a0eddac0ea5c5ed104f3e11147cdc6e0ef80a220b5e880b7be165da1b",
@@ -1819,7 +1819,7 @@
     },
     "p-reels-pip-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:bf57d99fd30a0c89402e29166817d9f76fa1cfe172b895bf4b1c56d9c3abfd6e",
+      "checksum": "sha256:975cbbfabe62fe5b0d1b37e9e0e19033b33f6b5f1f3a26b066b2783e187c1bd7",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1921,8 +1921,8 @@
         "SKILL.md"
       ],
       "fileHashes": {
-        ".hub/c-audio/LEARNINGS.md": "sha256:9a291f50ecd31e3ff95aa82893aa688761d80f9c7b1f3eca9768279d09d15f8f",
-        ".hub/c-audio/SKILL.md": "sha256:e8cdf63463444f6e6b231a3abc035919d3f866ec6bcdd757d169d557d6eb1f8a",
+        ".hub/c-audio/LEARNINGS.md": "sha256:f825c32045ac152b4065393c92d7589936b38ca89c92ebfd25a4b8d1ad1054aa",
+        ".hub/c-audio/SKILL.md": "sha256:a4cd2c7fbabb12763726cfb4b52b8a9d8b8645e6b64417ec530b7e8626941879",
         ".hub/c-broll-sync/SKILL.md": "sha256:a5d72389fb32fb4587f1749c440a1fbb67f8a5e2f623ba1058cc0b55731920f5",
         ".hub/c-broll-sync/scripts/plan.js": "sha256:eb2d4e507cf48c9c8f64f94743ad8e0fb1cdcc45b5e06752ffcd4507eabcfd12",
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
@@ -1936,8 +1936,8 @@
         ".hub/c-ffmpeg/references/delivery.md": "sha256:2da997a5b93ce4c59a9da84863341a3087ae7ef48a5ecc49a140c665e3749392",
         ".hub/c-ffmpeg/references/landscape-pip.md": "sha256:af42cbc01898b4480ce82754ba449d323fa07695ed91e843586deb7af3166e24",
         ".hub/c-ffmpeg/references/portrait-layouts.md": "sha256:1e9375ec6e57908c45a3f80a52a577fda58356d29be46b568662ff20e0910570",
-        ".hub/c-heygen/LEARNINGS.md": "sha256:087ebf121db8d245829331e12948bab8b8e6b4d5b3bd948a3e3e8e1450f2a291",
-        ".hub/c-heygen/SKILL.md": "sha256:52039403ee7d0be460581466df107e10edeeb354563065d018e6ba62c1401119",
+        ".hub/c-heygen/LEARNINGS.md": "sha256:4e5a4bbce917fa8a3b075b2f0d54caa811991b99b51a8f6f2595350e449c58c1",
+        ".hub/c-heygen/SKILL.md": "sha256:921af48d1fc8966570e0efa230da2153f5974680c35d6670c06cbc386f783073",
         ".hub/c-heygen/references/browser-render.md": "sha256:bece956f4fe835bd0045dcd1ed849e43e681176c3abe1132684864cf7009c330",
         ".hub/c-overlay-fx/.gitignore": "sha256:4d56952b0fb13bf8f9b6c13a6d4c34a075bac3af447636a1df4335d7576e2f97",
         ".hub/c-overlay-fx/SKILL.md": "sha256:f298ef89c5f2e9f3078130955d16fec848702177a1913c2bf8560170465f57dc",
@@ -2040,7 +2040,7 @@
     },
     "p-reels-spotlight-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:f721c587ae91b2494bbb7330423c474aebb1e8350c2ab1c1ee5e96540a420144",
+      "checksum": "sha256:617800e8e3c8023401723405a369ac7abd0c486df3f51bba645d84e2cd096e9b",
       "files": [
         ".hub/c-broll-sync/SKILL.md",
         ".hub/c-broll-sync/scripts/plan.js",
@@ -2174,8 +2174,8 @@
         ".hub/c-ffmpeg/references/delivery.md": "sha256:2da997a5b93ce4c59a9da84863341a3087ae7ef48a5ecc49a140c665e3749392",
         ".hub/c-ffmpeg/references/landscape-pip.md": "sha256:af42cbc01898b4480ce82754ba449d323fa07695ed91e843586deb7af3166e24",
         ".hub/c-ffmpeg/references/portrait-layouts.md": "sha256:1e9375ec6e57908c45a3f80a52a577fda58356d29be46b568662ff20e0910570",
-        ".hub/c-heygen/LEARNINGS.md": "sha256:087ebf121db8d245829331e12948bab8b8e6b4d5b3bd948a3e3e8e1450f2a291",
-        ".hub/c-heygen/SKILL.md": "sha256:52039403ee7d0be460581466df107e10edeeb354563065d018e6ba62c1401119",
+        ".hub/c-heygen/LEARNINGS.md": "sha256:4e5a4bbce917fa8a3b075b2f0d54caa811991b99b51a8f6f2595350e449c58c1",
+        ".hub/c-heygen/SKILL.md": "sha256:921af48d1fc8966570e0efa230da2153f5974680c35d6670c06cbc386f783073",
         ".hub/c-heygen/references/browser-render.md": "sha256:bece956f4fe835bd0045dcd1ed849e43e681176c3abe1132684864cf7009c330",
         ".hub/c-overlay-fx/.gitignore": "sha256:4d56952b0fb13bf8f9b6c13a6d4c34a075bac3af447636a1df4335d7576e2f97",
         ".hub/c-overlay-fx/SKILL.md": "sha256:f298ef89c5f2e9f3078130955d16fec848702177a1913c2bf8560170465f57dc",
@@ -2292,7 +2292,7 @@
     },
     "p-reels-split-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:2a90a2f78b1ae96138b95e8c3051405b00b4f167f911e7d973eb8f31afd6ba1b",
+      "checksum": "sha256:2c0ee88b050d5cdb4cf93a36c711a82f6d7578e63865112019826297518636e3",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -2398,8 +2398,8 @@
         "scripts/voice-to-reel.sh"
       ],
       "fileHashes": {
-        ".hub/c-audio/LEARNINGS.md": "sha256:9a291f50ecd31e3ff95aa82893aa688761d80f9c7b1f3eca9768279d09d15f8f",
-        ".hub/c-audio/SKILL.md": "sha256:e8cdf63463444f6e6b231a3abc035919d3f866ec6bcdd757d169d557d6eb1f8a",
+        ".hub/c-audio/LEARNINGS.md": "sha256:f825c32045ac152b4065393c92d7589936b38ca89c92ebfd25a4b8d1ad1054aa",
+        ".hub/c-audio/SKILL.md": "sha256:a4cd2c7fbabb12763726cfb4b52b8a9d8b8645e6b64417ec530b7e8626941879",
         ".hub/c-broll-sync/SKILL.md": "sha256:a5d72389fb32fb4587f1749c440a1fbb67f8a5e2f623ba1058cc0b55731920f5",
         ".hub/c-broll-sync/scripts/plan.js": "sha256:eb2d4e507cf48c9c8f64f94743ad8e0fb1cdcc45b5e06752ffcd4507eabcfd12",
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
@@ -2413,8 +2413,8 @@
         ".hub/c-ffmpeg/references/delivery.md": "sha256:2da997a5b93ce4c59a9da84863341a3087ae7ef48a5ecc49a140c665e3749392",
         ".hub/c-ffmpeg/references/landscape-pip.md": "sha256:af42cbc01898b4480ce82754ba449d323fa07695ed91e843586deb7af3166e24",
         ".hub/c-ffmpeg/references/portrait-layouts.md": "sha256:1e9375ec6e57908c45a3f80a52a577fda58356d29be46b568662ff20e0910570",
-        ".hub/c-heygen/LEARNINGS.md": "sha256:087ebf121db8d245829331e12948bab8b8e6b4d5b3bd948a3e3e8e1450f2a291",
-        ".hub/c-heygen/SKILL.md": "sha256:52039403ee7d0be460581466df107e10edeeb354563065d018e6ba62c1401119",
+        ".hub/c-heygen/LEARNINGS.md": "sha256:4e5a4bbce917fa8a3b075b2f0d54caa811991b99b51a8f6f2595350e449c58c1",
+        ".hub/c-heygen/SKILL.md": "sha256:921af48d1fc8966570e0efa230da2153f5974680c35d6670c06cbc386f783073",
         ".hub/c-heygen/references/browser-render.md": "sha256:bece956f4fe835bd0045dcd1ed849e43e681176c3abe1132684864cf7009c330",
         ".hub/c-overlay-fx/.gitignore": "sha256:4d56952b0fb13bf8f9b6c13a6d4c34a075bac3af447636a1df4335d7576e2f97",
         ".hub/c-overlay-fx/SKILL.md": "sha256:f298ef89c5f2e9f3078130955d16fec848702177a1913c2bf8560170465f57dc",
@@ -2495,11 +2495,11 @@
         ".hub/p-reels-split/acceptance.json": "sha256:f6119b3a0eddac0ea5c5ed104f3e11147cdc6e0ef80a220b5e880b7be165da1b",
         ".hub/p-reels-split/scripts/verify-skill.sh": "sha256:1abe4fb10104233939e232950d35c4c9051ec497e0c996a497f9266d0b664ca2",
         ".hub/p-reels-split/templates/split-motion-card.html": "sha256:b6e43527ccdef24fad2c0de6a14a9d24e012cdeabf37a0504fe248ce3cf00b4c",
-        ".hub/wowx-motions/SKILL.md": "sha256:00b169e24a271c774c50cade24e8e1e39f7bd7c3b298141942f039e97e9dcf59",
+        ".hub/wowx-motions/SKILL.md": "sha256:d48efdbc956ef474b7f6c3fcaddf2ee157737258dc8cab17247373f5895b6950",
         ".hub/wowx-motions/wowx_motion.py": "sha256:72439824e3e73fc13dc00aaedd632f4aed0f31cefb1748a93a64147e9245423a",
         "SKILL.md": "sha256:79add355e8b91a3c9653fdf154e5953403033c74bf3245e50e1fb171635ffb6d",
         "scripts/voice-to-reel.idempotency.test.sh": "sha256:8be71b5d4f98b24573d1ae41b5d6257d4a18373031796cde88a3977886264f79",
-        "scripts/voice-to-reel.sh": "sha256:86c8e1bf792ba7eb4cf7525055f6d9304f5bfe7ab2c2a5d185a3e4fe9cff3a1e"
+        "scripts/voice-to-reel.sh": "sha256:b63945725a37274cbba4d2af8fef612e514bd1ed04c98316381122fe2ad1083c"
       },
       "providers": [],
       "systemRequires": [],

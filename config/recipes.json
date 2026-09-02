@@ -1,0 +1,20 @@
+{
+  "_comment": "cfw-render's own recipe allowlist — which recipes scripts/sync-skills.sh copies from CFW_SKILLS_SRC (=~/ecosystem/skills) into skills/. Internalized 2026-09-01: replaces the former cfw-skills-pack/pack.config.json dependency (cfw-skills-pack retired). To add/remove a bundled recipe, edit this list and re-run scripts/sync-skills.sh. `version`/`providers` flow into skills/index.json per recipe.",
+  "source": "ecosystem/skills",
+  "recipes": [
+    { "name": "p-ai-character", "version": "1.0.0", "providers": [] },
+    { "name": "p-ai-image", "version": "1.0.0", "providers": [] },
+    { "name": "p-clone-reel", "version": "1.0.0", "providers": [] },
+    { "name": "p-carousel", "version": "1.0.0", "providers": [] },
+    { "name": "p-gfx-image", "version": "1.0.0", "providers": [] },
+    { "name": "p-longform", "version": "1.0.0", "providers": [] },
+    { "name": "p-reels-pip", "version": "1.0.0", "providers": [] },
+    { "name": "p-reels-spotlight", "version": "1.0.0", "providers": [] },
+    { "name": "p-reels-faceless", "version": "1.0.0", "providers": [] },
+    { "name": "p-reels-split", "version": "1.0.0", "providers": [] },
+    { "name": "p-reels-pip-heygen", "version": "1.0.0", "providers": [] },
+    { "name": "p-reels-spotlight-heygen", "version": "1.0.0", "providers": [] },
+    { "name": "p-reels-split-heygen", "version": "1.0.0", "providers": [] },
+    { "name": "c-composio", "version": "1.0.0", "providers": [] }
+  ]
+}

@@ -8,7 +8,8 @@
 #
 # Behavior:
 #   1. Requires $CFW_SKILLS_SRC (no fallback — see below).
-#   2. Reads the recipe allowlist from cfw-skills-pack's pack.config.json.
+#   2. Reads the recipe allowlist from cfw-render's own config/recipes.json
+#      (cfw-skills-pack retired — the allowlist now lives in this repo).
 #   3. For each allowlisted recipe, copies the recipe's own files AS-IS from
 #      $CFW_SKILLS_SRC/<recipe>/ into <out-dir>/<recipe>/, then computes the
 #      transitive closure of its `dependsOn` graph (cycle-safe) and copies
@@ -46,9 +47,8 @@
 #   CFW_SKILLS_SRC=/Users/vasanth/ecosystem/skills scripts/sync-skills.sh --out-dir /tmp/scratch-skills
 #
 # Options:
-#   --pack-config FILE   path to pack.config.json (recipe allowlist).
-#                        Auto-detected from known cfw-skills-pack locations if
-#                        omitted.
+#   --recipes FILE       path to the recipe allowlist (default: <repo>/config/recipes.json,
+#                        cfw-render's own internal allowlist — cfw-skills-pack retired).
 #   --out-dir DIR        where to write the synced bundle (default: <repo>/skills).
 #                        Point this at a scratch dir to dry-run without
 #                        touching the committed bundle.
@@ -66,12 +66,12 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SELF_DIR/.." && pwd)"
 
 OUT_DIR="$REPO_DIR/skills"
-PACK_CONFIG=""
+RECIPES_CONFIG="$REPO_DIR/config/recipes.json"
 SKIP_MANIFEST=0
 
 while (( $# )); do
   case "$1" in
-    --pack-config) PACK_CONFIG="$2"; shift 2 ;;
+    --recipes) RECIPES_CONFIG="$2"; shift 2 ;;
     --out-dir) OUT_DIR="$2"; shift 2 ;;
     --skip-manifest) SKIP_MANIFEST=1; shift ;;
     -*) echo "sync-skills.sh: unknown flag $1" >&2; exit 2 ;;
@@ -93,38 +93,29 @@ if [[ ! -d "$CFW_SKILLS_SRC" ]]; then
 fi
 CFW_SKILLS_SRC="$(cd "$CFW_SKILLS_SRC" && pwd)"
 
-# ---- locate pack.config.json (recipe allowlist) ----
-if [[ -z "$PACK_CONFIG" ]]; then
-  for cand in \
-    "/Users/vasanth/initiatives/cfw/cfw-skills-pack/pack.config.json" \
-    "/Users/vasanth/Code/cfw/cfw-skills-pack/pack.config.json"
-  do
-    if [[ -f "$cand" ]]; then PACK_CONFIG="$cand"; break; fi
-  done
-fi
-if [[ -z "$PACK_CONFIG" || ! -f "$PACK_CONFIG" ]]; then
-  echo "sync-skills.sh: ERROR — could not find pack.config.json (recipe allowlist)." >&2
-  echo "  Pass --pack-config <path> explicitly." >&2
+# ---- recipe allowlist (cfw-render's own config/recipes.json) ----
+if [[ ! -f "$RECIPES_CONFIG" ]]; then
+  echo "sync-skills.sh: ERROR — recipe allowlist not found at '$RECIPES_CONFIG'." >&2
+  echo "  Expected cfw-render's config/recipes.json, or pass --recipes <path> explicitly." >&2
   exit 1
 fi
 
-echo "sync-skills.sh: source      = $CFW_SKILLS_SRC"
-echo "sync-skills.sh: pack-config = $PACK_CONFIG"
-echo "sync-skills.sh: out-dir     = $OUT_DIR"
+echo "sync-skills.sh: source   = $CFW_SKILLS_SRC"
+echo "sync-skills.sh: recipes  = $RECIPES_CONFIG"
+echo "sync-skills.sh: out-dir  = $OUT_DIR"
 
 mkdir -p "$OUT_DIR"
 
 python3 "$SELF_DIR/sync-skills.py" \
   --src "$CFW_SKILLS_SRC" \
-  --pack-config "$PACK_CONFIG" \
+  --recipes "$RECIPES_CONFIG" \
   --out-dir "$OUT_DIR"
 
 if (( SKIP_MANIFEST == 0 )) && [[ "$OUT_DIR" == "$REPO_DIR/skills" ]]; then
   SOURCE_COMMIT="$(git -C "$CFW_SKILLS_SRC" rev-parse HEAD 2>/dev/null || echo unknown)"
   SOURCE_REMOTE="$(git -C "$CFW_SKILLS_SRC" remote get-url origin 2>/dev/null || echo "")"
   # Prefer the source repo's own origin slug; if it has no remote configured,
-  # fall back to pack.config.json's declared sourceSkillsRepo (the private
-  # source repo of record, e.g. "Vasanth19/skills").
+  # fall back to config/recipes.json's "source" field (default "ecosystem/skills").
   SOURCE_REPO_SLUG="$(python3 -c '
 import re, sys, json
 url = sys.argv[1]
@@ -134,10 +125,10 @@ if m:
 else:
     try:
         cfg = json.load(open(sys.argv[2]))
-        print(cfg.get("sourceSkillsRepo") or "unknown")
+        print(cfg.get("source") or "ecosystem/skills")
     except Exception:
-        print("unknown")
-' "$SOURCE_REMOTE" "$PACK_CONFIG")"
+        print("ecosystem/skills")
+' "$SOURCE_REMOTE" "$RECIPES_CONFIG")"
 
   "$SELF_DIR/gen-skills-manifest.sh" --skills-dir "$OUT_DIR" --manifest "$REPO_DIR/config/skills-version.json"
 
