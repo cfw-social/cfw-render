@@ -127,6 +127,23 @@ bin/cfw-render-ctl.sh logs [n]
 bin/cfw-render-ctl.sh unblock <orderId>   # forward-compatible; fails fast today, see below
 ```
 
+**Operator fleet-enable (CFW-16) — run from an operator machine, NOT a box:**
+
+```bash
+# Uses the MASTER key (CFW_MASTER_API_KEY), not the box's cfw_render_ worker key.
+# Read it from ~/.gsai/secrets/cfw-render-admin.env ($CFW_RENDER_ADMIN_ENV) or the env.
+bin/cfw-render-fleet.sh status  <brandId>          # read renderFleetEnabled
+bin/cfw-render-fleet.sh enable  <brandId>          # opt brand IN  (per-brand, reversible)
+bin/cfw-render-fleet.sh disable <brandId>          # opt brand OUT (instant rollback)
+bin/cfw-render-ctl.sh   fleet   status <brandId>   # same thing, via ctl
+```
+
+This is the per-brand, reversible replacement for the raw-SQL `render_fleet_enabled`
+flip. It never bulk-flips (name each brand id) and reads the value back to confirm.
+The live rollout stays gated + brand-by-brand — see `docs/deploy.md` §6. It depends
+on a small cfw-social route extension (documented in that section); until that lands
+the helper reports the gap and you use the break-glass SQL.
+
 ## Knobs
 
 Every config var is documented inline in `config/cfw-render.env.example`

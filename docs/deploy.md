@@ -81,16 +81,45 @@ rollout:
   to `submit_render_order` instead of rendering inline
   (`cfw-social/docs/cfw-render-worker-plan.md` §1b(2); doctrine via CFW-V2-071).
 - **The flip is an OPERATOR ACTION, per-brand and reversible** — never a
-  bulk code flip. `renderFleetEnabled` defaults `false`; a single DB write (or
-  the cfw-social master-key admin endpoint, when CFW-V2-073's endpoint lands)
-  is the whole flip, and reverting to `false` is an instant rollback with zero
-  box changes.
+  bulk code flip. `renderFleetEnabled` defaults `false`; the whole flip is one
+  per-brand toggle via the fleet helper (below), and reverting to `false` is an
+  instant rollback with zero box changes.
 
-### 6.1 Read current fleet state (before and after each flip)
+### 6.1 The operator fleet-enable helper (CFW-16)
 
+`bin/cfw-render-fleet.sh` (also reachable as `cfw-render-ctl.sh fleet …`) is the
+per-brand, reversible, auditable way to opt a brand in/out of the render fleet
+and read current state. It uses the **master key** (`cfw-api-key`), NOT the
+box's narrow `cfw_render_` worker key — so **run it from an operator machine,
+never a render box.** Point it at the master key via `CFW_MASTER_API_KEY` (in
+`$CFW_RENDER_ADMIN_ENV`, default `~/.gsai/secrets/cfw-render-admin.env`, or the
+process env) plus `CFW_API_BASE`:
+
+```bash
+cfw-render-fleet.sh status  <brandId> [<brandId>...]   # read renderFleetEnabled
+cfw-render-fleet.sh enable  <brandId>                   # opt brand IN  (reversible)
+cfw-render-fleet.sh disable <brandId>                   # opt brand OUT (instant rollback)
+```
+
+It flips one named brand at a time and reads the value back to confirm — it
+**never bulk-flips**. Brands are addressed by **id**; map a slug to its id with
+`SELECT id FROM brands WHERE slug = '<brand>';`.
+
+> **SERVER-SIDE FOLLOW-UP (cfw-social) — required before the live flip.** The
+> helper talks to `PATCH`/`GET /api/v1/admin/brands/:id`. That route today only
+> curates `isShowcase`; extend it to carry `renderFleetEnabled`:
+> add `renderFleetEnabled: z.boolean().optional()` to `PatchSchema` (write it
+> through `prisma.brand.update`) and add a `GET` returning
+> `{ id, renderFleetEnabled }`, both behind the existing `assertMasterOrAdmin()`
+> gate (`src/app/api/v1/admin/brands/[id]/route.ts`). Until it lands, the helper
+> reports the gap loudly and you fall back to the break-glass SQL below.
+
+**Break-glass (only until the route ships, or if the API is down):**
 ```sql
--- which brands are on cfw-render today:
+-- read current fleet state:
 SELECT id, slug, render_fleet_enabled FROM brands ORDER BY render_fleet_enabled DESC, slug;
+-- flip one brand:
+UPDATE brands SET render_fleet_enabled = true WHERE slug = 'bujji';
 ```
 
 Fleet-wide drain health (master-key context, NOT the box's narrow worker key):
@@ -100,10 +129,10 @@ attribution — use it to confirm orders are flowing `queued → done` after a f
 ### 6.2 Cutover — Bujji first (parallel-run)
 
 1. Flip **Bujji only** (not fleet-wide):
-   ```sql
-   UPDATE brands SET render_fleet_enabled = true WHERE slug = 'bujji';
+   ```bash
+   cfw-render-fleet.sh enable "$(psql ... -tAc "SELECT id FROM brands WHERE slug='bujji'")"
+   # break-glass equivalent: UPDATE brands SET render_fleet_enabled = true WHERE slug = 'bujji';
    ```
-   (or the master-key `PATCH` endpoint once CFW-V2-073 ships it — do NOT bulk-flip.)
 2. Submit one real reel via Hermes (`p-reels-spotlight` or similar). With the
    hard submit rule live, Hermes must **submit** it, not render inline.
 3. Watch `cfw-render-ctl.sh status` + the brand UI event stream end-to-end:
@@ -119,10 +148,11 @@ Only after one clean end-to-end run, flip the next brand and repeat 6.2. Keep
 going until every brand has `render_fleet_enabled = true` and
 `GET /api/v1/admin/fleet/renders` shows cfw-render draining 100% of render work.
 
-**Rollback (any brand, any time):** `UPDATE brands SET render_fleet_enabled =
-false WHERE slug = '<brand>';` — the brand's Hermes falls back to its previous
-behavior instantly; already-queued orders still drain (the worker + list
-surfaces ignore the flag for in-flight orders by design).
+**Rollback (any brand, any time):** `cfw-render-fleet.sh disable <brandId>`
+(break-glass: `UPDATE brands SET render_fleet_enabled = false WHERE slug =
+'<brand>';`) — the brand's Hermes falls back to its previous behavior instantly;
+already-queued orders still drain (the worker + list surfaces ignore the flag
+for in-flight orders by design).
 
 **Exit criteria (Phase 2):** zero inline renders on any gateway, cfw-render is
 the sole renderer, the box carries no skills (§8b).

@@ -8,6 +8,7 @@
 #   cfw-render-ctl.sh run-now
 #   cfw-render-ctl.sh logs [n]
 #   cfw-render-ctl.sh unblock <orderId>
+#   cfw-render-ctl.sh fleet {status|enable|disable} <brandId>...
 set -u
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -106,8 +107,15 @@ EOF
     exit 1
     ;;
 
+  fleet)
+    # Operator fleet-enable surface (CFW-16). Delegates to cfw-render-fleet.sh,
+    # which uses the MASTER key (operator-only) — NOT the worker key this ctl's
+    # other verbs use. Runs from an operator machine, never the box.
+    exec "$SELF_DIR/cfw-render-fleet.sh" "$@"
+    ;;
+
   *)
-    echo "cfw-render-ctl: usage: {status|run-now|logs [n]|unblock <orderId>}" >&2
+    echo "cfw-render-ctl: usage: {status|run-now|logs [n]|unblock <orderId>|fleet {status|enable|disable} <brandId>...}" >&2
     exit 2
     ;;
 esac

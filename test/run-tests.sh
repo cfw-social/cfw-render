@@ -250,6 +250,79 @@ lock_calls="$(wc -l < "$lock_mock_state/calls.jsonl" 2>/dev/null | tr -d ' ')"
 [[ -z "$lock_calls" ]] && lock_calls=0
 if [[ "$lock_calls" == "0" ]]; then pass "tick-lock: no claim while lock held"; else fail "tick-lock: claim count" "expected 0 tool calls, got $lock_calls"; fi
 
+echo "=== Case 7: fleet-enable operator surface (set + read) ==="
+# Exercises bin/cfw-render-fleet.sh against the mock's master-key admin brands
+# route. Master key differs from the worker key on purpose — flipping
+# renderFleetEnabled is a privileged operator action.
+fleet_master_key="master-test-key-cfw16"
+fleet_seed="$(mktemp)"; order_fixture order-fleet-1 brand-fleet-1 video > "$fleet_seed"
+fleet_state="$(mktemp -d)"
+fleet_port=$((MOCK_PORT_BASE + 70))
+MOCK_MASTER_KEY="$fleet_master_key" \
+  python3 "$TEST_DIR/mock-server.py" "$fleet_port" "$fleet_state" "$fleet_seed" \
+  > "$fleet_state/mock-server.log" 2>&1 &
+fleet_pid=$!
+for _ in $(seq 1 50); do
+  curl -sS --max-time 1 "http://127.0.0.1:$fleet_port/api/v1/mcp" >/dev/null 2>&1 && break
+  sleep 0.1
+done
+
+fleet_run() {  # fleet_run <extra-env-assignments...> -- <fleet args...>
+  local envs=()
+  while [[ "${1:-}" != "--" && $# -gt 0 ]]; do envs+=("$1"); shift; done
+  shift || true
+  env "${envs[@]}" \
+    CFW_API_BASE="http://127.0.0.1:$fleet_port" \
+    CFW_RENDER_ADMIN_ENV="/nonexistent-admin-env-for-tests" \
+    "$REPO_DIR/bin/cfw-render-fleet.sh" "$@"
+}
+
+# 1. initial read: false
+out="$(fleet_run "CFW_MASTER_API_KEY=$fleet_master_key" -- status brand-fleet-1 2>/dev/null)"
+if echo "$out" | grep -q "brand-fleet-1.*renderFleetEnabled=false"; then
+  pass "fleet: initial status reads false"
+else
+  fail "fleet: initial status" "expected renderFleetEnabled=false, got: $out"
+fi
+
+# 2. enable, then read back true
+out="$(fleet_run "CFW_MASTER_API_KEY=$fleet_master_key" -- enable brand-fleet-1 2>/dev/null)"; rc=$?
+if [[ "$rc" == 0 ]] && echo "$out" | grep -q "brand-fleet-1.*renderFleetEnabled=true"; then
+  pass "fleet: enable flips to true and reads back"
+else
+  fail "fleet: enable" "expected rc=0 + renderFleetEnabled=true, got rc=$rc: $out"
+fi
+out="$(fleet_run "CFW_MASTER_API_KEY=$fleet_master_key" -- status brand-fleet-1 2>/dev/null)"
+if echo "$out" | grep -q "brand-fleet-1.*renderFleetEnabled=true"; then
+  pass "fleet: status reflects enabled state (persisted)"
+else
+  fail "fleet: status after enable" "expected renderFleetEnabled=true, got: $out"
+fi
+
+# 3. disable, read back false (reversible)
+out="$(fleet_run "CFW_MASTER_API_KEY=$fleet_master_key" -- disable brand-fleet-1 2>/dev/null)"; rc=$?
+if [[ "$rc" == 0 ]] && echo "$out" | grep -q "brand-fleet-1.*renderFleetEnabled=false"; then
+  pass "fleet: disable flips back to false (reversible)"
+else
+  fail "fleet: disable" "expected rc=0 + renderFleetEnabled=false, got rc=$rc: $out"
+fi
+
+# 4. missing master key: refuse (fail fast, no call)
+if fleet_run "CFW_RENDER_ADMIN_ENV=/nonexistent" -- status brand-fleet-1 >/dev/null 2>&1; then
+  fail "fleet: missing master key" "expected non-zero exit when CFW_MASTER_API_KEY unset"
+else
+  pass "fleet: refuses without a master key"
+fi
+
+# 5. wrong master key: 401, non-zero exit
+if fleet_run "CFW_MASTER_API_KEY=wrong-key" -- enable brand-fleet-1 >/dev/null 2>&1; then
+  fail "fleet: wrong master key" "expected non-zero exit on 401"
+else
+  pass "fleet: rejects a wrong master key"
+fi
+
+kill "$fleet_pid" 2>/dev/null; wait "$fleet_pid" 2>/dev/null
+
 echo ""
 echo "=== Lint ==="
 if "$REPO_DIR/scripts/lint.sh"; then
