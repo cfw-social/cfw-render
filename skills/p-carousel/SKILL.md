@@ -120,17 +120,38 @@ convert $(ls -v slides/slide-*.png) "final/carousel-<topic-slug>.pdf"
 ```
 → Output: `final/carousel-<topic-slug>.pdf` + the individual `slides/*.png` (for platforms that take images).
 
-### Step 7 — Caption
+### Step 7 — Captions (per platform) → `final/captions.json` (MANDATORY)
 
-→ Skill: `c-script` — write the post copy:
+→ Skill: `c-script` — write the post copy ONCE per target platform, in the
+brand voice, from the slide copy you just rendered (same hook, same numbers,
+same CTA — never new claims):
 - Hook line (matches the cover slide)
 - Tease slides 2–3 (don't give it all away)
 - CTA: "Save this + follow for more"
-- 3–5 relevant hashtags
+- 3–5 relevant hashtags (platform-appropriate — none at the start on LinkedIn, none on X)
+
+Write them as ONE JSON object keyed by lower-cased platform name — every
+platform in the order's `targets` (a carousel dish with no caption cannot
+be published; the owner sees "No caption" in Reviews):
+
+```bash
+cat > final/captions.json <<'JSON'
+{
+  "linkedin":  "<3–6 short paragraphs; hashtags only at the end, ≤ 3000 chars>",
+  "instagram": "<hook + 2–4 lines + CTA + 3–8 hashtags, ≤ 2200 chars>",
+  "facebook":  "<the Instagram body without the hashtag block>",
+  "threads":   "<≤ 500 chars, conversational, ≤ 2 hashtags>",
+  "twitter":   "<≤ 280 chars, hook-first, no hashtags>"
+}
+JSON
+python3 -c 'import json; d=json.load(open("final/captions.json")); assert d and all(v.strip() for v in d.values()), "blank caption"'
+```
 
 ### Step 8 — Deliver ⛔ CHECKPOINT
 
-Deliver: PDF + slide PNGs + caption `.txt`.
+Deliver: slide PNGs (cover first, in order) + PDF last + `final/captions.json`
+(`cfw-render-report.sh complete final/slide-1.png … final/carousel-<slug>.pdf`
+picks the captions file up automatically and sends it as `captions`).
 **Gate: User approves caption before scheduling.**
 
 ## Self-Improvement Feedback Loop

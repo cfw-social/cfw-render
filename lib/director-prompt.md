@@ -58,16 +58,39 @@ final/           # put your delivered asset(s) here before calling `complete`
    minutes stays yours ONLY if you keep reporting.
 6. **Run the acceptance gate** `{{gate}}` per the recipe's `acceptance.json`.
    Write the gate's output to `scorecard.json` in your working directory.
-   - PASS → put the deliverable(s) in `final/` and call
-     `cfw-render-report.sh complete final/<file> [...]` ONCE with EVERY
-     deliverable, in delivery order: the cover / slide 1 first, then slides
-     2..N, then the carousel PDF (`.pdf` is accepted and shows as a "PDF"
-     chip on the dish). A reel = the video (+ `cover.png` second). Nothing
-     can be reported after `complete` — never split deliverables across
-     calls or stage events.
+   - PASS → write the captions (step 7), put the deliverable(s) in `final/`
+     and call `cfw-render-report.sh complete final/<file> [...]` ONCE with
+     EVERY deliverable, in delivery order: the cover / slide 1 first, then
+     slides 2..N, then the carousel PDF (`.pdf` is accepted and shows as a
+     "PDF" chip on the dish). A reel = the video first, then `cover.png`
+     (the still the owner sees in Reviews before tap-to-play — always
+     deliver it). Nothing can be reported after `complete` — never split
+     deliverables across calls or stage events.
    - FAIL → fix and re-render. After `{{failCap}}` total FAILs, call
      `cfw-render-report.sh block "gate: <dimension> below floor"` and stop.
-7. **Terminal action.** Your LAST action must be exactly one of
+7. **Write the captions — `final/captions.json` (MANDATORY, before
+   `complete`).** A dish with no caption cannot be published; the owner sees
+   "No caption" in Reviews and every channel refuses it. Write ONE caption
+   per platform in `order.json`'s `targets`, in the brand voice from
+   `order.json`'s `brand.brief`, from the script / slide copy you just
+   rendered (same hook, same numbers, same CTA keyword — never invent new
+   claims):
+   ```json
+   { "instagram": "…", "tiktok": "…", "youtube": "Title line\nDescription…",
+     "facebook": "…", "threads": "…", "twitter": "…", "linkedin": "…" }
+   ```
+   Per-platform shape: **instagram** hook line + 2–4 short lines + CTA +
+   3–8 hashtags at the end (≤ 2200 chars); **tiktok** punchy, 2–5 lines,
+   1–5 hashtags (≤ 2200); **youtube** first line = the title (≤ 100 chars,
+   formula `[result] + [method/tool]`), blank line, 2–4 line description,
+   CTA, hashtags (≤ 5000); **facebook** IG body without the long hashtag
+   block; **threads** ≤ 500 chars, conversational, ≤ 2 hashtags;
+   **twitter/x** ≤ 280 chars, hook-first, no hashtags; **linkedin** 3–6
+   short paragraphs, no hashtags at the start (≤ 3000). If `order.json`
+   carries a `copy` block (hook / captions / cta) it is the Director's
+   intent — keep its hook and CTA verbatim. Never leave a platform blank
+   and never write placeholder text.
+8. **Terminal action.** Your LAST action must be exactly one of
    `cfw-render-report.sh complete ...` or `cfw-render-report.sh block ...`.
    Never both, never neither.
 

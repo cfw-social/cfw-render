@@ -85,6 +85,30 @@ def handle_tool_call(name, args):
             if o.get("url", "").lower().endswith(".pdf") and o.get("kind") != "doc":
                 log_call(name, args, False)
                 return rpc_result({"ok": False, "error": "pdf output must be kind doc"}), None
+        # CFW-136: captions, when sent, must be a {platform: non-blank string} map
+        # (the report script drops blanks — a blank reaching here is a regression);
+        # outputs[].role must be one of cover|slide|poster; on a video order the
+        # image that follows the video must be the poster (never a slide).
+        caps = args.get("captions")
+        if caps is not None:
+            if not isinstance(caps, dict) or not caps:
+                log_call(name, args, False)
+                return rpc_result({"ok": False, "error": "captions must be a non-empty object"}), None
+            for k, v in caps.items():
+                if not isinstance(k, str) or not k or k != k.lower() or not isinstance(v, str) or not v.strip():
+                    log_call(name, args, False)
+                    return rpc_result({"ok": False, "error": f"captions[{k!r}] must be a lower-cased key with a non-blank caption"}), None
+        seen_video = False
+        for o in args.get("outputs") or []:
+            role = o.get("role")
+            if role is not None and role not in ("cover", "slide", "poster"):
+                log_call(name, args, False)
+                return rpc_result({"ok": False, "error": f"bad role {role!r}"}), None
+            if o.get("kind") == "video":
+                seen_video = True
+            elif o.get("kind") == "image" and seen_video and role == "slide":
+                log_call(name, args, False)
+                return rpc_result({"ok": False, "error": "image after a video must be role poster"}), None
         with LOCK:
             STATUS[order_id] = "done"
         log_call(name, args, True)
