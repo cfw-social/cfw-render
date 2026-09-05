@@ -92,7 +92,7 @@ check "SKILL.md vstack inputs=2"           grep -q "vstack=inputs=2" "$SKILL_DIR
 
 # Component skill directories
 _find_skill() {
-  find "$HOME/.claude/skills" "$HOME/.hermes/skills" /Users/vasanth/ecosystem/skills \
+  find "$HOME/.claude/skills" "$HOME/.hermes/skills" /Users/vasanth/ecosystem/harness/skills \
     -maxdepth 4 -type d -name "$1" 2>/dev/null | head -1
 }
 BROLL_SYNC=$(_find_skill c-broll-sync)

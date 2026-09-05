@@ -185,6 +185,66 @@ else
   fail "happy: journal row" "no complete journal row found"
 fi
 
+echo "=== Case 2b: carousel — outputUrls[] + outputs[] (CFW-135) ==="
+run_case "carousel" "carousel" "order_fixture order-carousel-1 brand-1 image" true
+if [[ "$(calls_count complete_render_order)" == "1" ]]; then
+  pass "carousel: exactly one complete_render_order call"
+else
+  fail "carousel: complete count" "expected 1, got $(calls_count complete_render_order)"
+fi
+carousel_line="$(grep '"tool": "complete_render_order"' "$CASE_MOCKSTATE/calls.jsonl" 2>/dev/null | tail -1)"
+carousel_check="$(printf '%s' "$carousel_line" | python3 -c '
+import json, sys
+try:
+    call = json.loads(sys.stdin.read())
+except Exception as e:
+    print("ERR parse " + str(e)); sys.exit(0)
+a = call.get("args", {})
+urls = a.get("outputUrls") or []
+outs = a.get("outputs") or []
+ok = (
+    len(urls) == 4
+    and urls[0].endswith("-slide-1.png") and urls[3].endswith("-carousel.pdf")
+    and a.get("outputUrl") == urls[0]
+    and len(outs) == 4
+    and [o["order"] for o in outs] == [0, 1, 2, 3]
+    and [o["kind"] for o in outs] == ["image", "image", "image", "doc"]
+    and outs[3]["mimeType"] == "application/pdf"
+    and all("brands/brand-1/renders/order-carousel-1/" in u for u in urls)
+)
+print("OK" if ok else "BAD " + json.dumps(a)[:400])
+')"
+if [[ "$carousel_check" == "OK" ]]; then
+  pass "carousel: outputUrl=cover, outputUrls=4 in order, outputs[] typed (pdf → doc/application/pdf)"
+else
+  fail "carousel: complete payload" "$carousel_check"
+fi
+if [[ -f "$CASE_MOCKSTATE/uploads.jsonl" ]] && grep -q "carousel.pdf" "$CASE_MOCKSTATE/uploads.jsonl"; then
+  pass "carousel: PDF uploaded via /render/upload"
+else
+  fail "carousel: PDF upload" "carousel.pdf not in uploads.jsonl"
+fi
+# No append_render_event may follow the complete call (the order is terminal).
+post_complete="$(python3 -c '
+import json, sys
+seen = False; late = 0
+for line in open(sys.argv[1]):
+    c = json.loads(line)
+    if c.get("tool") == "complete_render_order": seen = True; continue
+    if seen and c.get("tool") == "append_render_event": late += 1
+print(late)
+' "$CASE_MOCKSTATE/calls.jsonl" 2>/dev/null || echo 99)"
+if [[ "$post_complete" == "0" ]]; then
+  pass "carousel: no stage event after complete"
+else
+  fail "carousel: post-complete event" "$post_complete append_render_event call(s) after complete"
+fi
+if grep -q "order-carousel-1.*complete" "$CASE_STATE/journal.tsv" 2>/dev/null; then
+  pass "carousel: journal row outcome=complete"
+else
+  fail "carousel: journal row" "no complete journal row found"
+fi
+
 echo "=== Case 3: gate-fail path ==="
 run_case "gate-fail" "gate-fail" "order_fixture order-gatefail-1 brand-1 video" true
 if [[ "$(calls_count block_render_order)" -ge 1 ]]; then pass "gate-fail: block_render_order called"; else fail "gate-fail: block" "no block_render_order call"; fi

@@ -52,3 +52,22 @@
   (3) `c-reel-premium` captions are ON by default for this format (TTS+graphics reel needs
   captions — different from fmt4 where the graphics carry the text themselves); (4) cover rule
   is the last pre-upload step, not folded into `c-reel-premium`.
+
+### 2026-09-04 — CFW-128 headless certification (MGG, Day 17 MCP script, 1 ElevenLabs call $0.16)
+- **Loudness contradiction:** Step 2 loudnorms the VO to **-16 LUFS** but `acceptance.json` `qa_gate` (c-shorts-qa-gate) expects **-14 ± 1.5** → the final reads -17.3 and FAILs. Master to -14 (or change Step 2 to -14) before the cover freeze.
+- **Frame-0 floor vs navy palette:** every MGG graphics card measures YAVG≈42, below c-shorts-qa-gate's `>0x30` (48) frame-0 floor, so a card can never be the cover on this brand. Pick a b-roll frame or brighten the cover treatment; the planner's `cover_at` (a graphics beat) will fail here.
+- **Step 8 b-roll filter is invalid:** it passes a labelled `[0:v]split…[bv]` graph to `-vf` → ffmpeg "Output with label 'bv' does not exist". Use `-filter_complex`.
+- `c-broll-sync/plan.js` emits graphics beats with EMPTY `eyebrow/ghost/title_html` and windows of 10–17 s. The Director must split them into 4–6 s sub-beats and author every card's copy (`scene_plan`) — nothing in the chain writes card text.
+- `repeat: -1` is rejected by `hyperframes lint` — compute a finite repeat from the beat duration.
+- `voice_id` must be passed explicitly: the vault `ELEVENLABS_DEFAULT_VOICE_ID` is the superseded clone; the pin lives in `brand-overrides/<slug>/brand.json` (`qfNHzU5pVyzMLm53FhzY`, `eleven_v3`).
+- MGG has **no video b-roll on disk** (`creatives/brolls/recordings/` is gone) — Ken-Burns clips from `brolls/images/*.png` (`zoompan`) work as on-brand b-roll.
+
+### 2026-09-05 — CFW-131 fleet-blocker fixes (applied to this SKILL.md)
+- **Loudness contradiction FIXED**: Step 2 now normalises to **-14 LUFS** and Step 13 re-masters the premium output to -14 (two-pass loudnorm) before the cover freeze; `acceptance.json` `vo_loudness` = -14 and a new `final_loudness` check on the delivered file. One truth: **-14 LUFS for reels.**
+- **Step 8 `-vf` FIXED** → `-filter_complex` (labelled graph).
+- **Frame-0 floor → perceptual**: `c-shorts-qa-gate` + new `c-eval-runner` `contrast_floor` (`cover_has_contrast` at t=0) accept a dark card with a bright headline; flat dark frames still fail. Prefer `cover: true` on a footage/bright scene in `scene_plan.json`.
+- **Card copy is the Director's job**: Step 5a authors `scene_plan.json` (`.hub/c-broll-sync/SCENE-PLAN.md`); `plan.js --scene-plan` splits windows into 4–6 s cards and exits 1 if any graphics beat would be blank. Beats carry `slug` = `beat<N>-<id>` for Steps 7/9.
+- **c-reel-premium P2 needs the vendored GSAP in the polish comp dir** (`cp .hub/f-gsap/vendor/gsap.min.js "$PW/comp/"` before `hyperframes validate/render`) — the template loads `gsap.min.js` locally and `validate` dies with `404 loading gsap.min.js` otherwise (CFW-131 re-run; same rule as Step 7 cards and the Step 11 outro).
+- **The premium pass drifts the level (CFW-131 re-run: VO bed −14.0 → `premium.mp4` measured −16.1 LUFS)** — the caption comp re-encode + `amix normalize=0` with SFX under is not level-neutral. Step 13's two-pass master is therefore load-bearing, not cosmetic: the delivered file read −14.0 only after it.
+- **scene_plan certified 2026-09-05 (CFW-131):** 9 scenes (7 graphic + 2 pinned broll with `cover:true` on the first) authored with `start_phrase`/`end_phrase` anchors → `plan.js --scene-plan` → 7 cards, every one with copy (luma range ≥ 215, ≥ 2.1 % bright pixels at mid-beat); gates PASS (−14.0 LUFS, cover YAVG 208, contrast_floor). Output: `mr-growth-guide/creatives/productions/2026-09-04-cfw131-p-reels-faceless/`.
+- **Caption band must sit in the lower third for this format (`CAP_TOP=1450`).** The c-reel-premium default (1180) put captions over the last checklist row / flow node / CTA sub-line on 3 of 7 cards in the CFW-131 re-run (vision pass caught it; the mechanical gates did not). Cards occupy ≈120–1330 px; 1450–1600 px is clear of both the cards and the platform UI safe zone.

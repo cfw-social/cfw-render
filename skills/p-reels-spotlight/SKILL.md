@@ -105,10 +105,10 @@ OUT_RAW="$OUT_BASE.mp4"
 OUT="${OUT_BASE}-with-cover.mp4"
 COVER_PNG="{production}/final/spotlight-cover.png"
 mkdir -p "$(dirname "$OUT")"
-SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name p-reels-spotlight 2>/dev/null | head -1)
-BROLL_SYNC_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-broll-sync 2>/dev/null | head -1)
-PREMIUM_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-reel-premium 2>/dev/null | head -1)
-TYPING_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-typing-ui 2>/dev/null | head -1)
+SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/harness/skills -maxdepth 5 -type d -name p-reels-spotlight 2>/dev/null | head -1)
+BROLL_SYNC_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/harness/skills -maxdepth 5 -type d -name c-broll-sync 2>/dev/null | head -1)
+PREMIUM_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/harness/skills -maxdepth 5 -type d -name c-reel-premium 2>/dev/null | head -1)
+TYPING_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/harness/skills -maxdepth 5 -type d -name c-typing-ui 2>/dev/null | head -1)
 ```
 
 ### Step 1 — Source the speaker video (the voice bed)
@@ -402,6 +402,8 @@ When `broll[]` is supplied, run `c-broll-sync` to compute the takeover beat list
 c-broll-sync are **merged** with the graphics takeovers from plan.json — b-roll beats become
 additional full-frame takeovers; they do not replace the OPUS-planned graphics takeovers.
 
+> **`scene_plan.json` is MANDATORY (CFW-131).** `plan.js` emits graphics beats with no copy and now exits 1 rather than hand a blank card downstream. Before this call, author `$W/scene_plan.json` (contract: `.hub/c-broll-sync/SCENE-PLAN.md` — one `graphic` scene per 4–6 s idea with `headline` / `eyebrow` / `ghost` / `type`, `avatar` scenes for talking-head windows, optional `broll` scenes to pin clips, `cover: true` on the cover scene) and validate it: `node "$BROLL_SYNC_DIR/scripts/validate-scene-plan.js" "$W/scene_plan.json" --bed-dur "$BED_DUR" --transcript <words.json>`. Every `graphics` beat then carries `scene.title_html` + a `slug` (`beat<N>-<id>`).
+
 ```bash
 if [ "$HAVE_BROLL" = "True" ]; then
   BED_DUR="$DUR"
@@ -419,6 +421,7 @@ if [ "$HAVE_BROLL" = "True" ]; then
     --reuse      "$BROLL_REUSE" \
     --bed-dur    "$BED_DUR" \
     --brand      "$W/brand.json" \
+    --scene-plan "$W/scene_plan.json" \
     --out        "$W/beat_list.json"
 
   # Log shortfall if any
@@ -777,7 +780,7 @@ the corners; the mid-frame is always the face.
 # Each spec also carries brand context. Empty/unset → skip entirely (default).
 OVERLAY_BEATS="${overlay_beats:-[]}"
 if [ "$(echo "$OVERLAY_BEATS" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)" -gt 0 ]; then
-  OVERLAY_FX_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-overlay-fx 2>/dev/null | head -1)
+  OVERLAY_FX_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/harness/skills -maxdepth 5 -type d -name c-overlay-fx 2>/dev/null | head -1)
   [ -z "$OVERLAY_FX_DIR" ] && { echo "[spotlight] overlay_beats set but c-overlay-fx not found — skipping"; OVERLAY_BEATS="[]"; }
 fi
 if [ "$(echo "$OVERLAY_BEATS" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)" -gt 0 ]; then

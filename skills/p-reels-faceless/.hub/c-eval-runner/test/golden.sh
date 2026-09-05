@@ -23,7 +23,9 @@ cat > "$WORK/recipe/acceptance.json" <<'JSON'
     { "id": "dur",    "kind": "mechanical", "type": "duration_window", "min_s": 3, "max_s": 30 },
     { "id": "top_not_black", "kind": "geometry", "type": "luma_floor",
       "crop": "1080:960:0:0", "floor": 16, "samples": [0.2,0.5,0.8] },
-    { "id": "loud",   "kind": "mechanical", "type": "loudness", "target": -14, "tol": 1.5 }
+    { "id": "loud",   "kind": "mechanical", "type": "loudness", "target": -14, "tol": 1.5 },
+    { "id": "cover_contrast", "kind": "geometry", "type": "contrast_floor",
+      "crop": "1080:1920:0:0", "samples": [0.0, 0.5] }
   ] }
 JSON
 
@@ -35,9 +37,21 @@ mkreel(){ # <out> <top_color>
     -map "[v]" -map "[a]" -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest "$1" -y 2>/dev/null
 }
 
+# navy brand card: dark bg + a headline-sized white block (a readable dark cover)
+mknavy(){ # <out> <with_text:1|0>
+  local draw="null"
+  [ "$2" = "1" ] && draw="drawbox=x=90:y=700:w=900:h=220:color=white:t=fill"
+  ffmpeg -v error -f lavfi -i "color=c=0x0F172A:s=1080x1920:r=30:d=6" \
+    -f lavfi -i "sine=frequency=220:duration=6" \
+    -filter_complex "[0:v]${draw}[v];[1:a]loudnorm=I=-14:TP=-1.5[a]" \
+    -map "[v]" -map "[a]" -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest "$1" -y 2>/dev/null
+}
+
 echo "=== c-eval-runner golden test ==="
 mkreel "$WORK/good.mp4" teal
 mkreel "$WORK/bad.mp4"  black     # black top zone → must trip luma_floor
+mknavy "$WORK/navy-text.mp4" 1    # dark card WITH a bright headline → contrast_floor must PASS
+mknavy "$WORK/navy-flat.mp4" 0    # flat navy, nothing on it → contrast_floor must FAIL
 
 python3 "$ENGINE" "$WORK/good.mp4" --recipe-dir "$WORK/recipe" --outdir "$WORK/eg" >/dev/null 2>&1
 [ $? -eq 0 ] && ok "GOOD render → exit 0 (no hard fail)" || no "GOOD render unexpectedly failed"
@@ -48,6 +62,20 @@ python3 "$ENGINE" "$WORK/bad.mp4" --recipe-dir "$WORK/recipe" --outdir "$WORK/eb
 [ $? -eq 1 ] && ok "BAD render → exit 1 (blocks delivery)" || no "BAD render did NOT exit 1 — FLOOR BREACHED"
 BV="$(python3 -c "import json;print(json.load(open('$WORK/eb/scorecard.json'))['verdict'])")"
 [ "$BV" = "FAIL" ] && ok "BAD verdict=FAIL" || no "BAD verdict was $BV — FLOOR BREACHED"
+
+# contrast_floor (CFW-131 perceptual cover rule) — spec with ONLY that check so
+# the navy renders are judged on it alone (their full-frame mean luma ≈ 40 is
+# below the old 48 floor by design).
+mkdir -p "$WORK/recipe-cc"
+cat > "$WORK/recipe-cc/acceptance.json" <<'JSON'
+{ "recipe": "golden-cc", "spec_version": 1,
+  "checks": [ { "id": "cover_contrast", "kind": "geometry", "type": "contrast_floor",
+                "crop": "1080:1920:0:0", "samples": [0.0, 0.5] } ] }
+JSON
+python3 "$ENGINE" "$WORK/navy-text.mp4" --recipe-dir "$WORK/recipe-cc" --outdir "$WORK/ent" >/dev/null 2>&1
+[ $? -eq 0 ] && ok "navy card WITH headline → contrast_floor PASS (dark brand cards are valid covers)" || no "navy card WITH headline FAILED contrast_floor — dark-palette brands are blocked again"
+python3 "$ENGINE" "$WORK/navy-flat.mp4" --recipe-dir "$WORK/recipe-cc" --outdir "$WORK/enf" >/dev/null 2>&1
+[ $? -eq 1 ] && ok "flat navy frame → contrast_floor FAIL (blank dark cover still blocked)" || no "flat navy frame PASSED contrast_floor — FLOOR BREACHED"
 
 echo ""
 [ "$FAILS" -eq 0 ] && { echo "GOLDEN OK — floor holds."; exit 0; }

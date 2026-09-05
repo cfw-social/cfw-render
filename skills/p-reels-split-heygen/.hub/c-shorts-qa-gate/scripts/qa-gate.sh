@@ -6,7 +6,8 @@
 #   - valid video / has audio
 #   - resolution + fps match the format
 #   - integrated loudness ≈ -14 LUFS
-#   - frame-0 brightness > 0x30 (not a black/dark open)
+#   - frame-0 cover: bright (YAVG>0x30) OR dark card with bright foreground
+#     (YAVG>=8, luma range>=128, >=2% bright pixels) — perceptual, CFW-131
 #   - green-screen residual (chroma key missed in PIP or FULL)
 # ADVISORY checks (reported, never block — need a human/vision pass):
 #   - captions present + bottom-positioned (bottom-strip crops dumped)
@@ -90,13 +91,38 @@ if [ -n "$ACODEC" ]; then
   else adv "could not measure loudness"; fi
 fi
 
-# ---- HARD: frame-0 brightness ----------------------------------------------
+# ---- HARD: frame-0 cover check (perceptual, CFW-131) -----------------------
+# The old rule was a raw mean-luma floor (YAVG > 0x30 = 48). A dark-palette
+# brand card (navy bg, white headline, orange accent) reads YAVG≈40 and can
+# NEVER pass it, yet it is a perfectly readable cover — while a flat dark frame
+# with nothing on it is the real defect. So the rule is now PERCEPTUAL:
+#   PASS if  YAVG > 48                                        (bright frame), OR
+#            YAVG >= 8  AND  contrast range (YMAX-YMIN) >= 128  (something bright
+#            is on the frame) AND  >= 2% of pixels are >= 128 luma (a headline-
+#            sized bright element, not a stray highlight)
+#   FAIL otherwise (true black / near-black / flat dark frame / hook-blank).
+# signalstats values are limited-range (16–235); thresholds below are in that
+# scale. The bright-pixel fraction is measured via a luma threshold mask.
 F0="$OUTDIR/frame-0.png"
 ffmpeg -hide_banner -loglevel error -y -i "$VIDEO" -frames:v 1 "$F0" 2>/dev/null
-Y0=$(ffmpeg -hide_banner -nostats -i "$VIDEO" -vf "select=eq(n\,0),signalstats,metadata=print" -frames:v 1 -f null - 2>&1 \
-      | awk -F= '/signalstats.YAVG/{print $2; exit}')
+STATS=$(ffmpeg -hide_banner -nostats -i "$VIDEO" -vf "select=eq(n\,0),signalstats,metadata=print" -frames:v 1 -f null - 2>&1)
+Y0=$(printf '%s\n' "$STATS" | awk -F= '/signalstats.YAVG/{print $2; exit}')
+YMIN=$(printf '%s\n' "$STATS" | awk -F= '/signalstats.YMIN/{print $2; exit}')
+YMAX=$(printf '%s\n' "$STATS" | awk -F= '/signalstats.YMAX/{print $2; exit}')
+# fraction of pixels with luma >= 128: threshold mask → mean of {0,255} → /255
+BRIGHT=$(ffmpeg -hide_banner -nostats -i "$VIDEO" \
+  -vf "select=eq(n\,0),format=gray,geq=lum='255*gte(lum(X\,Y)\,128)',signalstats,metadata=print" \
+  -frames:v 1 -f null - 2>&1 | awk -F= '/signalstats.YAVG/{printf "%.4f", $2/255; exit}')
 if [ -n "$Y0" ]; then
-  if fcmp "$Y0" '>' 48; then pass "frame-0 brightness YAVG=${Y0} (>48)"; else fail "frame-0 brightness YAVG=${Y0} ≤48 (black/avatar-only open)"; fi
+  RANGE=$(awk -v a="${YMAX:-0}" -v b="${YMIN:-0}" 'BEGIN{print a-b}')
+  BPCT=$(awk -v f="${BRIGHT:-0}" 'BEGIN{printf "%.1f", f*100}')
+  if fcmp "$Y0" '>' 48; then
+    pass "frame-0 cover: bright frame YAVG=${Y0} (>48)"
+  elif fcmp "$Y0" '>=' 8 && fcmp "$RANGE" '>=' 128 && fcmp "${BRIGHT:-0}" '>=' 0.02; then
+    pass "frame-0 cover: dark card with bright foreground YAVG=${Y0} range=${RANGE} bright=${BPCT}% (perceptual rule)"
+  else
+    fail "frame-0 cover: YAVG=${Y0} range=${RANGE} bright=${BPCT}% — black/flat-dark/blank open (need YAVG>48, or YAVG>=8 + range>=128 + >=2% bright pixels)"
+  fi
 else adv "could not read frame-0 brightness"; fi
 
 # ---- ADVISORY: green-screen residual ---------------------------------------

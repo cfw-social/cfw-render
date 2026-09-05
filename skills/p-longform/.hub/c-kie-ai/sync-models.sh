@@ -65,7 +65,7 @@ for match in re.finditer(pattern, content, re.DOTALL):
         "deprecated":    bool(deprecated_m),
     })
 
-out_file = "/Users/vasanth/ecosystem/skills/kie-ai/models.jsonl"
+out_file = "/Users/vasanth/ecosystem/harness/skills/kie-ai/models.jsonl"
 with open(out_file, 'w') as f:
     f.write(json.dumps({
         "synced_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),

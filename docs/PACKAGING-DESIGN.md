@@ -105,7 +105,7 @@ Vasanth19/skills (private)   cfw-skills-pack (build tool)   cfw-social/cfw-skill
    the same directory with no coordination. `chattr +i` is dropped only for the pull's own
    duration — but Hermes scans "at cook time" by design (`ARCHITECTURE.md` §5c: "no gateway
    restart" is a *feature* for Hermes). For cfw-render this is a liability: a multi-minute
-   video render (`CFW_RENDER_TIMEOUT_VIDEO=1800`) can start reading `SKILL.md` under one
+   video render (`CFW_RENDER_TIMEOUT_VIDEO=3600`) can start reading `SKILL.md` under one
    recipe version and finish reading `.hub/c-ffmpeg/SKILL.md` under a different one if a
    pull lands mid-tick. Nothing detects this; a bad render just... happens.
 3. **Skills-drift-from-worker, structurally.** The worker's code (`spawn_director`'s default

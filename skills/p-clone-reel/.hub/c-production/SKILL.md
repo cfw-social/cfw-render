@@ -47,7 +47,7 @@ Create this structure at `{brand_local_path}/creatives/productions/{production-n
 ```
 
 **AI-generated images** → `{brand_local_path}/creatives/brolls/images/` (NEVER in interim/)
-**SFX** → `/Users/vasanth/ecosystem/skills/sfx/` (NEVER in audio/)
+**SFX** → `/Users/vasanth/ecosystem/harness/skills/sfx/` (NEVER in audio/)
 **Deliverables** → `final/` only — never copy to brand `creatives/` before delivery
 
 ```bash

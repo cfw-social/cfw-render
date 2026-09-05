@@ -25,6 +25,7 @@ mime_for() {
   case "$(printf '%s' "${1##*.}" | tr '[:upper:]' '[:lower:]')" in
     mp4) echo video/mp4 ;;  mov) echo video/quicktime ;;  webm) echo video/webm ;;  m4v) echo video/x-m4v ;;
     png) echo image/png ;;  jpg|jpeg) echo image/jpeg ;;  gif) echo image/gif ;;  webp) echo image/webp ;;
+    pdf) echo application/pdf ;;   # CFW-135: the LinkedIn-native carousel document (≤50 MB), stored as a `doc` output
     *) echo "" ;;
   esac
 }
@@ -33,7 +34,7 @@ upload_one() {
   local file="$1" out="$2" mime
   if [ ! -s "$file" ]; then echo "cfw-render-upload: file not found or empty: $file" >&2; echo ERROR > "$out"; return 1; fi
   mime="$(mime_for "$file")"
-  if [ -z "$mime" ]; then echo "cfw-render-upload: unsupported extension for $file (image/* or video/* only)" >&2; echo ERROR > "$out"; return 1; fi
+  if [ -z "$mime" ]; then echo "cfw-render-upload: unsupported extension for $file (image/*, video/* or .pdf only)" >&2; echo ERROR > "$out"; return 1; fi
   local resp
   resp="$(curl -fsS -X POST "${CFW_API_BASE%/}/api/v1/render/upload" \
             -H "cfw-render-key: $CFW_RENDER_WORKER_KEY" \

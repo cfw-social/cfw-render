@@ -20,6 +20,19 @@ case "$mode" in
     echo "fake video bytes" > final/out.mp4
     cfw-render-report.sh complete final/out.mp4
     ;;
+  carousel)
+    # CFW-135: a multi-slide carousel + its LinkedIn PDF — every deliverable in
+    # ONE complete call, cover first, PDF last.
+    cfw-render-report.sh stage fetch-assets 10 "Gathering ingredients"
+    cfw-render-report.sh stage assemble 70 "Plating 3 cards"
+    cfw-render-report.sh stage vision-qa 95 "Running QA gate"
+    mkdir -p final
+    echo "slide 1" > final/slide-1.png
+    echo "slide 2" > final/slide-2.png
+    echo "slide 3" > final/slide-3.png
+    echo "%PDF-1.4 fake" > final/carousel.pdf
+    cfw-render-report.sh complete final/slide-1.png final/slide-2.png final/slide-3.png final/carousel.pdf
+    ;;
   gate-fail)
     cfw-render-report.sh stage fetch-assets 10 "Gathering ingredients"
     cfw-render-report.sh stage vision-qa 50 "Running QA gate"

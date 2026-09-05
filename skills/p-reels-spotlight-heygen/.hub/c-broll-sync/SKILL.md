@@ -35,6 +35,7 @@ fmt1 / fmt4 behavior (100% motion-graphics background).
 | `BROLL_REUSE` | No | `false` | `true` → clips may be reused to hit the coverage target. |
 | `BED_DURATION` | No | auto | Total reel duration (seconds). If omitted, derived from max word end time. |
 | `BRAND_JSON` | No | `{}` | Brand identity blob forwarded into each `graphics` beat's `brand` field for the renderer. |
+| `SCENE_PLAN_JSON` | **Yes (headless)** | — | The `scene_plan` directive — Director-authored card copy + card boundaries (`SCENE-PLAN.md`). Without it every graphics beat is emitted **blank** and `plan.js` exits 1 (`--allow-empty-copy` is the legacy escape hatch for cores that author copy themselves). |
 | `PLAN_MODEL` | No | opus | `opus` (via OAuth env-unset) or `kimi` (fallback). |
 
 ### `BROLL_JSON` element schema
@@ -148,6 +149,8 @@ The script writes `beat_list.json`:
 | `scene.title_html` | string | Punchy headline; key word in `<span class="accent">WORD</span>`. |
 | `scene.brand` | object | Brand identity forwarded from `BRAND_JSON`. |
 | `scene.type` | string | Optional — `"typing-ui"`, `"chart"`, `"stat"`, `"checklist"`. Default omitted = standard motion card. |
+| `scene.sub` / `scene.scene_id` / `scene.source` | string | From `--scene-plan`: supporting line, the scene `id`, and `"scene_plan"`. Passthrough keys (`lines`, `chips`, `items`, `flow`, `stat`, `unit`…) ride along verbatim. |
+| `slug` (beat-level) | string | `beat<N>-<scene_id>` — the card folder name the calling core renders into (`gfx/<slug>/<slug>.mp4`). |
 
 ### `kind: "broll"` beat fields
 
@@ -178,11 +181,25 @@ node "$BROLL_SYNC_DIR/scripts/plan.js" \
   --reuse      false \
   --bed-dur    "$BED_DUR" \
   --brand      "$W/brand.json" \
+  --scene-plan "$W/scene_plan.json" \
   --out        "$W/beat_list.json"
 ```
 
 For `transcript-match` the script spawns an OPUS sub-call (env-unset pattern; kimi fallback).
 For `as-given` and `even` the plan is entirely mechanical — no LLM call.
+
+**`--scene-plan` (CFW-131 — card copy is the Director's job).** `scene_plan.json` follows
+`SCENE-PLAN.md`: sorted, gapless `scenes[]` of kind `graphic|broll|avatar`, every `graphic` scene
+carrying non-empty `headline` copy (+ `eyebrow`, `ghost`, `sub`, `type`, passthrough fields).
+`plan.js` validates it first (`scripts/validate-scene-plan.js`), splits each graphics window into
+the plan's cards, and copies the copy onto `beat.scene` (`title_html` = `headline`,
+`source: "scene_plan"`, `slug` = `beat<N>-<id>`). If the plan has `broll` scenes they are the b-roll
+placements. **Any graphics beat that would be emitted without copy is a HARD error (exit 1)** —
+never render blank cards. Validate standalone:
+
+```bash
+node "$BROLL_SYNC_DIR/scripts/validate-scene-plan.js" "$W/scene_plan.json" --bed-dur "$BED_DUR" --transcript "$W/transcript.json"
+```
 
 ---
 
@@ -208,8 +225,10 @@ The LLM **never** decides the budget number — that is computed mechanically fr
 
 ## Gotchas
 
+- **Blank cards are a hard failure, not a warning (CFW-131).** Without `--scene-plan`, `plan.js` exits 1 as soon as a graphics beat would carry empty `title_html`. Author `scene_plan.json` (SCENE-PLAN.md) — that is where card copy lives. `--allow-empty-copy` only for cores that demonstrably author copy in a later step.
 - **No b-roll supplied → 100% graphics — this is valid, not degraded.** Reproduces fmt1/fmt4 behavior.
 - **`broll_reuse=false` (default) + too few clips → shortfall log, not an error.** The plan completes with fewer b-roll windows than the budget allows.
 - **`transcript-match` with silent clips:** OPUS falls back to filename/label heuristic (the clip's filename words are matched against the transcript). Works for descriptive filenames like `coffee-shop-morning.mp4`.
 - **Beat boundaries are gapless:** every second of `bed_duration` belongs to exactly one beat (`graphics` or `broll`). No gaps, no overlaps.
 - **The planner is engine-agnostic:** it emits a JSON plan, it does not call ffmpeg or HyperFrames. The calling core renders each beat into its layout.
+- **Tests:** `node --test test/scene-plan.test.js` — validator + plan.js integration (mechanical paths, no LLM).

@@ -79,10 +79,21 @@ def handle_tool_call(name, args):
         order = ORDERS_BY_ID.get(order_id, {})
         brand_id = order.get("brandId", "")
         expected = f"brands/{brand_id}/renders/{order_id}/"
-        output_url = args.get("outputUrl", "")
-        if expected not in output_url:
+        # CFW-135: same precedence as cfw-social — outputs[] > outputUrls[] > outputUrl.
+        if args.get("outputs"):
+            urls = [o.get("url", "") for o in args["outputs"]]
+        elif args.get("outputUrls"):
+            urls = list(args["outputUrls"])
+        else:
+            urls = [args.get("outputUrl", "")]
+        if not urls or any(expected not in u for u in urls):
             log_call(name, args, False)
             return rpc_result({"ok": False, "error": "outputUrl not brand/order-namespaced"}), None
+        # A PDF must be typed `doc` (never a slide) — mirrors the server-side inference.
+        for o in args.get("outputs") or []:
+            if o.get("url", "").lower().endswith(".pdf") and o.get("kind") != "doc":
+                log_call(name, args, False)
+                return rpc_result({"ok": False, "error": "pdf output must be kind doc"}), None
         with LOCK:
             STATUS[order_id] = "done"
         log_call(name, args, True)

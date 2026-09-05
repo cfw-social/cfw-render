@@ -9,14 +9,22 @@ MCP credential.
 **Worker auth/credential:** `/Users/vasanth/Code/cfw/cfw-social/docs/render-worker-auth.md`
 **Implementation plan (this repo):** `backlog/attachments/AB-RNDR-WORKER/implementation-plan.md`
 
-Status: deployed to `hst` (15-min drainer timer, first deployed 2026-08-12).
+Status: **DEPLOYED on `hst`** since 2026-08-18 (`/opt/cfw-render`, source copy
+`/opt/cfw-render-src`, `/etc/cfw-render.env`, `cfw-render.timer` every 15 min →
+`cfw-render.service --once`; state in `/root/.cfw-render/`). Refreshed to `main`
+`b817a18` on 2026-09-05 (CFW-129) via `install/install.sh --prefix /opt/cfw-render
+--env-file /etc/cfw-render.env --user root --yes-really` (`--dry` PASS, skills pin
+`eb1996a`). It drains `render_orders` for every `render_fleet_enabled` brand and
+posts a `render_done` pack task that the multi-tenant `cfw-hermes-mt` daemon
+(cfw-provisioner) acks. `docs/deploy.md` is the supervised refresh runbook.
+
 The skills bundle is **self-contained** (the box carries no render toolchain).
 The remaining step to make cfw-render the **sole** renderer is the gated,
-per-brand `renderFleetEnabled` flip — an **operator action**, not a code
-change; see `docs/deploy.md` §6 (fleet-enable rollout). The submit-vs-inline
-"hard rule" and the fleet-enable admin endpoint are enforced/served in
-**cfw-social** (`src/lib/render/submit-render-order.ts`, `CFW-V2-071`
-doctrine), not in this repo.
+per-brand `renderFleetEnabled` flip — an **operator action** via
+`bin/cfw-render-fleet.sh`, not a code change; see `docs/deploy.md` §6
+(fleet-enable rollout). The submit-vs-inline "hard rule" and the fleet-enable
+admin endpoint are enforced/served in **cfw-social**
+(`src/lib/render/submit-render-order.ts`, `CFW-V2-071` doctrine), not in this repo.
 
 ## Layout
 
@@ -147,7 +155,10 @@ the helper reports the gap and you use the break-glass SQL.
 ## Knobs
 
 Every config var is documented inline in `config/cfw-render.env.example`
-(concurrency, scratch/state/skills paths, watchdog timeouts per `kind`, gate
+(concurrency, scratch/state/skills paths, watchdog timeouts per `kind` —
+`CFW_RENDER_TIMEOUT_VIDEO` defaults to **3600 s** since CFW-131: local reels
+certify at ≈6 min, the box runs 2–3× slower and a gate-fail re-render doubles
+it; stage reports heartbeat the 30-min claim lease so the hour is safe — gate
 fail-cap, fan-out model allowlist, Ollama keys file, the `CFW_RENDER_DIRECTOR_CMD`
 test seam). Load order: `/etc/cfw-render.env` → `$CFW_RENDER_ENV` (default
 `~/.gsai/secrets/cfw-render.env`) → process env wins over both files.

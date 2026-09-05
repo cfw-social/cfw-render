@@ -7,6 +7,12 @@
 # Usage:
 #   cfw-render-report.sh stage <stage> <pct> <message>
 #   cfw-render-report.sh complete <file> [file2 ...]
+#       CFW-135: EVERY deliverable goes in this ONE call, in delivery order —
+#       cover/slide 1 first, then slides 2..N, then the carousel PDF. The call
+#       sends outputUrl (= first file, legacy), outputUrls[] (all URLs) and
+#       outputs[] ({url, kind, mimeType, order}); cfw-social attaches every
+#       slide to the dish and the PDF as a "PDF" chip. Nothing can be reported
+#       after complete (the order is terminal), so never split deliverables.
 #   cfw-render-report.sh block <reason>
 set -u
 
@@ -51,6 +57,8 @@ case "$VERB" in
       fi
     done
     output_url="${urls[0]}"
+    # CFW-135: every URL, arg order, as one JSON array (consumed below).
+    urls_json="$(printf '%s\n' "${urls[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')"
 
     # models rollup: director model from the failover state file (written by
     # claude_native_or_ollama_quota_fallback into work/.director-model),
@@ -64,16 +72,30 @@ case "$VERB" in
     fi
 
     complete_args="$(python3 -c '
-import json, sys
-order_id, worker_id, output_url, director_model, fanout_json = sys.argv[1:6]
+import json, sys, os
+order_id, worker_id, output_url, director_model, fanout_json, urls_json = sys.argv[1:7]
+urls = json.loads(urls_json)
+KIND = {"pdf": "doc", "mp4": "video", "mov": "video", "webm": "video", "m4v": "video",
+        "mp3": "audio", "wav": "audio", "m4a": "audio"}
+MIME = {"pdf": "application/pdf", "mp4": "video/mp4", "mov": "video/quicktime", "webm": "video/webm",
+        "m4v": "video/x-m4v", "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+        "gif": "image/gif", "webp": "image/webp", "mp3": "audio/mpeg", "wav": "audio/wav", "m4a": "audio/mp4"}
+def ext(u):
+    return os.path.splitext(u.split("?")[0].split("#")[0])[1].lstrip(".").lower()
+outputs = [{"url": u, "kind": KIND.get(ext(u), "image"), "mimeType": MIME.get(ext(u), "image/jpeg"), "order": i}
+           for i, u in enumerate(urls)]
 d = {
     "orderId": order_id,
     "workerId": worker_id,
+    # legacy single-URL field (cover) — kept for older servers
     "outputUrl": output_url,
+    # CFW-135: the FULL ordered deliverable list (slides + PDF) — one call
+    "outputUrls": urls,
+    "outputs": outputs,
     "models": {"director": director_model, "fanout": json.loads(fanout_json), "escalated": director_model != "sonnet"},
 }
 print(json.dumps(d))
-' "$CFW_ORDER_ID" "$CFW_WORKER_ID" "$output_url" "$director_model" "$fanout_json")"
+' "$CFW_ORDER_ID" "$CFW_WORKER_ID" "$output_url" "$director_model" "$fanout_json" "$urls_json")"
 
     resp="$(cr_mcp_call complete_render_order "$complete_args")" || { echo "cfw-render-report: complete_render_order failed" >&2; exit 1; }
     ok="$(python3 -c 'import json,sys; print("1" if json.loads(sys.stdin.read()).get("ok") else "0")' <<< "$resp" 2>/dev/null)"
@@ -82,10 +104,9 @@ print(json.dumps(d))
       exit 1
     fi
 
-    if (( ${#urls[@]} > 1 )); then
-      extra="${urls[*]:1}"
-      cr_event "$CFW_ORDER_ID" stage assemble "Additional deliverables: $extra" 100 2>/dev/null || true
-    fi
+    # CFW-135: NO post-complete event — the order is terminal after
+    # complete_render_order and the server rejects further events ("Order not
+    # claimed by this worker"). Every deliverable already went in the call above.
 
     echo "complete" > .outcome
     echo "$resp"

@@ -1,6 +1,6 @@
 ---
 name: c-shorts-qa-gate
-description: Pre-delivery QA gate for short-form video (reels, shorts, VSL). Runs the mechanical delivery checks that block a broken render — loudness (~-14 LUFS), frame-0 brightness, resolution/fps/duration, audio presence — and emits a frame sweep + report for the perceptual checks (captions, b-roll coverage, outro, lip-sync) a human or vision pass reviews. Use as the final step of any reel/short/VSL recipe before marking a production complete.
+description: Pre-delivery QA gate for short-form video (reels, shorts, VSL). Runs the mechanical delivery checks that block a broken render — loudness (~-14 LUFS), frame-0 cover contrast, resolution/fps/duration, audio presence — and emits a frame sweep + report for the perceptual checks (captions, b-roll coverage, outro, lip-sync) a human or vision pass reviews. Use as the final step of any reel/short/VSL recipe before marking a production complete.
 when_to_use: Trigger on c-shorts-qa-gate, QA gate, delivery check, shorts/reel/VSL quality gate, verify final video, loudnorm check, frame-0 / black-open check, caption/coverage review, before-publish verification, "is this reel ready to deliver".
 allowed-tools: Bash
 kind: component
@@ -49,7 +49,7 @@ bash .hub/c-shorts-qa-gate/scripts/qa-gate.sh output/final-portrait.mp4 --format
 4. fps ≈ expected
 5. Duration > 0
 6. Integrated loudness within target (-14 ± 1.5 LUFS) — catches skipped `loudnorm`
-7. Frame-0 brightness YAVG > 0x30 — catches black / avatar-only opens (frame-0 must be b-roll)
+7. Frame-0 cover (perceptual, CFW-131) — PASS if YAVG > 0x30 **or** the frame is a dark card with a bright foreground (YAVG ≥ 8, luma range ≥ 128, ≥ 2 % pixels ≥ 128). Catches black / flat-dark / hook-blank opens without failing navy-palette brand cards.
 
 **ADVISORY (reported + artifacts dumped, never blocks):**
 - Captions present & bottom-positioned → `caption-strip-*.png` crops

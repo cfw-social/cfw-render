@@ -180,7 +180,7 @@ cr_load_config() {
   : "${CFW_RENDER_SKILLS_DIR:=$(cr_default_skills_dir)}"
   : "${CFW_RENDER_DIRECTOR_MODEL:=sonnet}"
   : "${CFW_RENDER_FANOUT_MODELS:=glm-5.2,kimi-k2}"
-  : "${CFW_RENDER_TIMEOUT_VIDEO:=1800}"
+  : "${CFW_RENDER_TIMEOUT_VIDEO:=3600}"
   : "${CFW_RENDER_TIMEOUT_IMAGE:=900}"
   : "${CFW_RENDER_GATE_FAIL_CAP:=2}"
   : "${CFW_RENDER_OLLAMA_KEYS_FILE:=$HOME/.gsai/secrets/ollama-keys.env}"
@@ -529,7 +529,7 @@ claude_native_or_ollama_quota_fallback() {
 # mkdir-based tick lock with stale-age self-heal (ab-hustler batch-lock
 # semantics, no sqlite — plan §0.3: order-level mutex is already the server's
 # claim CAS; this only prevents two overlapping drainer ticks on one host).
-# Stale threshold: CFW_RENDER_TIMEOUT_VIDEO + 600s, OR the recorded pid is dead.
+# Stale threshold: CFW_RENDER_TIMEOUT_VIDEO (default 3600) + 600s, OR the recorded pid is dead.
 # ---------------------------------------------------------------------------
 cr_tick_lock_acquire() {
   local dir="${CFW_RENDER_STATE_DIR:-$HOME/.cfw-render}"
@@ -544,7 +544,7 @@ cr_tick_lock_acquire() {
   pid="$(grep '^pid=' "$info" 2>/dev/null | cut -d= -f2)"
   ts="$(grep '^ts=' "$info" 2>/dev/null | cut -d= -f2)"
   now="$(date +%s)"
-  stale_after=$(( ${CFW_RENDER_TIMEOUT_VIDEO:-1800} + 600 ))
+  stale_after=$(( ${CFW_RENDER_TIMEOUT_VIDEO:-3600} + 600 ))
   local is_stale=0
   if [[ -z "$pid" || -z "$ts" ]]; then
     is_stale=1
