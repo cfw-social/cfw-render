@@ -211,6 +211,8 @@ if (require.main === module) {
     try { words = JSON.parse(fs.readFileSync(transcriptPath, 'utf8')); }
     catch (e) { console.error(`[scene_plan] cannot read transcript ${transcriptPath}: ${e.message}`); process.exit(2); }
   }
+  // --bed-dur also feeds anchor chaining (a last scene without `end` ends at the bed).
+  if (plan && typeof plan === 'object' && !Array.isArray(plan) && !isNum(plan.bed_duration) && isNum(bedDur)) plan.bed_duration = bedDur;
   const r = resolveAnchors(plan, words);
   const v = validateScenePlan(r.plan, { bedDuration: bedDur });
   const errors = [...r.errors, ...v.errors];

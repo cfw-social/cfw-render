@@ -212,6 +212,12 @@ test('validate-scene-plan CLI exits 1 on invalid, 0 on valid', () => {
   const p = goodPlan(); p.scenes[3].headline = '';
   fs.writeFileSync(path.join(tmp, 'bad.json'), JSON.stringify(p));
   assert.equal(spawnSync('node', [path.join(SCRIPTS, 'validate-scene-plan.js'), 'ok.json', '--bed-dur', String(BED)], { cwd: tmp, encoding: 'utf8' }).status, 0);
+  // phrase-anchored plan whose last scene has no `end`: --bed-dur must close it
+  fs.writeFileSync(path.join(tmp, 'anch.json'), JSON.stringify({ version: 1, scenes: [
+    { id: 'a', kind: 'graphic', start: 0, end_phrase: 'the setup', headline: 'A' },
+    { id: 'b', kind: 'graphic', start_phrase: 'the setup', headline: 'B' } ] }));
+  const anch = spawnSync('node', [path.join(SCRIPTS, 'validate-scene-plan.js'), 'anch.json', '--bed-dur', String(BED), '--transcript', 'words.json'], { cwd: tmp, encoding: 'utf8' });
+  assert.equal(anch.status, 0, anch.stderr);
   const bad = spawnSync('node', [path.join(SCRIPTS, 'validate-scene-plan.js'), 'bad.json', '--bed-dur', String(BED)], { cwd: tmp, encoding: 'utf8' });
   assert.equal(bad.status, 1); assert.match(bad.stderr, /INVALID/);
 });

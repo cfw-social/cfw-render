@@ -42,9 +42,10 @@
       "[enthusiastically]"
     ],
     "output_format": "mp3_44100_128",
-    "loudnorm_lufs": -16,
+    "loudnorm_lufs": -14,
     "_resolved": "CFW-128 2026-09-04: GET /v1/voices lists both candidates — qfNHzU5pVyzMLm53FhzY='Vasanth-042026' (cloned), iXo9OlmDD0eO2j9eo7sM='Vasanth' (older clone). Every MGG production 06.28→07.02 used qfNHzU5pVyzMLm53FhzY/eleven_v3 → pinned. iXo9… is superseded (still the vault ELEVENLABS_DEFAULT_VOICE_ID — pass voice_id explicitly).",
-    "_brand_note": "Same pin as MGG (decision 1). .brand/faceless doc still cites iXo9OlmDD0eO2j9eo7sM — superseded."
+    "_brand_note": "Same pin as MGG (decision 1). .brand/faceless doc still cites iXo9OlmDD0eO2j9eo7sM — superseded.",
+    "_loudness_note": "CFW-131: ONE reel loudness truth = -14 LUFS integrated (was -16, contradicted c-shorts-qa-gate/acceptance)."
   },
   "captions": {
     "style": "kinetic-karaoke",

@@ -113,6 +113,11 @@ root = open(f"{PREMIUM}/templates/root-shell-polish.html").read()
 open(f"{proj}/index.html","w").write(fill(root, {"DURATION": dur, "VIDEO_SRC": "reel-in.mp4"}))
 print(f"assembled polish comp: {len(plan['caption_groups'])} groups, {dur}s, cap_top={CAP_TOP}")
 PY
+# The templates load GSAP via a LOCAL <script src="gsap.min.js"> — copy the vendored build in
+# first or `validate` fails with "404 loading gsap.min.js" (CFW-131).
+GSAP=$(for p in "$SKILL_DIR/.hub/f-gsap/vendor" "$SKILL_DIR/../f-gsap/vendor"; do [ -f "$p/gsap.min.js" ] && echo "$p/gsap.min.js" && break; done)
+[ -n "$GSAP" ] || { echo "[c-reel-premium] FATAL: vendored gsap.min.js not found"; exit 1; }
+cp "$GSAP" "$PW/comp/gsap.min.js"
 cd "$PW/comp" && npx hyperframes@0.7.5 lint && npx hyperframes@0.7.5 validate && \
   npx hyperframes@0.7.5 render --output "$PW/visuals.mp4" --fps 30 --quality high
 cd - >/dev/null
