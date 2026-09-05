@@ -77,7 +77,8 @@ fallback). Shape:
 | `qa_gate` | yes | `format` | delegates to `c-shorts-qa-gate` (loudness/res/fps/frame0/audio) |
 | `dims` | yes | `w`, `h` | exact resolution |
 | `duration_window` | yes | `min_s`, `max_s` | duration band |
-| `luma_floor` | yes | `crop` (`W:H:X:Y`), `floor`, `samples[]` | a region is not black/dark on any sample |
+| `luma_floor` | yes | `crop` (`W:H:X:Y`), `floor`, `samples[]` | a region is not black/dark on any sample (mean luma) |
+| `contrast_floor` | yes | `crop`, `samples[]` (`0.0` = frame 0), `bright_mean`=48, `min_mean`=8, `min_range`=128, `min_bright_pct`=2 | **perceptual cover rule (CFW-131):** PASS if mean > `bright_mean` OR (mean ≥ `min_mean` AND luma range ≥ `min_range` AND ≥ `min_bright_pct` % pixels ≥ 128). Lets a navy card with a white headline be a cover; still fails black / flat-dark / blank frames |
 | `loudness` | yes | `target`, `tol` | integrated LUFS (ebur128) |
 | `mean_volume` | yes | `min_db`, `max_db` | speech present / not clipping / not silent |
 | `custom` | yes | `script` (recipe-relative), `args[]` | **escape hatch** — run a recipe-local check; exit 0 = PASS |

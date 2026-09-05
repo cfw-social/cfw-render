@@ -21,7 +21,9 @@ so a reprovision of `hst` reinstalls the render worker the same way
    cp cfw-render/install/cfw-render.timer /etc/systemd/system/cfw-render.timer
    # substitute {{PREFIX}}, {{ENV_FILE}}, {{USER}} the same way install.sh does
    ```
-3. **Ensure the env file exists** at `/etc/cfw-render.env` — this is a secret
+3. **Ensure the env file exists** at `/etc/cfw-render.env` (start from
+   `config/cfw-render.env.example`; keep `CFW_RENDER_TIMEOUT_VIDEO=3600` — the
+   60-min video watchdog is the fleet default since CFW-131) — this is a secret
    and must NOT be templated into the provisioner repo. Pull it from the vault
    (`~/.gsai/secrets/cfw-render.env`) via whatever secret-sync mechanism the
    provisioner already uses for other per-box `.env` files.

@@ -123,7 +123,10 @@ bin/cfw-render-ctl.sh unblock <orderId>   # forward-compatible; fails fast today
 ## Knobs
 
 Every config var is documented inline in `config/cfw-render.env.example`
-(concurrency, scratch/state/skills paths, watchdog timeouts per `kind`, gate
+(concurrency, scratch/state/skills paths, watchdog timeouts per `kind` —
+`CFW_RENDER_TIMEOUT_VIDEO` defaults to **3600 s** since CFW-131: local reels
+certify at ≈6 min, the box runs 2–3× slower and a gate-fail re-render doubles
+it; stage reports heartbeat the 30-min claim lease so the hour is safe — gate
 fail-cap, fan-out model allowlist, Ollama keys file, the `CFW_RENDER_DIRECTOR_CMD`
 test seam). Load order: `/etc/cfw-render.env` → `$CFW_RENDER_ENV` (default
 `~/.gsai/secrets/cfw-render.env`) → process env wins over both files.

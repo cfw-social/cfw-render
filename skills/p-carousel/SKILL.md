@@ -83,7 +83,9 @@ Write full copy per slide:
 ```bash
 cd <production>
 [ -d node_modules/playwright ] || npm i playwright >/dev/null 2>&1
-# render.mjs auto-discovers every <section class="slide" id="sN"> and shoots each at 2x.
+# render.mjs auto-discovers every <section class="slide" id="sN">, captures each at 2x into
+# slides-2x/ and lanczos-downscales into slides/ at EXACTLY 1080×1350 (ffprobe-verified —
+# the acceptance `dims` gate is exact; CFW-131). Needs ffmpeg/ffprobe when SCALE>1.
 WIDTH=1080 HEIGHT=1350 SCALE=2 node render.mjs        # HEIGHT=1080 for 1:1
 ```
 → Output: `slides/slide-<id>.png` (retina, sharp).

@@ -402,6 +402,8 @@ When `broll[]` is supplied, run `c-broll-sync` to compute the takeover beat list
 c-broll-sync are **merged** with the graphics takeovers from plan.json — b-roll beats become
 additional full-frame takeovers; they do not replace the OPUS-planned graphics takeovers.
 
+> **`scene_plan.json` is MANDATORY (CFW-131).** `plan.js` emits graphics beats with no copy and now exits 1 rather than hand a blank card downstream. Before this call, author `$W/scene_plan.json` (contract: `.hub/c-broll-sync/SCENE-PLAN.md` — one `graphic` scene per 4–6 s idea with `headline` / `eyebrow` / `ghost` / `type`, `avatar` scenes for talking-head windows, optional `broll` scenes to pin clips, `cover: true` on the cover scene) and validate it: `node "$BROLL_SYNC_DIR/scripts/validate-scene-plan.js" "$W/scene_plan.json" --bed-dur "$BED_DUR" --transcript <words.json>`. Every `graphics` beat then carries `scene.title_html` + a `slug` (`beat<N>-<id>`).
+
 ```bash
 if [ "$HAVE_BROLL" = "True" ]; then
   BED_DUR="$DUR"
@@ -419,6 +421,7 @@ if [ "$HAVE_BROLL" = "True" ]; then
     --reuse      "$BROLL_REUSE" \
     --bed-dur    "$BED_DUR" \
     --brand      "$W/brand.json" \
+    --scene-plan "$W/scene_plan.json" \
     --out        "$W/beat_list.json"
 
   # Log shortfall if any
