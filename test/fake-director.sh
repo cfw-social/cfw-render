@@ -18,6 +18,24 @@ case "$mode" in
     cfw-render-report.sh stage vision-qa 95 "Running QA gate"
     mkdir -p final
     echo "fake video bytes" > final/out.mp4
+    # CFW-136: a reel delivers its cover.png (poster) + per-platform captions.
+    echo "fake cover png" > final/cover.png
+    cat > final/captions.json <<'JSON'
+{ "Instagram": "Day 14 of 30. The 3 AI tools that survived two weeks of building. #AItools",
+  "tiktok": "Day 14 of 30 — the 3 tools that made the cut 👇 #AItools",
+  "youtube": "Day 14 of 30: The 3 AI Tools That Survived Two Weeks\nTwo weeks in — Claude, n8n, Opus Clip.",
+  "threads": "   " }
+JSON
+    cfw-render-report.sh complete final/out.mp4 final/cover.png
+    ;;
+  no-captions)
+    # CFW-136: a Director that forgot captions.json — the report WARNS, still
+    # completes (cfw-social falls back to the order copy/intent), sends NO
+    # captions key.
+    cfw-render-report.sh stage fetch-assets 10 "Gathering ingredients"
+    cfw-render-report.sh stage vision-qa 95 "Running QA gate"
+    mkdir -p final
+    echo "fake video bytes" > final/out.mp4
     cfw-render-report.sh complete final/out.mp4
     ;;
   carousel)

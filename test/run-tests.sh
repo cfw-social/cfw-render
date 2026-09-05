@@ -42,6 +42,7 @@ order = {
         "brand": {"id": brand, "slug": "test-brand", "brief": "test brand"},
         "kind": kind, "recipe": "p-reels-spotlight", "workspaceId": "ws-1",
         "intent": "test render", "ingredients": [],
+        "targets": ["instagram", "tiktok", "youtube", "threads"],
         "acceptance": {"gate": "c-shorts-qa-gate"},
     },
     "priority": 0, "attempts": 1,
@@ -174,6 +175,37 @@ if echo "$complete_line" | grep -q '"fanout": \["glm-5.2"\]'; then
 else
   fail "happy: models rollup" "fanout model not found in: $complete_line"
 fi
+# CFW-136: reel completion = video (cover) + cover.png (poster) + per-platform captions.
+happy_check="$(printf '%s' "$complete_line" | python3 -c '
+import json, sys
+try:
+    call = json.loads(sys.stdin.read())
+except Exception as e:
+    print("ERR parse " + str(e)); sys.exit(0)
+a = call.get("args", {})
+outs = a.get("outputs") or []
+caps = a.get("captions") or {}
+problems = []
+if len(outs) != 2: problems.append("outputs=%d" % len(outs))
+if not (outs and outs[0].get("kind") == "video" and outs[0].get("role") == "cover"): problems.append("video not role cover")
+if not (len(outs) > 1 and outs[1].get("url", "").endswith("-cover.png") and outs[1].get("kind") == "image" and outs[1].get("role") == "poster"): problems.append("cover.png not role poster")
+if a.get("outputUrl") != (outs[0].get("url") if outs else None): problems.append("outputUrl != video")
+if sorted(caps.keys()) != ["instagram", "tiktok", "youtube"]: problems.append("caption keys %r" % sorted(caps.keys()))
+if "threads" in caps: problems.append("blank threads caption was sent")
+if any(not v.strip() for v in caps.values()): problems.append("blank caption value")
+if not caps.get("youtube", "").startswith("Day 14 of 30: The 3 AI Tools"): problems.append("youtube title line lost")
+print("OK" if not problems else "BAD " + "; ".join(problems) + " :: " + json.dumps(a)[:300])
+')"
+if [[ "$happy_check" == "OK" ]]; then
+  pass "happy: reel payload — video role cover, cover.png role poster, captions lower-cased/non-blank per target (blank threads dropped)"
+else
+  fail "happy: reel payload" "$happy_check"
+fi
+if [[ -f "$CASE_MOCKSTATE/uploads.jsonl" ]] && grep -q "cover.png" "$CASE_MOCKSTATE/uploads.jsonl"; then
+  pass "happy: cover.png uploaded via /render/upload"
+else
+  fail "happy: cover.png upload" "cover.png not in uploads.jsonl"
+fi
 if [[ ! -d "$CASE_SCRATCH/test-brand/order-happy-1" ]]; then
   pass "happy: scratch dir wiped after complete"
 else
@@ -243,6 +275,25 @@ if grep -q "order-carousel-1.*complete" "$CASE_STATE/journal.tsv" 2>/dev/null; t
   pass "carousel: journal row outcome=complete"
 else
   fail "carousel: journal row" "no complete journal row found"
+fi
+
+echo "=== Case 2c: no captions.json — WARN, still completes, no captions key (CFW-136) ==="
+run_case "no-captions" "no-captions" "order_fixture order-nocap-1 brand-1 video" true
+if [[ "$(calls_count complete_render_order)" == "1" ]]; then
+  pass "no-captions: complete_render_order still called (server falls back to copy/intent)"
+else
+  fail "no-captions: complete count" "expected 1, got $(calls_count complete_render_order)"
+fi
+nocap_line="$(grep '"tool": "complete_render_order"' "$CASE_MOCKSTATE/calls.jsonl" 2>/dev/null | tail -1)"
+if printf '%s' "$nocap_line" | python3 -c 'import json,sys; a=json.loads(sys.stdin.read()).get("args",{}); sys.exit(0 if "captions" not in a else 1)'; then
+  pass "no-captions: no captions key sent (never an empty map)"
+else
+  fail "no-captions: captions key" "an empty/absent captions.json must not send a captions key: $nocap_line"
+fi
+if grep -q "order-nocap-1.*complete" "$CASE_STATE/journal.tsv" 2>/dev/null; then
+  pass "no-captions: journal row outcome=complete"
+else
+  fail "no-captions: journal row" "no complete journal row found"
 fi
 
 echo "=== Case 3: gate-fail path ==="

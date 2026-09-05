@@ -1042,7 +1042,42 @@ cp "$W/split-reel-with-cover.mp4" "$OUT"
 
 COVER_PNG="$W/cover.png"
 echo "[p-reels-split] cover.png extracted at ${COVER_AT}s"
+cp "$COVER_PNG" "$(dirname "$OUT")/cover.png"   # deliver SECOND after the reel — the Reviews poster (tap-to-play)
 ```
+
+### Step 10.5 — Captions (per platform) → `final/captions.json` (MANDATORY — CFW-136)
+
+A reel with no caption cannot be published: Reviews shows "No caption" and every
+channel refuses it at approval (this is exactly how the 2026-09-05 MGG split reel
+dead-ended). Write ONE caption per platform in the order's `targets`, in the brand
+voice (`order.json` → `brand.brief`), from the transcript you just cut — same hook,
+same numbers, same CTA keyword; never new claims. If `order.json` carries a `copy`
+block (hook / captions / cta), keep its hook + CTA verbatim.
+
+```bash
+mkdir -p "$(dirname "$OUT")"
+cat > "$(dirname "$OUT")/captions.json" <<'JSON'
+{
+  "instagram": "<hook line + 2–4 short lines + CTA + 3–8 hashtags at the end, ≤ 2200>",
+  "tiktok":    "<punchy, 2–5 lines, 1–5 hashtags, ≤ 2200>",
+  "youtube":   "<TITLE ≤ 100 chars: [result] + [method/tool]>\n\n<2–4 line description + CTA + hashtags>",
+  "facebook":  "<the Instagram body without the long hashtag block>",
+  "threads":   "<≤ 500 chars, conversational, ≤ 2 hashtags>",
+  "twitter":   "<≤ 280 chars, hook-first, no hashtags>"
+}
+JSON
+python3 - "$(dirname "$OUT")/captions.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d and all(isinstance(v, str) and v.strip() for v in d.values()), "blank caption — every platform needs real copy"
+assert len(d.get("threads", "x")) <= 500 and len(d.get("twitter", "x")) <= 280, "threads ≤ 500 / twitter ≤ 280"
+print("captions OK:", ", ".join(sorted(d)))
+PY
+```
+
+Delivery: `cfw-render-report.sh complete final/split-reel-with-cover.mp4 final/cover.png`
+— the PNG after the video is tagged as the poster, and `final/captions.json` is
+sent automatically as `captions`.
 
 ### Step 11 — Verify (mandatory)
 
