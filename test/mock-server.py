@@ -72,6 +72,12 @@ def rpc_result(payload):
 
 def handle_tool_call(name, args):
     if name == "claim_render_order":
+        # CFW-146: the renderer identity is optional but must be well-formed
+        # when present (the owner card reads its `kind`).
+        r = args.get("renderer")
+        if r is not None and (not isinstance(r, dict) or r.get("kind") not in ("mac", "box", "byo", "fleet")):
+            log_call(name, args, False)
+            return rpc_result({"order": None, "error": "bad renderer identity"}), None
         with LOCK:
             for o in QUEUE:
                 if STATUS.get(o["id"], "queued") == "queued":
@@ -87,6 +93,20 @@ def handle_tool_call(name, args):
         if CLAIMED.get(order_id) != args.get("workerId"):
             log_call(name, args, False)
             return None, {"code": -32000, "message": "order not claimed by this worker"}
+        # CFW-146: a heartbeat is a pulse, not progress — it may carry the
+        # renderer kind on `stage` but never a pct, and it never lands on a
+        # terminal order (the drainer stops the pulse before reporting).
+        if args.get("kind") == "heartbeat":
+            if STATUS.get(order_id) in ("done", "blocked"):
+                log_call(name, args, False)
+                return None, {"code": -32000, "message": "order is terminal"}
+            if args.get("pct") is not None:
+                log_call(name, args, False)
+                return rpc_result({"ok": False, "error": "heartbeat must not carry pct"}), None
+            stage = args.get("stage")
+            if stage is not None and stage not in ("mac", "box", "byo", "fleet"):
+                log_call(name, args, False)
+                return rpc_result({"ok": False, "error": f"bad renderer kind {stage!r}"}), None
         log_call(name, args, True)
         return rpc_result({"ok": True}), None
 
@@ -147,6 +167,10 @@ def handle_tool_call(name, args):
         if CLAIMED.get(order_id) != args.get("workerId"):
             log_call(name, args, False)
             return None, {"code": -32000, "message": "order not claimed by this worker"}
+        # CFW-146: `needs` is optional, but only the three contract values.
+        if args.get("needs") is not None and args["needs"] not in ("ingredient", "decision", "capacity"):
+            log_call(name, args, False)
+            return rpc_result({"ok": False, "error": f"bad needs {args['needs']!r}"}), None
         with LOCK:
             STATUS[order_id] = "blocked"
         log_call(name, args, True)

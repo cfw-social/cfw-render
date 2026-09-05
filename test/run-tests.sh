@@ -400,6 +400,80 @@ else
   fail "watchdog: journal row" "no timeout journal row found"
 fi
 
+echo "=== Case 4b: heartbeat + renderer identity (CFW-146) ==="
+# A 2-second pulse against an ~8-second Director → at least 2 heartbeats, each
+# carrying the renderer kind and no pct, and NONE after the order is terminal.
+run_case "heartbeat" "heartbeat" "order_fixture order-hb-1 brand-1 video" export CFW_RENDER_HEARTBEAT_SECS=2
+hb_check="$(python3 -c '
+import json, sys
+calls = [json.loads(l) for l in open(sys.argv[1])]
+hb = [c for c in calls if c.get("tool") == "append_render_event" and c.get("args", {}).get("kind") == "heartbeat"]
+claim = next((c for c in calls if c.get("tool") == "claim_render_order"), None)
+problems = []
+if len(hb) < 2:
+    problems.append("heartbeats=%d (expected >=2)" % len(hb))
+if any(c["args"].get("pct") is not None for c in hb):
+    problems.append("a heartbeat carried a pct")
+kinds = {c["args"].get("stage") for c in hb}
+if kinds and not kinds <= {"mac", "box", "byo", "fleet"}:
+    problems.append("bad renderer kinds on heartbeats: %r" % kinds)
+if any(not c.get("ok") for c in hb):
+    problems.append("a heartbeat was rejected by the server")
+if not claim or not isinstance(claim["args"].get("renderer"), dict):
+    problems.append("claim carried no renderer identity")
+elif claim["args"]["renderer"].get("kind") not in ("mac", "box", "byo", "fleet"):
+    problems.append("claim renderer kind %r" % claim["args"]["renderer"].get("kind"))
+# nothing may follow the terminal call
+seen_terminal = False
+late = 0
+for c in calls:
+    if c.get("tool") in ("complete_render_order", "block_render_order"):
+        seen_terminal = True
+        continue
+    if seen_terminal and c.get("tool") == "append_render_event":
+        late += 1
+if late:
+    problems.append("%d event(s) after the order went terminal" % late)
+print("OK" if not problems else "BAD " + "; ".join(problems))
+' "$CASE_MOCKSTATE/calls.jsonl" 2>/dev/null || echo "BAD could not read calls.jsonl")"
+if [[ "$hb_check" == "OK" ]]; then
+  pass "heartbeat: >=2 pulses with renderer kind, no pct, none after terminal; claim carries the renderer"
+else
+  fail "heartbeat" "$hb_check"
+fi
+if [[ "$(calls_count complete_render_order)" == "1" ]]; then
+  pass "heartbeat: the render still completed normally"
+else
+  fail "heartbeat: complete" "expected 1 complete_render_order, got $(calls_count complete_render_order)"
+fi
+if ! pgrep -f "cfw-render" >/dev/null 2>&1 || true; then :; fi
+
+echo "=== Case 4c: block carries `needs` (CFW-146) ==="
+run_case "needs-ingredient" "needs-ingredient" "order_fixture order-needs-1 brand-1 video" true
+needs_check="$(python3 -c '
+import json, sys
+calls = [json.loads(l) for l in open(sys.argv[1])]
+blocks = [c for c in calls if c.get("tool") == "block_render_order"]
+if not blocks:
+    print("BAD no block_render_order call"); raise SystemExit
+a = blocks[-1]["args"]
+if a.get("needs") != "ingredient":
+    print("BAD needs=%r" % a.get("needs")); raise SystemExit
+if not blocks[-1].get("ok"):
+    print("BAD block rejected by the server"); raise SystemExit
+print("OK")
+' "$CASE_MOCKSTATE/calls.jsonl" 2>/dev/null || echo "BAD could not read calls.jsonl")"
+if [[ "$needs_check" == "OK" ]]; then
+  pass "needs: block_render_order carries needs=ingredient (card offers an upload)"
+else
+  fail "needs" "$needs_check"
+fi
+if grep -q "order-needs-1.*block" "$CASE_STATE/journal.tsv" 2>/dev/null; then
+  pass "needs: journal row outcome=block"
+else
+  fail "needs: journal row" "no block journal row found"
+fi
+
 echo "=== Case 5: empty queue ==="
 run_case "empty-queue" "happy" empty_queue true
 if [[ "$CASE_DRAINER_EXIT" == "0" ]]; then pass "empty-queue: drainer exits 0"; else fail "empty-queue: exit" "expected 0, got $CASE_DRAINER_EXIT"; fi

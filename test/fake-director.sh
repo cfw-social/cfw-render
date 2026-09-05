@@ -64,6 +64,25 @@ JSON
     echo "%PDF-1.4 fake" > final/carousel.pdf
     cfw-render-report.sh complete final/slide-1.png final/slide-2.png final/slide-3.png final/carousel.pdf
     ;;
+  heartbeat)
+    # CFW-146: a slow render — the drainer must pulse `heartbeat` on its own
+    # while this Director works, so cfw-social can tell "slow" from "dead".
+    cfw-render-report.sh stage fetch-assets 10 "Gathering ingredients"
+    sleep 5
+    cfw-render-report.sh stage assemble 70 "Assembling"
+    sleep 3
+    mkdir -p final
+    echo "fake video bytes" > final/out.mp4
+    cat > final/captions.json <<'JSON'
+{ "instagram": "Slow but steady." }
+JSON
+    cfw-render-report.sh complete final/out.mp4
+    ;;
+  needs-ingredient)
+    # CFW-146: a block that names WHAT it needs → the owner card offers upload.
+    cfw-render-report.sh stage fetch-assets 10 "Gathering ingredients"
+    cfw-render-report.sh block "I need a clip of the workspace to cut this" ingredient
+    ;;
   gate-fail)
     cfw-render-report.sh stage fetch-assets 10 "Gathering ingredients"
     cfw-render-report.sh stage vision-qa 50 "Running QA gate"

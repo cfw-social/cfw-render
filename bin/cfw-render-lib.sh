@@ -149,6 +149,7 @@ cr_load_config() {
     CFW_RENDER_FANOUT_MODELS CFW_RENDER_TIMEOUT_VIDEO CFW_RENDER_TIMEOUT_IMAGE
     CFW_RENDER_GATE_FAIL_CAP CFW_RENDER_OLLAMA_KEYS_FILE CFW_RENDER_DIRECTOR_CMD
     CFW_RENDER_MODE CFW_RENDER_WORKER_ID_FILE
+    CFW_RENDER_HEARTBEAT_SECS CFW_RENDER_RENDERER_KIND
   )
   local _cr_preset=() _v
   for _v in "${_cr_vars[@]}"; do
@@ -192,11 +193,31 @@ cr_load_config() {
   # own skills/, git-pull to update; BYOA and server use the same source).
   : "${CFW_RENDER_MODE:=server}"
   : "${CFW_RENDER_WORKER_ID_FILE:=$CFW_RENDER_STATE_DIR/worker-id}"
+  # [CFW-146] Heartbeat cadence (seconds) while a Director holds an order. The
+  # order card in cfw-social treats silence > 3 min as "Still working — last
+  # heard N min ago", so 60 s gives three chances before the owner sees that.
+  # 0 disables the pulse (tests / a box that must stay silent).
+  : "${CFW_RENDER_HEARTBEAT_SECS:=60}"
+  # [CFW-146] Renderer identity shown to the owner ("Working on your Mac" /
+  # "on the box"). Derived from the platform + deploy mode unless set:
+  #   Darwin        → mac   (the owner's laptop)
+  #   mode=server   → box   (the fleet VPS)
+  #   otherwise     → byo   (a customer's own renderer)
+  if [[ -z "${CFW_RENDER_RENDERER_KIND:-}" ]]; then
+    if [[ "$(uname -s 2>/dev/null)" == "Darwin" ]]; then
+      CFW_RENDER_RENDERER_KIND="mac"
+    elif [[ "$CFW_RENDER_MODE" == "server" ]]; then
+      CFW_RENDER_RENDERER_KIND="box"
+    else
+      CFW_RENDER_RENDERER_KIND="byo"
+    fi
+  fi
   export CFW_RENDER_CONCURRENCY CFW_RENDER_SCRATCH CFW_RENDER_STATE_DIR \
     CFW_RENDER_SKILLS_DIR CFW_RENDER_DIRECTOR_MODEL CFW_RENDER_FANOUT_MODELS \
     CFW_RENDER_TIMEOUT_VIDEO CFW_RENDER_TIMEOUT_IMAGE CFW_RENDER_GATE_FAIL_CAP \
     CFW_RENDER_OLLAMA_KEYS_FILE CFW_RENDER_DIRECTOR_CMD \
-    CFW_RENDER_MODE CFW_RENDER_WORKER_ID_FILE
+    CFW_RENDER_MODE CFW_RENDER_WORKER_ID_FILE \
+    CFW_RENDER_HEARTBEAT_SECS CFW_RENDER_RENDERER_KIND
 
   local missing=()
   [[ -z "${CFW_API_BASE:-}" ]] && missing+=("CFW_API_BASE")
@@ -440,6 +461,50 @@ print(json.dumps(d))
 ' "$order_id" "$CFW_WORKER_ID" "$kind" "$stage" "$message" "$pct" "$model" 2>/dev/null)" || return 0
   cr_mcp_call append_render_event "$args" >/dev/null 2>>"$CFW_RENDER_STATE_DIR/cfw-render.log" || \
     cr_log "cr_event: append_render_event failed (best-effort, ignored) — order=$order_id kind=$kind stage=$stage"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# cr_heartbeat_start <orderId> — [CFW-146] emit `kind: heartbeat` every
+# $CFW_RENDER_HEARTBEAT_SECS while the Director works, so cfw-social can tell
+# "slow" from "dead": the order card shows "Still working — last heard N min
+# ago" once no event of ANY kind has arrived for 3 minutes, and the server
+# extends the claim lease on every heartbeat. The pulse carries the renderer
+# kind (mac|box|byo) so the card can keep saying where the work is happening.
+#
+# Echoes the background loop's PID; pair with cr_heartbeat_stop. A cadence of 0
+# disables it (echoes nothing). Best-effort throughout: a failed pulse is
+# logged by cr_event and never touches the render.
+# ---------------------------------------------------------------------------
+cr_heartbeat_start() {
+  local order_id="$1"
+  local secs="${CFW_RENDER_HEARTBEAT_SECS:-60}"
+  [[ "$secs" =~ ^[0-9]+$ ]] || return 0
+  (( secs > 0 )) || return 0
+  # NOTE: the loop's stdout/stderr MUST be redirected away from the caller's
+  # pipe. Callers take the PID via `$(cr_heartbeat_start …)`; a background child
+  # that keeps the command substitution's pipe open means the substitution never
+  # sees EOF and the caller hangs forever (same trap as test/run-tests.sh's
+  # start_mock). cr_event already logs its own failures to the state dir.
+  (
+    while :; do
+      sleep "$secs"
+      cr_event "$order_id" heartbeat "${CFW_RENDER_RENDERER_KIND:-}" "Still working" ""
+    done
+  ) >/dev/null 2>&1 &
+  echo $!
+}
+
+# ---------------------------------------------------------------------------
+# cr_heartbeat_stop <pid> — stop the pulse. Always called before the outcome is
+# reported, so no heartbeat can ever land after complete/block (the order is
+# terminal then and the server rejects further events).
+# ---------------------------------------------------------------------------
+cr_heartbeat_stop() {
+  local pid="${1:-}"
+  [[ -n "$pid" ]] || return 0
+  kill "$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null
   return 0
 }
 
