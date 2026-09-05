@@ -143,12 +143,12 @@ These rules are LOAD-BEARING. Violating any one of them is a HARD FAILURE.
 source ~/ecosystem/vault/secrets.env
 FF=/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg
 W="$OUT_DIR/work" ; mkdir -p "$W/gfx"
-SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name p-reels-faceless 2>/dev/null | head -1)
-BROLL_SYNC_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-broll-sync 2>/dev/null | head -1)
+SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/harness/skills -maxdepth 5 -type d -name p-reels-faceless 2>/dev/null | head -1)
+BROLL_SYNC_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/harness/skills -maxdepth 5 -type d -name c-broll-sync 2>/dev/null | head -1)
 [ -n "$BROLL_SYNC_DIR" ] || BROLL_SYNC_DIR="$SKILL_DIR/.hub/c-broll-sync"
-TYPING_UI_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-typing-ui 2>/dev/null | head -1)
+TYPING_UI_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/harness/skills -maxdepth 5 -type d -name c-typing-ui 2>/dev/null | head -1)
 [ -n "$TYPING_UI_DIR" ] || TYPING_UI_DIR="$SKILL_DIR/.hub/c-typing-ui"
-PREMIUM_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-reel-premium 2>/dev/null | head -1)
+PREMIUM_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/harness/skills -maxdepth 5 -type d -name c-reel-premium 2>/dev/null | head -1)
 
 VOICE_ID="${VOICE_ID:-${ELEVENLABS_DEFAULT_VOICE_ID}}"
 BROLL_CLIPS="${BROLL_CLIPS:-}"
@@ -713,7 +713,7 @@ the current beat's layout and keep the overlay clear of its hero element.
 # Each spec also carries brand context. Empty/unset → skip entirely (default).
 OVERLAY_BEATS="${overlay_beats:-[]}"
 if [ "$(echo "$OVERLAY_BEATS" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)" -gt 0 ]; then
-  OVERLAY_FX_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name c-overlay-fx 2>/dev/null | head -1)
+  OVERLAY_FX_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/harness/skills -maxdepth 5 -type d -name c-overlay-fx 2>/dev/null | head -1)
   [ -z "$OVERLAY_FX_DIR" ] && { echo "[p-reels-faceless] overlay_beats set but c-overlay-fx not found — skipping"; OVERLAY_BEATS="[]"; }
 fi
 if [ "$(echo "$OVERLAY_BEATS" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)" -gt 0 ]; then

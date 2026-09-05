@@ -29,7 +29,7 @@ dependsOn: [c-ai-media, c-kie-ai, c-replicate, c-ffmpeg, c-thumbnail, c-eval-run
 ## QA Gate (run per produced image — MANDATORY before delivery)
 
 ```bash
-SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name p-ai-image 2>/dev/null | head -1)
+SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/harness/skills -maxdepth 5 -type d -name p-ai-image 2>/dev/null | head -1)
 bash .hub/c-eval-runner/scripts/eval-run.sh <OUTPUT_IMAGE.png> --recipe-dir "$SKILL_DIR" --brand "$BRAND_SLUG"
 ```
 
