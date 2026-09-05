@@ -28,6 +28,19 @@ case "$mode" in
 JSON
     cfw-render-report.sh complete final/out.mp4 final/cover.png
     ;;
+  large)
+    # CFW-144: a real-sized reel (6 MiB > the 4.5 MB Vercel body cap) + its
+    # cover — only the presigned path can deliver it.
+    cfw-render-report.sh stage fetch-assets 10 "Gathering ingredients"
+    cfw-render-report.sh stage vision-qa 95 "Running QA gate"
+    mkdir -p final
+    head -c 6291456 /dev/urandom > final/out.mp4
+    echo "fake cover png" > final/cover.png
+    cat > final/captions.json <<'JSON'
+{ "instagram": "Big reel, small function.", "tiktok": "Big reel, small function.", "youtube": "Big reel, small function.", "threads": "Big reel, small function." }
+JSON
+    cfw-render-report.sh complete final/out.mp4 final/cover.png
+    ;;
   no-captions)
     # CFW-136: a Director that forgot captions.json — the report WARNS, still
     # completes (cfw-social falls back to the order copy/intent), sends NO
