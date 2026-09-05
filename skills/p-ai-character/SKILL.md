@@ -165,7 +165,7 @@ runs geometry and luma checks, and writes a structured `scorecard.json`.
 **Do NOT deliver if it exits non-zero (verdict FAIL).**
 
 ```bash
-SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name p-ai-character 2>/dev/null | head -1)
+SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" /Users/vasanth/ecosystem/harness/skills -maxdepth 5 -type d -name p-ai-character 2>/dev/null | head -1)
 bash .hub/c-eval-runner/scripts/eval-run.sh <FINAL_MP4> --recipe-dir "$SKILL_DIR" --brand "$BRAND_SLUG"
 # scorecard → <video_dir>/eval/scorecard.json ; frame sweep → <video_dir>/eval/
 ```

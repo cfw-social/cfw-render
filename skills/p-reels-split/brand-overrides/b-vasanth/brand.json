@@ -1,0 +1,91 @@
+{
+  "brand": "Vasanth Subramanyam",
+  "slug": "b-vasanth",
+  "aliases": [
+    "bv",
+    "b-vasanth"
+  ],
+  "cfw_brand_id": "cmpxg9smb00gj04icz5k58tpk",
+  "style": "Blueprint (LOCKED 2026-06-13 — white grid, blue accent, numbered cards, navy footer; diagram varies per content)",
+  "palette": {
+    "bg": "#FFFFFF",
+    "ink": "#0F172A",
+    "grey": "#64748B",
+    "grey2": "#94A3B8",
+    "accent": "#2563EB",
+    "accent_soft": "#EFF4FF",
+    "accent_line": "#BFD3F5",
+    "border": "#E6EAF1",
+    "navy": "#0A1733",
+    "green": "#16A34A",
+    "green_soft": "#ECFCEF",
+    "red": "#DC2626",
+    "red_soft": "#FEF2F2",
+    "grid": "rgba(37,99,235,0.045) 48px"
+  },
+  "fonts": {
+    "display": "Inter",
+    "body": "Inter",
+    "mono": "JetBrains Mono"
+  },
+  "voice": {
+    "provider": "elevenlabs",
+    "voice_id": "qfNHzU5pVyzMLm53FhzY",
+    "voice_name": "Vasanth-042026",
+    "model_id": "eleven_v3",
+    "voice_settings": {
+      "stability": 0.0,
+      "use_speaker_boost": true
+    },
+    "style_tags": [
+      "[excited]",
+      "[enthusiastically]"
+    ],
+    "output_format": "mp3_44100_128",
+    "loudnorm_lufs": -16,
+    "_resolved": "CFW-128 2026-09-04: GET /v1/voices lists both candidates — qfNHzU5pVyzMLm53FhzY='Vasanth-042026' (cloned), iXo9OlmDD0eO2j9eo7sM='Vasanth' (older clone). Every MGG production 06.28→07.02 used qfNHzU5pVyzMLm53FhzY/eleven_v3 → pinned. iXo9… is superseded (still the vault ELEVENLABS_DEFAULT_VOICE_ID — pass voice_id explicitly).",
+    "_brand_note": "Same pin as MGG (decision 1). .brand/faceless doc still cites iXo9OlmDD0eO2j9eo7sM — superseded."
+  },
+  "captions": {
+    "style": "kinetic-karaoke",
+    "case": "upper",
+    "font": "Inter Bold",
+    "size_px": 86,
+    "active_color": "#2563EB",
+    "inactive_color": "#0F172A",
+    "one_accent_word_per_chunk": true,
+    "placement": {
+      "p-reels-faceless": "caption band CAP_TOP=1180 on white cards — dark ink, no white text"
+    }
+  },
+  "outro": {
+    "type": "generated-card",
+    "path": null,
+    "footer": "Vasanth Subramanyam · growthsystems.ai",
+    "_note": "No outro asset on disk; recipes generate the closing card from this footer line."
+  },
+  "cta": {
+    "line": "Which one bit you hardest in production?",
+    "style": "discussion-prompt-only",
+    "forbidden": [
+      "book a call",
+      "DM me",
+      "link in bio",
+      "course",
+      "community",
+      "like if you agree"
+    ],
+    "handle": "growthsystems.ai",
+    "hashtags": "none in caption"
+  },
+  "rules": {
+    "video_never_to_linkedin": true,
+    "carousel_publish": "PDF via LinkedIn UI (manual) — never image arrays",
+    "author_byline": "Vasanth Subramanyam"
+  },
+  "carousel": {
+    "template": "brand-overrides/b-vasanth/template.html (Blueprint carousel-ized from .brand/templates/blueprint/template.html)",
+    "canvas": "1080x1350",
+    "slides": "8-12"
+  }
+}

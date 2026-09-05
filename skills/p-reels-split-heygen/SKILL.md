@@ -97,7 +97,7 @@ else
 
   # Locate this skill dir (box deployments live under ~/.hermes/profiles/<slug>/skills/cfw/)
   SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" \
-    /Users/vasanth/ecosystem/skills -maxdepth 5 -type d -name p-reels-split-heygen 2>/dev/null | head -1)
+    /Users/vasanth/ecosystem/harness/skills -maxdepth 5 -type d -name p-reels-split-heygen 2>/dev/null | head -1)
 
   # Provider step — requires ELEVENLABS_API_KEY + HEYGEN_API_KEY in the environment.
   # Writes the finished avatar MP4 to $CACHED_VIDEO and prints the path on its last line.

@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<!--
+  p-carousel · brand-overrides/b-vasanth/template.html — BLUEPRINT carousel template (CFW-128, 2026-09-04)
+  Carousel-ized from b-vasanth/.brand/templates/blueprint/template.html: same tokens (white 48px grid, ink #0F172A,
+  blue #2563EB with ONE .hl word per headline, Inter + JetBrains Mono, navy #0A1733 footer "Vasanth Subramanyam · growthsystems.ai").
+  Shipped as a full 8-slide EXEMPLAR (the CFW-128 certification run). Replace the copy per slide, keep the :root tokens,
+  .footer, .wrap paddings and the component classes (.card/.trap/.diagram/.flow/.cols/.stat/.fields/.takeaway/.next).
+  Vary the diagram per slide (VISUAL-STANDARDS 2026-06-14) — never the same layout back-to-back.
+  Render: WIDTH=1080 HEIGHT=1350 SCALE=2 node render.mjs, then downscale to EXACT 1080x1350 for the acceptance dims check.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  /* ── BRAND TOKENS — Blueprint (brand-overrides/b-vasanth/brand.json) ─────── */
+  :root{
+    --ink:#0F172A; --grey:#64748B; --grey2:#94A3B8;
+    --blue:#2563EB; --blue-soft:#EFF4FF; --blue-line:#BFD3F5;
+    --border:#E6EAF1; --navy:#0A1733;
+    --green:#16A34A; --green-soft:#ECFCEF; --red:#DC2626; --red-soft:#FEF2F2;
+    --w:1080px; --h:1350px;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#E9EEF6;font-family:'Inter',-apple-system,sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased}
+  .mono{font-family:'JetBrains Mono',monospace}
+
+  /* ── SLIDE SHELL (Blueprint canvas) ─────────────────────────────────────── */
+  .slide{
+    position:relative;width:var(--w);height:var(--h);overflow:hidden;background:#FFFFFF;
+    background-image:linear-gradient(rgba(37,99,235,0.045) 1px,transparent 1px),
+                     linear-gradient(90deg,rgba(37,99,235,0.045) 1px,transparent 1px);
+    background-size:48px 48px;
+  }
+  .wrap{position:absolute;inset:0;padding:60px 64px 112px;display:flex;flex-direction:column}
+  .topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px}
+  .eyebrow{font-family:'JetBrains Mono',monospace;font-weight:600;font-size:15px;letter-spacing:0.16em;text-transform:uppercase;color:var(--blue)}
+  .pager{font-family:'JetBrains Mono',monospace;font-weight:600;font-size:15px;letter-spacing:0.12em;color:var(--grey2)}
+  .pager b{color:var(--ink)}
+  h1{font-weight:800;font-size:62px;line-height:1.04;letter-spacing:-0.02em;color:var(--ink)}
+  h1.cover{font-size:82px;line-height:1.0}
+  h1 .hl{color:var(--blue)}
+  .sub{margin-top:16px;font-size:25px;color:var(--grey);line-height:1.4}
+  .sub b{color:var(--ink);font-weight:600}
+  .sub .url{color:var(--blue);font-weight:500}
+  .rule{height:1px;background:var(--border);margin:22px 0 26px}
+  .grow{flex:1}
+
+  /* ── COMPONENTS ─────────────────────────────────────────────────────────── */
+  .card{border:1.5px solid var(--border);border-radius:16px;background:#fff;padding:22px 28px;box-shadow:0 2px 10px rgba(15,23,42,0.03)}
+  .label{font-family:'JetBrains Mono',monospace;font-weight:600;font-size:14px;letter-spacing:0.14em;text-transform:uppercase;color:var(--blue);margin-bottom:10px}
+  .does{display:flex;align-items:flex-start;gap:14px;font-size:31px;font-weight:600;color:var(--ink);line-height:1.3}
+  .tick{flex-shrink:0;width:34px;height:34px;border-radius:9px;background:var(--green-soft);color:var(--green);display:flex;align-items:center;justify-content:center;font-size:19px;font-weight:800;margin-top:2px}
+  .trap{margin-top:18px;display:flex;align-items:flex-start;gap:12px;background:var(--red-soft);border:1px solid #F7D4D4;border-radius:12px;padding:16px 20px;font-size:24px;color:#7F1D1D;line-height:1.35}
+  .trap .x{flex-shrink:0;width:28px;height:28px;border-radius:8px;background:#fff;color:var(--red);display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:15px;margin-top:2px}
+  .trap .k{font-family:'JetBrains Mono',monospace;font-weight:600;color:var(--red);margin-right:6px}
+  .badge{display:inline-flex;align-items:center;justify-content:center;width:86px;height:56px;background:#fff;border:2.5px solid var(--blue-line);border-radius:12px;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:26px;color:var(--blue)}
+  .rank{display:flex;align-items:center;gap:18px;margin-bottom:18px}
+  .rank .of{font-family:'JetBrains Mono',monospace;font-size:15px;letter-spacing:0.12em;color:var(--grey2);text-transform:uppercase}
+  .rank .of b{color:var(--red);font-weight:700}
+  .takeaway{margin-top:auto;background:var(--blue-soft);border:1.5px solid #D6E2FB;border-radius:16px;padding:20px 26px;border-left:6px solid var(--blue)}
+  .tk-label{font-family:'JetBrains Mono',monospace;font-weight:600;font-size:14px;letter-spacing:0.14em;text-transform:uppercase;color:var(--blue);margin-bottom:8px}
+  .tk-body{font-size:23px;line-height:1.35;color:var(--ink);font-weight:500}
+  .tk-body b{font-weight:700}
+
+  /* diagrams */
+  .diagram{margin-top:30px;border:1.5px dashed var(--blue-line);border-radius:16px;padding:30px 30px;background:rgba(239,244,255,0.55)}
+  .dg-label{font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:0.14em;text-transform:uppercase;color:var(--grey);margin-bottom:16px}
+  .chips{display:flex;flex-wrap:wrap;gap:12px}
+  .chip{display:inline-flex;align-items:center;gap:10px;border:1.5px solid var(--border);background:#fff;border-radius:999px;padding:12px 20px;font-size:21px;font-weight:600;color:var(--ink)}
+  .chip .n{font-family:'JetBrains Mono',monospace;font-size:15px;color:var(--blue);font-weight:700}
+  .chip.hot{border-color:var(--red);background:var(--red-soft);color:#7F1D1D}
+  .chip.ok{border-color:var(--green);background:var(--green-soft);color:#14532D}
+  .chip.blue{border-color:var(--blue);background:var(--blue-soft);color:var(--blue)}
+  .flow{display:flex;align-items:center;gap:12px;flex-wrap:nowrap}
+  .node{border:1.5px solid var(--border);background:#fff;border-radius:12px;padding:16px 14px;font-size:22px;font-weight:600;color:var(--ink);text-align:center;flex:1 1 0;min-width:0}
+  .node .m{display:block;font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:0.12em;color:var(--grey);margin-bottom:4px;text-transform:uppercase}
+  .node.bad{border-color:var(--red);background:var(--red-soft);color:#7F1D1D}
+  .node.good{border-color:var(--green);background:var(--green-soft);color:#14532D}
+  .node.blue{border-color:var(--blue);background:var(--blue-soft)}
+  .arrow{width:26px;height:3px;background:var(--blue-line);position:relative;flex-shrink:0}
+  .arrow::after{content:"";position:absolute;right:-2px;top:-6px;border:7px solid transparent;border-left:10px solid var(--blue-line)}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  .col{border:1.5px solid var(--border);border-radius:14px;background:#fff;padding:18px 20px}
+  .col h4{font-family:'JetBrains Mono',monospace;font-size:14px;letter-spacing:0.14em;text-transform:uppercase;margin-bottom:12px}
+  .col.bad h4{color:var(--red)} .col.good h4{color:var(--green)}
+  .col li{list-style:none;font-size:23px;line-height:1.45;color:var(--ink);padding-left:22px;position:relative}
+  .col li::before{content:"";position:absolute;left:0;top:12px;width:9px;height:9px;border-radius:50%;background:var(--blue-line)}
+  .col.bad li::before{background:var(--red)} .col.good li::before{background:var(--green)}
+  .stat{display:flex;align-items:flex-end;gap:26px}
+  .stat .big{font-weight:800;font-size:118px;line-height:0.9;letter-spacing:-0.04em;color:var(--red)}
+  .stat .cap{font-size:24px;color:var(--grey);line-height:1.35;padding-bottom:8px}
+  .bar{margin-top:20px;height:22px;border-radius:999px;background:var(--border);position:relative;overflow:hidden}
+  .bar .fill{position:absolute;left:0;top:0;bottom:0;width:100%;background:linear-gradient(90deg,var(--blue),var(--red));border-radius:999px}
+  .bar .cap-line{position:absolute;left:36%;top:-8px;bottom:-8px;width:4px;background:var(--ink)}
+  .bar-lbl{display:flex;justify-content:space-between;font-family:'JetBrains Mono',monospace;font-size:14px;color:var(--grey);margin-top:10px;letter-spacing:0.1em;text-transform:uppercase}
+  .fields{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+  .field{border:1.5px solid var(--blue-line);border-radius:12px;background:#fff;padding:16px 10px;text-align:center}
+  .field .m{font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:0.12em;color:var(--grey);text-transform:uppercase}
+  .field .v{font-size:26px;font-weight:700;color:var(--blue);margin-top:6px}
+  .cover-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:34px}
+  .cg{display:flex;align-items:center;gap:14px;border:1.5px solid var(--border);border-radius:12px;background:#fff;padding:20px 18px;font-size:24px;font-weight:600}
+  .cg .b{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:16px;color:var(--blue);width:36px}
+  .cg.first{border-color:var(--red);background:var(--red-soft);color:#7F1D1D}
+  .next{margin-top:auto;display:flex;align-items:center;justify-content:space-between;border-top:1.5px solid var(--border);padding-top:18px}
+  .next .lbl{font-family:'JetBrains Mono',monospace;font-size:15px;letter-spacing:0.14em;text-transform:uppercase;color:var(--grey2)}
+  .next .to{font-size:22px;font-weight:700;color:var(--blue)}
+  .swipe{margin-top:auto;display:inline-flex;align-items:center;gap:12px;font-family:'JetBrains Mono',monospace;font-size:15px;letter-spacing:0.14em;text-transform:uppercase;color:var(--blue)}
+
+  /* ── FOOTER (never change name/domain) ──────────────────────────────────── */
+  .footer{position:absolute;left:0;right:0;bottom:0;height:80px;background:var(--navy);display:flex;align-items:center;justify-content:center;gap:14px}
+  .footer .av{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,#2563EB,#1E40AF);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:15px}
+  .footer .who{font-family:'JetBrains Mono',monospace;font-weight:500;font-size:16px;letter-spacing:0.06em;color:#fff;text-transform:uppercase}
+  .footer .who .dot{color:var(--blue-line);margin:0 8px}
+  .footer .who .u{color:#9DBBF0;text-transform:none;letter-spacing:0}
+</style>
+</head>
+<body>
+
+<!-- ── 1 · COVER ──────────────────────────────────────────────────────────── -->
+<section class="slide" id="s1"><div class="wrap">
+  <div class="topbar"><div class="eyebrow">MCP · Enterprise AI assistants</div><div class="pager"><b>01</b> / 08</div></div>
+  <h1 class="cover">7 components in the MCP wiring — ranked by what <span class="hl">breaks</span> first</h1>
+  <p class="sub">The model is rarely the bottleneck. <b>The plumbing</b> is what gets you to renew. · <span class="url">growthsystems.ai</span></p>
+  <div class="rule"></div>
+  <div class="cover-grid">
+    <div class="cg first"><span class="b">01</span>Auth &amp; token refresh</div>
+    <div class="cg"><span class="b">02</span>Idempotency keys</div>
+    <div class="cg"><span class="b">03</span>Tool allowlist per agent</div>
+    <div class="cg"><span class="b">04</span>Cost ceiling per workflow</div>
+    <div class="cg"><span class="b">05</span>Audit trail</div>
+    <div class="cg"><span class="b">06</span>Human-in-the-loop gates</div>
+    <div class="cg"><span class="b">07</span>Observability for non-engineers</div>
+    <div class="cg" style="border-style:dashed;color:var(--grey)"><span class="b">→</span>ranked by production failure</div>
+  </div>
+  <div class="swipe">Swipe · what breaks first →</div>
+</div><div class="footer"><div class="av">VS</div><div class="who">Vasanth Subramanyam <span class="dot">·</span> <span class="u">growthsystems.ai</span></div></div></section>
+
+<!-- ── 2 · AUTH & TOKEN REFRESH ───────────────────────────────────────────── -->
+<section class="slide" id="s2"><div class="wrap">
+  <div class="topbar"><div class="eyebrow">Component 01 of 7</div><div class="pager"><b>02</b> / 08</div></div>
+  <div class="rank"><span class="badge">01</span><span class="of">breaks <b>first</b></span></div>
+  <h1>Auth &amp; <span class="hl">token</span> refresh</h1>
+  <p class="sub">Fails silently the first weekend. Audit it before anything else.</p>
+  <div class="rule"></div>
+  <div class="card">
+    <div class="label">What it does</div>
+    <div class="does"><span class="tick">&#10003;</span>Keeps every connector alive without a human re-logging in.</div>
+    <div class="trap"><span class="x">!</span><span><span class="k">trap</span>a refresh token that expires on Saturday shows up as a 401 on Monday — after 48 hours of silent failure.</span></div>
+  </div>
+  <div class="diagram">
+    <div class="dg-label">The weekend timeline</div>
+    <div class="flow">
+      <div class="node good"><span class="m">Fri 18:00</span>token ok</div><div class="arrow"></div>
+      <div class="node bad"><span class="m">Sat 02:10</span>refresh fails</div><div class="arrow"></div>
+      <div class="node bad"><span class="m">Sat → Sun</span>every call 401</div><div class="arrow"></div>
+      <div class="node"><span class="m">Mon 09:00</span>someone notices</div>
+    </div>
+  </div>
+
+  <div class="next"><span class="lbl">Next</span><span class="to">02 · Idempotency keys →</span></div>
+</div><div class="footer"><div class="av">VS</div><div class="who">Vasanth Subramanyam <span class="dot">·</span> <span class="u">growthsystems.ai</span></div></div></section>
+
+<!-- ── 3 · IDEMPOTENCY KEYS ───────────────────────────────────────────────── -->
+<section class="slide" id="s3"><div class="wrap">
+  <div class="topbar"><div class="eyebrow">Component 02 of 7</div><div class="pager"><b>03</b> / 08</div></div>
+  <div class="rank"><span class="badge">02</span><span class="of">breaks <b>second</b></span></div>
+  <h1><span class="hl">Idempotency</span> keys on every external write</h1>
+  <p class="sub">Without them, retries become double-posts. We learned this with a $5K Slack flood.</p>
+  <div class="rule"></div>
+  <div class="card">
+    <div class="label">What it does</div>
+    <div class="does"><span class="tick">&#10003;</span>Makes a retried call a no-op instead of a second side effect.</div>
+    <div class="trap"><span class="x">!</span><span><span class="k">trap</span>timeouts are not failures — the first write often landed. The retry lands again.</span></div>
+  </div>
+  <div class="diagram">
+    <div class="dg-label">Before → after</div>
+    <div class="cols">
+      <div class="col bad"><h4>No key</h4><ul><li>call times out</li><li>agent retries ×3</li><li>3 messages, 3 invoices, 3 posts</li></ul></div>
+      <div class="col good"><h4>Key = hash(intent)</h4><ul><li>call times out</li><li>agent retries ×3</li><li>1 write. The rest return the same result.</li></ul></div>
+    </div>
+  </div>
+
+  <div class="next"><span class="lbl">Next</span><span class="to">03 · Tool allowlist per agent →</span></div>
+</div><div class="footer"><div class="av">VS</div><div class="who">Vasanth Subramanyam <span class="dot">·</span> <span class="u">growthsystems.ai</span></div></div></section>
+
+<!-- ── 4 · TOOL ALLOWLIST PER AGENT ───────────────────────────────────────── -->
+<section class="slide" id="s4"><div class="wrap">
+  <div class="topbar"><div class="eyebrow">Component 03 of 7</div><div class="pager"><b>04</b> / 08</div></div>
+  <div class="rank"><span class="badge">03</span><span class="of">breaks <b>third</b></span></div>
+  <h1>Tool <span class="hl">allowlist</span> per agent</h1>
+  <p class="sub">The EchoLeak (CVE-2025-32711) class of attacks lives here. Reader/Actor split is the architectural fix.</p>
+  <div class="rule"></div>
+  <div class="card">
+    <div class="label">What it does</div>
+    <div class="does"><span class="tick">&#10003;</span>An agent that reads untrusted content cannot also send, post, or pay.</div>
+    <div class="trap"><span class="x">!</span><span><span class="k">trap</span>one "do-everything" agent + one poisoned document = exfiltration with your own credentials.</span></div>
+  </div>
+  <div class="diagram">
+    <div class="dg-label">Reader / Actor split</div>
+    <div class="cols">
+      <div class="col"><h4 style="color:var(--blue)">Reader agent</h4><ul><li>search, fetch, summarise</li><li>sees untrusted input</li><li>tools: <b>read-only</b></li></ul></div>
+      <div class="col"><h4 style="color:var(--blue)">Actor agent</h4><ul><li>send, post, write, pay</li><li>sees only the Reader's structured output</li><li>tools: <b>allowlisted, logged</b></li></ul></div>
+    </div>
+  </div>
+
+  <div class="next"><span class="lbl">Next</span><span class="to">04 · Cost ceiling per workflow →</span></div>
+</div><div class="footer"><div class="av">VS</div><div class="who">Vasanth Subramanyam <span class="dot">·</span> <span class="u">growthsystems.ai</span></div></div></section>
+
+<!-- ── 5 · COST CEILING PER WORKFLOW ──────────────────────────────────────── -->
+<section class="slide" id="s5"><div class="wrap">
+  <div class="topbar"><div class="eyebrow">Component 04 of 7</div><div class="pager"><b>05</b> / 08</div></div>
+  <div class="rank"><span class="badge">04</span><span class="of">breaks <b>fourth</b></span></div>
+  <h1>Cost <span class="hl">ceiling</span> per workflow</h1>
+  <p class="sub">Runaway loops drain budgets overnight. Hard-cap, not a warning.</p>
+  <div class="rule"></div>
+  <div class="card">
+    <div class="label">What it does</div>
+    <div class="does"><span class="tick">&#10003;</span>Kills the run when spend crosses the line — no alert, no dashboard, a stop.</div>
+    <div class="trap"><span class="x">!</span><span><span class="k">trap</span>a warning e-mail at 02:00 is read at 09:00. The loop ran seven more hours.</span></div>
+  </div>
+  <div class="diagram">
+    <div class="dg-label">One night, one loop</div>
+    <div class="stat"><div class="big">$5K</div><div class="cap">drained overnight by a single retry loop<br>calling a paid tool with no ceiling.</div></div>
+    <div class="bar"><div class="fill"></div><div class="cap-line"></div></div>
+    <div class="bar-lbl"><span>hard cap · $50 / run</span><span>where the loop actually stopped</span></div>
+  </div>
+
+  <div class="next"><span class="lbl">Next</span><span class="to">05 · Audit trail →</span></div>
+</div><div class="footer"><div class="av">VS</div><div class="who">Vasanth Subramanyam <span class="dot">·</span> <span class="u">growthsystems.ai</span></div></div></section>
+
+<!-- ── 6 · AUDIT TRAIL ────────────────────────────────────────────────────── -->
+<section class="slide" id="s6"><div class="wrap">
+  <div class="topbar"><div class="eyebrow">Component 05 of 7</div><div class="pager"><b>06</b> / 08</div></div>
+  <div class="rank"><span class="badge">05</span><span class="of">breaks <b>fifth</b></span></div>
+  <h1>Audit <span class="hl">trail</span> on every output</h1>
+  <p class="sub">Without it you can't debug a single weird output. Ever.</p>
+  <div class="rule"></div>
+  <div class="card">
+    <div class="label">What it does</div>
+    <div class="does"><span class="tick">&#10003;</span>Stores the four things you need to reproduce any answer, per call.</div>
+    <div class="trap"><span class="x">!</span><span><span class="k">trap</span>logging only the final text is a diary, not an audit trail — you cannot replay it.</span></div>
+  </div>
+  <div class="diagram">
+    <div class="dg-label">The minimum record</div>
+    <div class="fields">
+      <div class="field"><div class="m">model</div><div class="v">id + date</div></div>
+      <div class="field"><div class="m">prompt</div><div class="v">full text</div></div>
+      <div class="field"><div class="m">version</div><div class="v">git sha</div></div>
+      <div class="field"><div class="m">output</div><div class="v">raw + final</div></div>
+    </div>
+  </div>
+
+  <div class="next"><span class="lbl">Next</span><span class="to">06 · Human-in-the-loop gates →</span></div>
+</div><div class="footer"><div class="av">VS</div><div class="who">Vasanth Subramanyam <span class="dot">·</span> <span class="u">growthsystems.ai</span></div></div></section>
+
+<!-- ── 7 · HUMAN-IN-THE-LOOP GATES ────────────────────────────────────────── -->
+<section class="slide" id="s7"><div class="wrap">
+  <div class="topbar"><div class="eyebrow">Component 06 of 7</div><div class="pager"><b>07</b> / 08</div></div>
+  <div class="rank"><span class="badge">06</span><span class="of">breaks <b>sixth</b></span></div>
+  <h1>Human-in-the-loop <span class="hl">gates</span></h1>
+  <p class="sub">"Ask a human if confused" is not a gate. Named escalation rules are.</p>
+  <div class="rule"></div>
+  <div class="card">
+    <div class="label">What it does</div>
+    <div class="does"><span class="tick">&#10003;</span>Routes a defined class of actions to a defined person before they execute.</div>
+    <div class="trap"><span class="x">!</span><span><span class="k">trap</span>models are never "confused" — they are confident. The vague gate fires zero times.</span></div>
+  </div>
+  <div class="diagram">
+    <div class="dg-label">Vague vs named</div>
+    <div class="cols">
+      <div class="col bad"><h4>Vague gate</h4><ul><li>"escalate if unsure"</li><li>no owner, no SLA</li><li>fires: never</li></ul></div>
+      <div class="col good"><h4>Named rule</h4><ul><li>any refund &gt; $200 → finance lead</li><li>any external e-mail → account owner</li><li>fires: every time, with a queue</li></ul></div>
+    </div>
+  </div>
+
+  <div class="next"><span class="lbl">Next</span><span class="to">07 · Observability for non-engineers →</span></div>
+</div><div class="footer"><div class="av">VS</div><div class="who">Vasanth Subramanyam <span class="dot">·</span> <span class="u">growthsystems.ai</span></div></div></section>
+
+<!-- ── 8 · OBSERVABILITY + CLOSE ──────────────────────────────────────────── -->
+<section class="slide" id="s8"><div class="wrap">
+  <div class="topbar"><div class="eyebrow">Component 07 of 7 · the close</div><div class="pager"><b>08</b> / 08</div></div>
+  <div class="rank"><span class="badge">07</span><span class="of">breaks <b>last</b> — hurts most</span></div>
+  <h1><span class="hl">Observability</span> for non-engineers</h1>
+  <p class="sub">If Customer Support can't trace one bad output, the org won't trust the system.</p>
+  <div class="rule"></div>
+  <div class="diagram" style="margin-top:0">
+    <div class="dg-label">One bad answer, traced without an engineer</div>
+    <div class="flow">
+      <div class="node blue"><span class="m">support</span>ticket #4412</div><div class="arrow"></div>
+      <div class="node"><span class="m">trace id</span>run_8f3a</div><div class="arrow"></div>
+      <div class="node"><span class="m">step 3 of 5</span>tool: pricing.lookup</div><div class="arrow"></div>
+      <div class="node bad"><span class="m">cause</span>stale price feed</div>
+    </div>
+  </div>
+  <div class="takeaway">
+    <div class="tk-label">The rule</div>
+    <div class="tk-body">The model is rarely the bottleneck. <b>The plumbing gets you to renew. The wiring keeps you off the front page</b> when something breaks.</div>
+  </div>
+  <div class="card" style="margin-top:16px">
+    <div class="label">Your turn</div>
+    <div class="does" style="font-size:24px"><span class="tick" style="background:var(--blue-soft);color:var(--blue)">?</span>Of these 7, which one bit you hardest in production? Name the tool — I'm building a public list of MCP wiring war stories.</div>
+  </div>
+</div><div class="footer"><div class="av">VS</div><div class="who">Vasanth Subramanyam <span class="dot">·</span> <span class="u">growthsystems.ai</span></div></div></section>
+
+</body>
+</html>

@@ -1,6 +1,6 @@
 {
-  "_comment": "cfw-render's own recipe allowlist — which recipes scripts/sync-skills.sh copies from CFW_SKILLS_SRC (=~/ecosystem/skills) into skills/. Internalized 2026-09-01: replaces the former cfw-skills-pack/pack.config.json dependency (cfw-skills-pack retired). To add/remove a bundled recipe, edit this list and re-run scripts/sync-skills.sh. `version`/`providers` flow into skills/index.json per recipe.",
-  "source": "ecosystem/skills",
+  "_comment": "cfw-render's own recipe allowlist — which recipes scripts/sync-skills.sh copies from CFW_SKILLS_SRC (=~/ecosystem/harness/skills — moved from ~/ecosystem/skills 2026-09-04) into skills/. Internalized 2026-09-01: replaces the former cfw-skills-pack/pack.config.json dependency (cfw-skills-pack retired). To add/remove a bundled recipe, edit this list and re-run scripts/sync-skills.sh. `version`/`providers` flow into skills/index.json per recipe.",
+  "source": "ecosystem/harness/skills",
   "recipes": [
     { "name": "p-ai-character", "version": "1.0.0", "providers": [] },
     { "name": "p-ai-image", "version": "1.0.0", "providers": [] },

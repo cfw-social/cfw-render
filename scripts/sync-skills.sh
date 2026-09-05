@@ -43,8 +43,8 @@
 #   NOT now.
 #
 # Usage:
-#   CFW_SKILLS_SRC=/Users/vasanth/ecosystem/skills scripts/sync-skills.sh
-#   CFW_SKILLS_SRC=/Users/vasanth/ecosystem/skills scripts/sync-skills.sh --out-dir /tmp/scratch-skills
+#   CFW_SKILLS_SRC=/Users/vasanth/ecosystem/harness/skills scripts/sync-skills.sh
+#   CFW_SKILLS_SRC=/Users/vasanth/ecosystem/harness/skills scripts/sync-skills.sh --out-dir /tmp/scratch-skills
 #
 # Options:
 #   --recipes FILE       path to the recipe allowlist (default: <repo>/config/recipes.json,
@@ -57,7 +57,7 @@
 #
 # Env:
 #   CFW_SKILLS_SRC   REQUIRED. Absolute path to the private source skills repo
-#                    (e.g. /Users/vasanth/ecosystem/skills). NOT defaulted —
+#                    (e.g. /Users/vasanth/ecosystem/harness/skills). NOT defaulted —
 #                    in particular this never falls back to the old, now-dead
 #                    /Users/vasanth/Code/skills path that earlier tooling used.
 set -euo pipefail
@@ -83,7 +83,7 @@ done
 if [[ -z "${CFW_SKILLS_SRC:-}" ]]; then
   echo "sync-skills.sh: ERROR — CFW_SKILLS_SRC is not set." >&2
   echo "  Point it at the private source skills repo, e.g.:" >&2
-  echo "    CFW_SKILLS_SRC=/Users/vasanth/ecosystem/skills $0" >&2
+  echo "    CFW_SKILLS_SRC=/Users/vasanth/ecosystem/harness/skills $0" >&2
   echo "  There is no default — this script will NOT fall back to any other path." >&2
   exit 1
 fi
@@ -115,7 +115,7 @@ if (( SKIP_MANIFEST == 0 )) && [[ "$OUT_DIR" == "$REPO_DIR/skills" ]]; then
   SOURCE_COMMIT="$(git -C "$CFW_SKILLS_SRC" rev-parse HEAD 2>/dev/null || echo unknown)"
   SOURCE_REMOTE="$(git -C "$CFW_SKILLS_SRC" remote get-url origin 2>/dev/null || echo "")"
   # Prefer the source repo's own origin slug; if it has no remote configured,
-  # fall back to config/recipes.json's "source" field (default "ecosystem/skills").
+  # fall back to config/recipes.json's "source" field (default "ecosystem/harness/skills").
   SOURCE_REPO_SLUG="$(python3 -c '
 import re, sys, json
 url = sys.argv[1]
@@ -125,9 +125,9 @@ if m:
 else:
     try:
         cfg = json.load(open(sys.argv[2]))
-        print(cfg.get("source") or "ecosystem/skills")
+        print(cfg.get("source") or "ecosystem/harness/skills")
     except Exception:
-        print("ecosystem/skills")
+        print("ecosystem/harness/skills")
 ' "$SOURCE_REMOTE" "$RECIPES_CONFIG")"
 
   "$SELF_DIR/gen-skills-manifest.sh" --skills-dir "$OUT_DIR" --manifest "$REPO_DIR/config/skills-version.json"

@@ -52,3 +52,12 @@
   (3) `c-reel-premium` captions are ON by default for this format (TTS+graphics reel needs
   captions — different from fmt4 where the graphics carry the text themselves); (4) cover rule
   is the last pre-upload step, not folded into `c-reel-premium`.
+
+### 2026-09-04 — CFW-128 headless certification (MGG, Day 17 MCP script, 1 ElevenLabs call $0.16)
+- **Loudness contradiction:** Step 2 loudnorms the VO to **-16 LUFS** but `acceptance.json` `qa_gate` (c-shorts-qa-gate) expects **-14 ± 1.5** → the final reads -17.3 and FAILs. Master to -14 (or change Step 2 to -14) before the cover freeze.
+- **Frame-0 floor vs navy palette:** every MGG graphics card measures YAVG≈42, below c-shorts-qa-gate's `>0x30` (48) frame-0 floor, so a card can never be the cover on this brand. Pick a b-roll frame or brighten the cover treatment; the planner's `cover_at` (a graphics beat) will fail here.
+- **Step 8 b-roll filter is invalid:** it passes a labelled `[0:v]split…[bv]` graph to `-vf` → ffmpeg "Output with label 'bv' does not exist". Use `-filter_complex`.
+- `c-broll-sync/plan.js` emits graphics beats with EMPTY `eyebrow/ghost/title_html` and windows of 10–17 s. The Director must split them into 4–6 s sub-beats and author every card's copy (`scene_plan`) — nothing in the chain writes card text.
+- `repeat: -1` is rejected by `hyperframes lint` — compute a finite repeat from the beat duration.
+- `voice_id` must be passed explicitly: the vault `ELEVENLABS_DEFAULT_VOICE_ID` is the superseded clone; the pin lives in `brand-overrides/<slug>/brand.json` (`qfNHzU5pVyzMLm53FhzY`, `eleven_v3`).
+- MGG has **no video b-roll on disk** (`creatives/brolls/recordings/` is gone) — Ken-Burns clips from `brolls/images/*.png` (`zoompan`) work as on-brand b-roll.
