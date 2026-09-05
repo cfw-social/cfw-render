@@ -59,8 +59,12 @@ final/           # put your delivered asset(s) here before calling `complete`
 6. **Run the acceptance gate** `{{gate}}` per the recipe's `acceptance.json`.
    Write the gate's output to `scorecard.json` in your working directory.
    - PASS → put the deliverable(s) in `final/` and call
-     `cfw-render-report.sh complete final/<file>` (pass every file for a
-     multi-slide carousel).
+     `cfw-render-report.sh complete final/<file> [...]` ONCE with EVERY
+     deliverable, in delivery order: the cover / slide 1 first, then slides
+     2..N, then the carousel PDF (`.pdf` is accepted and shows as a "PDF"
+     chip on the dish). A reel = the video (+ `cover.png` second). Nothing
+     can be reported after `complete` — never split deliverables across
+     calls or stage events.
    - FAIL → fix and re-render. After `{{failCap}}` total FAILs, call
      `cfw-render-report.sh block "gate: <dimension> below floor"` and stop.
 7. **Terminal action.** Your LAST action must be exactly one of
