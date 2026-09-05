@@ -341,6 +341,84 @@ sys.stdout.write(inner)
 }
 
 # ---------------------------------------------------------------------------
+# cr_load_admin_config — config loader for the OPERATOR fleet-enable surface
+# (cfw-render-fleet.sh, CFW-16). Distinct from cr_load_config on purpose:
+#   * requires CFW_API_BASE + CFW_MASTER_API_KEY (the master key), NOT the
+#     narrow cfw_render_ worker key — flipping renderFleetEnabled is a
+#     privileged operator action the worker credential must NOT be able to do.
+#   * reads ONLY $CFW_RENDER_ADMIN_ENV (default ~/.gsai/secrets/cfw-render-admin
+#     .env) and the process env — DELIBERATELY never /etc/cfw-render.env. The
+#     master key must never live on a render box: the box is stateless and
+#     minimally-scoped by design (the whole point of CFW-16). This helper is an
+#     operator tool, run from an operator machine.
+# Process env wins over the file (same precedence rule as cr_load_config).
+# ---------------------------------------------------------------------------
+cr_load_admin_config() {
+  local _cr_vars=(CFW_API_BASE CFW_MASTER_API_KEY CFW_RENDER_ADMIN_ENV)
+  local _cr_preset=() _v
+  for _v in "${_cr_vars[@]}"; do _cr_preset+=("${!_v:-}"); done
+
+  local admin_env="${CFW_RENDER_ADMIN_ENV:-$HOME/.gsai/secrets/cfw-render-admin.env}"
+  if [[ -r "$admin_env" ]]; then
+    # shellcheck disable=SC1090
+    source "$admin_env"
+  fi
+
+  local _i=0
+  for _v in "${_cr_vars[@]}"; do
+    [[ -n "${_cr_preset[$_i]}" ]] && printf -v "$_v" '%s' "${_cr_preset[$_i]}"
+    _i=$(( _i + 1 ))
+  done
+  export CFW_API_BASE CFW_MASTER_API_KEY
+
+  local missing=()
+  [[ -z "${CFW_API_BASE:-}" ]] && missing+=("CFW_API_BASE")
+  [[ -z "${CFW_MASTER_API_KEY:-}" ]] && missing+=("CFW_MASTER_API_KEY")
+  if (( ${#missing[@]} > 0 )); then
+    printf 'cfw-render-fleet: missing required config var(s): %s (checked %s, process env). The master key is operator-only — never put it on a render box.\n' \
+      "${missing[*]}" "$admin_env" >&2
+    return 1
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# cr_admin_call <method> <path> [json-body]
+# Single curl wrapper against the cfw-social MASTER-key admin surface
+# ($CFW_API_BASE$path, header cfw-api-key: $CFW_MASTER_API_KEY — the same auth
+# assertMasterOrAdmin() checks in cfw-social). Prints the raw response body on
+# stdout (even on an HTTP error, so the caller can inspect it); the HTTP status
+# goes to stderr. Returns 0 only on a 2xx, non-zero on curl failure or any
+# non-2xx. Assumes cr_load_admin_config already ran.
+# ---------------------------------------------------------------------------
+cr_admin_call() {
+  local method="$1" path="$2" body="${3:-}"
+  local url="${CFW_API_BASE%/}$path"
+  local curl_args=(-sS --max-time 30 -X "$method" "$url"
+    -H "cfw-api-key: $CFW_MASTER_API_KEY"
+    -H "content-type: application/json"
+    -w $'\n%{http_code}')
+  [[ -n "$body" ]] && curl_args+=(-d "$body")
+
+  local raw rc
+  raw="$(curl "${curl_args[@]}" 2>/dev/null)"
+  rc=$?
+  if (( rc != 0 )); then
+    printf 'cfw-render-fleet: admin call %s %s — curl failed (rc=%s)\n' "$method" "$path" "$rc" >&2
+    return 1
+  fi
+  # Last line = HTTP status (from -w); everything before = body.
+  local status="${raw##*$'\n'}"
+  local out="${raw%$'\n'*}"
+  printf '%s' "$out"
+  if [[ "$status" == 2* ]]; then
+    return 0
+  fi
+  printf 'cfw-render-fleet: admin call %s %s -> HTTP %s\n' "$method" "$path" "$status" >&2
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # cr_event <orderId> <kind> <stage> <message> <pct> [model]
 # Thin append_render_event wrapper. Best-effort — NEVER fails the caller;
 # logs on error. stage/model may be empty strings (omitted from the call).

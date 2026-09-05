@@ -69,16 +69,93 @@ silently (it exits non-zero on FAIL).
 - Linux (systemd): `systemctl enable --now cfw-render.timer`
 - macOS (launchd): `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.cfw.render.plist`
 
-## 6. Cutover — Bujji first
+## 6. Fleet-enable rollout — all renders → cfw-render (CFW-16 / CFW-V2-073)
 
-1. Flip `render_fleet_enabled=true` on **Bujji only** (not fleet-wide).
-2. Submit one real reel via Hermes (`p-reels-spotlight` or similar).
+**Goal:** make cfw-render the *sole* renderer so the Hermes box carries no render
+toolchain (skills already bundled — §8b). Two independent parts, one gated
+rollout:
+
+- **Code (already shipped):** cfw-render bundles its own skills (self-contained);
+  cfw-social's `submitRenderOrderForBrand` gates on `Brand.renderFleetEnabled`
+  and Hermes's **hard submit rule** routes *every* engine/`p-*`/HTML/ffmpeg job
+  to `submit_render_order` instead of rendering inline
+  (`cfw-social/docs/cfw-render-worker-plan.md` §1b(2); doctrine via CFW-V2-071).
+- **The flip is an OPERATOR ACTION, per-brand and reversible** — never a
+  bulk code flip. `renderFleetEnabled` defaults `false`; the whole flip is one
+  per-brand toggle via the fleet helper (below), and reverting to `false` is an
+  instant rollback with zero box changes.
+
+### 6.1 The operator fleet-enable helper (CFW-16)
+
+`bin/cfw-render-fleet.sh` (also reachable as `cfw-render-ctl.sh fleet …`) is the
+per-brand, reversible, auditable way to opt a brand in/out of the render fleet
+and read current state. It uses the **master key** (`cfw-api-key`), NOT the
+box's narrow `cfw_render_` worker key — so **run it from an operator machine,
+never a render box.** Point it at the master key via `CFW_MASTER_API_KEY` (in
+`$CFW_RENDER_ADMIN_ENV`, default `~/.gsai/secrets/cfw-render-admin.env`, or the
+process env) plus `CFW_API_BASE`:
+
+```bash
+cfw-render-fleet.sh status  <brandId> [<brandId>...]   # read renderFleetEnabled
+cfw-render-fleet.sh enable  <brandId>                   # opt brand IN  (reversible)
+cfw-render-fleet.sh disable <brandId>                   # opt brand OUT (instant rollback)
+```
+
+It flips one named brand at a time and reads the value back to confirm — it
+**never bulk-flips**. Brands are addressed by **id**; map a slug to its id with
+`SELECT id FROM brands WHERE slug = '<brand>';`.
+
+> **SERVER-SIDE FOLLOW-UP (cfw-social) — required before the live flip.** The
+> helper talks to `PATCH`/`GET /api/v1/admin/brands/:id`. That route today only
+> curates `isShowcase`; extend it to carry `renderFleetEnabled`:
+> add `renderFleetEnabled: z.boolean().optional()` to `PatchSchema` (write it
+> through `prisma.brand.update`) and add a `GET` returning
+> `{ id, renderFleetEnabled }`, both behind the existing `assertMasterOrAdmin()`
+> gate (`src/app/api/v1/admin/brands/[id]/route.ts`). Until it lands, the helper
+> reports the gap loudly and you fall back to the break-glass SQL below.
+
+**Break-glass (only until the route ships, or if the API is down):**
+```sql
+-- read current fleet state:
+SELECT id, slug, render_fleet_enabled FROM brands ORDER BY render_fleet_enabled DESC, slug;
+-- flip one brand:
+UPDATE brands SET render_fleet_enabled = true WHERE slug = 'bujji';
+```
+
+Fleet-wide drain health (master-key context, NOT the box's narrow worker key):
+`GET /api/v1/admin/fleet/renders` returns every RenderOrder with model
+attribution — use it to confirm orders are flowing `queued → done` after a flip.
+
+### 6.2 Cutover — Bujji first (parallel-run)
+
+1. Flip **Bujji only** (not fleet-wide):
+   ```bash
+   cfw-render-fleet.sh enable "$(psql ... -tAc "SELECT id FROM brands WHERE slug='bujji'")"
+   # break-glass equivalent: UPDATE brands SET render_fleet_enabled = true WHERE slug = 'bujji';
+   ```
+2. Submit one real reel via Hermes (`p-reels-spotlight` or similar). With the
+   hard submit rule live, Hermes must **submit** it, not render inline.
 3. Watch `cfw-render-ctl.sh status` + the brand UI event stream end-to-end:
    `queued → claimed → rendering → gating → done` (or `blocked` with a
    readable reason).
-4. Confirm the dish lands in the Bujji Inbox and Hermes pings the owner.
+4. Confirm the dish lands in the Bujji Inbox and Hermes pings the owner, and
+   that **no inline render** happened on the gateway (check the box: the Hermes
+   turn should have called `submit_render_order`, not run ffmpeg/HTML locally).
 
-Only after one clean end-to-end run should other brands be flipped on.
+### 6.3 Widen brand-by-brand
+
+Only after one clean end-to-end run, flip the next brand and repeat 6.2. Keep
+going until every brand has `render_fleet_enabled = true` and
+`GET /api/v1/admin/fleet/renders` shows cfw-render draining 100% of render work.
+
+**Rollback (any brand, any time):** `cfw-render-fleet.sh disable <brandId>`
+(break-glass: `UPDATE brands SET render_fleet_enabled = false WHERE slug =
+'<brand>';`) — the brand's Hermes falls back to its previous behavior instantly;
+already-queued orders still drain (the worker + list surfaces ignore the flag
+for in-flight orders by design).
+
+**Exit criteria (Phase 2):** zero inline renders on any gateway, cfw-render is
+the sole renderer, the box carries no skills (§8b).
 
 ## 7. Rollback
 
@@ -108,39 +185,30 @@ as `AB-RNDR-REQUEUE` (repo: cfw-social) — see that task file for the exact
 scope. Until it lands, `cfw-render-ctl.sh unblock <orderId>` fails fast with
 the admin SQL to run manually rather than silently no-opping.
 
-## 8b. Bundled skills — migration note (CFW-HST-BUNDLE)
+## 8b. Bundled skills — self-contained (CFW-HST-BUNDLE → self-contain refactor)
 
-As of the CFW-HST-BUNDLE merge, this repo carries its own pinned `skills/`
-(see README "Bundled skills" + `config/skills-version.json`). `install.sh`
-now copies `skills/` into `$PREFIX/skills` alongside `bin/`/`lib/`, and the
-worker defaults `CFW_RENDER_SKILLS_DIR` to that bundled path when the var is
-left unset.
+This repo carries its own pinned `skills/` — a source-synced copy of the
+recipes in `config/recipes.json`, produced by `scripts/sync-skills.sh` from
+`~/ecosystem/skills` and pinned via `config/skills-version.json` (see README
+"Bundled skills"). `install.sh` copies `skills/` into `$PREFIX/skills`
+alongside `bin/`/`lib/`, and the worker defaults `CFW_RENDER_SKILLS_DIR` to
+that bundled path when the var is left unset. **cfw-render no longer reads the
+shared `/data/shared/cfw-skills/cfw` directory at all** — the git-subtree /
+`cfw-skills-pack` / bundle-vs-fetch switch were retired 2026-09-01. This is
+what lets the Hermes box be stateless: the render toolchain lives here, not on
+the box.
 
-**This is additive and non-breaking by design** — a box's existing
-`/etc/cfw-render.env` (or `~/.gsai/secrets/cfw-render.env`) with an explicit
-`CFW_RENDER_SKILLS_DIR=/data/shared/cfw-skills/cfw` keeps working exactly as
-before; nothing on the box changes until an operator either (a) removes that
-line so the new default takes over, or (b) points it at the bundled path
-explicitly.
+**The box's hourly skills-pull cron (`/usr/local/bin/cfw-skills-pull.sh`) and
+the `/data/shared/cfw-skills/cfw` checkout are NOT cfw-render's** — they fed
+the *Hermes assistant* bundle. Do NOT touch them as part of a cfw-render
+deploy. Once every render on a box has moved to cfw-render (fleet-enabled, §6),
+nothing cfw-render runs needs that cron; retiring it is a **separate,
+supervised step** a human runs later, and leaves `/data/shared/cfw-skills/cfw`
+in place for any external BYO agents that still read it.
 
-**Do NOT, as part of a routine deploy, touch the box's hourly skills-pull
-cron (`/usr/local/bin/cfw-skills-pull.sh`) or the `/data/shared/cfw-skills/cfw`
-checkout.** Per CFW-HST-BUNDLE's rollout gate, cutting a brand/box over to
-the bundle and retiring the standalone cron is a **separate, supervised,
-brand-by-brand step** a human runs later:
-
-1. Prove the bundle install on a scratch box (`install.sh` + `--dry` PASS
-   with `dir:skills` resolving to `$PREFIX/skills`).
-2. Cut one live box's `CFW_RENDER_SKILLS_DIR` to the bundled path (or unset
-   it) for one brand; verify a real cook renders end-to-end (§6 above).
-3. Repeat brand-by-brand.
-4. Only after every brand on a box is cut over: disable that box's
-   `cfw-skills-pull.sh` cron/timer. Leave `/data/shared/cfw-skills/cfw` on
-   disk (external BYO agents may still read it via the public repo's raw
-   URLs — that path is unaffected by this bundle).
-
-This repo change does not perform any of steps 1-4 — see "Supervised deploy
-gate" in the README.
+To verify the bundle on a box: `install.sh` + `cfw-render.sh --dry` must PASS
+with the `skills:pinned` row showing the expected `sourceSha` + recipe count,
+and `scripts/verify-skills-bundle.sh` (checksum gate) exiting 0.
 
 ## 9. Rotation
 

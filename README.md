@@ -18,49 +18,64 @@ Status: **DEPLOYED on `hst`** since 2026-08-18 (`/opt/cfw-render`, source copy
 posts a `render_done` pack task that the multi-tenant `cfw-hermes-mt` daemon
 (cfw-provisioner) acks. `docs/deploy.md` is the supervised refresh runbook.
 
+The skills bundle is **self-contained** (the box carries no render toolchain).
+The remaining step to make cfw-render the **sole** renderer is the gated,
+per-brand `renderFleetEnabled` flip — an **operator action** via
+`bin/cfw-render-fleet.sh`, not a code change; see `docs/deploy.md` §6
+(fleet-enable rollout). The submit-vs-inline "hard rule" and the fleet-enable
+admin endpoint are enforced/served in **cfw-social**
+(`src/lib/render/submit-render-order.ts`, `CFW-V2-071` doctrine), not in this repo.
+
 ## Layout
 
 ```
 bin/            drainer, ctl, and the Director-facing helpers (report/subagent/upload)
 lib/            director-prompt.md (the dispatch prompt template)
 config/         cfw-render.env.example — every knob, commented; skills-version.json — pinned bundle manifest
-skills/         BUNDLED recipes — git subtree of cfw-social/cfw-skills, pinned (see "Bundled skills" below)
+skills/         BUNDLED recipes — self-contained, source-synced from ecosystem/skills, pinned (see "Bundled skills" below)
 install/        launchd plist, systemd unit+timer, install.sh (--mode), provisioner snippet, byoa-installer-notes.md
 docs/           deploy.md (supervised deploy runbook), PACKAGING-DESIGN.md (the design this implements)
 test/           mock-server.py + fake-director.sh + run-tests.sh (no live services)
 scripts/        lint.sh, verify-skills-bundle.sh (checksum gate), gen-skills-manifest.sh (regen the pin)
 ```
 
-## Bundled skills (CFW-HST-BUNDLE, VPS-simplification epic Phase 2)
+## Bundled skills (CFW-HST-BUNDLE → self-contained, VPS-simplification epic Phase 2)
 
-The renderer ships **with** its recipes: `skills/` is a `git subtree` checkout
-of the public `cfw-social/cfw-skills` repo, pinned to the commit recorded in
-`config/skills-version.json`. Installing this repo (`install/install.sh`)
-installs both the worker and the exact skills closure it renders with — no
-separate hourly pull required once a box is fully on the bundle. Authoring
-still happens upstream (`Vasanth19/skills` → `cfw-skills-pack` build →
-public `cfw-social/cfw-skills`); this repo only vendors a pinned copy.
+The renderer ships **with** its recipes: `skills/` is a **self-contained**,
+source-synced copy of the recipes listed in `config/recipes.json`, pinned to
+the source commit recorded in `config/skills-version.json`. Installing this
+repo (`install/install.sh`) installs both the worker and the exact skills
+closure it renders with — no separate hourly pull, no shared-box directory, no
+second moving part to drift out of sync. This is what makes the Hermes box
+**stateless**: the render toolchain and its recipes live in this repo, not on
+the box. Authoring still happens upstream in `~/ecosystem/skills`
+(the `c-*`/`p-*`/`r-*` library); this repo vendors a pinned copy via
+`scripts/sync-skills.sh` (git-subtree + the old `cfw-skills-pack` build were
+retired 2026-09-01).
 
 - **Default resolution:** `CFW_RENDER_SKILLS_DIR` unset/blank → bundled
   `skills/` in this repo (resolved relative to the repo/install root, not
-  cwd) → falls back to the legacy shared box path
-  `/data/shared/cfw-skills/cfw` only if `skills/` isn't present (pre-bundle
-  checkout). Setting `CFW_RENDER_SKILLS_DIR` explicitly (env, `/etc/cfw-render.env`,
-  or `~/.gsai/secrets/cfw-render.env`) always overrides both — use this to
-  point back at the legacy path for parallel-run/rollback during transition,
-  or at a local `cfw-skills-pack` build for recipe-development iteration.
+  cwd). There is no shared-box fallback and no bundle-vs-fetch switch — the
+  bundle is cfw-render's one and only skills source. Setting
+  `CFW_RENDER_SKILLS_DIR` explicitly (env, `/etc/cfw-render.env`, or
+  `~/.gsai/secrets/cfw-render.env`) overrides it — use this only to point at a
+  local `~/ecosystem/skills` checkout for recipe-development iteration.
 - **Version pin:** `config/skills-version.json` records the exact
-  `cfw-social/cfw-skills` commit, the pack's `sourceSha`/`release`, and the
-  `git subtree pull` command to bump it. The worker logs this on every
-  config load (`cr_log_skills_version` in `bin/cfw-render-lib.sh`) — check
+  `ecosystem/skills` source commit (`sourceCommit`), per-recipe `version` +
+  checksum, and `recipeCount`. The worker logs this on every config load
+  (`cr_log_skills_version` in `bin/cfw-render-lib.sh`) — check
   `~/.cfw-render/cfw-render.log` (or `$CFW_RENDER_STATE_DIR`) to see which
   bundle a run served.
-- **Bumping the pin:**
+- **Bumping the pin / changing the recipe set:**
   ```bash
-  git subtree pull --prefix skills https://github.com/cfw-social/cfw-skills.git main --squash
-  scripts/gen-skills-manifest.sh   # refresh config/skills-version.json's recipe rollup + aggregate
-  # then hand-update sourceCommit in config/skills-version.json to the new subtree commit
+  # edit config/recipes.json to add/remove a bundled recipe, then:
+  scripts/sync-skills.sh            # copy recipes from ~/ecosystem/skills into skills/,
+                                    # regenerate skills/index.json + config/skills-version.json
+  scripts/verify-skills-bundle.sh   # confirm the tree matches the manifest (checksum gate)
   ```
+  `scripts/sync-skills.sh` reads `CFW_SKILLS_SRC` (default `~/ecosystem/skills`)
+  as the source of truth; `config/skills-version.json` is regenerated, not
+  hand-edited.
 - **Integrity verification (doc §5):** `config/skills-version.json` records, per
   recipe, `version` + aggregate `checksum` + `fileCount`, plus an
   `aggregateChecksum` over the whole bundle. `scripts/verify-skills-bundle.sh`
@@ -82,15 +97,14 @@ public `cfw-social/cfw-skills`); this repo only vendors a pinned copy.
 
 ## Deploy mode + stable worker identity (PACKAGING-DESIGN.md §4, §6.3)
 
-- **`CFW_RENDER_MODE=server|byoa`** (default `server`) and
-  **`CFW_RENDER_SKILLS_SOURCE=bundle|fetch`** (default `bundle`) are
-  **operational** config set once at install time — never the security
-  boundary (the server enforces that by which credential family resolves).
+- **`CFW_RENDER_MODE=server|byoa`** (default `server`) is **operational**
+  config set once at install time — never the security boundary (the server
+  enforces that by which credential family resolves).
   `install/install.sh --mode server|byoa` writes `CFW_RENDER_MODE` into the env
-  file. The BYOA curated-`fetch` path (CFW-V2-067) is **not built yet**:
-  `CFW_RENDER_SKILLS_SOURCE=fetch` makes the worker **refuse to run** (fail
-  fast, no silent fallback), and `--dry` emits a non-fatal `WARN` when
-  `mode=byoa` + `source=bundle`. See `install/byoa-installer-notes.md`.
+  file. Both modes render from the same self-contained `skills/` bundle — the
+  old `CFW_RENDER_SKILLS_SOURCE=bundle|fetch` switch and the curated-`fetch`
+  path were **removed 2026-09-01** (there is only the bundle now). See
+  `install/byoa-installer-notes.md`.
 - **Stable `workerId` (doc §6.3):** the claim identity is a **per-install**
   UUID persisted at `$CFW_RENDER_STATE_DIR/worker-id`
   (`CFW_RENDER_WORKER_ID_FILE`), seeded once by `install.sh` (and lazily by the
@@ -100,13 +114,14 @@ public `cfw-social/cfw-skills`); this repo only vendors a pinned copy.
   survives only as free-text log context. **Flagged for CFW-V2-068:** the
   server-side breaker must key off this stable id (or off the `RenderWorkerKey`
   id) — see PACKAGING-DESIGN.md §6.3.
-- **Box hourly pull cron (`/usr/local/bin/cfw-skills-pull.sh`) — transition
-  note:** the standalone `cfw-social/cfw-skills` repo + the box's hourly
-  `git pull` into `/data/shared/cfw-skills/cfw` stay alive during the
-  brand-by-brand cutover (CFW-HST-BUNDLE design note 3 — no break). Once a
-  brand/worker is fully on this bundled model, that cron becomes
-  unnecessary for it — but **retiring it on the live box `hst` is a human,
-  supervised step** (not done by this repo change); see `docs/deploy.md`.
+- **Box hourly pull cron (`/usr/local/bin/cfw-skills-pull.sh`) — retirement
+  note:** cfw-render no longer reads the shared `/data/shared/cfw-skills/cfw`
+  directory at all (self-contain refactor) — it renders only from its own
+  bundled `skills/`. The box's hourly skills-pull cron was for the *Hermes*
+  assistant bundle, never cfw-render; once every render on a box is on
+  cfw-render (fleet-enabled — see `docs/deploy.md` §6), nothing cfw-render runs
+  needs that cron. **Retiring it on the live box `hst` is a human, supervised
+  step** (not done by this repo change); see `docs/deploy.md`.
 
 ## Usage
 
@@ -119,6 +134,23 @@ bin/cfw-render-ctl.sh run-now
 bin/cfw-render-ctl.sh logs [n]
 bin/cfw-render-ctl.sh unblock <orderId>   # forward-compatible; fails fast today, see below
 ```
+
+**Operator fleet-enable (CFW-16) — run from an operator machine, NOT a box:**
+
+```bash
+# Uses the MASTER key (CFW_MASTER_API_KEY), not the box's cfw_render_ worker key.
+# Read it from ~/.gsai/secrets/cfw-render-admin.env ($CFW_RENDER_ADMIN_ENV) or the env.
+bin/cfw-render-fleet.sh status  <brandId>          # read renderFleetEnabled
+bin/cfw-render-fleet.sh enable  <brandId>          # opt brand IN  (per-brand, reversible)
+bin/cfw-render-fleet.sh disable <brandId>          # opt brand OUT (instant rollback)
+bin/cfw-render-ctl.sh   fleet   status <brandId>   # same thing, via ctl
+```
+
+This is the per-brand, reversible replacement for the raw-SQL `render_fleet_enabled`
+flip. It never bulk-flips (name each brand id) and reads the value back to confirm.
+The live rollout stays gated + brand-by-brand — see `docs/deploy.md` §6. It depends
+on a small cfw-social route extension (documented in that section); until that lands
+the helper reports the gap and you use the break-glass SQL.
 
 ## Knobs
 
@@ -133,11 +165,23 @@ test seam). Load order: `/etc/cfw-render.env` → `$CFW_RENDER_ENV` (default
 
 ## `workerId` semantics
 
-Computed, not configured: `"$(hostname -s):$$"` (host+pid). Per
-`render-worker-auth.md` §2, this is **concurrency hygiene, not a security
-boundary** — the credential itself (`CFW_RENDER_WORKER_KEY`) is the auth
-principal; `workerId` only stops two processes holding that same key from
-stomping each other's claims.
+**Stable per install, not per process** (doc §6.3 — see "Deploy mode + stable
+worker identity" above). The claim identity is a per-install UUID persisted at
+`$CFW_RENDER_STATE_DIR/worker-id` (`CFW_RENDER_WORKER_ID_FILE`), seeded once by
+`install.sh` and reused by every 15-min oneshot tick — **not** the old
+`"$(hostname -s):$$"` (host+pid), which changed every tick and would defeat
+CFW-V2-068's per-`workerId` circuit breaker. Resolution order (`cr_load_config`
+in `bin/cfw-render-lib.sh`, seeded by `cr_seed_worker_id`): an explicitly
+exported `CFW_WORKER_ID` wins (tests / special ops) → else the `worker-id` file
+(lazily seeded here too, so a hand-run/dev worker is also stable) → else, only
+if that file is empty/unreadable, an unstable `hostname:$$` fallback (logged as
+a WARN, since the breaker won't accumulate against it).
+
+Per `render-worker-auth.md` §2, `workerId` is **concurrency hygiene, not a
+security boundary** — the credential itself (`CFW_RENDER_WORKER_KEY`) is the
+auth principal; `workerId` only stops two processes holding that same key from
+stomping each other's claims (and now gives CFW-V2-068's breaker a stable key
+to accumulate against).
 
 ## Ollama keys vs `zai.env` (read before chasing a "missing key")
 

@@ -31,6 +31,15 @@ ORDERS_BY_ID = {o["id"]: o for o in QUEUE}
 CLAIMED = {}   # orderId -> workerId
 STATUS = {}    # orderId -> queued|claimed|done|blocked
 
+# ── Admin fleet-enable surface (mock of cfw-social's master-key admin brands
+# route, exercised by cfw-render-fleet.sh). Brands are seeded from the queue's
+# brandIds, all renderFleetEnabled=false — the real default. MOCK_MASTER_KEY,
+# when set, is the master key the route requires in the `cfw-api-key` header
+# (else any non-empty key is accepted, matching a "master key configured"
+# server that only checks presence-vs-match).
+MASTER_KEY = os.environ.get("MOCK_MASTER_KEY")
+BRANDS_FLEET = {o.get("brandId"): False for o in QUEUE if o.get("brandId")}
+
 TOOLS = ["claim_render_order", "append_render_event", "complete_render_order", "block_render_order"]
 
 
@@ -151,6 +160,64 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _admin_denied(self):
+        """Return True (and send 401) unless the master key is presented.
+        Mirrors cfw-social assertMasterOrAdmin() for the master-key path."""
+        key = self.headers.get("cfw-api-key", "")
+        if not key:
+            self._send_json({"error": "Not found"}, 404)
+            return True
+        if MASTER_KEY is not None and key != MASTER_KEY:
+            self._send_json({"error": "Invalid master API key"}, 401)
+            return True
+        return False
+
+    def _admin_brand_id(self):
+        """/api/v1/admin/brands/<id> -> <id>, else None."""
+        prefix = "/api/v1/admin/brands/"
+        if self.path.startswith(prefix):
+            rest = self.path[len(prefix):]
+            return rest.split("?", 1)[0].split("/", 1)[0] or None
+        return None
+
+    def do_GET(self):
+        brand_id = self._admin_brand_id()
+        if brand_id is not None:
+            if self._admin_denied():
+                return
+            if brand_id not in BRANDS_FLEET:
+                self._send_json({"error": "not_found"}, 404)
+                return
+            self._send_json({"id": brand_id, "renderFleetEnabled": BRANDS_FLEET[brand_id]})
+            return
+        # Any other GET (e.g. the test harness's /api/v1/mcp reachability probe)
+        # just needs to answer so the socket is proven live.
+        self._send_json({"error": "not found"}, 404)
+
+    def do_PATCH(self):
+        brand_id = self._admin_brand_id()
+        if brand_id is None:
+            self._send_json({"error": "not found"}, 404)
+            return
+        if self._admin_denied():
+            return
+        length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(length) if length else b""
+        try:
+            body = json.loads(raw)
+        except Exception:
+            self._send_json({"error": "Invalid JSON"}, 400)
+            return
+        if "renderFleetEnabled" not in body or not isinstance(body["renderFleetEnabled"], bool):
+            self._send_json({"error": "Expected { renderFleetEnabled: boolean }"}, 422)
+            return
+        if brand_id not in BRANDS_FLEET:
+            self._send_json({"error": "not_found"}, 404)
+            return
+        with LOCK:
+            BRANDS_FLEET[brand_id] = body["renderFleetEnabled"]
+        self._send_json({"ok": True, "id": brand_id, "renderFleetEnabled": BRANDS_FLEET[brand_id]})
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
