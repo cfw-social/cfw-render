@@ -9,9 +9,14 @@ MCP credential.
 **Worker auth/credential:** `/Users/vasanth/Code/cfw/cfw-social/docs/render-worker-auth.md`
 **Implementation plan (this repo):** `backlog/attachments/AB-RNDR-WORKER/implementation-plan.md`
 
-Status: code-authored (AB-RNDR-WORKER). **Not yet deployed to hst** — see
-`docs/deploy.md` for the supervised follow-up gate. Nothing in this repo has
-been run against the live box.
+Status: **DEPLOYED on `hst`** since 2026-08-18 (`/opt/cfw-render`, source copy
+`/opt/cfw-render-src`, `/etc/cfw-render.env`, `cfw-render.timer` every 15 min →
+`cfw-render.service --once`; state in `/root/.cfw-render/`). Refreshed to `main`
+`b817a18` on 2026-09-05 (CFW-129) via `install/install.sh --prefix /opt/cfw-render
+--env-file /etc/cfw-render.env --user root --yes-really` (`--dry` PASS, skills pin
+`eb1996a`). It drains `render_orders` for every `render_fleet_enabled` brand and
+posts a `render_done` pack task that the multi-tenant `cfw-hermes-mt` daemon
+(cfw-provisioner) acks. `docs/deploy.md` is the supervised refresh runbook.
 
 ## Layout
 
