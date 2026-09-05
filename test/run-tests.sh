@@ -296,6 +296,83 @@ else
   fail "no-captions: journal row" "no complete journal row found"
 fi
 
+echo "=== Case 2d: 6 MiB reel via the presigned path (CFW-144, default mode) ==="
+run_case "large-presign" "large" "order_fixture order-large-1 brand-1 video" true
+presign_check="$(python3 - "$CASE_MOCKSTATE/uploads.jsonl" <<'PY'
+import json, sys
+try:
+    rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+except Exception as e:
+    print("ERR " + str(e)); sys.exit(0)
+rows = [r for r in rows if r.get("orderId") == "order-large-1"]
+problems = []
+by = {r["files"][0]: r for r in rows}
+if set(by) != {"out.mp4", "cover.png"}: problems.append("files %r" % sorted(by))
+if any(r.get("via") != "presign" for r in rows): problems.append("not every file went via presign: %r" % [(r["files"], r.get("via")) for r in rows])
+if by.get("out.mp4", {}).get("bytes") != 6291456: problems.append("reel bytes %r" % by.get("out.mp4", {}).get("bytes"))
+if any(r.get("puts") != 1 for r in rows): problems.append("PUT retried (ETag/MD5 check should pass first try): %r" % [(r["files"], r.get("puts")) for r in rows])
+print("OK" if not problems else "BAD " + "; ".join(problems))
+PY
+)"
+if [[ "$presign_check" == "OK" ]]; then
+  pass "large: reel (6 MiB) + cover both delivered via upload-url → PUT → upload-complete, bytes verified, ETag=MD5 matched on the first PUT"
+else
+  fail "large: presign delivery" "$presign_check"
+fi
+if [[ "$(calls_count complete_render_order)" -eq 1 ]]; then
+  pass "large: exactly one complete_render_order"
+else
+  fail "large: complete" "expected 1 complete_render_order call, got $(calls_count complete_render_order)"
+fi
+complete_line="$(grep '"tool": "complete_render_order"' "$CASE_MOCKSTATE/calls.jsonl" 2>/dev/null | tail -1)"
+if echo "$complete_line" | grep -q 'brands/brand-1/renders/order-large-1/' && echo "$complete_line" | grep -q '"role": "poster"'; then
+  pass "large: completion carries namespaced CDN URLs + the poster role (report contract unchanged)"
+else
+  fail "large: completion payload" "$complete_line"
+fi
+if grep -q "order-large-1.*complete" "$CASE_STATE/journal.tsv" 2>/dev/null; then
+  pass "large: journal row outcome=complete"
+else
+  fail "large: journal row" "no complete journal row found"
+fi
+
+echo "=== Case 2e: auto mode — small file multipart, large file presign (CFW-144) ==="
+run_case "large-auto" "large" "order_fixture order-auto-1 brand-1 video" export CFW_RENDER_UPLOAD_MODE=auto
+auto_check="$(python3 - "$CASE_MOCKSTATE/uploads.jsonl" <<'PY'
+import json, sys
+try:
+    rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+except Exception as e:
+    print("ERR " + str(e)); sys.exit(0)
+by = {r["files"][0]: r.get("via") for r in rows if r.get("orderId") == "order-auto-1"}
+print("OK" if by == {"out.mp4": "presign", "cover.png": "multipart"} else "BAD %r" % by)
+PY
+)"
+if [[ "$auto_check" == "OK" ]]; then
+  pass "auto: cover.png (≤4 MiB) via multipart, out.mp4 (6 MiB) via presign"
+else
+  fail "auto: routing" "$auto_check"
+fi
+if [[ "$(calls_count complete_render_order)" -eq 1 ]]; then pass "auto: completed"; else fail "auto: complete" "no complete call"; fi
+
+echo "=== Case 2f: multipart-only mode with a 6 MiB reel → platform 413, order blocked, no completion (CFW-144 fail-fast) ==="
+run_case "large-multipart" "large" "order_fixture order-mp-1 brand-1 video" export CFW_RENDER_UPLOAD_MODE=multipart
+if [[ "$(calls_count complete_render_order)" -eq 0 ]]; then
+  pass "multipart: no complete_render_order (upload refused, nothing partial minted)"
+else
+  fail "multipart: complete" "expected 0 complete calls"
+fi
+if [[ "$(calls_count block_render_order)" -ge 1 ]]; then
+  pass "multipart: order blocked with a reason (no silent fallback to presign)"
+else
+  fail "multipart: block" "expected block_render_order"
+fi
+if [[ -f "$CASE_MOCKSTATE/uploads.jsonl" ]] && grep -q '"via": "presign"' "$CASE_MOCKSTATE/uploads.jsonl"; then
+  fail "multipart: fallback" "a presign upload happened in multipart-only mode"
+else
+  pass "multipart: no presign fallback"
+fi
+
 echo "=== Case 3: gate-fail path ==="
 run_case "gate-fail" "gate-fail" "order_fixture order-gatefail-1 brand-1 video" true
 if [[ "$(calls_count block_render_order)" -ge 1 ]]; then pass "gate-fail: block_render_order called"; else fail "gate-fail: block" "no block_render_order call"; fi

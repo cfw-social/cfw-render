@@ -31,13 +31,18 @@ These two checks are acceptance criteria for the deploy, not optional:
    headroom for video intermediates. Set `CFW_RENDER_SCRATCH` in
    `/etc/cfw-render.env` to that path (default in the example is
    `$HOME/cfw-render-scratch` — override it).
-2. **CFW Media render path.** Upload a small probe file through
-   `POST /api/v1/render/upload` against a throwaway **claimed** order (create
-   one via a test `submit_render_order` call from an attended Hermes session,
-   claim it manually with `claim_render_order`, then run
-   `cfw-render-upload.sh <probe-file>` with `CFW_ORDER_ID`/`CFW_WORKER_ID` set
-   to that order). Confirm the returned `cdnUrl` resolves and contains
-   `brands/<brandId>/renders/<orderId>/`.
+2. **CFW Media render path.** Upload a probe file **larger than 5 MB** (e.g.
+   `head -c 6000000 /dev/urandom > probe.mp4`) against a throwaway **claimed**
+   order (create one via a test `submit_render_order` call from an attended
+   Hermes session, claim it manually with `claim_render_order`, then run
+   `cfw-render-upload.sh probe.mp4` with `CFW_ORDER_ID`/`CFW_WORKER_ID` set to
+   that order). Confirm the returned `cdnUrl` resolves and contains
+   `brands/<brandId>/renders/<orderId>/`. The helper defaults to the presigned
+   direct-to-R2 path (`POST /api/v1/render/upload-url` → `PUT` →
+   `POST /api/v1/render/upload-complete`, CFW-144) because Vercel rejects any
+   function request body over 4.5 MB (`413 FUNCTION_PAYLOAD_TOO_LARGE`) — the
+   legacy multipart `POST /api/v1/render/upload` only carries ≤ 4 MiB files.
+   A > 5 MB probe therefore proves the path a real reel will take.
 
 Do not proceed to §3 until both checks pass.
 
