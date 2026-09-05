@@ -67,6 +67,35 @@ def crop_luma(f, crop, t):
         "-f","rawvideo","-"])
     return out[0] if rc == 0 and out else 0
 
+def crop_contrast(f, crop, t):
+    """Perceptual cover stats for a crop at time t (CFW-131): returns
+    (mean, range, bright_frac) in FULL-range 0-255 luma, where bright_frac is
+    the fraction of pixels with luma >= 128. A dark brand card with a white
+    headline has a low mean but a large range and a headline-sized bright
+    fraction; a flat dark / black frame has neither."""
+    stats = {}
+    rc, _, err = sh(["ffmpeg","-hide_banner","-ss",str(t),"-i",f,
+        "-vf",f"crop={crop},signalstats,metadata=print",
+        "-frames:v","1","-f","null","-"])
+    for line in err.splitlines():
+        for key in ("YAVG","YMIN","YMAX"):
+            tag = f"lavfi.signalstats.{key}="
+            if tag in line:
+                try: stats[key] = float(line.split(tag)[1].strip())
+                except ValueError: pass
+    rc, _, err = sh(["ffmpeg","-hide_banner","-ss",str(t),"-i",f,
+        "-vf",f"crop={crop},format=gray,geq=lum='255*gte(lum(X\\,Y)\\,128)',signalstats,metadata=print",
+        "-frames:v","1","-f","null","-"])
+    bright = 0.0
+    for line in err.splitlines():
+        if "lavfi.signalstats.YAVG=" in line:
+            try: bright = float(line.split("YAVG=")[1].strip()) / 255.0
+            except ValueError: pass
+    full = lambda v: max(0.0, (v - 16.0) * 255.0 / 219.0)
+    mean = full(stats.get("YAVG", 0.0))
+    rng  = full(stats.get("YMAX", 0.0)) - full(stats.get("YMIN", 0.0))
+    return mean, rng, bright
+
 def integrated_lufs(f):
     # NOTE: ebur128 prints its summary at info level — do NOT pass -v error here
     # or the "I: -14.0 LUFS" line is suppressed and the reading comes back empty.
@@ -118,6 +147,25 @@ def ck_luma_floor(f, c, ctx):
     return ("PASS", f"luma>={floor} all", "") if black == 0 else \
            ("FAIL", f"{black}/{len(samples)} below {floor}", "zone black/dark")
 
+def ck_contrast_floor(f, c, ctx):
+    """Perceptual cover/blank check (CFW-131). PASS at every sample if
+    mean > bright_mean (default 48) OR (mean >= min_mean [8] AND range >=
+    min_range [128] AND bright_frac >= min_bright_pct/100 [2%]). Replaces a raw
+    mean-luma floor for dark-palette brands whose cards can never reach it."""
+    crop = c["crop"]; samples = c.get("samples",[0.0])
+    bright_mean = c.get("bright_mean",48); min_mean = c.get("min_mean",8)
+    min_range = c.get("min_range",128); min_bright = c.get("min_bright_pct",2.0)/100.0
+    d = probe_dur(f) or 0
+    bad, vals = [], []
+    for p in samples:
+        t = 0.0 if p == 0 else round(d*p,2)
+        mean, rng, bf = crop_contrast(f, crop, t)
+        vals.append(f"t={t}:mean={mean:.0f}/range={rng:.0f}/bright={bf*100:.1f}%")
+        ok = mean > bright_mean or (mean >= min_mean and rng >= min_range and bf >= min_bright)
+        if not ok: bad.append(t)
+    return ("PASS", "; ".join(vals), "") if not bad else \
+           ("FAIL", "; ".join(vals), f"flat/dark/blank at t={bad} (need mean>{bright_mean} or mean>={min_mean}+range>={min_range}+bright>={min_bright*100:.0f}%)")
+
 def ck_loudness(f, c, ctx):
     i = integrated_lufs(f); t, tol = c.get("target",-14), c.get("tol",1.5)
     if i is None: return "FAIL", "?", "no loudness reading"
@@ -145,7 +193,7 @@ def ck_perceptual(f, c, ctx):
 
 DISPATCH = {
     "qa_gate": ck_qa_gate, "dims": ck_dims, "duration_window": ck_duration_window,
-    "luma_floor": ck_luma_floor, "loudness": ck_loudness,
+    "luma_floor": ck_luma_floor, "contrast_floor": ck_contrast_floor, "loudness": ck_loudness,
     "mean_volume": ck_mean_volume, "custom": ck_custom, "perceptual": ck_perceptual,
 }
 

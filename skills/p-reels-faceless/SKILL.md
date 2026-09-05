@@ -20,7 +20,7 @@ metadata:
 
 
 > ## ⚡ Frame integrity + integrated CTA (MANDATORY — 2026-06-16)
-> - **Frame 0 is NEVER black.** The first frame must be a bright money-shot — the cover-freeze of the strongest illustrative beat (Step 10 cover rule). Verify `ffmpeg ... signalstats` → `YAVG > 30`. No black / hook-blank / fade-in opener.
+> - **Frame 0 is NEVER black.** The first frame must be a money-shot — the cover-freeze of the strongest illustrative beat (Step 13 cover rule). Gate rule (perceptual, CFW-131): bright frame (`YAVG > 48`) OR a dark brand card with a bright headline (mean ≥ 8, luma range ≥ 128, ≥ 2 % bright pixels). No black / flat-dark / hook-blank / fade-in opener.
 > - **The LAST frame is NEVER black.** The reel must end on content, not a fade-to-black or trailing blank. Verify the final frame `YAVG > 30`.
 > - **CTA is integrated by DEFAULT, not optional.** Every reel/VSL ends on a branded **CTA beat baked into the timeline** (offer line + handle/URL), as the final illustrative HyperFrames card. Do not ship a reel whose last beat is filler or black. (In p-reels-split this is the Step 9 CTA takeover; other recipes must add an equivalent closing CTA card.)
 
@@ -183,8 +183,11 @@ curl -s -X POST "https://api.elevenlabs.io/v1/text-to-speech/$VOICE_ID" \
 # Verify real MP3 + loudnorm
 file "$W/vo.mp3"
 $FF -y -i "$W/vo.mp3" \
-  -af "loudnorm=I=-16:TP=-1.5:LRA=11" \
+  -af "loudnorm=I=-14:TP=-1.5:LRA=11" \
   -c:a aac -b:a 192k -ar 48000 -ac 2 "$W/vo-normed.aac"
+# ONE loudness truth for reels: -14 LUFS integrated (matches c-shorts-qa-gate, acceptance.json
+# `vo_loudness`, and every certified CFW-128 output). Step 13 re-masters the final to -14 after
+# the SFX mix so the delivered file is on target too. (Was -16 here — a contradiction; CFW-131.)
 BED_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$W/vo-normed.aac")
 echo "Bed duration: $BED_DUR s"
 ```
@@ -310,7 +313,29 @@ PY
 
 ---
 
-### 5 — OPUS plan the beat list (c-broll-sync)
+### 5 — Author the scene plan, then plan the beat list (c-broll-sync)
+
+**5a — `scene_plan.json` (MANDATORY — card copy is YOUR job, nothing else writes it).**
+`plan.js` emits graphics beats with **no copy**; without a scene plan it now exits 1 rather than
+hand a blank card to Step 7 (CFW-131). Contract: `.hub/c-broll-sync/SCENE-PLAN.md`.
+
+- If the order supplied one (`directives` contains `scene_plan=…` / an ingredient noted
+  `scene_plan`) → copy it to `$W/scene_plan.json` verbatim.
+- Otherwise **author it now from the VO script + `vo-words.json`**: one `graphic` scene per
+  4–6 s idea (hook · each claim · each step · the CTA), `kind: "broll"` scenes only where you
+  want to pin a specific clip, `cover: true` on the scene whose frame should be the feed cover
+  (a b-roll or bright scene on dark-palette brands). Every graphic scene needs `headline` (≤ 90
+  chars, `<span class="accent">` on the key word), `eyebrow`, `ghost` (number/letter), `type`
+  (`hook|terminal|chips|flow|checklist|stat|cta|standard`) and the passthrough fields that type
+  needs (`lines`, `chips`, `items`, `flow`, `stat`+`unit`, `sub`). Use `start_phrase`/`end_phrase`
+  (verbatim transcript words) instead of guessing seconds.
+
+```bash
+node "$BROLL_SYNC_DIR/scripts/validate-scene-plan.js" "$W/scene_plan.json" \
+  --bed-dur "$BED_DUR" --transcript "$W/vo-words.json" || { echo "scene_plan invalid — fix it; never render blank cards"; exit 1; }
+```
+
+**5b — plan the beats.**
 
 ```bash
 node "$BROLL_SYNC_DIR/scripts/plan.js" \
@@ -324,6 +349,7 @@ node "$BROLL_SYNC_DIR/scripts/plan.js" \
   --reuse      "$BROLL_REUSE" \
   --bed-dur    "$BED_DUR" \
   --brand      "$W/brand.json" \
+  --scene-plan "$W/scene_plan.json" \
   --out        "$W/beat_list.json"
 
 # Verify output
@@ -335,8 +361,14 @@ print(f'beat_list.json: {len(beats)} beats, achieved_broll={bl.get(\"achieved_br
 if bl.get('shortfall_note'): print('[c-broll-sync]', bl['shortfall_note'])
 kinds = {b['kind'] for b in beats}
 print('kinds:', kinds)
+blank = [b['index'] for b in beats if b['kind']=='graphics' and not b['scene'].get('title_html','').strip()]
+assert not blank, f'graphics beats without copy: {blank} — scene_plan did not cover them'
 "
 ```
+
+Every `graphics` beat now carries `scene.title_html`/`eyebrow`/`ghost`/`sub`/`type` (+ passthrough)
+from the scene plan, `scene.source == "scene_plan"`, and a `slug` (`beat<N>-<id>`) — Step 7
+renders into `gfx/<slug>/` and Step 9 concatenates by that slug.
 
 **When `$BROLL_CLIPS` is empty**, pass no `--broll` flag (or an empty file). The planner emits
 100% `graphics` beats, reproducing exact fmt4 behavior.
@@ -521,9 +553,11 @@ for b in bl["beats"]:
     # whole; a heavy-blurred zoomed copy fills the frame edges.  For true 9:16 clips
     # the fit copy == the frame — blurred-fill is a harmless no-op.
     # Blur strength: boxblur=40:2 (tunable; stronger = more separation from fg).
+    # A LABELLED graph ([0:v]…[bg];…[bv]) is a filter_complex — `-vf` rejects it with
+    # "Output with label 'bv' does not exist" (CFW-128 finding; fixed CFW-131).
     subprocess.run([
         FF, "-y", "-ss", str(t_in), "-i", clip, "-t", str(dur),
-        "-vf", (
+        "-filter_complex", (
             "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
             "boxblur=40:2,setsar=1[bg];"
             "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,setsar=1[fg];"
@@ -560,7 +594,7 @@ for b in sorted(bl["beats"], key=lambda x: x["index"]):
     else:
         # Graphics beat — path returned by delegate_task child (stored in a lookup table)
         # Resolve from known naming convention: gfx/<slug>/<slug>.mp4
-        slug = b.get("slug", f"beat{idx}")
+        slug = b.get("slug", f"beat{idx}")   # set by c-broll-sync from scene_plan (beat<N>-<id>)
         raw = f"$W/gfx/{slug}/{slug}.mp4"
     # Normalize
     out = f"$W/seg-norm-{idx:02d}.mp4"
@@ -751,9 +785,22 @@ fi
 moment past the hook. If not, pick `cover_at = bed_duration × 0.35` (early-mid of body, never
 the hook).
 
+**Cover on dark-palette brands:** the gate's frame-0 rule is perceptual (bright frame OR dark
+card with a bright headline — `contrast_floor`), so a navy card with a 60 px+ white headline is a
+valid cover. Still prefer footage or the brightest card: set `cover: true` on that scene in
+`scene_plan.json` (c-broll-sync writes `cover_at` from it) rather than the planner's default.
+
 ```bash
-COVER_AT="${COVER_AT:-$(python3 -c "print(round(float($BED_DUR)*0.35,1))")}"
-REEL_IN="$W/premium.mp4"
+COVER_AT="${COVER_AT:-$(python3 -c "import json;print(json.load(open('$W/beat_list.json')).get('cover_at') or round(float($BED_DUR)*0.35,1))")}"
+
+# Step 0: MASTER to -14 LUFS (the ONE reel loudness truth) — the premium SFX mix can drift the
+# integrated level; the delivered file must read -14 ± 1.5 at the gate. Two-pass loudnorm.
+STATS=$($FF -hide_banner -nostats -i "$W/premium.mp4" -af "loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json" -f null - 2>&1 | python3 -c "import sys,json,re; m=re.search(r'\{[^{}]*\}', sys.stdin.read()); print(json.dumps(json.loads(m.group(0)) if m else {}))")
+$FF -y -i "$W/premium.mp4" -c:v copy -af "$(python3 -c "
+import json,sys; s=json.loads(sys.argv[1])
+print('loudnorm=I=-14:TP=-1.5:LRA=11:measured_I=%s:measured_TP=%s:measured_LRA=%s:measured_thresh=%s:offset=%s:linear=true' % (s['input_i'],s['input_tp'],s['input_lra'],s['input_thresh'],s['target_offset']) if s else 'loudnorm=I=-14:TP=-1.5:LRA=11')" "$STATS")" \
+  -c:a aac -b:a 192k -ar 48000 -ac 2 "$W/premium-master14.mp4"
+REEL_IN="$W/premium-master14.mp4"
 
 # Step 1: Extract the money-shot frame
 $FF -y -ss "$COVER_AT" -i "$REEL_IN" -frames:v 1 -q:v 2 "$W/cover.png"
@@ -852,8 +899,9 @@ bash .hub/c-eval-runner/scripts/eval-run.sh <FINAL_MP4> --recipe-dir "$SKILL_DIR
 # scorecard → <video_dir>/eval/scorecard.json ; frame sweep → <video_dir>/eval/
 ```
 
-- **HARD** (verdict FAIL, exit 1, blocks delivery): mechanical gate (loudness ≈ -14
-  LUFS, frame-0 brightness > 0x30, resolution/fps, audio present), duration 30–90s,
+- **HARD** (verdict FAIL, exit 1, blocks delivery): mechanical gate (loudness -14 ± 1.5
+  LUFS, frame-0 cover = bright frame OR dark card with bright foreground (perceptual
+  `contrast_floor`, CFW-131), resolution/fps, audio present), duration 30–90s,
   canvas exactly 1080×1920, no black frames on any sampled timestamp.
 - **PERCEPTUAL** (verdict NEEDS_VISION until resolved): the Step 14 (a)–(i) checks
   are emitted as PENDING criteria with a frame sweep — resolve them with a vision

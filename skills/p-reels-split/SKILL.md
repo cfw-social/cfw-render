@@ -422,6 +422,8 @@ echo "[p-reels-split] broll cue index: $(python3 -c 'import json,sys; d=json.loa
 `c-broll-sync` plans the top zone exactly as it does for the full background in p-reels-pip —
 the beat list structure is identical; only the rendering target is 1080×960 instead of 1080×1920.
 
+> **`scene_plan.json` is MANDATORY (CFW-131).** `plan.js` emits graphics beats with no copy and now exits 1 rather than hand a blank card downstream. Before this call, author `$W/scene_plan.json` (contract: `.hub/c-broll-sync/SCENE-PLAN.md` — one `graphic` scene per 4–6 s idea with `headline` / `eyebrow` / `ghost` / `type`, `avatar` scenes for talking-head windows, optional `broll` scenes to pin clips, `cover: true` on the cover scene) and validate it: `node "$BROLL_SYNC_DIR/scripts/validate-scene-plan.js" "$W/scene_plan.json" --bed-dur "$BED_DUR" --transcript <words.json>`. Every `graphics` beat then carries `scene.title_html` + a `slug` (`beat<N>-<id>`).
+
 ```bash
 node "$BROLL_SYNC_DIR/scripts/plan.js" \
   --transcript "$W/transcript.json" \
@@ -434,6 +436,7 @@ node "$BROLL_SYNC_DIR/scripts/plan.js" \
   --reuse      "$BROLL_REUSE" \
   --bed-dur    "$BED_DUR" \
   --brand      "$W/brand.json" \
+  --scene-plan "$W/scene_plan.json" \
   --out        "$W/beat_list.json"
 
 python3 - "$W/beat_list.json" "$BED_DUR" <<'PY'

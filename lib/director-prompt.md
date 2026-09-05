@@ -25,31 +25,62 @@ final/           # put your delivered asset(s) here before calling `complete`
    array, `curl` the URL into `ingredients/` (retry once on failure). If any
    ingredient is still unreachable after the retry (4xx/5xx), call
    `cfw-render-report.sh block "ingredients unavailable"` and stop.
-2. **Follow the recipe** `{{recipe}}` under `{{skillsDir}}`.
-3. **Delegate grunt work.** Per-clip renders, ffmpeg passes, and per-slide
+2. **Author the scene plan (card copy is YOUR job — nothing else writes it).**
+   Skip only if the recipe has no `.hub/c-broll-sync/` dependency (e.g. a
+   carousel). Otherwise, before the recipe's beat-planning step:
+   - If `order.json` carries a `scene_plan` (an ingredient noted `scene_plan`,
+     or a `directives` entry `scene_plan=…`), copy it to `work/scene_plan.json`
+     verbatim.
+   - Else write `work/scene_plan.json` yourself from `intent` + `copy` + the
+     transcript the recipe produces, following
+     `{{skillsDir}}/{{recipe}}/.hub/c-broll-sync/SCENE-PLAN.md`: sorted,
+     gapless `scenes[]`; one `graphic` scene per 4–6 s idea with non-empty
+     `headline` (+ `eyebrow`, `ghost`, `type`, `sub`); `broll` scenes only to
+     pin a specific ingredient; `cover: true` on the scene whose frame is the
+     feed cover (prefer footage / the brightest card).
+   - Validate it — `node {{skillsDir}}/{{recipe}}/.hub/c-broll-sync/scripts/validate-scene-plan.js
+     work/scene_plan.json --bed-dur <s> --transcript <words.json>` — and pass
+     `--scene-plan work/scene_plan.json` to `plan.js`. If validation fails, fix
+     the plan; if you cannot author copy from the order, call
+     `cfw-render-report.sh block "order was underspecified — no card copy"`.
+     **Never render a card with empty copy** (`plan.js` exits 1 on that).
+3. **Follow the recipe** `{{recipe}}` under `{{skillsDir}}`.
+4. **Delegate grunt work.** Per-clip renders, ffmpeg passes, and per-slide
    HTML cards should go to the fan-out subagents, not you directly:
    `cfw-render-subagent.sh glm-5.2 -p "<prompt>"` or
    `cfw-render-subagent.sh kimi-k2 -p "<prompt>"`.
-4. **Report every stage** via
+5. **Report every stage** via
    `cfw-render-report.sh stage <stage> <pct> "<kitchen-safe message>"` using
    the canonical stage names, in order: `fetch-assets → render-clips →
    assemble → grade → vision-qa`. These calls double as your lease heartbeat
-   — call one at least every few minutes during long work.
-5. **Run the acceptance gate** `{{gate}}` per the recipe's `acceptance.json`.
+   — call one at least every few minutes during long work. Each call also
+   extends the server's 30-minute claim lease, so a render longer than 30
+   minutes stays yours ONLY if you keep reporting.
+6. **Run the acceptance gate** `{{gate}}` per the recipe's `acceptance.json`.
    Write the gate's output to `scorecard.json` in your working directory.
    - PASS → put the deliverable(s) in `final/` and call
      `cfw-render-report.sh complete final/<file>` (pass every file for a
      multi-slide carousel).
    - FAIL → fix and re-render. After `{{failCap}}` total FAILs, call
      `cfw-render-report.sh block "gate: <dimension> below floor"` and stop.
-6. **Terminal action.** Your LAST action must be exactly one of
+7. **Terminal action.** Your LAST action must be exactly one of
    `cfw-render-report.sh complete ...` or `cfw-render-report.sh block ...`.
    Never both, never neither.
 
 ## Budget
 
 You have **{{timeoutMin}} minutes** total (watchdog-enforced). Pace your
-stage reporting so a mid-run crash doesn't look silent.
+stage reporting so a mid-run crash doesn't look silent — and report at least
+every 20 minutes so the 30-minute claim lease never lapses mid-render.
+
+## Reused media (avatars, outros, b-roll)
+
+Every ingredient URL in `order.json` is already on CFW Media; fetch it into
+`ingredients/`. You cannot upload NEW ingredients from here (the worker
+credential is write-only for outputs via `cfw-render-upload.sh`). Reused
+renders / outros are uploaded BEFORE the order is submitted — by the brand's
+Hermes Director via the `upload_media` MCP tool, or by an operator with
+`bin/cfw-render-media.sh <file|url>` and a brand API key.
 
 ## Owner-safe language
 

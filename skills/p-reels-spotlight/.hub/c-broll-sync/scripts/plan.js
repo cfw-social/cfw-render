@@ -25,7 +25,18 @@
  *     --reuse      false \
  *     --bed-dur    42.3 \
  *     --brand      path/to/brand.json \
+ *     --scene-plan path/to/scene_plan.json   # CFW-131: Director-authored card copy (SCENE-PLAN.md)
  *     --out        path/to/beat_list.json
+ *
+ * CFW-131 — card copy is nobody's job unless it is the Director's:
+ *   --scene-plan <file>   apply the scene_plan directive (SCENE-PLAN.md). Graphics
+ *                         windows are split into the plan's `graphic` scenes and
+ *                         every graphics beat carries the scene's copy. If the plan
+ *                         has `broll` scenes they ARE the b-roll placements.
+ *   --allow-empty-copy    legacy escape hatch: emit graphics beats with empty copy
+ *                         (the calling core MUST author copy before rendering).
+ *                         Without it, any graphics beat left without a headline is
+ *                         a HARD error (exit 1) — blank cards never reach a render.
  */
 
 'use strict';
@@ -33,6 +44,7 @@
 const fs   = require('fs');
 const path = require('path');
 const { execSync, spawnSync } = require('child_process');
+const { validateScenePlan, resolveAnchors } = require('./validate-scene-plan');
 
 // ─── CLI arg parsing ──────────────────────────────────────────────────────────
 
@@ -61,6 +73,9 @@ const REUSE           = (raw['reuse'] || 'false') === 'true';
 const BED_DUR_ARG     = raw['bed-dur'] ? parseFloat(raw['bed-dur']) : null;
 const BRAND_PATH      = raw['brand']  || null;
 const OUT_PATH        = raw['out']    || 'beat_list.json';
+const SCENE_PLAN_PATH = raw['scene-plan'] || null;
+const ALLOW_EMPTY_COPY = process.argv.includes('--allow-empty-copy');
+const MIN_CARD_SECS   = parseFloat(raw['min-card-secs'] ?? '1.0');  // fragments shorter than this merge into a neighbour
 
 // ─── Load inputs ─────────────────────────────────────────────────────────────
 
@@ -92,6 +107,30 @@ const brand = (BRAND_PATH && fs.existsSync(BRAND_PATH))
 
 // Derive bed_duration
 const bedDuration = BED_DUR_ARG || words[words.length - 1].end;
+
+// ─── CFW-131: scene_plan directive (SCENE-PLAN.md) ───────────────────────────
+let scenePlan = null;
+if (SCENE_PLAN_PATH) {
+  if (!fs.existsSync(SCENE_PLAN_PATH)) {
+    console.error(`[c-broll-sync] ERROR: --scene-plan ${SCENE_PLAN_PATH} does not exist`);
+    process.exit(1);
+  }
+  let rawPlan;
+  try { rawPlan = JSON.parse(fs.readFileSync(SCENE_PLAN_PATH, 'utf8')); }
+  catch (e) { console.error(`[c-broll-sync] ERROR: scene_plan is not valid JSON: ${e.message}`); process.exit(1); }
+  if (rawPlan && typeof rawPlan === 'object' && !Array.isArray(rawPlan) && !isFinite(rawPlan.bed_duration)) rawPlan.bed_duration = bedDuration;
+  const resolved = resolveAnchors(rawPlan, words);
+  const verdict  = validateScenePlan(resolved.plan, { bedDuration });
+  const errs = [...resolved.errors, ...verdict.errors];
+  for (const w of verdict.warnings) console.warn(`[c-broll-sync] scene_plan WARN: ${w}`);
+  if (errs.length) {
+    for (const e of errs) console.error(`[c-broll-sync] scene_plan ERROR: ${e}`);
+    console.error(`[c-broll-sync] ERROR: scene_plan invalid (${errs.length} error(s)) — fix ${SCENE_PLAN_PATH}; never emit blank cards`);
+    process.exit(1);
+  }
+  scenePlan = resolved.plan;
+  console.log(`[c-broll-sync] scene_plan: ${scenePlan.scenes.length} scenes loaded from ${SCENE_PLAN_PATH}`);
+}
 
 // ─── Budget calculation (mechanical — never left to LLM) ──────────────────────
 
@@ -313,10 +352,43 @@ function callKimi(prompt) {
   }
 }
 
+/**
+ * Resolve a scene_plan `asset` reference to an index in brollClips: exact clip
+ * path, basename match, or `label`. A bare readable file path not in BROLL_JSON
+ * is appended as a new clip (duration unknown → window clamps to the scene).
+ */
+function resolveClipIndex(asset) {
+  const a = String(asset).trim();
+  let i = brollClips.findIndex(c => c.clip === a || c.label === a);
+  if (i >= 0) return i;
+  i = brollClips.findIndex(c => path.basename(String(c.clip)) === path.basename(a));
+  if (i >= 0) return i;
+  if (fs.existsSync(a)) { brollClips.push({ clip: a, cues: [] }); return brollClips.length - 1; }
+  return -1;
+}
+
 // ─── Run the selected placement strategy ──────────────────────────────────────
 
 let rawPlacements = [];
-switch (ORDER) {
+const planBroll = scenePlan ? scenePlan.scenes.filter(sc => sc.kind === 'broll') : [];
+if (planBroll.length > 0) {
+  // The Director placed the b-roll explicitly — the coverage strategies are bypassed.
+  console.log(`[c-broll-sync] scene_plan carries ${planBroll.length} broll scene(s) — using them as the placements (order=${ORDER} ignored)`);
+  rawPlacements = planBroll.map(sc => {
+    const idx = resolveClipIndex(sc.asset);
+    if (idx < 0) {
+      console.error(`[c-broll-sync] ERROR: scene_plan broll scene "${sc.id || sc.asset}" asset "${sc.asset}" matches no clip in --broll (by path, basename or label) and is not a readable file`);
+      process.exit(1);
+    }
+    const clip = brollClips[idx];
+    const clipDur = clip.duration || Infinity;
+    const want = sc.end - sc.start;
+    const inPt = Math.max(0, parseFloat(sc.in ?? 0));
+    const outPt = Math.min(inPt + want, clipDur);
+    return { clipIndex: idx, beatStart: sc.start, beatEnd: sc.start + (outPt - inPt), in: inPt, out: outPt,
+             matchScore: 1.0, matchReason: 'placed by scene_plan' };
+  });
+} else switch (ORDER) {
   case 'as-given':
     rawPlacements = placeAsGiven();
     break;
@@ -416,9 +488,88 @@ if (ORDER === 'transcript-match' && rawPlacements.length > 0 && rawPlacements[0]
   beats = buildBeatList(rawPlacements);
 }
 
+// ─── CFW-131: split graphics windows by the scene_plan and attach copy ───────
+
+const TIMING_KEYS = new Set(['start', 'end', 'start_phrase', 'end_phrase', 'kind', 'headline', 'asset', 'in', 'cover']);
+
+function sceneToGraphics(sc, start, end) {
+  const extra = {};
+  for (const [k, v] of Object.entries(sc)) if (!TIMING_KEYS.has(k)) extra[k] = v;
+  return {
+    start: parseFloat(start.toFixed(3)),
+    end:   parseFloat(end.toFixed(3)),
+    kind:  'graphics',
+    scene: {
+      ...extra,
+      eyebrow:    sc.eyebrow ?? '',
+      ghost:      sc.ghost ?? '',
+      title_html: sc.headline,
+      sub:        sc.sub ?? '',
+      type:       sc.type ?? 'standard',
+      scene_id:   sc.id ?? null,
+      source:     'scene_plan',
+      brand,
+    },
+  };
+}
+
+function applyScenePlan(bs, plan) {
+  const gfxScenes = plan.scenes.filter(sc => sc.kind === 'graphic');
+  const avScenes  = plan.scenes.filter(sc => sc.kind === 'avatar');
+  const out = [];
+  for (const b of bs) {
+    if (b.kind !== 'graphics') { out.push(b); continue; }
+    // Window [b.start, b.end] → the graphic/avatar scenes that overlap it, clipped.
+    const frags = [];
+    for (const sc of [...gfxScenes, ...avScenes].sort((x, y) => x.start - y.start)) {
+      const s = Math.max(sc.start, b.start), e = Math.min(sc.end, b.end);
+      if (e - s > 0.01) frags.push({ sc, s, e });
+    }
+    if (frags.length === 0) {
+      console.error(`[c-broll-sync] ERROR: no graphic scene in scene_plan covers the window ${b.start.toFixed(2)}–${b.end.toFixed(2)} s — add a card for it`);
+      process.exit(1);
+    }
+    // Merge fragments shorter than MIN_CARD_SECS into a neighbour (prefer the previous one).
+    for (let i = 0; i < frags.length; i++) {
+      if (frags[i].e - frags[i].s >= MIN_CARD_SECS || frags.length === 1) continue;
+      if (i > 0) { frags[i - 1].e = frags[i].e; frags.splice(i, 1); i--; }
+      else { frags[i + 1].s = frags[i].s; frags.splice(i, 1); i--; }
+    }
+    // Fill any slack at the window edges (from timing tolerance) into the edge fragments.
+    frags[0].s = b.start; frags[frags.length - 1].e = b.end;
+    for (const f of frags) {
+      if (f.sc.kind === 'avatar') {
+        out.push({ start: parseFloat(f.s.toFixed(3)), end: parseFloat(f.e.toFixed(3)), kind: 'avatar',
+                   avatar: { asset: f.sc.asset ?? null, scene_id: f.sc.id ?? null, source: 'scene_plan' } });
+      } else {
+        out.push(sceneToGraphics(f.sc, f.s, f.e));
+      }
+    }
+  }
+  return out;
+}
+
+if (scenePlan) beats = applyScenePlan(beats, scenePlan);
+
 // ─── Reindex + verify ─────────────────────────────────────────────────────────
 
-beats.forEach((b, i) => { b.index = i; });
+beats.forEach((b, i) => {
+  b.index = i;
+  if (b.kind === 'graphics' && !b.slug) {
+    const id = (b.scene && b.scene.scene_id) ? String(b.scene.scene_id) : '';
+    const safe = id.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    b.slug = safe ? `beat${i}-${safe}` : `beat${i}`;
+  }
+});
+
+// HARD RULE (CFW-131): never emit a graphics beat without copy.
+const blank = beats.filter(b => b.kind === 'graphics' && !String((b.scene || {}).title_html || '').replace(/<[^>]*>/g, '').trim());
+if (blank.length > 0 && !ALLOW_EMPTY_COPY) {
+  for (const b of blank) console.error(`[c-broll-sync] ERROR: graphics beat ${b.index} (${b.start.toFixed(2)}–${b.end.toFixed(2)} s) has EMPTY card copy`);
+  console.error(`[c-broll-sync] ERROR: ${blank.length} graphics beat(s) have no copy — supply --scene-plan <scene_plan.json> (see SCENE-PLAN.md) so every card is authored; never render blank cards. (--allow-empty-copy restores the legacy behaviour for cores that author copy themselves.)`);
+  process.exit(1);
+}
+if (blank.length > 0) console.warn(`[c-broll-sync] WARN: ${blank.length} graphics beat(s) emitted with EMPTY copy (--allow-empty-copy) — the calling core MUST author copy before rendering`);
 
 // Verify gapless coverage
 let prevEnd = 0;
@@ -461,7 +612,14 @@ function pickCoverAt(bs, dur) {
   }
   return parseFloat(Math.min(Math.max(t, 2.0), Math.max(0, dur - 0.1)).toFixed(3));
 }
-const coverAt = pickCoverAt(beats, bedDuration);
+let coverAt = pickCoverAt(beats, bedDuration);
+if (scenePlan) {
+  const flagged = scenePlan.scenes.find(sc => sc.cover === true);
+  if (flagged) {
+    coverAt = parseFloat((flagged.start + Math.min((flagged.end - flagged.start) / 2, 2.0)).toFixed(3));
+    console.log(`[c-broll-sync] cover_at=${coverAt} from scene_plan cover flag (${flagged.id || flagged.kind})`);
+  }
+}
 
 // ─── Write output ────────────────────────────────────────────────────────────
 
@@ -477,6 +635,7 @@ const output = {
     broll_max_seconds:  MAX_SECS,
     broll_order:        ORDER,
     broll_reuse:        REUSE,
+    scene_plan:         SCENE_PLAN_PATH ? path.basename(SCENE_PLAN_PATH) : null,
   },
   beats,
 };

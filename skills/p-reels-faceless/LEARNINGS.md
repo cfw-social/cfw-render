@@ -61,3 +61,9 @@
 - `repeat: -1` is rejected by `hyperframes lint` — compute a finite repeat from the beat duration.
 - `voice_id` must be passed explicitly: the vault `ELEVENLABS_DEFAULT_VOICE_ID` is the superseded clone; the pin lives in `brand-overrides/<slug>/brand.json` (`qfNHzU5pVyzMLm53FhzY`, `eleven_v3`).
 - MGG has **no video b-roll on disk** (`creatives/brolls/recordings/` is gone) — Ken-Burns clips from `brolls/images/*.png` (`zoompan`) work as on-brand b-roll.
+
+### 2026-09-05 — CFW-131 fleet-blocker fixes (applied to this SKILL.md)
+- **Loudness contradiction FIXED**: Step 2 now normalises to **-14 LUFS** and Step 13 re-masters the premium output to -14 (two-pass loudnorm) before the cover freeze; `acceptance.json` `vo_loudness` = -14 and a new `final_loudness` check on the delivered file. One truth: **-14 LUFS for reels.**
+- **Step 8 `-vf` FIXED** → `-filter_complex` (labelled graph).
+- **Frame-0 floor → perceptual**: `c-shorts-qa-gate` + new `c-eval-runner` `contrast_floor` (`cover_has_contrast` at t=0) accept a dark card with a bright headline; flat dark frames still fail. Prefer `cover: true` on a footage/bright scene in `scene_plan.json`.
+- **Card copy is the Director's job**: Step 5a authors `scene_plan.json` (`.hub/c-broll-sync/SCENE-PLAN.md`); `plan.js --scene-plan` splits windows into 4–6 s cards and exits 1 if any graphics beat would be blank. Beats carry `slug` = `beat<N>-<id>` for Steps 7/9.
