@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-05T04:47:59Z",
+  "generatedAt": "2026-09-05T04:51:21Z",
   "release": null,
   "sourceSha": null,
   "rawBase": null,
@@ -422,7 +422,7 @@
     },
     "p-carousel": {
       "version": "1.0.0",
-      "checksum": "sha256:853d59e517b8a61184df5f7327d3d4f9b88530158a0f39db6335320c7f6a8537",
+      "checksum": "sha256:261e28cc91d42b1c530a762be8e4bb3427024e93bd9de2be3756f2e202c12ffc",
       "files": [
         ".hub/c-eval-runner/LEARNINGS.md",
         ".hub/c-eval-runner/SKILL.md",
@@ -438,6 +438,7 @@
         "acceptance.json",
         "brand-overrides/README.md",
         "brand-overrides/b-vasanth/brand.json",
+        "brand-overrides/b-vasanth/template.html",
         "brand-overrides/vasanth-sek8tv/brand.json",
         "examples.json",
         "render.mjs",
@@ -453,11 +454,12 @@
         ".hub/c-script/SKILL.md": "sha256:ba1d83d551ec02cd7ae634fe6b5fd9017f74433f54ada1a8b7b689d355efdf0c",
         ".hub/c-vision-qa/SKILL.md": "sha256:328c298e86f09327f3c6156218e32426b1653897d117e6b8057b50e15edeefc3",
         ".hub/c-vision-qa/scripts/precheck.sh": "sha256:fed240467d8c01c2b94893b272d539054fb9afad42a880f33b804e38d70a8fc8",
-        "LEARNINGS.md": "sha256:b2fb03047716e66e7e0de9ce7cf303dff9dec21e0bd325be877f7008448213a5",
+        "LEARNINGS.md": "sha256:07957ea6f83be4e528dcba342cc6f61e3ff46b072e2b799176fa46e6e2e26b55",
         "SKILL.md": "sha256:4591925e21c727d6403e0690d6521d1c4511a91df9be171353c4859bb43b52c9",
         "acceptance.json": "sha256:8c8750eaa27f126a24e1840c67f6b57413d6997d2ad613c41b37d94f726681dc",
         "brand-overrides/README.md": "sha256:ba96dcd60132107bfdb629031252b2b0a53c3f603b9ca3f87336dbec4a36c02c",
         "brand-overrides/b-vasanth/brand.json": "sha256:9927f65d2a43c0f2a1a2f6539cb9d71b2fe500e24c150264fbd275b786b2f1fd",
+        "brand-overrides/b-vasanth/template.html": "sha256:4cb9717b6d45dc9807eb0590fb5d0f58fa8f02e85db1e375ec860be0f6a3e7cd",
         "brand-overrides/vasanth-sek8tv/brand.json": "sha256:0ffed879fd86f7956b41c83d4ce20783df06d6c7dec29a447497de0c8f0e7f17",
         "examples.json": "sha256:6cbd143eaaa63653c29764993611f3633a35eb24faa3ee6c09bb0a6e6f0cf96d",
         "render.mjs": "sha256:f770776f1f491efe8f88c2e4a3cd4f59f1cbb83d7165497b3603bc7c708b7e31",
@@ -1388,7 +1390,7 @@
     },
     "p-reels-faceless": {
       "version": "1.0.0",
-      "checksum": "sha256:8c9bc24059f3ab088721f2fa1edb4bc0d3f4ed9c392727eb75e833d5128f6c9b",
+      "checksum": "sha256:1c2a43fc3ec13418576e617306b88f9abd0dadfb5b2908c1245a879091dbd679",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1587,7 +1589,7 @@
         ".hub/f-hyperframes/scripts/animation-map.mjs": "sha256:44166b4bf1eb7fa03e3a51648df7c70838ccc9af7b63de8de1a7d93b764b28d2",
         ".hub/f-hyperframes/scripts/contrast-report.mjs": "sha256:a916382bd40f197ee0109160241f6e35f317158f281dc643d200eb006dff29be",
         ".hub/f-hyperframes/visual-styles.md": "sha256:d173663b4342d830e46c5cc14a1ffafe6dbc6daca0702b0a451db3ce914693cc",
-        "LEARNINGS.md": "sha256:c1bf6a8b5993264dedfc055f426692d7e9d3f96ef81765f66456485876e011ed",
+        "LEARNINGS.md": "sha256:0b163225defc459bb44d54e164f49452517bcd3b7a7726bd296fe4e3340d6221",
         "SKILL.md": "sha256:ef8d09d11ec0fcda7612f6e08149201fdd8251a4ce4362dd5efb7dfb67054c36",
         "acceptance.json": "sha256:0d29eaf443e468d148e96f20d6e07966e963665bea7e020217d87757d44ab332",
         "brand-overrides/README.md": "sha256:ba96dcd60132107bfdb629031252b2b0a53c3f603b9ca3f87336dbec4a36c02c",
@@ -1615,7 +1617,7 @@
     },
     "p-reels-split": {
       "version": "1.0.0",
-      "checksum": "sha256:bbfbf223d41742f76205aa1f29b4edeb0587c5d73f4349242661613e2e859e29",
+      "checksum": "sha256:a4c738155c0e44bf82604264f8dcf384f27e391759e7e14754f133b49665c4ea",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1709,6 +1711,7 @@
         ".hub/f-hyperframes/visual-styles.md",
         ".hub/wowx-motions/SKILL.md",
         ".hub/wowx-motions/wowx_motion.py",
+        "LEARNINGS.md",
         "SKILL.md",
         "acceptance.json",
         "brand-overrides/README.md",
@@ -1810,6 +1813,7 @@
         ".hub/f-hyperframes/visual-styles.md": "sha256:d173663b4342d830e46c5cc14a1ffafe6dbc6daca0702b0a451db3ce914693cc",
         ".hub/wowx-motions/SKILL.md": "sha256:d48efdbc956ef474b7f6c3fcaddf2ee157737258dc8cab17247373f5895b6950",
         ".hub/wowx-motions/wowx_motion.py": "sha256:72439824e3e73fc13dc00aaedd632f4aed0f31cefb1748a93a64147e9245423a",
+        "LEARNINGS.md": "sha256:2ccebc17f10e7aeb611880ac10e37a77f151eead814d45850494b26b01fe4d03",
         "SKILL.md": "sha256:ea3657d0ca27f9f378cbd50c99ef6727423cb09935cde3850f3b9968b998d329",
         "acceptance.json": "sha256:f6119b3a0eddac0ea5c5ed104f3e11147cdc6e0ef80a220b5e880b7be165da1b",
         "brand-overrides/README.md": "sha256:ba96dcd60132107bfdb629031252b2b0a53c3f603b9ca3f87336dbec4a36c02c",
@@ -2310,7 +2314,7 @@
     },
     "p-reels-split-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:ef2bd7420cdfe8e9fa69381892c66aff36db135f28b53272504b102830d58c02",
+      "checksum": "sha256:f83036c56809424d967244d08aab73634c9267088179c83165567cecd6425377",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -2405,6 +2409,7 @@
         ".hub/f-hyperframes/scripts/animation-map.mjs",
         ".hub/f-hyperframes/scripts/contrast-report.mjs",
         ".hub/f-hyperframes/visual-styles.md",
+        ".hub/p-reels-split/LEARNINGS.md",
         ".hub/p-reels-split/SKILL.md",
         ".hub/p-reels-split/acceptance.json",
         ".hub/p-reels-split/brand-overrides/README.md",
@@ -2512,6 +2517,7 @@
         ".hub/f-hyperframes/scripts/animation-map.mjs": "sha256:44166b4bf1eb7fa03e3a51648df7c70838ccc9af7b63de8de1a7d93b764b28d2",
         ".hub/f-hyperframes/scripts/contrast-report.mjs": "sha256:a916382bd40f197ee0109160241f6e35f317158f281dc643d200eb006dff29be",
         ".hub/f-hyperframes/visual-styles.md": "sha256:d173663b4342d830e46c5cc14a1ffafe6dbc6daca0702b0a451db3ce914693cc",
+        ".hub/p-reels-split/LEARNINGS.md": "sha256:2ccebc17f10e7aeb611880ac10e37a77f151eead814d45850494b26b01fe4d03",
         ".hub/p-reels-split/SKILL.md": "sha256:ea3657d0ca27f9f378cbd50c99ef6727423cb09935cde3850f3b9968b998d329",
         ".hub/p-reels-split/acceptance.json": "sha256:f6119b3a0eddac0ea5c5ed104f3e11147cdc6e0ef80a220b5e880b7be165da1b",
         ".hub/p-reels-split/brand-overrides/README.md": "sha256:ba96dcd60132107bfdb629031252b2b0a53c3f603b9ca3f87336dbec4a36c02c",
