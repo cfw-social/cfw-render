@@ -1,0 +1,78 @@
+{
+  "brand": "Mr Growth Guide",
+  "slug": "vasanth-sek8tv",
+  "aliases": [
+    "mgg",
+    "mr-growth-guide"
+  ],
+  "cfw_brand_id": "cmpt8h9bt000004gvjhe1bnms",
+  "palette": {
+    "bg": "#0F172A",
+    "split_bg": "#0B1020",
+    "accent": "#F97316",
+    "secondary": "#8B5CF6",
+    "teal": "#06B6D4",
+    "fg": "#FFFFFF",
+    "fg_soft": "#F1F5F9",
+    "caption_active": "#FFFF00"
+  },
+  "fonts": {
+    "display": "Oswald",
+    "mono": "JetBrains Mono",
+    "caption": "Montserrat",
+    "slides": "Poppins"
+  },
+  "voice": {
+    "provider": "elevenlabs",
+    "voice_id": "qfNHzU5pVyzMLm53FhzY",
+    "voice_name": "Vasanth-042026",
+    "model_id": "eleven_v3",
+    "voice_settings": {
+      "stability": 0.0,
+      "use_speaker_boost": true
+    },
+    "style_tags": [
+      "[excited]",
+      "[enthusiastically]"
+    ],
+    "output_format": "mp3_44100_128",
+    "loudnorm_lufs": -16,
+    "_resolved": "CFW-128 2026-09-04: GET /v1/voices lists both candidates — qfNHzU5pVyzMLm53FhzY='Vasanth-042026' (cloned), iXo9OlmDD0eO2j9eo7sM='Vasanth' (older clone). Every MGG production 06.28→07.02 used qfNHzU5pVyzMLm53FhzY/eleven_v3 → pinned. iXo9… is superseded (still the vault ELEVENLABS_DEFAULT_VOICE_ID — pass voice_id explicitly)."
+  },
+  "captions": {
+    "style": "kinetic-karaoke",
+    "case": "upper",
+    "font": "Montserrat Bold",
+    "size_px": 86,
+    "active_color": "#F97316",
+    "inactive_color": "#FFFFFF",
+    "one_accent_word_per_chunk": true,
+    "placement": {
+      "p-reels-split": "at the seam — \\an5\\pos(540,~1012), CAP_TOP=860",
+      "p-reels-faceless": "caption band CAP_TOP=1180"
+    },
+    "_legacy": "pre-2026-06 PIP format used Arial Bold 62px ALL CAPS, active #FFFF00 — retired with r-bottom-avatar-pip"
+  },
+  "outro": {
+    "type": "png-still",
+    "path": "/Users/vasanth/initiatives/brands/mr-growth-guide/marketing-mirror-import/brand-assets/outros/mgg-outro-vertical-1080x1920.png",
+    "relative": "marketing-mirror-import/brand-assets/outros/mgg-outro-vertical-1080x1920.png",
+    "size": "1080x1920",
+    "duration_s": 3.0,
+    "mode": "append-after-cta-takeover",
+    "_note": "Canonical home brand-assets/outros/ is empty (mp4 outros deleted 2026-06-11); only this PNG survives in the mirror import. On the fleet it must be uploaded to media.cfw.social and passed as an ingredient."
+  },
+  "cta": {
+    "line": "Follow for daily AI builds",
+    "handle": "@mr.growthguide",
+    "keyword_pattern": "Comment <KEYWORD> and I'll DM you <asset>",
+    "platforms_default": [
+      "instagram",
+      "tiktok",
+      "youtube",
+      "threads",
+      "facebook"
+    ]
+  },
+  "hero_portrait": "/Users/vasanth/initiatives/brands/mr-growth-guide/vasanth-portrait-amber-1080x1920.png"
+}

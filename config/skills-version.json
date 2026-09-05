@@ -4,8 +4,8 @@
   "sourceCommit": "bc935e7a33993641758d8d067f7f8151b8809baa",
   "sourceSha": "bc935e7a33993641758d8d067f7f8151b8809baa",
   "recipeCount": 14,
-  "aggregateChecksum": "sha256:5a008d49118cac74f7a51cbf4666034bd99878b97f0f384013b0b88d9df35795",
-  "bundledAt": "2026-09-05T04:24:11Z",
+  "aggregateChecksum": "sha256:aa0185d0f3e7ade6c665c09e480b9dcd8da5f7ec094e5cff53bdf53f7085f9c7",
+  "bundledAt": "2026-09-05T04:26:12Z",
   "bundleMethod": "scripts/sync-skills.sh (direct copy from private source repo; git-subtree retired)",
   "updateCommand": "CFW_SKILLS_SRC=<path-to-private-skills-repo> scripts/sync-skills.sh",
   "recipes": {
@@ -26,8 +26,8 @@
     },
     "p-carousel": {
       "version": "1.0.0",
-      "checksum": "sha256:8c5da21d5c2fe803b3d03a9632b91e01aa92d652f82b625dae47fe35044bd96a",
-      "fileCount": 15
+      "checksum": "sha256:b6c8889b85b72b9ff7cec8f8bc6b7d3343861c88b79ec643c0bcfb3d8bdf22ce",
+      "fileCount": 18
     },
     "p-clone-reel": {
       "version": "1.0.0",
@@ -46,8 +46,8 @@
     },
     "p-reels-faceless": {
       "version": "1.0.0",
-      "checksum": "sha256:73f201fe94b1ab28704fd8f4cbf443981a10ae6bdf20b11626dfe136c3920482",
-      "fileCount": 98
+      "checksum": "sha256:f9cac809159088741e59db693aba018a73928b80a814ad11e634e55064d7b687",
+      "fileCount": 101
     },
     "p-reels-pip": {
       "version": "1.0.0",
@@ -61,13 +61,13 @@
     },
     "p-reels-split": {
       "version": "1.0.0",
-      "checksum": "sha256:c452c76d7aced55948d642329a29d4db9757c20f25d993ffca53cb61b8efd989",
-      "fileCount": 96
+      "checksum": "sha256:06af97b7392eac298ba21958c3c6dc70b14723dc9f9dbbfd1741b523dd363e11",
+      "fileCount": 99
     },
     "p-reels-split-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:148cfd622764e171cebe71aa02604a7fa7fb1e815ea1e56677358221cf7ec402",
-      "fileCount": 102
+      "checksum": "sha256:8b51f636a6370311c37edab4f6311c625d1ffc8cda84ce125d6302c5a9957b65",
+      "fileCount": 105
     },
     "p-reels-spotlight": {
       "version": "1.0.0",
