@@ -44,7 +44,24 @@ def probe_dur(f):
     except ValueError: return None
 
 def crop_luma(f, crop, t):
-    """Mean luma 0-255 of a crop (W:H:X:Y) at time t — dependency-free."""
+    """Mean luma 0-255 of a crop (W:H:X:Y) at time t — dependency-free.
+    Uses signalstats YAVG (a true mean over the crop). The previous
+    `scale=1:1,format=gray` approach was a POINT SAMPLE — swscale cannot
+    area-average a 1000-px crop down to one pixel — and read 4–13 on
+    navy-brand frames whose real mean was 32–36, false-failing every
+    dark-palette render (CFW-128, 2026-09-04)."""
+    rc, _, err = sh(["ffmpeg","-hide_banner","-ss",str(t),"-i",f,
+        "-vf",f"crop={crop},signalstats,metadata=print:key=lavfi.signalstats.YAVG",
+        "-frames:v","1","-f","null","-"])
+    for line in err.splitlines():
+        if "lavfi.signalstats.YAVG=" in line:
+            try:
+                yavg = float(line.split("YAVG=")[1].strip())
+                # signalstats reports LIMITED-range luma (black=16, white=235);
+                # the spec floors are FULL-range 0-255 like the old gray sample.
+                return max(0.0, (yavg - 16.0) * 255.0 / 219.0)
+            except ValueError: pass
+    # fallback: single-pixel sample (legacy behaviour) if signalstats is unavailable
     rc, out, _ = sh(["ffmpeg","-v","error","-ss",str(t),"-i",f,
         "-vf",f"crop={crop},scale=1:1,format=gray","-frames:v","1",
         "-f","rawvideo","-"])

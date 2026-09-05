@@ -1,12 +1,12 @@
 {
-  "generatedAt": "2026-09-05T04:26:11Z",
+  "generatedAt": "2026-09-05T04:47:59Z",
   "release": null,
   "sourceSha": null,
   "rawBase": null,
   "recipes": {
     "p-ai-character": {
       "version": "1.0.0",
-      "checksum": "sha256:bf7fb0ff6ff38dfed969f0b42d297e4507e538fc5ae21af78a0478f94a6c09f8",
+      "checksum": "sha256:ca1353d1c242098f6f62970e7921f36b03fb4e8be5af51880b7f4c0bba582683",
       "files": [
         ".hub/c-ai-media/LEARNINGS.md",
         ".hub/c-ai-media/SKILL.md",
@@ -41,7 +41,7 @@
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
         ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
-        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
+        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:02550a9fea3d44e0793fbfeb6d1fbc65fe2e5ee3de327d7432439b45a19a9407",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
         ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
@@ -76,7 +76,7 @@
     },
     "p-ai-image": {
       "version": "1.0.0",
-      "checksum": "sha256:e243bfcd10b16eed353e29827a3fa5541c9e564674b76da0907541c5019e865d",
+      "checksum": "sha256:64940965bcb65c278b506649854483854351a00d5648cb1564213a1fc2096541",
       "files": [
         ".hub/c-ai-media/LEARNINGS.md",
         ".hub/c-ai-media/SKILL.md",
@@ -161,7 +161,7 @@
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
         ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
-        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
+        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:02550a9fea3d44e0793fbfeb6d1fbc65fe2e5ee3de327d7432439b45a19a9407",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
         ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
@@ -249,7 +249,7 @@
     },
     "p-clone-reel": {
       "version": "1.0.0",
-      "checksum": "sha256:61167fd1475ca3f4413ed56a3d7638a73db429648920fd82b30ac913f48b1604",
+      "checksum": "sha256:5d95b785adab8c9492cc54031e5b8e2dbfd526f921deb3d7d00b7675b03c5429",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -337,7 +337,7 @@
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
         ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
-        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
+        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:02550a9fea3d44e0793fbfeb6d1fbc65fe2e5ee3de327d7432439b45a19a9407",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
         ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
@@ -422,7 +422,7 @@
     },
     "p-carousel": {
       "version": "1.0.0",
-      "checksum": "sha256:b6c8889b85b72b9ff7cec8f8bc6b7d3343861c88b79ec643c0bcfb3d8bdf22ce",
+      "checksum": "sha256:853d59e517b8a61184df5f7327d3d4f9b88530158a0f39db6335320c7f6a8537",
       "files": [
         ".hub/c-eval-runner/LEARNINGS.md",
         ".hub/c-eval-runner/SKILL.md",
@@ -447,7 +447,7 @@
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
         ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
-        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
+        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:02550a9fea3d44e0793fbfeb6d1fbc65fe2e5ee3de327d7432439b45a19a9407",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-script/LEARNINGS.md": "sha256:d2bad99665351c4ffe0a809ef7990875847febb2df9113b8c8ba200e67dbfe33",
         ".hub/c-script/SKILL.md": "sha256:ba1d83d551ec02cd7ae634fe6b5fd9017f74433f54ada1a8b7b689d355efdf0c",
@@ -473,7 +473,7 @@
     },
     "p-gfx-image": {
       "version": "1.0.0",
-      "checksum": "sha256:10bf726f915c57111fa2890afb82a2010de507875ce17d5846856af18a843e86",
+      "checksum": "sha256:0c134bd1421bbf5f1c16eb54c523981bfea5edd96bcf8bc43ddb3ef5d6370d62",
       "files": [
         ".hub/c-banner/SKILL.md",
         ".hub/c-eval-runner/LEARNINGS.md",
@@ -542,7 +542,7 @@
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
         ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
-        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
+        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:02550a9fea3d44e0793fbfeb6d1fbc65fe2e5ee3de327d7432439b45a19a9407",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
         ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
@@ -613,7 +613,7 @@
     },
     "p-longform": {
       "version": "1.0.0",
-      "checksum": "sha256:a03318a7571f90ce5c83c5ba376dcf7ea8f475c9b4fa4967cfb87bc1075ed1e7",
+      "checksum": "sha256:2c67cd2358dfd0e548a5785f39b8183ab056fa9a9d6aa1b8f1bf621a2348def4",
       "files": [
         ".hub/c-ai-media/LEARNINGS.md",
         ".hub/c-ai-media/SKILL.md",
@@ -775,7 +775,7 @@
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
         ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
-        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
+        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:02550a9fea3d44e0793fbfeb6d1fbc65fe2e5ee3de327d7432439b45a19a9407",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
         ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
@@ -935,7 +935,7 @@
     },
     "p-reels-pip": {
       "version": "1.0.0",
-      "checksum": "sha256:209996084f06f18549d97d9d1a84bf64a2e69d5096135a8de4f2aae8a03ec29b",
+      "checksum": "sha256:7f3d0d60e4599a9263f5588f526c0ddabdb89b1ccce644b1243e6f574a772368",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1040,7 +1040,7 @@
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
         ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
-        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
+        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:02550a9fea3d44e0793fbfeb6d1fbc65fe2e5ee3de327d7432439b45a19a9407",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
         ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
@@ -1146,7 +1146,7 @@
     },
     "p-reels-spotlight": {
       "version": "1.0.0",
-      "checksum": "sha256:d7d4e25ae0199a71385f7bc5171970a1bedd1710fa3fe34cc611ceb03501d6ba",
+      "checksum": "sha256:5af1e70ec9c7166a77869754f16b357a161921b39d58e64e188888e12304e778",
       "files": [
         ".hub/c-broll-sync/SKILL.md",
         ".hub/c-broll-sync/scripts/plan.js",
@@ -1268,7 +1268,7 @@
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
         ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
-        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
+        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:02550a9fea3d44e0793fbfeb6d1fbc65fe2e5ee3de327d7432439b45a19a9407",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
         ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
@@ -1388,7 +1388,7 @@
     },
     "p-reels-faceless": {
       "version": "1.0.0",
-      "checksum": "sha256:f9cac809159088741e59db693aba018a73928b80a814ad11e634e55064d7b687",
+      "checksum": "sha256:8c9bc24059f3ab088721f2fa1edb4bc0d3f4ed9c392727eb75e833d5128f6c9b",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1504,7 +1504,7 @@
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
         ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
-        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
+        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:02550a9fea3d44e0793fbfeb6d1fbc65fe2e5ee3de327d7432439b45a19a9407",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
         ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
@@ -1615,7 +1615,7 @@
     },
     "p-reels-split": {
       "version": "1.0.0",
-      "checksum": "sha256:06af97b7392eac298ba21958c3c6dc70b14723dc9f9dbbfd1741b523dd363e11",
+      "checksum": "sha256:bbfbf223d41742f76205aa1f29b4edeb0587c5d73f4349242661613e2e859e29",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1725,7 +1725,7 @@
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
         ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
-        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
+        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:02550a9fea3d44e0793fbfeb6d1fbc65fe2e5ee3de327d7432439b45a19a9407",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
         ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
@@ -1837,7 +1837,7 @@
     },
     "p-reels-pip-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:0f9c2dfaa6d9de6eba566ac1d726fdf7f9dac64d6751eb52744b9b87cc4949e6",
+      "checksum": "sha256:e00af299a495454c6bb8dffa64acc46b844ae0f4cdccda0653ff47e18f8a4000",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1946,7 +1946,7 @@
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
         ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
-        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
+        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:02550a9fea3d44e0793fbfeb6d1fbc65fe2e5ee3de327d7432439b45a19a9407",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
         ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
@@ -2058,7 +2058,7 @@
     },
     "p-reels-spotlight-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:374e53bb8c40b4fc945280fbee6322a4471566a1cf3f5865415058af8a7e5bda",
+      "checksum": "sha256:e170fc9f7cb1fa0535b9c4dae779c8be9a3c1c5aac517dd3b1f4e196d8d15c39",
       "files": [
         ".hub/c-broll-sync/SKILL.md",
         ".hub/c-broll-sync/scripts/plan.js",
@@ -2184,7 +2184,7 @@
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
         ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
-        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
+        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:02550a9fea3d44e0793fbfeb6d1fbc65fe2e5ee3de327d7432439b45a19a9407",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
         ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
@@ -2310,7 +2310,7 @@
     },
     "p-reels-split-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:8b51f636a6370311c37edab4f6311c625d1ffc8cda84ce125d6302c5a9957b65",
+      "checksum": "sha256:ef2bd7420cdfe8e9fa69381892c66aff36db135f28b53272504b102830d58c02",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -2426,7 +2426,7 @@
         ".hub/c-eval-runner/LEARNINGS.md": "sha256:6c18b39cc20e1a60e5ffd4803558b6eeb333c4b97d044c6940f37318637f8eb2",
         ".hub/c-eval-runner/SKILL.md": "sha256:c734a00b97306d658a8ef7878c39a2f4b10a3d05561663f14a6886662f2faa60",
         ".hub/c-eval-runner/scripts/eval-run.sh": "sha256:a5cd2691a73dbcf5c69b3293678590d61ecf4abbd658b28b4f4e9689ee789b92",
-        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:ec48f9e7de1a2cf284495c35495f60818b4d6a7718827fa368c9317d83cd0647",
+        ".hub/c-eval-runner/scripts/eval_run.py": "sha256:02550a9fea3d44e0793fbfeb6d1fbc65fe2e5ee3de327d7432439b45a19a9407",
         ".hub/c-eval-runner/test/golden.sh": "sha256:5e522c2e76ba02f8b7061fc8201143ccb5d23e281eee06fc9ea296c32499ddb8",
         ".hub/c-ffmpeg/LEARNINGS.md": "sha256:df960915a2fa327835229215470b545be112988bacba68e3b1f40ce0fdf02f9d",
         ".hub/c-ffmpeg/SKILL.md": "sha256:c5f517cdad9344f4e9de8b88291bd47fe642bbea459fd1cc929dfe2ba1332662",
