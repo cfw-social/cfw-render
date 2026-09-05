@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-05T12:39:42Z",
+  "generatedAt": "2026-09-05T12:44:21Z",
   "release": null,
   "sourceSha": null,
   "rawBase": null,
@@ -615,7 +615,7 @@
     },
     "p-longform": {
       "version": "1.0.0",
-      "checksum": "sha256:adab8e8dae79ab41a4e280d18a1520086a52bb3633e34020b163f0011191fd70",
+      "checksum": "sha256:d6389fbda38c06beb9b037fb02704a2d46ff567c773b4cc63d368b7e03215c0e",
       "files": [
         ".hub/c-ai-media/LEARNINGS.md",
         ".hub/c-ai-media/SKILL.md",
@@ -802,7 +802,7 @@
         ".hub/c-kie-ai/sync-models.sh": "sha256:7cebecadc903960f2e37f4ac9e00f1919e1b79bc0bbe4c5cc4bbdf695074edda",
         ".hub/c-production/LEARNINGS.md": "sha256:3ac1f2a5de7b61ac81cd04352e4d3e1e2fe656ccaeb645f98e255a05b12fae1b",
         ".hub/c-production/SKILL.md": "sha256:02ecb0a048670330bd758de3b5d53310e2c33c6abd960cbe8d413af8674bcd4b",
-        ".hub/c-reel-premium/SKILL.md": "sha256:4b7545aa0392b1693587c033c7b280caabba1cb71e7b0b07d08912c893585ed8",
+        ".hub/c-reel-premium/SKILL.md": "sha256:3446401955e95ef51a758ab56c180bf8087136be1ed505132bb1deabcec96279",
         ".hub/c-reel-premium/assets/sfx/click.wav": "sha256:4fd295f33b4d942d0e66b92c94da7ac73b28e537ebb0bff351b8902bb6309d89",
         ".hub/c-reel-premium/assets/sfx/impact-punch.wav": "sha256:3e0c9c3e9747a01bf47508a636ae64dc365e9f0fef8ccbf09526d5dc124cb1b3",
         ".hub/c-reel-premium/assets/sfx/impact-sub.wav": "sha256:4a7b8799867e1025b4c9d643d8a1b510664c0dad43a083ea6e22a63775482d83",
@@ -943,7 +943,7 @@
     },
     "p-reels-pip": {
       "version": "1.0.0",
-      "checksum": "sha256:29c7c2d3cde42c96f9e71b30d2c0bbf709f1a7b892dd86d035dda680d4242e60",
+      "checksum": "sha256:0cb95a37bf9be6503a0ad2c385ab9c85c375930f8f853e7ecb3f20b37f9989cd",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1073,7 +1073,7 @@
         ".hub/c-overlay-fx/package-lock.json": "sha256:768439a44b21e2d87b7a97e6dd45cec1b8f3dbe603ec80de449f579aeddfc57d",
         ".hub/c-overlay-fx/package.json": "sha256:e599ff47c4a45741ab76f14c738dfa64f94fb3c50dfde63ba8eede8c146ccf94",
         ".hub/c-overlay-fx/render-overlay.cjs": "sha256:de38807337c425f6c727abb5ac0fa45b9a6b717fbd282f114be7122788da760f",
-        ".hub/c-reel-premium/SKILL.md": "sha256:4b7545aa0392b1693587c033c7b280caabba1cb71e7b0b07d08912c893585ed8",
+        ".hub/c-reel-premium/SKILL.md": "sha256:3446401955e95ef51a758ab56c180bf8087136be1ed505132bb1deabcec96279",
         ".hub/c-reel-premium/assets/sfx/click.wav": "sha256:4fd295f33b4d942d0e66b92c94da7ac73b28e537ebb0bff351b8902bb6309d89",
         ".hub/c-reel-premium/assets/sfx/impact-punch.wav": "sha256:3e0c9c3e9747a01bf47508a636ae64dc365e9f0fef8ccbf09526d5dc124cb1b3",
         ".hub/c-reel-premium/assets/sfx/impact-sub.wav": "sha256:4a7b8799867e1025b4c9d643d8a1b510664c0dad43a083ea6e22a63775482d83",
@@ -1160,7 +1160,7 @@
     },
     "p-reels-spotlight": {
       "version": "1.0.0",
-      "checksum": "sha256:f38ba6506558b1ef255b42cf9ed5d2dcb9cdaf9e3ae0a5849057b97d7f8b9b0a",
+      "checksum": "sha256:7e94deb22ed3154ece5b2c0397269067e29c516228ca5224798fd7998490f378",
       "files": [
         ".hub/c-broll-sync/SCENE-PLAN.md",
         ".hub/c-broll-sync/SKILL.md",
@@ -1307,7 +1307,7 @@
         ".hub/c-overlay-fx/package-lock.json": "sha256:768439a44b21e2d87b7a97e6dd45cec1b8f3dbe603ec80de449f579aeddfc57d",
         ".hub/c-overlay-fx/package.json": "sha256:e599ff47c4a45741ab76f14c738dfa64f94fb3c50dfde63ba8eede8c146ccf94",
         ".hub/c-overlay-fx/render-overlay.cjs": "sha256:de38807337c425f6c727abb5ac0fa45b9a6b717fbd282f114be7122788da760f",
-        ".hub/c-reel-premium/SKILL.md": "sha256:4b7545aa0392b1693587c033c7b280caabba1cb71e7b0b07d08912c893585ed8",
+        ".hub/c-reel-premium/SKILL.md": "sha256:3446401955e95ef51a758ab56c180bf8087136be1ed505132bb1deabcec96279",
         ".hub/c-reel-premium/assets/sfx/click.wav": "sha256:4fd295f33b4d942d0e66b92c94da7ac73b28e537ebb0bff351b8902bb6309d89",
         ".hub/c-reel-premium/assets/sfx/impact-punch.wav": "sha256:3e0c9c3e9747a01bf47508a636ae64dc365e9f0fef8ccbf09526d5dc124cb1b3",
         ".hub/c-reel-premium/assets/sfx/impact-sub.wav": "sha256:4a7b8799867e1025b4c9d643d8a1b510664c0dad43a083ea6e22a63775482d83",
@@ -1408,7 +1408,7 @@
     },
     "p-reels-faceless": {
       "version": "1.0.0",
-      "checksum": "sha256:3f096edf70aef143e1f156f743781106a392fd0cdce97ec70d4fd5d53c96fb69",
+      "checksum": "sha256:37d56346eae2d7c1cfe1895e19589deebf5b830364e4a13aadf571695c8da9dd",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1549,7 +1549,7 @@
         ".hub/c-overlay-fx/package-lock.json": "sha256:768439a44b21e2d87b7a97e6dd45cec1b8f3dbe603ec80de449f579aeddfc57d",
         ".hub/c-overlay-fx/package.json": "sha256:e599ff47c4a45741ab76f14c738dfa64f94fb3c50dfde63ba8eede8c146ccf94",
         ".hub/c-overlay-fx/render-overlay.cjs": "sha256:de38807337c425f6c727abb5ac0fa45b9a6b717fbd282f114be7122788da760f",
-        ".hub/c-reel-premium/SKILL.md": "sha256:4b7545aa0392b1693587c033c7b280caabba1cb71e7b0b07d08912c893585ed8",
+        ".hub/c-reel-premium/SKILL.md": "sha256:3446401955e95ef51a758ab56c180bf8087136be1ed505132bb1deabcec96279",
         ".hub/c-reel-premium/assets/sfx/click.wav": "sha256:4fd295f33b4d942d0e66b92c94da7ac73b28e537ebb0bff351b8902bb6309d89",
         ".hub/c-reel-premium/assets/sfx/impact-punch.wav": "sha256:3e0c9c3e9747a01bf47508a636ae64dc365e9f0fef8ccbf09526d5dc124cb1b3",
         ".hub/c-reel-premium/assets/sfx/impact-sub.wav": "sha256:4a7b8799867e1025b4c9d643d8a1b510664c0dad43a083ea6e22a63775482d83",
@@ -1613,8 +1613,8 @@
         ".hub/f-hyperframes/scripts/animation-map.mjs": "sha256:44166b4bf1eb7fa03e3a51648df7c70838ccc9af7b63de8de1a7d93b764b28d2",
         ".hub/f-hyperframes/scripts/contrast-report.mjs": "sha256:a916382bd40f197ee0109160241f6e35f317158f281dc643d200eb006dff29be",
         ".hub/f-hyperframes/visual-styles.md": "sha256:d173663b4342d830e46c5cc14a1ffafe6dbc6daca0702b0a451db3ce914693cc",
-        "LEARNINGS.md": "sha256:94b16e6e92bbe9cdb4a976811ce672708f69020e3302ddc3657e0c8f74b3dda1",
-        "SKILL.md": "sha256:7920e1c7aeedb338118711c72cc4975040a9166f9c7db67438e2a68ce4fa7930",
+        "LEARNINGS.md": "sha256:438081a4ab7ae3181b29891e47f57cea34ada0476d0fd65713fad72db30b9dae",
+        "SKILL.md": "sha256:d8e881f064966b03637d30d58dd8550a944f116bfce7713a0c75c280a5a7ff19",
         "acceptance.json": "sha256:9853ff9ddac9fefe91cd5cd389a5c03dffb5a1af7cd5b0d738a6306d9d8d3bac",
         "brand-overrides/README.md": "sha256:ba96dcd60132107bfdb629031252b2b0a53c3f603b9ca3f87336dbec4a36c02c",
         "brand-overrides/b-vasanth/brand.json": "sha256:5b20043e4db5030c8f401c739efd0c30f53689ad65d3ef2c16e7c76e4a4c0a80",
@@ -1641,7 +1641,7 @@
     },
     "p-reels-split": {
       "version": "1.0.0",
-      "checksum": "sha256:f467f2a20c6e4298e03e268aed18a314ef163bdb83fcc594f45c3d229e3c4c2b",
+      "checksum": "sha256:6fd40827455e327ec389b902c0f324ac3674e1cb4ecc298dd7e741c53f314e9f",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1777,7 +1777,7 @@
         ".hub/c-overlay-fx/package-lock.json": "sha256:768439a44b21e2d87b7a97e6dd45cec1b8f3dbe603ec80de449f579aeddfc57d",
         ".hub/c-overlay-fx/package.json": "sha256:e599ff47c4a45741ab76f14c738dfa64f94fb3c50dfde63ba8eede8c146ccf94",
         ".hub/c-overlay-fx/render-overlay.cjs": "sha256:de38807337c425f6c727abb5ac0fa45b9a6b717fbd282f114be7122788da760f",
-        ".hub/c-reel-premium/SKILL.md": "sha256:4b7545aa0392b1693587c033c7b280caabba1cb71e7b0b07d08912c893585ed8",
+        ".hub/c-reel-premium/SKILL.md": "sha256:3446401955e95ef51a758ab56c180bf8087136be1ed505132bb1deabcec96279",
         ".hub/c-reel-premium/assets/sfx/click.wav": "sha256:4fd295f33b4d942d0e66b92c94da7ac73b28e537ebb0bff351b8902bb6309d89",
         ".hub/c-reel-premium/assets/sfx/impact-punch.wav": "sha256:3e0c9c3e9747a01bf47508a636ae64dc365e9f0fef8ccbf09526d5dc124cb1b3",
         ".hub/c-reel-premium/assets/sfx/impact-sub.wav": "sha256:4a7b8799867e1025b4c9d643d8a1b510664c0dad43a083ea6e22a63775482d83",
@@ -1871,7 +1871,7 @@
     },
     "p-reels-pip-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:9c3934936448b56c7e36e18e756a5de5ea984b5c164d0b2435ce09b77297be75",
+      "checksum": "sha256:d4389eb203fe77c24398ac758fbe46b27ba92ec7ebba08c0c9594cdd572dc91e",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -2008,7 +2008,7 @@
         ".hub/c-overlay-fx/package-lock.json": "sha256:768439a44b21e2d87b7a97e6dd45cec1b8f3dbe603ec80de449f579aeddfc57d",
         ".hub/c-overlay-fx/package.json": "sha256:e599ff47c4a45741ab76f14c738dfa64f94fb3c50dfde63ba8eede8c146ccf94",
         ".hub/c-overlay-fx/render-overlay.cjs": "sha256:de38807337c425f6c727abb5ac0fa45b9a6b717fbd282f114be7122788da760f",
-        ".hub/c-reel-premium/SKILL.md": "sha256:4b7545aa0392b1693587c033c7b280caabba1cb71e7b0b07d08912c893585ed8",
+        ".hub/c-reel-premium/SKILL.md": "sha256:3446401955e95ef51a758ab56c180bf8087136be1ed505132bb1deabcec96279",
         ".hub/c-reel-premium/assets/sfx/click.wav": "sha256:4fd295f33b4d942d0e66b92c94da7ac73b28e537ebb0bff351b8902bb6309d89",
         ".hub/c-reel-premium/assets/sfx/impact-punch.wav": "sha256:3e0c9c3e9747a01bf47508a636ae64dc365e9f0fef8ccbf09526d5dc124cb1b3",
         ".hub/c-reel-premium/assets/sfx/impact-sub.wav": "sha256:4a7b8799867e1025b4c9d643d8a1b510664c0dad43a083ea6e22a63775482d83",
@@ -2098,7 +2098,7 @@
     },
     "p-reels-spotlight-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:84c7289a0dfa45e4f02ba1d9b4f720f129ef9f5a3bad2370c444aa16cea11b85",
+      "checksum": "sha256:0fb07f9a8d1f15cafb209be24349e437fcab1e65fa21febd5b41e6ced44f73df",
       "files": [
         ".hub/c-broll-sync/SCENE-PLAN.md",
         ".hub/c-broll-sync/SKILL.md",
@@ -2252,7 +2252,7 @@
         ".hub/c-overlay-fx/package-lock.json": "sha256:768439a44b21e2d87b7a97e6dd45cec1b8f3dbe603ec80de449f579aeddfc57d",
         ".hub/c-overlay-fx/package.json": "sha256:e599ff47c4a45741ab76f14c738dfa64f94fb3c50dfde63ba8eede8c146ccf94",
         ".hub/c-overlay-fx/render-overlay.cjs": "sha256:de38807337c425f6c727abb5ac0fa45b9a6b717fbd282f114be7122788da760f",
-        ".hub/c-reel-premium/SKILL.md": "sha256:4b7545aa0392b1693587c033c7b280caabba1cb71e7b0b07d08912c893585ed8",
+        ".hub/c-reel-premium/SKILL.md": "sha256:3446401955e95ef51a758ab56c180bf8087136be1ed505132bb1deabcec96279",
         ".hub/c-reel-premium/assets/sfx/click.wav": "sha256:4fd295f33b4d942d0e66b92c94da7ac73b28e537ebb0bff351b8902bb6309d89",
         ".hub/c-reel-premium/assets/sfx/impact-punch.wav": "sha256:3e0c9c3e9747a01bf47508a636ae64dc365e9f0fef8ccbf09526d5dc124cb1b3",
         ".hub/c-reel-premium/assets/sfx/impact-sub.wav": "sha256:4a7b8799867e1025b4c9d643d8a1b510664c0dad43a083ea6e22a63775482d83",
@@ -2356,7 +2356,7 @@
     },
     "p-reels-split-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:61ea465321b3d52e84d3a2d1321aaee7614140c764946234a1cb6c3d7290e34f",
+      "checksum": "sha256:e602c2e7bc2eaecc28c94ef4a4cffe9178382668ce4792b1ecb7304a122fcc5e",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -2501,7 +2501,7 @@
         ".hub/c-overlay-fx/package-lock.json": "sha256:768439a44b21e2d87b7a97e6dd45cec1b8f3dbe603ec80de449f579aeddfc57d",
         ".hub/c-overlay-fx/package.json": "sha256:e599ff47c4a45741ab76f14c738dfa64f94fb3c50dfde63ba8eede8c146ccf94",
         ".hub/c-overlay-fx/render-overlay.cjs": "sha256:de38807337c425f6c727abb5ac0fa45b9a6b717fbd282f114be7122788da760f",
-        ".hub/c-reel-premium/SKILL.md": "sha256:4b7545aa0392b1693587c033c7b280caabba1cb71e7b0b07d08912c893585ed8",
+        ".hub/c-reel-premium/SKILL.md": "sha256:3446401955e95ef51a758ab56c180bf8087136be1ed505132bb1deabcec96279",
         ".hub/c-reel-premium/assets/sfx/click.wav": "sha256:4fd295f33b4d942d0e66b92c94da7ac73b28e537ebb0bff351b8902bb6309d89",
         ".hub/c-reel-premium/assets/sfx/impact-punch.wav": "sha256:3e0c9c3e9747a01bf47508a636ae64dc365e9f0fef8ccbf09526d5dc124cb1b3",
         ".hub/c-reel-premium/assets/sfx/impact-sub.wav": "sha256:4a7b8799867e1025b4c9d643d8a1b510664c0dad43a083ea6e22a63775482d83",

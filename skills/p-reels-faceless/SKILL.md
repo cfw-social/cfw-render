@@ -708,6 +708,9 @@ WORDS_JSON="$W/vo-words.json"
 
 # Run c-reel-premium Steps P1–P4 (follow its SKILL.md)
 # Key defaults for this format:
+#   CAP_TOP=1450  (LOWER THIRD — the motion cards fill the centre down to ≈1330 px; the
+#                  c-reel-premium default 1180 overlaps checklist/flow/CTA card rows and
+#                  fails QA check (a) "no overlapping text". Certified 2026-09-05, CFW-131.)
 #   CAPTIONS=on   (TTS-over-graphics; captions are the primary text layer; ON by default)
 #   SFX=on        (whoosh/impact/riser cues lift beat transitions)
 #   GRADE=<planner picks from plan.json, or warm-amber default>
