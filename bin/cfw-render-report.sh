@@ -21,7 +21,11 @@
 #       lands in Reviews with per-platform copy instead of "No caption". A
 #       missing platform falls back server-side (order copy → intent); an
 #       absent file logs a WARNING (the Director should always write one).
-#   cfw-render-report.sh block <reason>
+#   cfw-render-report.sh block <reason> [needs]
+#       CFW-146: optional `needs` — ingredient | decision | capacity — tells the
+#       owner's order card WHICH action to offer ("Add a photo or clip" /
+#       "Answer" / just Retry). Omit it for a plain struggle; the card then reads
+#       "Struggled at <step>" with Retry.
 set -u
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -167,13 +171,22 @@ print(json.dumps(d))
     ;;
 
   block)
-    reason="${1:-}"
+    reason="${1:-}"; needs="${2:-}"
     if [[ -z "$reason" ]]; then
-      echo "cfw-render-report: usage: block <reason>" >&2
+      echo "cfw-render-report: usage: block <reason> [ingredient|decision|capacity]" >&2
       exit 2
     fi
-    args="$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":sys.argv[3]}))' \
-      "$CFW_ORDER_ID" "$CFW_WORKER_ID" "$reason")"
+    if [[ -n "$needs" && "$needs" != "ingredient" && "$needs" != "decision" && "$needs" != "capacity" ]]; then
+      echo "cfw-render-report: block — needs must be ingredient|decision|capacity (got '$needs')" >&2
+      exit 2
+    fi
+    args="$(python3 -c '
+import json, sys
+d = {"orderId": sys.argv[1], "workerId": sys.argv[2], "reason": sys.argv[3]}
+if sys.argv[4]:
+    d["needs"] = sys.argv[4]
+print(json.dumps(d))
+' "$CFW_ORDER_ID" "$CFW_WORKER_ID" "$reason" "$needs")"
     resp="$(cr_mcp_call block_render_order "$args")" || { echo "cfw-render-report: block_render_order failed" >&2; exit 1; }
     echo "block" > .outcome
     echo "$resp"
