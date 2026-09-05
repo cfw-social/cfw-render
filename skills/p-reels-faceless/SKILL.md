@@ -830,7 +830,41 @@ echo "cover.png extracted at ${COVER_AT}s → prepended 0.4s"
 ```
 
 Final deliverable: `faceless-reel-with-cover.mp4` (feed thumbnail = money shot) + `cover.png`
-(explicit Output thumbnail).
+(explicit Output thumbnail — deliver it SECOND in `cfw-render-report.sh complete <reel>.mp4 <cover>.png`;
+it becomes the poster the owner sees in Reviews before tap-to-play).
+
+### 13.5 — Captions (per platform) → `final/captions.json` (MANDATORY — CFW-136)
+
+A reel with no caption cannot be published: Reviews shows "No caption" and every
+channel refuses it at approval. Write ONE caption per platform in the order's
+`targets`, in the brand voice (`order.json` → `brand.brief`), from the script you
+just voiced — same hook, same numbers, same CTA keyword; never new claims. If
+`order.json` carries a `copy` block (hook / captions / cta), keep its hook + CTA
+verbatim.
+
+```bash
+mkdir -p final
+cat > final/captions.json <<'JSON'
+{
+  "instagram": "<hook line + 2–4 short lines + CTA + 3–8 hashtags at the end, ≤ 2200>",
+  "tiktok":    "<punchy, 2–5 lines, 1–5 hashtags, ≤ 2200>",
+  "youtube":   "<TITLE ≤ 100 chars: [result] + [method/tool]>\n\n<2–4 line description + CTA + hashtags>",
+  "facebook":  "<the Instagram body without the long hashtag block>",
+  "threads":   "<≤ 500 chars, conversational, ≤ 2 hashtags>",
+  "twitter":   "<≤ 280 chars, hook-first, no hashtags>"
+}
+JSON
+python3 - <<'PY'
+import json
+d = json.load(open("final/captions.json"))
+assert d and all(isinstance(v, str) and v.strip() for v in d.values()), "blank caption — every platform needs real copy"
+assert len(d.get("threads", "x")) <= 500 and len(d.get("twitter", "x")) <= 280, "threads ≤ 500 / twitter ≤ 280"
+print("captions OK:", ", ".join(sorted(d)))
+PY
+```
+
+`cfw-render-report.sh complete` picks `final/captions.json` up automatically and
+sends it as `captions`; the dish then lands in Reviews with per-platform copy.
 
 ---
 
