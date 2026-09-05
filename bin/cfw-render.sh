@@ -219,6 +219,12 @@ print(tpl)
 
   cr_event "$order_id" stage fetch-assets "Gathering ingredients" 5
 
+  # [CFW-146] Pulse every 60 s for as long as this Director runs. Started
+  # BEFORE the subprocess and stopped in every exit path below (normal,
+  # watchdog kill, crash) so no heartbeat can land after the order is terminal.
+  local heartbeat_pid
+  heartbeat_pid="$(cr_heartbeat_start "$order_id")"
+
   local ts out_file model_state_file
   ts="$(date +%s)"
   out_file="$RUNS_DIR/${order_id}-${ts}.out"
@@ -258,6 +264,9 @@ print(tpl)
   wait "$director_pid"
   local director_exit=$?
   kill "$watchdog_pid" 2>/dev/null; wait "$watchdog_pid" 2>/dev/null
+  # Stop the pulse before ANY outcome is reported — a heartbeat after
+  # complete/block would be rejected ("order not claimed by this worker").
+  cr_heartbeat_stop "$heartbeat_pid"
 
   local outcome_file="$order_dir/.outcome" outcome model_served=""
   [[ -f "$model_state_file" ]] && model_served="$(cat "$model_state_file" 2>/dev/null)"
@@ -272,7 +281,7 @@ print(tpl)
     fi
   elif (( director_exit == 143 || director_exit == 137 )); then
     outcome="timeout"
-    cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"render exceeded the time budget"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
+    cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"render exceeded the time budget","needs":"capacity"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
       || cr_log "order $order_id — block_render_order (timeout) call failed; lease expiry is the backstop"
   else
     outcome="crashed"
@@ -291,7 +300,9 @@ spawn_pids=()
 slot=0
 while (( slot < CFW_RENDER_CONCURRENCY )); do
   slot=$(( slot + 1 ))
-  claim_resp="$(cr_mcp_call claim_render_order "$(python3 -c 'import json,sys; print(json.dumps({"workerId":sys.argv[1]}))' "$CFW_WORKER_ID")")" || {
+  # [CFW-146] the claim carries the renderer identity so the owner's order card
+  # can say "Working on your Mac" / "on the box" instead of a bare "Cooking".
+  claim_resp="$(cr_mcp_call claim_render_order "$(python3 -c 'import json,sys; print(json.dumps({"workerId":sys.argv[1],"renderer":{"kind":sys.argv[2],"label":sys.argv[3]}}))' "$CFW_WORKER_ID" "$CFW_RENDER_RENDERER_KIND" "$(hostname -s 2>/dev/null || hostname)")")" || {
     cr_log "claim_render_order call failed — stopping this tick's claim loop"
     break
   }
