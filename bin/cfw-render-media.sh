@@ -21,7 +21,7 @@
 # design. Run this from the Hermes gateway env / an operator shell BEFORE
 # submitting the order, not from inside a Director run.
 #
-# Usage:  cfw-render-media.sh [--kind image|video] [--filename NAME] [--note TEXT] <file-or-url> [...]
+# Usage:  cfw-render-media.sh [--kind image|video|doc] [--filename NAME] [--note TEXT] <file-or-url> [...]
 set -uo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -39,7 +39,7 @@ while [ $# -gt 0 ]; do
     *)          INPUTS+=("$1"); shift;;
   esac
 done
-[ "${#INPUTS[@]}" -ge 1 ] || { echo "cfw-render-media: usage: [--kind image|video] [--filename NAME] [--note TEXT] <file-or-url> [...]" >&2; exit 2; }
+[ "${#INPUTS[@]}" -ge 1 ] || { echo "cfw-render-media: usage: [--kind image|video|doc] [--filename NAME] [--note TEXT] <file-or-url> [...]" >&2; exit 2; }
 : "${CFW_API_BASE:?cfw-render-media: CFW_API_BASE not set in env}"
 if [ -z "${CFW_BRAND_API_KEY:-}" ]; then
   echo "cfw-render-media: CFW_BRAND_API_KEY (a brand cfw_… API key) is required — upload_media is a BRAND capability; the render worker key cannot upload ingredients (outputs-only via cfw-render-upload.sh)." >&2
@@ -51,10 +51,11 @@ mime_for() {
   case "$(printf '%s' "${1##*.}" | tr '[:upper:]' '[:lower:]')" in
     mp4) echo video/mp4 ;;  mov) echo video/quicktime ;;  webm) echo video/webm ;;
     png) echo image/png ;;  jpg|jpeg) echo image/jpeg ;;  gif) echo image/gif ;;  webp) echo image/webp ;;
+    pdf) echo application/pdf ;;   # CFW-135: kind doc (≤50 MB)
     *) echo "" ;;
   esac
 }
-kind_for_mime() { case "$1" in video/*) echo video;; image/*) echo image;; *) echo "";; esac; }
+kind_for_mime() { case "$1" in video/*) echo video;; image/*) echo image;; application/pdf) echo doc;; *) echo "";; esac; }
 
 api_post() { # <json-body> → response body on stdout; non-zero on HTTP failure
   curl -fsS -X POST "${CFW_API_BASE%/}/api/v1/media/upload-media" \
@@ -73,7 +74,7 @@ upload_one() {
   name="${FILENAME:-$(basename "${src%%\?*}")}"
   mime="$(mime_for "$name")"
   kind="${KIND:-$(kind_for_mime "$mime")}"
-  if [ -z "$kind" ]; then echo "cfw-render-media: cannot infer --kind for $src (image/* or video/* extensions only)" >&2; echo ERROR > "$out"; return 1; fi
+  if [ -z "$kind" ]; then echo "cfw-render-media: cannot infer --kind for $src (image/*, video/* or .pdf extensions only)" >&2; echo ERROR > "$out"; return 1; fi
   case "$src" in
     http://*|https://*)
       resp="$(api_post "$(jbody "url=$src" "kind=$kind" "filename=$name" "mimeType=$mime" "note=$NOTE")" 2>&1)" \
