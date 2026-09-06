@@ -585,6 +585,90 @@ fi
 
 kill "$fleet_pid" 2>/dev/null; wait "$fleet_pid" 2>/dev/null
 
+echo "=== Case P: toolchain preflight refuses to claim on a half-provisioned host ==="
+# CFW-199 / CFW-188. hst had NO ImageMagick and was one `systemctl enable` from
+# claiming production orders it could not finish. The drainer must now refuse.
+pf_dir="$(mktemp -d)"; mkdir -p "$pf_dir/mockstate"
+order_fixture order-preflight-1 brand-1 video > "$pf_dir/queue.json"
+pf_port=$((MOCK_PORT_BASE + 95))
+pf_pid="$(start_mock "$pf_dir/queue.json" "$pf_dir/mockstate" "$pf_port")"
+
+# A PATH shim that hides exactly ONE required tool — ImageMagick — and passes
+# everything else through unchanged. That is the shape of the CFW-188 box: fully
+# provisioned except for the one binary the recipes need.
+pf_shim="$(mktemp -d)"
+pf_full_path="$REPO_DIR/bin:$FAKE_BIN:$PATH"
+IFS=':' read -ra pf_path_dirs <<< "$pf_full_path"
+for pf_d in "${pf_path_dirs[@]}"; do
+  [[ -n "$pf_d" && -d "$pf_d" ]] || continue
+  for pf_f in "$pf_d"/*; do
+    [[ -f "$pf_f" || -L "$pf_f" ]] || continue
+    [[ -x "$pf_f" ]] || continue
+    pf_b="${pf_f##*/}"
+    [[ "$pf_b" == "magick" || "$pf_b" == "convert" ]] && continue
+    [[ -e "$pf_shim/$pf_b" ]] || ln -s "$pf_f" "$pf_shim/$pf_b" 2>/dev/null
+  done
+done
+
+pf_out=""; pf_exit=0
+pf_run() { # pf_run <PATH> — sets $pf_out and $pf_exit (NOT via command
+           # substitution: that is a subshell and $pf_out would not survive)
+  pf_out="$(
+    export PATH="$1"
+    export CFW_API_BASE="http://127.0.0.1:$pf_port"
+    export CFW_RENDER_WORKER_KEY="cfw_render_test0000000000000000"
+    export CFW_RENDER_ENV="/nonexistent-cfw-render-env-for-tests"
+    export CFW_RENDER_STATE_DIR="$pf_dir/cr-state"
+    export CFW_RENDER_SCRATCH="$pf_dir/cr-scratch"
+    export CFW_RENDER_SKILLS_DIR="$pf_dir/skills"
+    export CFW_RENDER_OLLAMA_KEYS_FILE="$OLLAMA_KEYS_FIXTURE"
+    export CFW_RENDER_DIRECTOR_CMD="$TEST_DIR/fake-director.sh"
+    "$REPO_DIR/bin/cfw-render.sh" 2>&1
+  )"
+  pf_exit=$?
+}
+
+pf_run "$pf_shim"
+if [[ "$pf_exit" != "0" ]]; then
+  pass "preflight: a host missing ImageMagick exits non-zero"
+else
+  fail "preflight: exit code" "expected non-zero on a host without 'magick', got 0"
+fi
+if echo "$pf_out" | grep -q "magick"; then
+  pass "preflight: names the missing tool"
+else
+  fail "preflight: message" "failure output does not name 'magick': $pf_out"
+fi
+if echo "$pf_out" | grep -qiE "brew install imagemagick|apt-get install -y imagemagick"; then
+  pass "preflight: names how to install it"
+else
+  fail "preflight: install hint" "no install command in the failure output"
+fi
+# NB: `grep -c ... || echo 0` double-prints when the file exists but has no
+# match (grep exits 1 having already printed "0") — the harness hit that before.
+pf_claims=0
+if [[ -f "$pf_dir/mockstate/calls.jsonl" ]]; then
+  pf_claims="$(grep -c '"tool": "claim_render_order"' "$pf_dir/mockstate/calls.jsonl")" || pf_claims=0
+fi
+if [[ "$pf_claims" == "0" ]]; then
+  pass "preflight: claimed NOTHING (the queued order is untouched)"
+else
+  fail "preflight: claimed work" "expected 0 claim_render_order calls, got $pf_claims"
+fi
+
+# Same host, full PATH restored: the drainer runs normally. Proves the gate is
+# the missing tool, not the shim.
+pf_run "$REPO_DIR/bin:$FAKE_BIN:$PATH"
+pf_ok_exit="$pf_exit"
+if [[ "$pf_ok_exit" == "0" ]]; then
+  pass "preflight: a fully-provisioned host still runs"
+else
+  fail "preflight: false negative" "expected 0 on a complete toolchain, got $pf_ok_exit"
+fi
+
+kill "$pf_pid" 2>/dev/null; wait "$pf_pid" 2>/dev/null
+rm -rf "$pf_shim"
+
 echo ""
 echo "=== Lint ==="
 if "$REPO_DIR/scripts/lint.sh"; then

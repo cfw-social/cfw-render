@@ -111,6 +111,14 @@ except Exception:
     fi
   fi
 
+  # [CFW-199] Toolchain preflight is part of --dry too, so a box is validated
+  # before anyone enables the timer. The old --dry checked config, credentials
+  # and a live tools/list but NOT whether this host owns the tools the recipes
+  # shell out to — which is how CFW-188 found hst with no ImageMagick at all,
+  # one `systemctl enable` from claiming orders it could not finish.
+  echo ""
+  cr_preflight || pass=0
+
   echo "-------------------------------------"
   if (( pass )); then echo "RESULT: PASS"; exit 0; else echo "RESULT: FAIL"; exit 1; fi
 fi
@@ -118,6 +126,17 @@ fi
 # ---------------------------------------------------------------------------
 # Real tick.
 # ---------------------------------------------------------------------------
+
+# [CFW-199] THE GATE. Before the tick lock, before the claim loop, before a
+# single tools/call: prove this host can finish a render. `claim_render_order`
+# claims fleet-wide, oldest-first, across every brand — a half-provisioned box
+# that starts here does not fail quietly, it takes the owner's real orders and
+# burns them into failures. A missing tool is fatal, never a warning.
+if ! cr_preflight --quiet; then
+  cr_log "preflight FAILED — refusing to claim any order on this host"
+  exit 1
+fi
+
 cr_tick_lock_acquire || { cr_log "tick lock held by another run — quiet no-op"; exit 0; }
 trap 'cr_tick_lock_release' EXIT
 

@@ -634,3 +634,196 @@ cr_tick_lock_release() {
   rm -rf "$dir/tick.lock" 2>/dev/null
   return 0
 }
+
+# ===========================================================================
+# TOOLCHAIN PREFLIGHT (CFW-199)
+# ===========================================================================
+#
+# WHY THIS EXISTS
+# CFW-188 found hst with **no ImageMagick at all**. `cfw-render.timer` was one
+# `systemctl enable` away from claiming production orders on a box that could
+# not finish a single one — every claimed order would have burned its attempt,
+# blocked, and shown the owner a failure. Nothing in the install path or the
+# drainer's startup checked. `--dry` checks config, credentials and a live
+# tools/list; it does NOT check that the recipes' toolchain is on the box.
+#
+# THE RULE: never claim an order this host cannot finish. A missing tool is a
+# hard FAIL with a named install command and a NON-ZERO exit — the drainer
+# refuses to start rather than claiming work it will burn.
+#
+# `cr_preflight` is called from three places: `install/install.sh` (before it
+# reports success), `bin/cfw-render.sh` (before the claim loop AND inside
+# `--dry`), and `bin/cfw-render-preflight.sh` (a human can run it alone).
+# ---------------------------------------------------------------------------
+
+# Binaries every recipe path needs, whatever it renders.
+#   curl     — the MCP transport (claim/event/complete/block)
+#   python3  — every JSON hop in this repo (no jq on the box)
+#   node/npx — hyperframes CLI, the HTML compositor
+#   ffmpeg   — every video recipe; ffprobe is how durations are read
+#   magick   — ImageMagick 7 verb form. The recipes call `magick`, not
+#              `convert`; an IM6 box with only `convert` fails at render time,
+#              which is exactly what CFW-188 had to shim by hand.
+_CR_REQUIRED_BINS=(curl python3 node npx ffmpeg ffprobe magick)
+
+# Install hint for one missing tool on this OS. Never a silent fallback — the
+# operator gets the exact command.
+cr_preflight_hint() { # cr_preflight_hint <tool>
+  local tool="$1" os
+  os="$(uname -s 2>/dev/null || echo unknown)"
+  case "$tool" in
+    curl)            [[ "$os" == Darwin ]] && echo "brew install curl" || echo "apt-get install -y curl" ;;
+    python3)         [[ "$os" == Darwin ]] && echo "brew install python@3" || echo "apt-get install -y python3" ;;
+    node|npx)        [[ "$os" == Darwin ]] && echo "brew install node" || echo "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs" ;;
+    ffmpeg|ffprobe)  [[ "$os" == Darwin ]] && echo "brew install ffmpeg" || echo "apt-get install -y ffmpeg" ;;
+    magick)          [[ "$os" == Darwin ]] && echo "brew install imagemagick" || echo "apt-get install -y imagemagick   (IM6 ships only 'convert' — then add the IM7 verb shim: printf '#!/bin/sh\\nexec convert \"\$@\"\\n' >/usr/local/bin/magick && chmod +x /usr/local/bin/magick)" ;;
+    claude)          echo "npm i -g @anthropic-ai/claude-code   then authenticate on THIS host: claude auth login   (verify: claude auth status)" ;;
+    chromium)        [[ "$os" == Darwin ]] && echo "npx playwright install chromium" || echo "npx playwright install --with-deps chromium   (or: apt-get install -y chromium)" ;;
+    fonts)           [[ "$os" == Darwin ]] && echo "brew install fontconfig" || echo "apt-get install -y fontconfig fonts-dejavu-core fonts-liberation2 fonts-noto-core" ;;
+    *)               echo "install $tool and put it on PATH" ;;
+  esac
+}
+
+# Resolve a Chromium/headless-shell binary for the HTML compositor. Playwright
+# caches under PLAYWRIGHT_BROWSERS_PATH or the per-OS default; a system Chrome
+# also counts. Prints the path on success.
+cr_preflight_chromium() {
+  local root exe b
+  for root in "${PLAYWRIGHT_BROWSERS_PATH:-}" \
+              "$HOME/Library/Caches/ms-playwright" \
+              "$HOME/.cache/ms-playwright" \
+              "/root/.cache/ms-playwright" \
+              "/ms-playwright"; do
+    [[ -n "$root" && -d "$root" ]] || continue
+    exe="$(find "$root" -maxdepth 8 \
+             \( -name 'headless_shell' -o -name 'chrome-headless-shell' -o -name 'chrome' -o -name 'Chromium' \) \
+             -type f -perm -u+x 2>/dev/null | head -1)"
+    [[ -n "$exe" ]] && { printf '%s' "$exe"; return 0; }
+  done
+  for b in chromium chromium-browser google-chrome google-chrome-stable; do
+    if command -v "$b" >/dev/null 2>&1; then command -v "$b"; return 0; fi
+  done
+  return 1
+}
+
+# Fonts. Deliberately checks the GENERIC families, not the brand families the
+# recipes name (Inter/Oswald/JetBrains Mono/…): the HyperFrames compiler embeds
+# those itself, and the Mac drainer — which has cooked real dishes — has none of
+# them installed system-wide. Requiring them would be a false FAIL. What DOES
+# break a render is a host with no usable font at all: headless Chromium and
+# ImageMagick then draw blank or tofu text and the QA gate fails every time.
+# Prints the resolved sans font on success.
+cr_preflight_fonts() {
+  local fam file
+  if command -v fc-match >/dev/null 2>&1; then
+    local sans=""
+    for fam in sans-serif serif monospace; do
+      file="$(fc-match -f '%{file}' "$fam" 2>/dev/null)"
+      [[ -n "$file" && -r "$file" ]] || return 1
+      [[ "$fam" == "sans-serif" ]] && sans="$file"
+    done
+    printf '%s' "$sans"
+    return 0
+  fi
+  # No fontconfig: macOS still has Core Text system fonts, which Chromium uses.
+  if [[ "$(uname -s 2>/dev/null)" == "Darwin" && -d /System/Library/Fonts ]]; then
+    file="$(find /System/Library/Fonts -maxdepth 1 -type f \( -name '*.ttf' -o -name '*.ttc' -o -name '*.otf' \) 2>/dev/null | head -1)"
+    [[ -n "$file" ]] && { printf '%s (no fontconfig; Core Text)' "$file"; return 0; }
+  fi
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# cr_preflight — the gate. Prints one row per check; returns 0 iff every
+# required check PASSes. Callers MUST treat a non-zero return as fatal.
+#
+# `--quiet` prints only failures (used on the drainer's hot path, so a healthy
+# 15-minute tick stays silent).
+# ---------------------------------------------------------------------------
+cr_preflight() {
+  local quiet=0
+  [[ "${1:-}" == "--quiet" ]] && quiet=1
+
+  local ok=1
+  local -a missing=()
+  _cr_pf_row() { # _cr_pf_row <ok:0|1> <label> <detail>
+    if [[ "$1" == "0" ]]; then
+      (( quiet )) || printf '  PASS  %-22s %s\n' "$2" "$3"
+    else
+      printf '  FAIL  %-22s %s\n' "$2" "$3" >&2
+      ok=0
+    fi
+  }
+
+  (( quiet )) || { echo "cfw-render preflight — toolchain"; echo "-------------------------------------"; }
+
+  local b path
+  for b in "${_CR_REQUIRED_BINS[@]}"; do
+    if path="$(command -v "$b" 2>/dev/null)"; then
+      _cr_pf_row 0 "binary:$b" "$path"
+    else
+      _cr_pf_row 1 "binary:$b" "not on PATH"
+      missing+=("$b")
+    fi
+  done
+
+  # ImageMagick 7 verb form specifically — an IM6-only box has `convert` but the
+  # recipes shell out to `magick` (CFW-188's exact hole).
+  if command -v magick >/dev/null 2>&1; then
+    local imv
+    imv="$(magick -version 2>/dev/null | head -1)"
+    _cr_pf_row 0 "imagemagick" "${imv:-present}"
+  elif command -v convert >/dev/null 2>&1; then
+    _cr_pf_row 1 "imagemagick" "only ImageMagick 6 'convert' found — the recipes call 'magick'"
+  fi
+
+  # The Director. Skipped when a stub Director is configured (tests / dev).
+  if [[ -n "${CFW_RENDER_DIRECTOR_CMD:-}" ]]; then
+    (( quiet )) || printf '  SKIP  %-22s %s\n' "cli:claude" "CFW_RENDER_DIRECTOR_CMD is set — stub Director"
+  elif command -v claude >/dev/null 2>&1; then
+    local cv
+    cv="$(claude --version 2>/dev/null | head -1)"
+    if [[ -n "$cv" ]]; then
+      _cr_pf_row 0 "cli:claude" "$cv"
+    else
+      _cr_pf_row 1 "cli:claude" "found at $(command -v claude) but 'claude --version' produced nothing"
+      missing+=("claude")
+    fi
+  else
+    _cr_pf_row 1 "cli:claude" "not on PATH — the render Director cannot run"
+    missing+=("claude")
+  fi
+
+  if path="$(cr_preflight_chromium)"; then
+    _cr_pf_row 0 "chromium" "$path"
+  else
+    _cr_pf_row 1 "chromium" "no Playwright/Chromium browser found — HTML compositions cannot render"
+    missing+=("chromium")
+  fi
+
+  if path="$(cr_preflight_fonts)"; then
+    _cr_pf_row 0 "fonts" "$path"
+  else
+    _cr_pf_row 1 "fonts" "no usable system font — text renders blank/tofu and every QA gate fails"
+    missing+=("fonts")
+  fi
+
+  if (( ok )); then
+    (( quiet )) || { echo "-------------------------------------"; echo "PREFLIGHT: PASS"; }
+    return 0
+  fi
+
+  {
+    echo ""
+    echo "PREFLIGHT: FAIL — this host cannot finish a render. Refusing to continue."
+    echo "cfw-render claims orders fleet-wide; starting here would claim work and burn it."
+    echo ""
+    echo "Missing:"
+    for b in "${missing[@]}"; do
+      printf '  - %-10s %s\n' "$b" "$(cr_preflight_hint "$b")"
+    done
+    echo ""
+    echo "Re-run 'bin/cfw-render-preflight.sh' until it prints PASS, then start the timer."
+  } >&2
+  return 1
+}
