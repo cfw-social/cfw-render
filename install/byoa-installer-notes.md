@@ -45,3 +45,12 @@ BYOA uses a brand- or user-scoped `RenderWorkerKey` (not the global fleet
 claim — this is server-side work (CFW-V2-062 + the user-scope extension) and is **not**
 part of this cfw-render repo change. A BYOA worker install never touches personas,
 brand DNA, or the full brand MCP surface — it is the narrow render worker only.
+
+## Troubleshooting: `FAIL binary:claude not on PATH` (macOS)
+
+See `docs/deploy.md` §4 for the full note. Short version: launchd never
+inherits your login shell's PATH, so `com.cfw.render.plist`'s
+`EnvironmentVariables.PATH` is the *only* PATH the scheduled tick sees. It now
+prepends `~/.local/bin` and `~/bin` (CFW-279) so a native/user-level `claude`
+install resolves — but an already-installed box needs `install.sh` re-run (or
+the plist manually re-rendered + reloaded) to pick up the fix.

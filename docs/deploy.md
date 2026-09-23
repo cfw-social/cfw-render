@@ -69,6 +69,18 @@ All rows must PASS before enabling the timer. `install.sh` already runs this
 at the end of installation and refuses to leave you in a broken state
 silently (it exits non-zero on FAIL).
 
+**macOS BYOA troubleshooting — `FAIL binary:claude not on PATH`:** launchd
+agents never source a login shell, so the LaunchAgent's PATH is exactly the
+literal string baked into `com.cfw.render.plist` at install time (plus
+`~/.local/bin` and `~/bin`, prepended since CFW-279). If `--dry` still
+reports this FAIL on a customer Mac, confirm `claude` actually resolves at
+`~/.local/bin/claude` (or wherever `which claude` points in the customer's
+normal shell), then re-run `install/install.sh` to regenerate
+`~/Library/LaunchAgents/com.cfw.render.plist` from the current template — an
+already-installed plist is a static copy and won't pick up a template change
+until the installer is re-run (or you `launchctl bootout` + `bootstrap` after
+manually re-rendering it).
+
 ## 5. Enable the timer
 
 - Linux (systemd): `systemctl enable --now cfw-render.timer`
