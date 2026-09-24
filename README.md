@@ -123,6 +123,165 @@ retired 2026-09-01).
   needs that cron. **Retiring it on the live box `hst` is a human, supervised
   step** (not done by this repo change); see `docs/deploy.md`.
 
+## Toolchain preflight (CFW-199)
+
+`cfw-render` shells out to a real toolchain — ffmpeg, ImageMagick 7, headless
+Chromium, node/npx (hyperframes), python3 and the `claude` CLI. **If any of it
+is missing, the drainer must not start.** `claim_render_order` claims
+**fleet-wide, oldest-first, across every brand**, so a half-provisioned host
+does not fail quietly: it takes the owner's real orders and burns them into
+failures.
+
+This is not hypothetical. **CFW-188 found `hst` with no ImageMagick at all**,
+installed and unit-ready, one `systemctl enable cfw-render.timer` away from
+doing exactly that. Nothing in the install path or the drainer's startup
+checked; `--dry` validated config, credentials and a live `tools/list`, but
+never the tools the recipes actually run.
+
+```bash
+bin/cfw-render-preflight.sh            # full report
+bin/cfw-render-preflight.sh --quiet    # only failures
+```
+
+Exit **0** = every required tool is present. Exit **1** = at least one is
+missing, and the failure block names each one **and the command that installs
+it on this OS**. It claims nothing, calls no API, costs nothing.
+
+The same gate runs automatically in three places:
+
+| where | when |
+|---|---|
+| `install/install.sh` | **first**, before anything is copied or a unit is written — a failed preflight aborts the install |
+| `bin/cfw-render.sh` (real tick) | before the tick lock and before the claim loop — a failed preflight logs and exits **1** having claimed nothing |
+| `bin/cfw-render.sh --dry` | as part of the validation report |
+
+**What is checked, and why that list:**
+
+- `curl` · `python3` · `node` · `npx` · `ffmpeg` · `ffprobe` — every recipe path
+  needs all six (no `jq` on the box, so every JSON hop is `python3`).
+- **`magick`** — ImageMagick **7** verb form. The recipes call `magick`, not
+  `convert`. A box with only IM6 fails at render time; the preflight says so
+  explicitly and prints the shim.
+- **`claude`** — the render Director. Skipped when `CFW_RENDER_DIRECTOR_CMD` is
+  set (tests / a stub Director). Note the binary being present is **not** proof
+  it is authenticated — after installing, run `claude auth login` on that host
+  and confirm with `claude auth status` (this was the whole CFW-188 gate).
+- **Chromium** — resolved from `PLAYWRIGHT_BROWSERS_PATH`, the per-OS
+  `ms-playwright` cache, or a system Chrome/Chromium. HTML compositions cannot
+  render without it.
+- **Fonts** — deliberately the *generic* families (`sans-serif`, `serif`,
+  `monospace`) must resolve to real, readable font files, **not** the brand
+  families the recipes name (Inter, Oswald, JetBrains Mono, Poppins…). The
+  HyperFrames compiler embeds those itself, and the Mac renderer — which has
+  cooked real dishes — has none of them installed system-wide, so requiring
+  them would be a false FAIL. What genuinely breaks a render is a host with
+  **no usable font at all**: Chromium and ImageMagick then draw blank/tofu text
+  and every QA gate fails.
+
+## Bringing up a third renderer (a new machine, start to finish)
+
+Every step is copy-pasteable. Nothing here claims an order until the last line.
+
+**1 — Clone at the pinned commit.** Never `main` by accident; pin what you
+intend to run, and record it.
+
+```bash
+sudo mkdir -p /opt && cd /opt
+sudo git clone https://github.com/cfw-social/cfw-render cfw-render-src
+cd /opt/cfw-render-src
+git fetch --tags origin
+git checkout <PINNED_SHA>          # e.g. the SHA the fleet is already on
+git rev-parse HEAD                 # write this down — it goes in the rollout note
+cat config/skills-version.json     # the recipe closure this checkout carries
+```
+
+**2 — Env from the vault, with a FRESH worker id.** The worker key and API base
+live in the vault; never invent them and never print their values.
+
+```bash
+sudo install -m 600 /dev/null /etc/cfw-render.env
+# Copy CFW_API_BASE + CFW_RENDER_WORKER_KEY out of the vault entry for this
+# fleet (~/ecosystem/vault/…), plus any knob overrides. Minimum:
+#   CFW_API_BASE=https://app.cfw.social
+#   CFW_RENDER_WORKER_KEY=cfw_render_…      # this machine's OWN key
+#   CFW_RENDER_MODE=server                   # or byoa for a customer box
+#   CFW_RENDER_TIMEOUT_VIDEO=3600
+sudo chmod 600 /etc/cfw-render.env
+```
+
+> **The worker id must be fresh.** It is a per-install UUID at
+> `$CFW_RENDER_STATE_DIR/worker-id`, seeded once by `install.sh`. **Do not copy
+> another machine's `worker-id` file** — two hosts sharing one id defeat
+> CFW-V2-068's per-`workerId` circuit breaker and make "which box burned this
+> order?" unanswerable. If you cloned a disk, delete the file and let the
+> installer re-seed it:
+>
+> ```bash
+> sudo rm -f "$HOME/.cfw-render/worker-id"      # only on a cloned/imaged host
+> ```
+
+**3 — Preflight.** Before installing anything, before enabling anything.
+
+```bash
+/opt/cfw-render-src/bin/cfw-render-preflight.sh
+```
+
+Fix everything it names and re-run until it prints `PREFLIGHT: PASS`. Then
+authenticate the Director on **this** host — the preflight proves the binary
+exists, not that it can talk to Anthropic:
+
+```bash
+claude auth login && claude auth status
+```
+
+**4 — Install.** The installer re-runs the preflight itself and aborts if it
+fails, so a half-provisioned box cannot end up looking installed.
+
+```bash
+sudo /opt/cfw-render-src/install/install.sh \
+  --prefix /opt/cfw-render \
+  --env-file /etc/cfw-render.env \
+  --mode server \
+  --user <run-user> \
+  --yes-really
+```
+
+It copies `bin/ lib/ scripts/ skills/ config/`, seeds the worker id, renders the
+systemd units to `/tmp` (macOS: writes the LaunchAgent), and finishes with a
+`--dry` run. **It does not enable the timer.**
+
+**5 — Dry render.** Two gates, in order. `--dry` claims nothing:
+
+```bash
+CFW_RENDER_ENV=/etc/cfw-render.env /opt/cfw-render/bin/cfw-render.sh --dry
+```
+
+Expect `RESULT: PASS` with `live:tools/list  all 4 worker tools present,
+claimed nothing` and `PREFLIGHT: PASS`. Then run the repo's lifecycle suite
+against the mock server — no live services, no real orders:
+
+```bash
+cd /opt/cfw-render-src && test/run-tests.sh
+```
+
+**6 — Start.** Only now, and only after confirming **no other renderer is
+draining the same queue** — the claim is fleet-wide, so two live drainers race
+for the same orders.
+
+```bash
+# Check what else is live first (e.g. the Mac): tmux ls | grep cfw-render-local
+sudo cp /tmp/cfw-render.service.* /etc/systemd/system/cfw-render.service
+sudo cp /tmp/cfw-render.timer.*   /etc/systemd/system/cfw-render.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now cfw-render.timer
+systemctl status cfw-render.timer
+/opt/cfw-render/bin/cfw-render-ctl.sh status
+```
+
+**Rollback** is one command: `sudo systemctl disable --now cfw-render.timer`.
+The drainer is a oneshot timer, so nothing is in flight between ticks except a
+Director that is already running.
+
 ## Usage
 
 ```bash

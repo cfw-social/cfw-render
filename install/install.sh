@@ -47,6 +47,20 @@ fi
 OS="$(uname -s)"
 echo "install.sh: OS=$OS prefix=$PREFIX env-file=$ENV_FILE user=$RUN_USER mode=$MODE"
 
+# ── [CFW-199] Toolchain preflight, BEFORE anything is copied or a unit written.
+# CFW-188 found hst with no ImageMagick at all — installed, unit-ready, and one
+# `systemctl enable` away from claiming production orders it could not finish.
+# Fail here, loudly, with the install commands, rather than leaving a box that
+# looks installed and burns real work.
+# shellcheck source=/dev/null
+source "$REPO_DIR/bin/cfw-render-lib.sh"
+if ! cr_preflight; then
+  echo "install.sh: ABORTING — the toolchain preflight failed (see above)." >&2
+  echo "  Nothing was installed. Fix the missing tools and re-run install.sh." >&2
+  exit 1
+fi
+echo ""
+
 mkdir -p "$PREFIX/bin" "$PREFIX/lib" "$PREFIX/config" "$PREFIX/scripts"
 cp -a "$REPO_DIR"/bin/*.sh "$PREFIX/bin/"
 cp -a "$REPO_DIR"/lib/*.md "$PREFIX/lib/"
