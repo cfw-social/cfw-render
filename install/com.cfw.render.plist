@@ -25,7 +25,7 @@
     <key>CFW_RENDER_ENV</key>
     <string>{{ENV_FILE}}</string>
     <key>PATH</key>
-    <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    <string>{{HOME}}/.local/bin:{{HOME}}/bin:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
   </dict>
 
   <key>StartCalendarInterval</key>

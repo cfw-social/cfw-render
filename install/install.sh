@@ -147,6 +147,11 @@ case "$OS" in
     PLIST_SRC="$SELF_DIR/com.cfw.render.plist"
     PLIST_DST="$HOME/Library/LaunchAgents/com.cfw.render.plist"
     mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+    # NOTE: {{HOME}} here also seeds the plist's EnvironmentVariables PATH
+    # (~/.local/bin, ~/bin) — must resolve to the *service user's* home, not
+    # the installer's, for parity with the worker-id RUN_USER resolution
+    # above. Unlike the Linux {{USER}} systemd path, a macOS LaunchAgent is
+    # always per-logged-in-user, so plain $HOME is already correct here.
     sed -e "s#{{PREFIX}}#$PREFIX#g" -e "s#{{ENV_FILE}}#$ENV_FILE#g" -e "s#{{HOME}}#$HOME#g" \
       "$PLIST_SRC" > "$PLIST_DST"
     echo "install.sh: wrote $PLIST_DST"
