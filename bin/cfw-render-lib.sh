@@ -465,6 +465,27 @@ print(json.dumps(d))
 }
 
 # ---------------------------------------------------------------------------
+# cr_kill_tree <pid> [signal=TERM] — signal <pid> AND every live descendant.
+# A backgrounded subshell (`cmd &`) gets no process group of its own — bash job
+# control is off by default in a non-interactive script — so `kill $pid` only
+# ever reaches that one wrapper. If it dies (e.g. SIGTERM, no trap) while
+# blocked on ITS OWN foreground child, that child is orphaned: reparented to
+# PID 1, left running, still holding whatever fds it inherited (this is how the
+# render watchdog's own `sleep $timeout_secs` outlives a normal-path completion
+# and wedges any caller that captures cfw-render.sh's output via `$( )` — see
+# CFW-292). Worse: it means a genuinely hung render is never actually killed by
+# the watchdog. Walk the tree with pgrep -P (present on both hst/Linux and
+# macOS — no new dependency) so every descendant gets the signal.
+# ---------------------------------------------------------------------------
+cr_kill_tree() {
+  local pid="$1" sig="${2:-TERM}" kid
+  for kid in $(pgrep -P "$pid" 2>/dev/null); do
+    cr_kill_tree "$kid" "$sig"
+  done
+  kill "-$sig" "$pid" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
 # cr_heartbeat_start <orderId> — [CFW-146] emit `kind: heartbeat` every
 # $CFW_RENDER_HEARTBEAT_SECS while the Director works, so cfw-social can tell
 # "slow" from "dead": the order card shows "Still working — last heard N min
@@ -503,7 +524,7 @@ cr_heartbeat_start() {
 cr_heartbeat_stop() {
   local pid="${1:-}"
   [[ -n "$pid" ]] || return 0
-  kill "$pid" 2>/dev/null
+  cr_kill_tree "$pid" TERM
   wait "$pid" 2>/dev/null
   return 0
 }
