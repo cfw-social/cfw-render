@@ -65,7 +65,7 @@ unit + timer, launchd plist, `install.sh`).
   project memory, but `render_fleet_enabled=false` fleet-wide — the box has the binary, the
   fleet flip is a separate gated rollout (`CFW-V2-073`).
 - **Config load order** (`cr_load_config` in `bin/cfw-render-lib.sh`): `/etc/cfw-render.env`
-  → `$CFW_RENDER_ENV` (default `~/.gsai/secrets/cfw-render.env`) → process env wins over both.
+  → `$CFW_RENDER_ENV` (default `~/ecosystem/vault/cfw-render.env`) → process env wins over both.
 
 ### 1.2 How cfw-render gets skills today
 
@@ -150,7 +150,7 @@ up nothing on pinning precision, remove a whole footgun class — is the decidin
 **Why not (e) container image, in more depth:** cfw-render's Director is a `claude` CLI
 subprocess running under the operator's OAuth session (`bin/cfw-render.sh` spawns it with
 `CFW_RENDER_DIRECTOR_MODEL`, `-p "$prompt" --dangerously-skip-permissions`), plus a GLM/Kimi
-fan-out subprocess helper reading `~/.gsai/secrets/ollama-keys.env`. Containerizing that means
+fan-out subprocess helper reading `~/ecosystem/vault/ollama-keys.env`. Containerizing that means
 either baking long-lived credentials into an image (bad) or mounting host credential
 directories into every container run (workable but adds real complexity for zero benefit over
 plain process isolation on a box that's already dedicated to this one job). It also fights the

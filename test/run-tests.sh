@@ -585,6 +585,81 @@ fi
 
 kill "$fleet_pid" 2>/dev/null; wait "$fleet_pid" 2>/dev/null
 
+echo "=== Case 8: default credential paths resolve into ~/ecosystem/vault, not ~/.gsai/secrets (CFW-289) ==="
+# Regression for CFW-289: bin/cfw-render-lib.sh's three credential-path
+# defaults used to point at the retired ~/.gsai/secrets vault. Each sub-case
+# runs under a throwaway $HOME so the assertions don't depend on (or touch)
+# this machine's real vault state, and the --dry sub-case talks to a mock
+# server — never a live CFW_API_BASE.
+c289_home="$(mktemp -d)"
+
+# 1. cr_load_config: default CFW_RENDER_ENV path, no required vars set — the
+#    "missing required" error interpolates the path it checked.
+c289_out="$(
+  env -i HOME="$c289_home" PATH="$PATH" bash -c '
+    set -u
+    source "'"$REPO_DIR"'/bin/cfw-render-lib.sh"
+    cr_load_config
+  ' 2>&1
+)"
+if echo "$c289_out" | grep -q "ecosystem/vault/cfw-render.env" && ! echo "$c289_out" | grep -q '\.gsai'; then
+  pass "cr_load_config: default env path is ~/ecosystem/vault, not ~/.gsai/secrets"
+else
+  fail "cr_load_config: default env path" "expected ecosystem/vault/cfw-render.env with no .gsai mention, got: $c289_out"
+fi
+
+# 2. cr_load_admin_config: default CFW_RENDER_ADMIN_ENV path.
+c289_admin_out="$(
+  env -i HOME="$c289_home" PATH="$PATH" bash -c '
+    set -u
+    source "'"$REPO_DIR"'/bin/cfw-render-lib.sh"
+    cr_load_admin_config
+  ' 2>&1
+)"
+if echo "$c289_admin_out" | grep -q "ecosystem/vault/cfw-render-admin.env" && ! echo "$c289_admin_out" | grep -q '\.gsai'; then
+  pass "cr_load_admin_config: default admin-env path is ~/ecosystem/vault, not ~/.gsai/secrets"
+else
+  fail "cr_load_admin_config: default admin-env path" "expected ecosystem/vault/cfw-render-admin.env with no .gsai mention, got: $c289_admin_out"
+fi
+
+# 3. cr_load_config's ollama-keys default, surfaced via `cfw-render.sh --dry`'s
+#    health table (against a mock server, not a live CFW_API_BASE).
+c289_seed="$(mktemp)"; empty_queue > "$c289_seed"
+c289_state="$(mktemp -d)"
+c289_port=$((MOCK_PORT_BASE + 80))
+c289_pid="$(start_mock "$c289_seed" "$c289_state" "$c289_port")"
+c289_dry_out="$(
+  env -i HOME="$c289_home" PATH="$REPO_DIR/bin:$FAKE_BIN:$PATH" \
+    CFW_API_BASE="http://127.0.0.1:$c289_port" \
+    CFW_RENDER_WORKER_KEY="cfw_render_test0000000000000000" \
+    CFW_RENDER_STATE_DIR="$c289_home/cr-state" \
+    CFW_RENDER_SCRATCH="$c289_home/cr-scratch" \
+    CFW_RENDER_SKILLS_DIR="$c289_home/skills" \
+    "$REPO_DIR/bin/cfw-render.sh" --dry 2>&1
+)"
+kill "$c289_pid" 2>/dev/null; wait "$c289_pid" 2>/dev/null
+if echo "$c289_dry_out" | grep -q "ecosystem/vault/ollama-keys.env" && ! echo "$c289_dry_out" | grep -q '\.gsai'; then
+  pass "cfw-render.sh --dry: default ollama-keys path is ~/ecosystem/vault, not ~/.gsai/secrets"
+else
+  fail "cfw-render.sh --dry: default ollama-keys path" "expected ecosystem/vault/ollama-keys.env with no .gsai mention, got: $c289_dry_out"
+fi
+
+echo "=== Case 9: static guard — no live reference to the retired ~/.gsai/secrets vault ==="
+# Cheap grep gate so a future doc edit can't copy the old prose back in.
+# backlog/ is excluded on purpose — those are dated historical task records
+# from when ~/.gsai/secrets was the live convention (see design notes).
+c289_grep_raw="$(grep -rn '\.gsai/secrets' "$REPO_DIR/bin" "$REPO_DIR/lib" "$REPO_DIR/config" "$REPO_DIR"/install/*.md "$REPO_DIR/README.md" "$REPO_DIR/docs" 2>/dev/null)"
+# README's "Ollama keys vs zai.env" note intentionally keeps ONE historical
+# mention — the task text's original wrong *file*, not the retired vault
+# *directory* (see the design doc for CFW-289). Exclude that single known line.
+c289_grep_out="$(printf '%s\n' "$c289_grep_raw" | grep -v "README.md:.*task text originally said")"
+c289_grep_out="$(printf '%s\n' "$c289_grep_out" | sed '/^$/d')"
+if [[ -z "$c289_grep_out" ]]; then
+  pass "static guard: no live bin/lib/config/docs reference to ~/.gsai/secrets"
+else
+  fail "static guard: retired vault path" "found live references: $c289_grep_out"
+fi
+
 echo "=== Case P: toolchain preflight refuses to claim on a half-provisioned host ==="
 # CFW-199 / CFW-188. hst had NO ImageMagick and was one `systemctl enable` from
 # claiming production orders it could not finish. The drainer must now refuse.
