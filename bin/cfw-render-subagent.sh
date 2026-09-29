@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # cfw-render-subagent.sh — Director-facing: GLM/Kimi fan-out wrapper.
-# Validates the model against CFW_RENDER_FANOUT_MODELS, runs the bash-ported
-# claude_ollama_failover (goofy→pike), appends the served model to
+# Validates the model against CFW_RENDER_FANOUT_MODELS, runs claude_fanout_run
+# (native Claude alias → the worker's own login; otherwise the bash-ported
+# claude_ollama_failover goofy→pike), appends the served model to
 # work/.models-fanout (deduped later by cfw-render-report.sh complete), and
 # emits append_render_event(kind:subagent, model:...) — the AC "record
 # per-stage model" satisfied mechanically, not by trusting the Director's
@@ -39,7 +40,7 @@ fi
 
 mkdir -p work
 out="work/.subagent-$(date +%s)-$$.out"
-claude_ollama_failover "$CFW_ORDER_ID:$stage" "$model" "$out" -- "$@"
+claude_fanout_run "$CFW_ORDER_ID:$stage" "$model" "$out" -- "$@"
 rc=$?
 
 if (( rc == 0 )); then

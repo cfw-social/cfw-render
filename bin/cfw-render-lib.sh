@@ -578,6 +578,42 @@ claude_ollama_failover() {
 }
 
 # ---------------------------------------------------------------------------
+# cr_is_native_claude_model <model> — true for a model the worker's own Claude
+# login serves: the sonnet/haiku/opus aliases (optional "[1m]") or a full
+# claude-* id. Everything else is treated as an Ollama Cloud model.
+# ---------------------------------------------------------------------------
+cr_is_native_claude_model() {
+  [[ "$1" =~ ^(sonnet|haiku|opus)(\[1m\])?$ || "$1" == claude-* ]]
+}
+
+# ---------------------------------------------------------------------------
+# claude_fanout_run <label> <model> <outfile> -- <claude args...>
+# Fan-out routing by model name. A native Claude alias runs on the worker's
+# own Claude login — the same subscription that serves the Director — so a
+# box with no live Ollama Cloud account still has a fan-out path. Anything
+# else goes through claude_ollama_failover unchanged. Ollama Cloud was found
+# dead on 2026-09-29 (goofy_hugle at its monthly limit, recursing_pike
+# Unauthorized): every fan-out call failed before a request left the Mac and
+# every delegated order ended `block`.
+# ---------------------------------------------------------------------------
+claude_fanout_run() {
+  local label="$1" model="$2" out="$3"; shift 3
+  [[ "${1:-}" == "--" ]] && shift
+  if cr_is_native_claude_model "$model"; then
+    CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 \
+    claude --model "$model" "$@" < /dev/null >> "$out" 2>&1
+    local rc=$?
+    if (( rc == 0 )); then
+      cr_log "  served by native claude ($model) — $label"
+      return 0
+    fi
+    cr_log "  native claude ($model) failed on $label (exit $rc) — caller's error path takes over"
+    return $rc
+  fi
+  claude_ollama_failover "$label" "$model" "$out" -- "$@"
+}
+
+# ---------------------------------------------------------------------------
 # claude_native_or_ollama_quota_fallback <label> <native_model> <outfile> \
 #   <state_file> -- <claude args...>
 # BASH PORT of ab-lib.sh:109-140. Runs native Claude first (Sonnet, Claude
