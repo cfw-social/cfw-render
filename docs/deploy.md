@@ -195,6 +195,19 @@ with an expired lease, and there is no `requeue_render_order` tool yet
 - **Drainer death mid-render** (power loss, SIGKILL) → the order strands in
   `claimed` with an expired lease and nothing currently reclaims it.
 
+**Reading `journal.tsv`'s `outcome` column (CFW-286):** `crashed` and
+`orphaned` are NOT the same failure — don't treat them interchangeably when
+triaging. `crashed` means the Director process itself exited with a nonzero
+code (bad exit, uncaught exception, OOM) — a real toolchain/host problem.
+`orphaned` means the Director exited cleanly (rc=0) but never called
+`complete`/`block` — it backgrounded a step (a trailing `&`, `run_in_background:
+true`, a detached upload/encode) and ended its turn before that step
+finished, which `lib/director-prompt.md` explicitly forbids. A nonzero
+`orphaned` rate points at a Director-side prompt-adherence regression, not a
+host/toolchain issue — spot-check that order's transcript
+(`$CFW_RENDER_STATE_DIR/runs/<orderId>-<ts>.out`) for a backgrounded tool call
+before assuming it's an infra problem.
+
 **Follow-up:** a ~5-line cfw-social change (extend the worker-claim CAS WHERE
 to also take `status IN ('claimed','rendering','gating') AND
 lease_expires_at < now()`), or a dedicated `requeue_render_order` tool. Filed

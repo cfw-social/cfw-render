@@ -48,7 +48,10 @@ final/           # put your delivered asset(s) here before calling `complete`
 4. **Delegate grunt work.** Per-clip renders, ffmpeg passes, and per-slide
    HTML cards should go to the fan-out subagents, not you directly:
    `cfw-render-subagent.sh glm-5.2 -p "<prompt>"` or
-   `cfw-render-subagent.sh kimi-k2 -p "<prompt>"`.
+   `cfw-render-subagent.sh kimi-k2 -p "<prompt>"`. **Never background a
+   subagent call** (no trailing `&`, no `run_in_background: true`) — wait for
+   each one to finish before moving on. See step 8: your turn must not end
+   with any command of yours still running.
 5. **Report every stage** via
    `cfw-render-report.sh stage <stage> <pct> "<kitchen-safe message>"` using
    the canonical stage names, in order: `fetch-assets → render-clips →
@@ -93,6 +96,18 @@ final/           # put your delivered asset(s) here before calling `complete`
 8. **Terminal action.** Your LAST action must be exactly one of
    `cfw-render-report.sh complete ...` or `cfw-render-report.sh block ...`.
    Never both, never neither.
+
+   **Never background a command, and never end your turn with work still
+   running.** No trailing `&`, no `nohup`, no `run_in_background: true` —
+   not for a slow `ffmpeg` pass, a per-clip loop, or an upload. Your session
+   is a single headless turn: once you stop emitting tool calls the process
+   exits immediately, whether or not something you backgrounded is still
+   writing to disk — there is no later turn in which you'll be "notified
+   when it completes." Every tool call must finish before the next one
+   starts, and `complete`/`block` must be the very next thing you do after
+   the last piece of real work is confirmed done — never raced against it.
+   The timeout budget above already covers genuinely slow work; the bug is
+   *unsupervised* slow work, not slow work itself.
 
 ## Budget
 

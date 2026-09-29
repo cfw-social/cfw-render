@@ -384,4 +384,11 @@ test seam) so no real `claude` spawn, real Ollama call, or live cfw-social
 endpoint is ever hit. Covers: `--dry` makes zero `tools/call`s, the happy
 path (claim → stage events → subagent fan-out → upload → complete, scratch
 wiped, journal row), gate-fail block (scratch retained), watchdog timeout →
-block with a time-budget reason, empty queue, and tick-lock exclusion.
+block with a time-budget reason (and, per CFW-286, that a background process
+it spawned is reaped too, not just the watchdog-killed subshell), empty
+queue, and tick-lock exclusion. Also covers CFW-286's orphaned-background
+race directly: a Director that backgrounds a step finishing just inside the
+grace window still lands `outcome=complete`, while one that backgrounds a
+step past the grace window is reaped and lands the distinct `outcome=orphaned`
+(never `crashed`, and never a stray `complete_render_order` call racing the
+block).

@@ -149,7 +149,7 @@ cr_load_config() {
     CFW_RENDER_FANOUT_MODELS CFW_RENDER_TIMEOUT_VIDEO CFW_RENDER_TIMEOUT_IMAGE
     CFW_RENDER_GATE_FAIL_CAP CFW_RENDER_OLLAMA_KEYS_FILE CFW_RENDER_DIRECTOR_CMD
     CFW_RENDER_MODE CFW_RENDER_WORKER_ID_FILE
-    CFW_RENDER_HEARTBEAT_SECS CFW_RENDER_RENDERER_KIND
+    CFW_RENDER_HEARTBEAT_SECS CFW_RENDER_RENDERER_KIND CFW_RENDER_ORPHAN_GRACE_SECS
   )
   local _cr_preset=() _v
   for _v in "${_cr_vars[@]}"; do
@@ -198,6 +198,11 @@ cr_load_config() {
   # heard N min ago", so 60 s gives three chances before the owner sees that.
   # 0 disables the pulse (tests / a box that must stay silent).
   : "${CFW_RENDER_HEARTBEAT_SECS:=60}"
+  # [CFW-286] After the Director's process ends with no .outcome on disk and
+  # a clean exit (not a watchdog kill), how long to poll before declaring the
+  # render orphaned — absorbs a background write that lands a few hundred ms
+  # after the Director's own turn ended, without masking a real failure.
+  : "${CFW_RENDER_ORPHAN_GRACE_SECS:=5}"
   # [CFW-146] Renderer identity shown to the owner ("Working on your Mac" /
   # "on the box"). Derived from the platform + deploy mode unless set:
   #   Darwin        → mac   (the owner's laptop)
@@ -217,7 +222,7 @@ cr_load_config() {
     CFW_RENDER_TIMEOUT_VIDEO CFW_RENDER_TIMEOUT_IMAGE CFW_RENDER_GATE_FAIL_CAP \
     CFW_RENDER_OLLAMA_KEYS_FILE CFW_RENDER_DIRECTOR_CMD \
     CFW_RENDER_MODE CFW_RENDER_WORKER_ID_FILE \
-    CFW_RENDER_HEARTBEAT_SECS CFW_RENDER_RENDERER_KIND
+    CFW_RENDER_HEARTBEAT_SECS CFW_RENDER_RENDERER_KIND CFW_RENDER_ORPHAN_GRACE_SECS
 
   local missing=()
   [[ -z "${CFW_API_BASE:-}" ]] && missing+=("CFW_API_BASE")
@@ -554,6 +559,7 @@ claude_ollama_failover() {
     ANTHROPIC_BASE_URL="https://ollama.com" ANTHROPIC_AUTH_TOKEN="$key" \
       ANTHROPIC_MODEL="$model" ANTHROPIC_SMALL_FAST_MODEL="$model" \
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1" \
+      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 \
       claude "$@" < /dev/null >> "$out" 2>&1
     rc=$?
     if (( rc == 0 )); then
@@ -586,6 +592,9 @@ claude_native_or_ollama_quota_fallback() {
   local native_model_flag=()
   [[ -n "$native_model" ]] && native_model_flag=(--model "$native_model")
 
+  # [CFW-286] verified on claude 2.1.261: removes run_in_background from the
+  # Bash/Agent tool schema, so a one-shot Director cannot detach its own work.
+  CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 \
   claude "${native_model_flag[@]}" "$@" < /dev/null >> "$out" 2>&1
   local rc=$?
   if (( rc == 0 )); then
