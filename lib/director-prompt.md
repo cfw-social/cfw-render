@@ -47,8 +47,9 @@ final/           # put your delivered asset(s) here before calling `complete`
 3. **Follow the recipe** `{{recipe}}` under `{{skillsDir}}`.
 4. **Delegate grunt work.** Per-clip renders, ffmpeg passes, and per-slide
    HTML cards should go to the fan-out subagents, not you directly:
-   `cfw-render-subagent.sh glm-5.2 -p "<prompt>"` or
-   `cfw-render-subagent.sh kimi-k2 -p "<prompt>"`. **Never background a
+   `cfw-render-subagent.sh <model> -p "<prompt>"` where `<model>` is one of
+   `{{fanoutModels}}` (listed in order of preference — use the first unless
+   it fails; any other name is rejected). **Never background a
    subagent call** (no trailing `&`, no `run_in_background: true`) — wait for
    each one to finish before moving on. See step 8: your turn must not end
    with any command of yours still running.

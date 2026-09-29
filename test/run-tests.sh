@@ -824,6 +824,55 @@ else
 fi
 
 echo ""
+echo "=== Case F: fan-out routes a native Claude alias to the worker's own login (CFW-299) ==="
+cf_dir="$(mktemp -d)"; mkdir -p "$cf_dir/mockstate" "$cf_dir/work"
+empty_queue > "$cf_dir/queue.json"
+cf_port=$((MOCK_PORT_BASE + 95))
+cf_pid="$(start_mock "$cf_dir/queue.json" "$cf_dir/mockstate" "$cf_port")"
+: > "$cf_dir/no-keys.env"   # no live Ollama account at all — the 2026-09-29 state
+(
+  cd "$cf_dir" || exit 1
+  export PATH="$REPO_DIR/bin:$FAKE_BIN:$PATH"
+  export CFW_API_BASE="http://127.0.0.1:$cf_port"
+  export CFW_RENDER_WORKER_KEY="cfw_render_test0000000000000000"
+  export CFW_ORDER_ID="order-fanout-test" CFW_WORKER_ID="worker-fanout-test"
+  # the Director env always carries these (cfw-render.sh exports them); cr_event
+  # runs under set -u and needs the state dir for its best-effort log line
+  export CFW_RENDER_STATE_DIR="$cf_dir/cr-state" CFW_RENDER_SCRATCH_DIR="$cf_dir"
+  export CFW_RENDER_FANOUT_MODELS="sonnet,glm-5.2"
+  export CFW_RENDER_OLLAMA_KEYS_FILE="$cf_dir/no-keys.env"
+  "$REPO_DIR/bin/cfw-render-subagent.sh" sonnet -p "render card 1" >/dev/null 2>&1
+  echo "$?" > "$cf_dir/rc-native"
+  "$REPO_DIR/bin/cfw-render-subagent.sh" glm-5.2 -p "render card 2" >/dev/null 2>&1
+  echo "$?" > "$cf_dir/rc-ollama"
+)
+kill "$cf_pid" 2>/dev/null; wait "$cf_pid" 2>/dev/null
+if [[ "$(cat "$cf_dir/rc-native")" == "0" ]]; then
+  pass "fanout: native alias 'sonnet' is served (exit 0) with no Ollama key present"
+else
+  fail "fanout: native alias" "expected exit 0, got $(cat "$cf_dir/rc-native")"
+fi
+if grep -qx 'sonnet' "$cf_dir/work/.models-fanout" 2>/dev/null; then
+  pass "fanout: served model 'sonnet' recorded in work/.models-fanout"
+else
+  fail "fanout: models-fanout" "expected 'sonnet' in work/.models-fanout, got: $(cat "$cf_dir/work/.models-fanout" 2>/dev/null)"
+fi
+if grep -qs -- '--model sonnet' "$cf_dir"/work/.subagent-*.out; then
+  pass "fanout: native path invoked claude with --model sonnet"
+else
+  fail "fanout: native invocation" "no '--model sonnet' in $(ls "$cf_dir"/work/.subagent-*.out 2>/dev/null)"
+fi
+if [[ "$(cat "$cf_dir/rc-ollama")" != "0" ]]; then
+  pass "fanout: Ollama model with no live key fails loudly (non-zero), never hangs"
+else
+  fail "fanout: ollama without keys" "expected non-zero exit, got 0"
+fi
+if grep -q '"kind": "subagent"' "$cf_dir/mockstate/calls.jsonl" 2>/dev/null; then
+  pass "fanout: native subagent event reached the server"
+else
+  fail "fanout: subagent event" "no kind=subagent append_render_event in mock calls"
+fi
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
