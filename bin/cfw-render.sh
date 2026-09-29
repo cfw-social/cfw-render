@@ -230,11 +230,12 @@ subs = {
     "{{gate}}": sys.argv[5],
     "{{failCap}}": sys.argv[6],
     "{{timeoutMin}}": sys.argv[7],
+    "{{fanoutModels}}": sys.argv[8],
 }
 for k, v in subs.items():
     tpl = tpl.replace(k, v)
 print(tpl)
-' "$SELF_DIR/../lib/director-prompt.md" "$order_id" "$CFW_RENDER_SKILLS_DIR" "$recipe" "$gate" "$CFW_RENDER_GATE_FAIL_CAP" "$timeout_min" 2>/dev/null)"
+' "$SELF_DIR/../lib/director-prompt.md" "$order_id" "$CFW_RENDER_SKILLS_DIR" "$recipe" "$gate" "$CFW_RENDER_GATE_FAIL_CAP" "$timeout_min" "$CFW_RENDER_FANOUT_MODELS" 2>/dev/null)"
 
   cr_event "$order_id" stage fetch-assets "Gathering ingredients" 5
 
