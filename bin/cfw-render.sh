@@ -250,6 +250,17 @@ print(tpl)
   model_state_file="$order_dir/work/.director-model"
   : > "$out_file"
 
+  # [CFW-286] Enable job control HERE — in the frame that backgrounds the
+  # subshell below — not inside it. Job control gives a `(...) &` job its own
+  # new process group (pgid == the job's own pid) only when monitor mode is
+  # already on in the shell doing the backgrounding; turning it on inside the
+  # subshell itself is too late; the subshell's own pgid is already fixed at
+  # fork time. Once set, the plain (non-`&`) foreground exec of claude/
+  # $CFW_RENDER_DIRECTOR_CMD inside the subshell stays in that same group, and
+  # since spawn_director itself always runs as its own forked job (called via
+  # `spawn_director "$order_json" &`), this is scoped to one order — it does
+  # not affect the main script or sibling concurrent orders.
+  set -m
   (
     cd "$order_dir" || exit 1
     export CFW_ORDER_ID="$order_id"
@@ -277,7 +288,24 @@ print(tpl)
   ) &
   local director_pid=$!
 
-  ( sleep "$timeout_secs"; cr_kill_tree "$director_pid" TERM; sleep 30; cr_kill_tree "$director_pid" KILL ) &
+  # [CFW-286] Capture the Director's process group right after backgrounding
+  # it — before anything can exit — so both the watchdog and the post-wait
+  # reap below can signal the whole group, not just the subshell itself. If
+  # the lookup races a very short-lived process (e.g. a config error that
+  # exits in milliseconds) and comes back empty, fall back to the bare PID —
+  # today's behavior, never a hard failure of the drainer.
+  local director_pgid director_kill_target
+  director_pgid="$(ps -o pgid= -p "$director_pid" 2>/dev/null | tr -d ' ')"
+  if [[ -n "$director_pgid" ]]; then
+    director_kill_target="-$director_pgid"
+  else
+    director_kill_target="$director_pid"
+  fi
+
+  # Watchdog kills the whole tree (CFW-292). Redirected so the orphaned `sleep`
+  # it leaves behind cannot hold the caller's stdout open — that was the
+  # test-gate hang and the stray `sleep 3600`s found on the Mac (CFW-286).
+  ( sleep "$timeout_secs"; cr_kill_tree "$director_pid" TERM; sleep 30; cr_kill_tree "$director_pid" KILL ) >/dev/null 2>&1 &
   local watchdog_pid=$!
 
   wait "$director_pid"
@@ -289,6 +317,23 @@ print(tpl)
 
   local outcome_file="$order_dir/.outcome" outcome model_served=""
   [[ -f "$model_state_file" ]] && model_served="$(cat "$model_state_file" 2>/dev/null)"
+
+  # [CFW-286] The Director's turn ended (not a watchdog kill) but .outcome
+  # hasn't landed yet — exactly the race a backgrounded step produces:
+  # `claude` exits clean while a background write is still in flight. Poll
+  # for a short, fixed window before declaring the render orphaned; a
+  # genuinely near-finished write lands within it and is treated as a normal
+  # completion below. Bounded (seconds, not minutes) — indefinitely awaiting
+  # an unsupervised background process would defeat the whole point of the
+  # per-kind timeout budget.
+  if [[ ! -f "$outcome_file" ]] && (( director_exit != 143 && director_exit != 137 )); then
+    local grace_secs="${CFW_RENDER_ORPHAN_GRACE_SECS:-5}"
+    local grace_ticks=$(( grace_secs * 2 )) grace_i=0
+    while (( grace_i < grace_ticks )) && [[ ! -f "$outcome_file" ]]; do
+      sleep 0.5
+      grace_i=$(( grace_i + 1 ))
+    done
+  fi
 
   if [[ -f "$outcome_file" ]]; then
     outcome="$(cat "$outcome_file" 2>/dev/null)"
@@ -303,9 +348,31 @@ print(tpl)
     cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"render exceeded the time budget","needs":"capacity"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
       || cr_log "order $order_id — block_render_order (timeout) call failed; lease expiry is the backstop"
   else
-    outcome="crashed"
-    cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"render failed unexpectedly"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
-      || cr_log "order $order_id — block_render_order (crash) call failed; lease expiry is the backstop"
+    # [CFW-286] Grace window expired with no terminal action ever landing.
+    # Reap anything still alive in the Director's process group first — a
+    # best-effort cleanup (a detached/setsid child escapes this, which is
+    # why the prompt-level fix in lib/director-prompt.md is the primary
+    # defense) — so no straggler can keep mutating the scratch dir or race
+    # the drainer's own decision with a stale completion.
+    kill -TERM "$director_kill_target" 2>/dev/null
+    sleep 1
+    kill -KILL "$director_kill_target" 2>/dev/null
+    if (( director_exit == 0 )); then
+      # Clean exit, no complete/block ever called — the Director backgrounded
+      # a step and ended its turn without waiting on it. This is the CFW-286
+      # bug itself, made visible instead of hidden inside "crashed".
+      outcome="orphaned"
+      cr_log "order $order_id — Director exited cleanly (rc=0) with no complete/block after a ${grace_secs}s grace window; a background step was likely still running when its turn ended (CFW-286)"
+      cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"render ended without finishing — a background step was still running when the Director'"'"'s turn ended"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
+        || cr_log "order $order_id — block_render_order (orphaned) call failed; lease expiry is the backstop"
+    else
+      # Nonzero exit (bad exit code, uncaught exception, OOM, etc.) — a
+      # genuine crash, distinct from the clean-exit orphaned case above.
+      outcome="crashed"
+      cr_log "order $order_id — Director exited nonzero (exit=$director_exit) with no complete/block"
+      cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"render failed unexpectedly"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
+        || cr_log "order $order_id — block_render_order (crash) call failed; lease expiry is the backstop"
+    fi
   fi
 
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \

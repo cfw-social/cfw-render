@@ -399,8 +399,79 @@ if grep -q "order-watchdog-1.*timeout" "$CASE_STATE/journal.tsv" 2>/dev/null; th
 else
   fail "watchdog: journal row" "no timeout journal row found"
 fi
+# [CFW-286] The watchdog kill must reach the WHOLE process group, not just the
+# subshell — a straggler the Director backgrounded must not survive a
+# watchdog-triggered block any more than a clean exit does.
+watchdog_bg_pidfile="$CASE_SCRATCH/test-brand/order-watchdog-1/watchdog-bg.pid"
+if [[ -f "$watchdog_bg_pidfile" ]]; then
+  watchdog_bg_pid="$(cat "$watchdog_bg_pidfile" 2>/dev/null)"
+  if [[ -n "$watchdog_bg_pid" ]] && ! kill -0 "$watchdog_bg_pid" 2>/dev/null; then
+    pass "watchdog: backgrounded straggler reaped (group-kill on the watchdog path)"
+  else
+    fail "watchdog: straggler reap" "pid $watchdog_bg_pid is still alive after the tick"
+  fi
+else
+  fail "watchdog: straggler reap" "watchdog-bg.pid not found — fake-director.sh didn't record it"
+fi
 
-echo "=== Case 4b: heartbeat + renderer identity (CFW-146) ==="
+echo "=== Case 4a: orphaned background — grace window absorbs a near-miss (CFW-286) ==="
+# A background step that finishes WELL inside CFW_RENDER_ORPHAN_GRACE_SECS,
+# after the Director itself has already exited 0 — the grace-poll must catch
+# it and still land outcome=complete, not a false orphaned/crashed.
+run_case "orphan-just-in-time" "orphan-just-in-time" "order_fixture order-orphan-jit-1 brand-1 video" \
+  export CFW_RENDER_ORPHAN_GRACE_SECS=3 FAKE_DIRECTOR_ORPHAN_SLEEP=1
+if grep -q "order-orphan-jit-1.*complete" "$CASE_STATE/journal.tsv" 2>/dev/null; then
+  pass "orphan-just-in-time: journal row outcome=complete"
+else
+  fail "orphan-just-in-time: journal row" "no complete journal row found — grace window failed to absorb the near-miss"
+fi
+if [[ "$(calls_count complete_render_order)" == "1" ]]; then
+  pass "orphan-just-in-time: complete_render_order called exactly once"
+else
+  fail "orphan-just-in-time: complete call" "expected 1 complete_render_order, got $(calls_count complete_render_order)"
+fi
+if [[ ! -d "$CASE_SCRATCH/test-brand/order-orphan-jit-1" ]]; then
+  pass "orphan-just-in-time: scratch wiped"
+else
+  fail "orphan-just-in-time: scratch" "scratch dir still present after a complete outcome"
+fi
+
+echo "=== Case 4b: orphaned background — past the grace window (CFW-286, the bug itself) ==="
+# A background step that would finish PAST the grace window — the exact
+# "Director ends its turn with background work still running" sequence.
+# Must land outcome=orphaned (never crashed), block_render_order with the
+# orphaned-specific reason, the process group reaped, and NO
+# complete_render_order racing in after the block.
+run_case "orphan-late" "orphan-late" "order_fixture order-orphan-late-1 brand-1 video" \
+  export CFW_RENDER_ORPHAN_GRACE_SECS=2 FAKE_DIRECTOR_ORPHAN_SLEEP=15
+if grep -q "order-orphan-late-1.*orphaned" "$CASE_STATE/journal.tsv" 2>/dev/null; then
+  pass "orphan-late: journal row outcome=orphaned"
+else
+  fail "orphan-late: journal row" "no orphaned journal row found (got: $(grep 'order-orphan-late-1' "$CASE_STATE/journal.tsv" 2>/dev/null))"
+fi
+if [[ "$(calls_count block_render_order)" -ge 1 ]] && grep -q "background step was still running" "$CASE_MOCKSTATE/calls.jsonl" 2>/dev/null; then
+  pass "orphan-late: block_render_order called with the orphaned-specific reason"
+else
+  fail "orphan-late: block reason" "expected a block_render_order call mentioning 'background step was still running'"
+fi
+if [[ "$(calls_count complete_render_order)" == "0" ]]; then
+  pass "orphan-late: no complete_render_order landed after the block (straggler didn't race the drainer's decision)"
+else
+  fail "orphan-late: stale complete" "a complete_render_order call landed — the reaped background process raced the block"
+fi
+orphan_bg_pidfile="$CASE_SCRATCH/test-brand/order-orphan-late-1/orphan-bg.pid"
+if [[ -f "$orphan_bg_pidfile" ]]; then
+  orphan_bg_pid="$(cat "$orphan_bg_pidfile" 2>/dev/null)"
+  if [[ -n "$orphan_bg_pid" ]] && ! kill -0 "$orphan_bg_pid" 2>/dev/null; then
+    pass "orphan-late: backgrounded straggler reaped, no longer alive"
+  else
+    fail "orphan-late: straggler reap" "pid $orphan_bg_pid is still alive after the tick"
+  fi
+else
+  fail "orphan-late: straggler reap" "orphan-bg.pid not found — fake-director.sh didn't record it"
+fi
+
+echo "=== Case 4d: heartbeat + renderer identity (CFW-146) ==="
 # A 2-second pulse against an ~8-second Director → at least 2 heartbeats, each
 # carrying the renderer kind and no pct, and NONE after the order is terminal.
 run_case "heartbeat" "heartbeat" "order_fixture order-hb-1 brand-1 video" export CFW_RENDER_HEARTBEAT_SECS=2
@@ -448,7 +519,7 @@ else
 fi
 if ! pgrep -f "cfw-render" >/dev/null 2>&1 || true; then :; fi
 
-echo "=== Case 4c: block carries `needs` (CFW-146) ==="
+echo "=== Case 4e: block carries `needs` (CFW-146) ==="
 run_case "needs-ingredient" "needs-ingredient" "order_fixture order-needs-1 brand-1 video" true
 needs_check="$(python3 -c '
 import json, sys
