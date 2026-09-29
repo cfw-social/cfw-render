@@ -44,7 +44,11 @@ if [[ "$(id -u)" -eq 0 && "$YES_REALLY" -ne 1 ]]; then
   exit 1
 fi
 
-OS="$(uname -s)"
+# CFW_RENDER_TEST_OS — a narrow test-only seam (same spirit as
+# CFW_RENDER_DIRECTOR_CMD) so test/run-tests.sh can exercise the Linux
+# template-rendering branch from a macOS dev box without an actual Linux
+# host. Only ever set by the test harness; never set in a real install.
+OS="${CFW_RENDER_TEST_OS:-$(uname -s)}"
 echo "install.sh: OS=$OS prefix=$PREFIX env-file=$ENV_FILE user=$RUN_USER mode=$MODE"
 
 # ── [CFW-199] Toolchain preflight, BEFORE anything is copied or a unit written.
@@ -57,6 +61,23 @@ source "$REPO_DIR/bin/cfw-render-lib.sh"
 if ! cr_preflight; then
   echo "install.sh: ABORTING — the toolchain preflight failed (see above)." >&2
   echo "  Nothing was installed. Fix the missing tools and re-run install.sh." >&2
+  exit 1
+fi
+echo ""
+
+# ── [CFW-291] Resolve the real worker PATH from where binaries actually live
+# (not a guessed static list), then prove `claude` runs under EXACTLY that
+# PATH in a stripped env — the narrow environment launchd/systemd hand a
+# scheduled unit, not this installer's rich shell. A `claude` that resolves
+# via cr_preflight's `command -v` (because a shell function/alias/nvm-asdf
+# init hook shadows or wraps the real binary) can still fail the moment it
+# runs headless — this is the gap CFW-279 left open.
+WORKER_PATH="$(cr_resolve_worker_path)"
+echo "install.sh: resolved worker PATH: $WORKER_PATH"
+if ! cr_probe_claude_headless "$WORKER_PATH"; then
+  echo "install.sh: ABORTING — claude resolves but does not run under the exact" >&2
+  echo "  PATH a scheduled tick will get (see probe output above). Nothing was" >&2
+  echo "  installed. Fix claude's install (or its wrapper/shim) and re-run." >&2
   exit 1
 fi
 echo ""
@@ -153,6 +174,7 @@ case "$OS" in
     # above. Unlike the Linux {{USER}} systemd path, a macOS LaunchAgent is
     # always per-logged-in-user, so plain $HOME is already correct here.
     sed -e "s#{{PREFIX}}#$PREFIX#g" -e "s#{{ENV_FILE}}#$ENV_FILE#g" -e "s#{{HOME}}#$HOME#g" \
+        -e "s#{{WORKER_PATH}}#$WORKER_PATH#g" \
       "$PLIST_SRC" > "$PLIST_DST"
     echo "install.sh: wrote $PLIST_DST"
     echo "install.sh: to load: launchctl bootstrap gui/\$(id -u) $PLIST_DST"
@@ -160,6 +182,7 @@ case "$OS" in
   Linux)
     UNIT_DST=/etc/systemd/system
     sed -e "s#{{PREFIX}}#$PREFIX#g" -e "s#{{ENV_FILE}}#$ENV_FILE#g" -e "s#{{USER}}#$RUN_USER#g" \
+        -e "s#{{WORKER_PATH}}#$WORKER_PATH#g" \
       "$SELF_DIR/cfw-render.service" > "/tmp/cfw-render.service.$$"
     sed -e "s#{{PREFIX}}#$PREFIX#g" \
       "$SELF_DIR/cfw-render.timer" > "/tmp/cfw-render.timer.$$"

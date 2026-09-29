@@ -687,6 +687,95 @@ cr_tick_lock_release() {
 #              which is exactly what CFW-188 had to shim by hand.
 _CR_REQUIRED_BINS=(curl python3 node npx ffmpeg ffprobe magick)
 
+# ---------------------------------------------------------------------------
+# cr_resolve_worker_path — CFW-291. Walks _CR_REQUIRED_BINS plus `claude`,
+# resolving each with `command -v` in the CALLER's current environment (at
+# install time that's the installer's real, rich shell — the only place we
+# can observe where things are actually installed). Takes the `dirname` of
+# each hit and dedupes into an ordered list (first-seen wins). Appends
+# today's static fallback dirs at the END, only if not already present, so a
+# resolved real location always wins over a guess but a box that already
+# worked via the old hardcoded dirs keeps working unchanged.
+#
+# A binary that doesn't resolve is silently skipped here — cr_preflight is
+# still the one place that turns "missing" into a hard failure; this
+# function's only job is turning "found, and here's where" into a PATH
+# string. Prints the colon-joined result on stdout. Never fails.
+# ---------------------------------------------------------------------------
+cr_resolve_worker_path() {
+  local result="" b path dir fb
+  for b in "${_CR_REQUIRED_BINS[@]}" claude; do
+    path="$(command -v "$b" 2>/dev/null)" || continue
+    dir="$(dirname "$path")"
+    case ":$result:" in
+      *":$dir:"*) ;;
+      *) result="${result:+$result:}$dir" ;;
+    esac
+  done
+  for fb in /usr/local/bin /usr/bin /bin /opt/homebrew/bin; do
+    case ":$result:" in
+      *":$fb:"*) ;;
+      *) result="${result:+$result:}$fb" ;;
+    esac
+  done
+  printf '%s' "$result"
+}
+
+# ---------------------------------------------------------------------------
+# cr_probe_claude_headless [worker_path] — CFW-291. The actual new safety
+# net: doesn't just ask "does claude resolve" (cr_preflight already does
+# that) — asks "does claude actually RUN in the narrowest environment a
+# scheduled tick will ever get." Defaults worker_path to a fresh
+# cr_resolve_worker_path call if not given.
+#
+# Mirrors cr_preflight's existing stub-Director skip (CFW_RENDER_DIRECTOR_CMD
+# set → SKIP, not FAIL — a test/dev box that intentionally stubs out claude
+# must not suddenly be required to install a real one). Otherwise runs the
+# probe exactly the way launchd/systemd will run the real tick: `env -i` (a
+# fully stripped environment) with only PATH=<worker_path>, HOME, and a
+# short, explicit allow-list of vars a CLI can legitimately need to behave
+# correctly (TMPDIR, LANG, LC_ALL, USER — passed through only if already set
+# in the caller's env), then `claude --version`.
+#
+# Applies the same "exit 0 but empty output is still a failure" rule
+# cr_preflight already applies to its own claude --version check.
+#
+# On success: prints the version string on stdout, returns 0.
+# On failure (or SKIP): prints a message on stdout/stderr, returns 0 (SKIP)
+# or 1 (genuine failure) — the captured probe output and the worker_path
+# tried are always included in the failure message so a human (or
+# install.sh) gets an actionable message instead of a bare non-zero.
+# ---------------------------------------------------------------------------
+cr_probe_claude_headless() {
+  local worker_path="${1:-}"
+  [[ -n "$worker_path" ]] || worker_path="$(cr_resolve_worker_path)"
+
+  if [[ -n "${CFW_RENDER_DIRECTOR_CMD:-}" ]]; then
+    printf 'SKIP — CFW_RENDER_DIRECTOR_CMD is set (stub Director); not probing a real claude\n'
+    return 0
+  fi
+
+  local -a env_args=("PATH=$worker_path" "HOME=${HOME:-}")
+  local v
+  for v in TMPDIR LANG LC_ALL USER; do
+    [[ -n "${!v:-}" ]] && env_args+=("$v=${!v}")
+  done
+
+  local out rc
+  out="$(env -i "${env_args[@]}" claude --version 2>&1)"
+  rc=$?
+  if (( rc == 0 )) && [[ -n "$out" ]]; then
+    printf '%s' "$out"
+    return 0
+  fi
+  {
+    printf 'claude --version failed under a headless probe (env -i, rc=%s)\n' "$rc"
+    printf 'worker_path tried: %s\n' "$worker_path"
+    printf 'captured output: %s\n' "${out:-<empty>}"
+  } >&2
+  return 1
+}
+
 # Install hint for one missing tool on this OS. Never a silent fallback — the
 # operator gets the exact command.
 cr_preflight_hint() { # cr_preflight_hint <tool>

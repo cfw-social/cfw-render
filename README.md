@@ -384,4 +384,13 @@ test seam) so no real `claude` spawn, real Ollama call, or live cfw-social
 endpoint is ever hit. Covers: `--dry` makes zero `tools/call`s, the happy
 path (claim → stage events → subagent fan-out → upload → complete, scratch
 wiped, journal row), gate-fail block (scratch retained), watchdog timeout →
-block with a time-budget reason, empty queue, and tick-lock exclusion.
+block with a time-budget reason, empty queue, and tick-lock exclusion. Also
+covers (CFW-291): `cr_resolve_worker_path` finding a binary in a nonstandard
+location and deduping/preserving the static fallback dirs;
+`cr_probe_claude_headless` catching a `claude` that only "works" via an
+ambient env var a rich shell would supply but `env -i` strips (the exact
+CFW-279 gap), its empty-output-is-still-a-failure rule, and its
+stub-Director skip; and `install/install.sh` rendering the resolved
+`WORKER_PATH` into both the macOS plist and the Linux systemd unit
+(exercised via the `CFW_RENDER_TEST_OS` test seam), well-formed and ordered
+correctly relative to `EnvironmentFile=`.
