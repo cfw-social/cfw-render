@@ -90,7 +90,49 @@ JSON
     ;;
   watchdog)
     cfw-render-report.sh stage fetch-assets 10 "Gathering ingredients"
+    # [CFW-286] Also background a marker-writing straggler, same as a
+    # Director that backgrounds a step AND then gets watchdog-killed — proves
+    # the group-kill on the watchdog path reaps it too, not just the
+    # foreground subshell. Its pid is recorded so run-tests.sh can assert it
+    # is no longer alive once the tick completes.
+    ( sleep 300; touch watchdog-bg-marker ) &
+    echo $! > watchdog-bg.pid
     sleep 60
+    ;;
+  orphan-just-in-time)
+    # [CFW-286] Backgrounds a step that finishes WELL INSIDE the grace window
+    # (CFW_RENDER_ORPHAN_GRACE_SECS), then exits 0 immediately without
+    # waiting on it — exercises the grace-poll absorbing a near-miss so it
+    # still lands outcome=complete instead of a false orphaned/crashed.
+    cfw-render-report.sh stage fetch-assets 10 "Gathering ingredients"
+    (
+      sleep "${FAKE_DIRECTOR_ORPHAN_SLEEP:-1}"
+      mkdir -p final
+      echo "fake video bytes" > final/out.mp4
+      cat > final/captions.json <<'JSON'
+{ "instagram": "Landed just inside the grace window." }
+JSON
+      cfw-render-report.sh complete final/out.mp4
+    ) &
+    echo $! > orphan-bg.pid
+    exit 0
+    ;;
+  orphan-late)
+    # [CFW-286] Reproduces the bug directly: backgrounds a step that would
+    # finish PAST the grace window, then exits 0 immediately — the exact
+    # "Director ends its turn with background work still running" sequence.
+    # The wrapper's grace window expires, reaps this process group (killing
+    # the sleep below before it ever gets to call complete), and reports
+    # outcome=orphaned instead of the old opaque "crashed".
+    cfw-render-report.sh stage fetch-assets 10 "Gathering ingredients"
+    (
+      sleep "${FAKE_DIRECTOR_ORPHAN_SLEEP:-30}"
+      mkdir -p final
+      echo "fake video bytes" > final/out.mp4
+      cfw-render-report.sh complete final/out.mp4
+    ) &
+    echo $! > orphan-bg.pid
+    exit 0
     ;;
   *)
     echo "fake-director: unknown FAKE_DIRECTOR_MODE '$mode'" >&2
