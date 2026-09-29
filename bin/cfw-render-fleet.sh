@@ -15,7 +15,7 @@
 #   * Run from an OPERATOR machine. NEVER install the master key on a render
 #     box — the box is stateless and minimally-scoped by design (the point of
 #     CFW-16). The key is read from $CFW_RENDER_ADMIN_ENV (default
-#     ~/.gsai/secrets/cfw-render-admin.env) or the process env — deliberately
+#     ~/ecosystem/vault/cfw-render-admin.env) or the process env — deliberately
 #     NOT from /etc/cfw-render.env (the box file). See cr_load_admin_config.
 #   * The flip is an operator decision — this NEVER bulk-flips. You name each
 #     brand id explicitly, and the live rollout stays brand-by-brand + gated.
