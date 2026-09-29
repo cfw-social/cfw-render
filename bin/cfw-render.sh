@@ -277,12 +277,12 @@ print(tpl)
   ) &
   local director_pid=$!
 
-  ( sleep "$timeout_secs"; kill -TERM "$director_pid" 2>/dev/null; sleep 30; kill -KILL "$director_pid" 2>/dev/null ) &
+  ( sleep "$timeout_secs"; cr_kill_tree "$director_pid" TERM; sleep 30; cr_kill_tree "$director_pid" KILL ) &
   local watchdog_pid=$!
 
   wait "$director_pid"
   local director_exit=$?
-  kill "$watchdog_pid" 2>/dev/null; wait "$watchdog_pid" 2>/dev/null
+  cr_kill_tree "$watchdog_pid" TERM; wait "$watchdog_pid" 2>/dev/null
   # Stop the pulse before ANY outcome is reported — a heartbeat after
   # complete/block would be rejected ("order not claimed by this worker").
   cr_heartbeat_stop "$heartbeat_pid"
