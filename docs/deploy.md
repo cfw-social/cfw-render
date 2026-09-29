@@ -10,7 +10,7 @@
 
 - SSH access to the render worker host (`hst` today; the worker is
   host-agnostic per `cfw-render-worker-plan.md` "Open items").
-- `~/.gsai/secrets/cfw-render.env` populated (§5 of
+- `~/ecosystem/vault/cfw-render.env` populated (§5 of
   `cfw-social/docs/render-worker-auth.md`) with `CFW_RENDER_WORKER_KEY` +
   `CFW_API_BASE`.
 - Vercel env `CFW_RENDER_WORKER_KEY` set on prod (matching value) and
@@ -21,7 +21,7 @@
 1. Mint/verify the render-worker key per `render-worker-auth.md` §5.1–5.2.
 2. Confirm the Vercel env is live (`vercel env ls`) and cfw-social has been
    redeployed since the key was set.
-3. Confirm `~/.gsai/secrets/cfw-render.env` has the matching key, chmod 600.
+3. Confirm `~/ecosystem/vault/cfw-render.env` has the matching key, chmod 600.
 
 ## 2. REQUIRED CHECKS — confirm scratch root + CFW Media path on the live box
 
@@ -109,7 +109,7 @@ per-brand, reversible, auditable way to opt a brand in/out of the render fleet
 and read current state. It uses the **master key** (`cfw-api-key`), NOT the
 box's narrow `cfw_render_` worker key — so **run it from an operator machine,
 never a render box.** Point it at the master key via `CFW_MASTER_API_KEY` (in
-`$CFW_RENDER_ADMIN_ENV`, default `~/.gsai/secrets/cfw-render-admin.env`, or the
+`$CFW_RENDER_ADMIN_ENV`, default `~/ecosystem/vault/cfw-render-admin.env`, or the
 process env) plus `CFW_API_BASE`:
 
 ```bash
@@ -230,6 +230,6 @@ and `scripts/verify-skills-bundle.sh` (checksum gate) exiting 0.
 ## 9. Rotation
 
 Follow `render-worker-auth.md` §5.3 verbatim: mint → update Vercel env →
-redeploy cfw-social → update `~/.gsai/secrets/cfw-render.env` + the box
+redeploy cfw-social → update `~/ecosystem/vault/cfw-render.env` + the box
 `/etc/cfw-render.env` → restart the worker pool (`systemctl restart
 cfw-render.timer` picks up the new env on the next tick; no code change).

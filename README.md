@@ -58,7 +58,7 @@ retired 2026-09-01).
   cwd). There is no shared-box fallback and no bundle-vs-fetch switch — the
   bundle is cfw-render's one and only skills source. Setting
   `CFW_RENDER_SKILLS_DIR` explicitly (env, `/etc/cfw-render.env`, or
-  `~/.gsai/secrets/cfw-render.env`) overrides it — use this only to point at a
+  `~/ecosystem/vault/cfw-render.env`) overrides it — use this only to point at a
   local `~/ecosystem/skills` checkout for recipe-development iteration.
 - **Version pin:** `config/skills-version.json` records the exact
   `ecosystem/skills` source commit (`sourceCommit`), per-recipe `version` +
@@ -285,7 +285,7 @@ Director that is already running.
 ## Usage
 
 ```bash
-cp config/cfw-render.env.example ~/.gsai/secrets/cfw-render.env   # fill in CFW_API_BASE + CFW_RENDER_WORKER_KEY, chmod 600
+cp config/cfw-render.env.example ~/ecosystem/vault/cfw-render.env   # fill in CFW_API_BASE + CFW_RENDER_WORKER_KEY, chmod 600
 bin/cfw-render.sh --dry      # validate config + credential + live tools/list; claims nothing
 bin/cfw-render.sh --once     # one real tick — claims + renders (what the timer calls every 15 min)
 bin/cfw-render-ctl.sh status # tick-lock state, journal tail, timer status, --dry summary
@@ -298,7 +298,7 @@ bin/cfw-render-ctl.sh unblock <orderId>   # forward-compatible; fails fast today
 
 ```bash
 # Uses the MASTER key (CFW_MASTER_API_KEY), not the box's cfw_render_ worker key.
-# Read it from ~/.gsai/secrets/cfw-render-admin.env ($CFW_RENDER_ADMIN_ENV) or the env.
+# Read it from ~/ecosystem/vault/cfw-render-admin.env ($CFW_RENDER_ADMIN_ENV) or the env.
 bin/cfw-render-fleet.sh status  <brandId>          # read renderFleetEnabled
 bin/cfw-render-fleet.sh enable  <brandId>          # opt brand IN  (per-brand, reversible)
 bin/cfw-render-fleet.sh disable <brandId>          # opt brand OUT (instant rollback)
@@ -320,7 +320,7 @@ certify at ≈6 min, the box runs 2–3× slower and a gate-fail re-render doubl
 it; stage reports heartbeat the 30-min claim lease so the hour is safe — gate
 fail-cap, fan-out model allowlist, Ollama keys file, the `CFW_RENDER_DIRECTOR_CMD`
 test seam). Load order: `/etc/cfw-render.env` → `$CFW_RENDER_ENV` (default
-`~/.gsai/secrets/cfw-render.env`) → process env wins over both files.
+`~/ecosystem/vault/cfw-render.env`) → process env wins over both files.
 
 ## `workerId` semantics
 
@@ -348,7 +348,7 @@ The task text originally said `~/.gsai/secrets/zai.env` for the GLM/Kimi
 fan-out + Sonnet quota-failover keys. That file holds unrelated z.ai creds
 (`ZAI_API_KEY`) — **not** what `claude_ollama_failover` needs. The proven
 production recipe (same one `ab-hustler` uses) is
-`~/.gsai/secrets/ollama-keys.env` (`OLLAMA_KEY_GOOFY_HUGLE_463_B`,
+`~/ecosystem/vault/ollama-keys.env` (`OLLAMA_KEY_GOOFY_HUGLE_463_B`,
 `OLLAMA_KEY_RECURSING_PIKE_357`), configured via
 `CFW_RENDER_OLLAMA_KEYS_FILE` (default already points there — see
 `implementation-plan.md` §0.7).

@@ -134,7 +134,7 @@ cr_verify_skills_bundle() {
 
 # ---------------------------------------------------------------------------
 # cr_load_config — env cascade: /etc/cfw-render.env (Linux box) → $CFW_RENDER_ENV
-# (default ~/.gsai/secrets/cfw-render.env) → process env wins over both files
+# (default ~/ecosystem/vault/cfw-render.env) → process env wins over both files
 # (a file only fills vars that are still unset). Fails fast on missing
 # required vars; never prints values.
 # ---------------------------------------------------------------------------
@@ -161,7 +161,7 @@ cr_load_config() {
     source /etc/cfw-render.env
   fi
 
-  local env_file="${CFW_RENDER_ENV:-$HOME/.gsai/secrets/cfw-render.env}"
+  local env_file="${CFW_RENDER_ENV:-$HOME/ecosystem/vault/cfw-render.env}"
   if [[ -r "$env_file" ]]; then
     # shellcheck disable=SC1090
     source "$env_file"
@@ -184,7 +184,7 @@ cr_load_config() {
   : "${CFW_RENDER_TIMEOUT_VIDEO:=3600}"
   : "${CFW_RENDER_TIMEOUT_IMAGE:=900}"
   : "${CFW_RENDER_GATE_FAIL_CAP:=2}"
-  : "${CFW_RENDER_OLLAMA_KEYS_FILE:=$HOME/.gsai/secrets/ollama-keys.env}"
+  : "${CFW_RENDER_OLLAMA_KEYS_FILE:=$HOME/ecosystem/vault/ollama-keys.env}"
   : "${CFW_RENDER_DIRECTOR_CMD:=}"
   # Deploy mode (doc §4) — operational only, NEVER the security boundary (the
   # server enforces that via which credential family resolves). Set once at
@@ -367,7 +367,7 @@ sys.stdout.write(inner)
 #   * requires CFW_API_BASE + CFW_MASTER_API_KEY (the master key), NOT the
 #     narrow cfw_render_ worker key — flipping renderFleetEnabled is a
 #     privileged operator action the worker credential must NOT be able to do.
-#   * reads ONLY $CFW_RENDER_ADMIN_ENV (default ~/.gsai/secrets/cfw-render-admin
+#   * reads ONLY $CFW_RENDER_ADMIN_ENV (default ~/ecosystem/vault/cfw-render-admin
 #     .env) and the process env — DELIBERATELY never /etc/cfw-render.env. The
 #     master key must never live on a render box: the box is stateless and
 #     minimally-scoped by design (the whole point of CFW-16). This helper is an
@@ -379,7 +379,7 @@ cr_load_admin_config() {
   local _cr_preset=() _v
   for _v in "${_cr_vars[@]}"; do _cr_preset+=("${!_v:-}"); done
 
-  local admin_env="${CFW_RENDER_ADMIN_ENV:-$HOME/.gsai/secrets/cfw-render-admin.env}"
+  local admin_env="${CFW_RENDER_ADMIN_ENV:-$HOME/ecosystem/vault/cfw-render-admin.env}"
   if [[ -r "$admin_env" ]]; then
     # shellcheck disable=SC1090
     source "$admin_env"
@@ -540,7 +540,7 @@ cr_heartbeat_stop() {
 claude_ollama_failover() {
   local label="$1" model="$2" out="$3"; shift 3
   [[ "${1:-}" == "--" ]] && shift
-  local keysfile="${CFW_RENDER_OLLAMA_KEYS_FILE:-$HOME/.gsai/secrets/ollama-keys.env}"
+  local keysfile="${CFW_RENDER_OLLAMA_KEYS_FILE:-$HOME/ecosystem/vault/ollama-keys.env}"
   # shellcheck source=/dev/null
   [[ -f "$keysfile" ]] && source "$keysfile"
   local accts=(

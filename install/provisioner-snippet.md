@@ -25,7 +25,7 @@ so a reprovision of `hst` reinstalls the render worker the same way
    `config/cfw-render.env.example`; keep `CFW_RENDER_TIMEOUT_VIDEO=3600` — the
    60-min video watchdog is the fleet default since CFW-131) — this is a secret
    and must NOT be templated into the provisioner repo. Pull it from the vault
-   (`~/.gsai/secrets/cfw-render.env`) via whatever secret-sync mechanism the
+   (`~/ecosystem/vault/cfw-render.env`) via whatever secret-sync mechanism the
    provisioner already uses for other per-box `.env` files.
 4. **Enable + verify:**
    ```bash
