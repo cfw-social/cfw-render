@@ -1,8 +1,15 @@
 # cfw-render.service — systemd oneshot unit (Linux — hst).
-# Placeholders {{PREFIX}}, {{ENV_FILE}}, {{USER}} substituted by
-# install/install.sh. NOT installed by this task (AB-RNDR-WORKER is
-# code-authoring only) — a human installs it later per docs/deploy.md, as a
-# SEPARATE service pool decoupled from the cfw-gw@<slug> gateway units.
+# Placeholders {{PREFIX}}, {{ENV_FILE}}, {{USER}}, {{WORKER_PATH}}
+# substituted by install/install.sh. NOT installed by this task
+# (AB-RNDR-WORKER is code-authoring only) — a human installs it later per
+# docs/deploy.md, as a SEPARATE service pool decoupled from the
+# cfw-gw@<slug> gateway units.
+#
+# PATH (CFW-291): systemd gives a oneshot unit its own minimal default
+# search path, not the service user's login-shell PATH — the same failure
+# class CFW-279 fixed for macOS only. {{WORKER_PATH}} is the same resolved
+# PATH computed once in install.sh (cr_resolve_worker_path), fed into both
+# platform templates so there is no drift between them.
 [Unit]
 Description=cfw-render drainer (one tick)
 After=network-online.target
@@ -12,6 +19,11 @@ Wants=network-online.target
 Type=oneshot
 User={{USER}}
 EnvironmentFile={{ENV_FILE}}
+# Deliberately AFTER EnvironmentFile — systemd applies repeated
+# Environment=/EnvironmentFile= directives for the same key in file order,
+# last one wins, so the resolved worker PATH must always win over anything
+# {{ENV_FILE}} declares. See CFW-291.
+Environment=PATH={{WORKER_PATH}}
 ExecStart={{PREFIX}}/bin/cfw-render.sh --once
 TimeoutStartSec=2100
 
