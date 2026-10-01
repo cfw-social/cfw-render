@@ -1,59 +1,17 @@
-VERDICT: FAIL
+VERDICT: PASS
 
-## Why
+## What I checked
 
-The actual fix is correct in shape but was never committed to this branch. `HEAD`
-(`92c1c64`, "Merge branch 'dozer/CFW-307' into dozer/CFW-308") still contains Case
-Q4 in its original, buggy form:
+The prior review (`DOZER-REVIEW-CFW-308.md` at `2bb1690`) failed this branch because the correct fix existed only as an uncommitted working-tree edit; `HEAD` at that time (`92c1c64`) still had the bug. Since then, a new commit `c530e80` ("fix(CFW-308): CFW-291 Q4 fixture — give env -i probe a bash-bearing PATH") landed on top. This review starts from a clean slate: `git status --short` is empty (nothing uncommitted), so whatever is in `HEAD` is what would actually ship.
 
-```
-$ git show HEAD:test/run-tests.sh | grep -n cr_probe_claude_headless
-...
-1104:  cr_probe_claude_headless "$q4_tmp"
-...
-1123:  cr_probe_claude_headless "$q4_empty"
-```
+**Fix is committed and matches the design exactly.** `git show c530e80` touches only `test/run-tests.sh` (2 lines) and adds `DOZER-FIX-CFW-308.md`. The two `cr_probe_claude_headless` call sites in Case Q4 (success case and empty-output case) now pass `"$q4_tmp:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"` / `"$q4_empty:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"` instead of the bare temp dir — the identical patch `DOZER-DESIGN-CFW-308.md` prescribes, using the full 4-dir fallback list (not Q3's narrower 3-dir subset), matching `cr_resolve_worker_path`'s own fallback order.
 
-Both calls are missing the `:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin` suffix
-that `DOZER-DESIGN-CFW-308.md` specifies as the fix. The only place that suffix
-exists is an **uncommitted** working-tree edit to `test/run-tests.sh` (`git status`
-shows `M test/run-tests.sh`; `git diff` shows exactly the two-line patch the design
-doc describes). There is no `DOZER-FIX-CFW-308.md` and no fix commit on this branch.
+**No code changes to `bin/cfw-render-lib.sh`** — confirmed via the commit stat; `cr_resolve_worker_path`/`cr_probe_claude_headless` are untouched, consistent with the design's "this is a fixture-only defect" conclusion. Root-cause analysis (env -i strips PATH to a directory with no `bash`, so `#!/usr/bin/env bash` in `fake-claude.sh` can't resolve before the fixture's own logic runs) is sound and independently reproducible.
 
-If `dozer/CFW-308` were serial-merged into `develop` right now, Case Q4 would still
-fail with the exact root cause this ticket exists to fix — confirmed by direct
-reproduction:
+**Independently re-ran the full suite** rather than trusting `DOZER-FIX-CFW-308.md`'s claimed numbers: `./test/run-tests.sh` → **105 PASS / 0 FAIL**, `scripts/lint.sh` clean (bash -n + shellcheck -S warning across every script, zero findings), matching the fix doc's claim exactly. Case Q4 (both sub-cases) passes; Q1, Q2, Q3, Q5, Q6, Q7, and Case F all still pass — no regressions.
 
-```
-$ bash -c '
-tmp=$(mktemp -d); cp test/fake-claude.sh "$tmp/claude"; chmod +x "$tmp/claude"
-source bin/cfw-render-lib.sh
-cr_probe_claude_headless "$tmp"                                                  # committed (unfixed) call shape
-echo rc=$?
-cr_probe_claude_headless "$tmp:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"   # the fix, currently only uncommitted
-echo rc=$?
-'
-claude --version failed under a headless probe (env -i, rc=127)
-captured output: env: bash: No such file or directory
-rc=1
-fake-claude: ok (--version)
-rc=0
-```
+**No conflict markers** anywhere in the tree (`grep -rn '<<<<<<<\|=======\|>>>>>>>'` across `.sh`/`.md` files, empty). **No orphaned render processes** after the run — `pgrep -fl cfw-render` shows only a pre-existing, unrelated log-tail watcher from a separate monitoring session (same one already noted as harmless in `DOZER-FIX-CFW-307.md`), not a spawned render worker.
 
-So: the design's root-cause analysis is correct, the prescribed patch is correct and
-does fix the bug when applied — but the build/fix pass never actually committed it.
-The committed diff this review was handed (`develop..HEAD`) must have been generated
-against a working tree that included this uncommitted edit, which does not reflect
-what's actually on the branch. Reviewing committed state only (the only thing that
-can be merged), the ticket's one deliverable is missing.
+## Disposition
 
-## Secondary note (not independently blocking, but worth flagging for the fix pass)
-
-The merge commit `92c1c64` correctly brought in `dozer/CFW-307`'s content (CFW-291 +
-CFW-292 + CFW-286 + CFW-299), matching `DOZER-DESIGN-CFW-308.md`'s "Prerequisite"
-section — `cr_resolve_worker_path`/`cr_probe_claude_headless` and Cases Q1-Q7 are
-present and otherwise intact (Q1, Q2, Q3, Q5 unaffected; Q4's two sub-cases are the
-only gap). So the only outstanding work is: commit the already-correct two-line
-`test/run-tests.sh` edit (and add whatever `DOZER-FIX-CFW-308.md` this repo's
-pipeline expects), then re-run the suite to confirm Q4 now passes with no
-regressions elsewhere.
+The one outstanding gap from the previous review — an uncommitted fix — is resolved. The implementation satisfies the design doc, the suite is fully green, and nothing else on the branch regressed. Ready to serial-merge `dozer/CFW-308` into `develop`.
