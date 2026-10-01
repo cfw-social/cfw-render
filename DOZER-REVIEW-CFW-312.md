@@ -61,4 +61,35 @@ brand-overrides asset paths) were correctly left alone and are allowlisted in th
 one-line reason each, matching the design's explicit instruction not to grow the allowlist
 without re-examining the rewrite first.
 
+## Independent re-verification (second review pass)
+
+Re-ran every claim above from scratch in this worktree rather than trusting the committed
+review text — all reproduced:
+
+- `scripts/check-skills-portability.sh` → PASS (14 recipe dirs).
+- `scripts/verify-skills-bundle.sh` → PASS (14 recipes, 1150 files).
+- `test/run-tests.sh` → `PASS: 80  FAIL: 0`, Case 10 and Case 11 both present and green.
+- Raw `grep -rl` sweep of `skills/` for the three forbidden host-root patterns turned up only
+  `c-audio`/`c-production` doc paths, `c-kie-ai`/`c-replicate`'s `${SKILLS_DIR:-$HOME/.claude/skills}`
+  default-value idiom (not a `find`, correctly untouched), `c-kie-ai/sync-models.sh`'s author-side
+  output path, and `eval_run.py`'s allowlisted `.hub/`-first fallback — nothing else.
+- `p-reels-pip-heygen/.hub/p-reels-pip/SKILL.md` confirmed on disk to resolve its own dir to its
+  real nested path and its sub-skill vars to `$SKILL_DIR/../<dep>` siblings; `CFW_RENDER_SKILLS_DIR`
+  confirmed exported at `bin/cfw-render-lib.sh:221-222`.
+- Ran all four recipe-level `scripts/verify-skill.sh` copies touched by this diff
+  (`p-reels-pip`, `p-reels-pip-heygen/.hub/p-reels-pip`, `p-reels-split`,
+  `p-reels-split-heygen/.hub/p-reels-split`) directly: 33/33, 33/33, 48/48, 48/48 under a
+  UTF-8 locale — the `_find_skill()` rewrite works in both the top-level (`.hub/$1`) and
+  nested (`../$1`) forms.
+
+**One pre-existing, out-of-scope flake found and ruled out as a blocker:** under a `C`
+locale shell, `p-reels-split/scripts/verify-skill.sh`'s own "bottom zone 1080x960" check
+(line 47, `grep -q "bottom.*1080.960\|..."`) fails, because its `.` assumes the `×` in
+"1080×960" is one byte; in `C` locale it's two UTF-8 bytes, so the pattern doesn't match.
+Confirmed this reproduces byte-for-byte on `develop`'s baseline copy of the same file under
+the same locale — it predates this branch, CFW-312 never touched that check line, and
+`test/run-tests.sh` (the actual gate `pnpm test` runs) never invokes any recipe's
+`verify-skill.sh` at all, so this never reaches CI. Not a regression, not in scope, not
+blocking — flagging only so it doesn't get mistaken for fallout from this change later.
+
 No changes made to the repo other than this review file.
