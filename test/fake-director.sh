@@ -134,6 +134,21 @@ JSON
     echo $! > orphan-bg.pid
     exit 0
     ;;
+  heygen-cred)
+    # [CFW-313] Proves the brand-scoped HeyGen credential the gate resolved
+    # actually reached the Director's env, under the right names — never
+    # HEYGEN_API_KEY. Written to disk, then BLOCKS (rather than completing)
+    # so run-tests.sh can inspect the file before the scratch dir is wiped —
+    # a completed order's scratch dir is deleted by the drainer right after.
+    {
+      echo "HEYGEN_OAUTH_TOKEN=${HEYGEN_OAUTH_TOKEN:-}"
+      echo "HEYGEN_CREDIT_POOL=${HEYGEN_CREDIT_POOL:-}"
+      echo "HEYGEN_TOKEN_EXPIRES_AT=${HEYGEN_TOKEN_EXPIRES_AT:-}"
+      echo "HEYGEN_API_KEY=${HEYGEN_API_KEY:-}"
+    } > heygen-env.txt
+    cfw-render-report.sh stage fetch-assets 10 "Gathering ingredients"
+    cfw-render-report.sh block "test probe only — not a real render"
+    ;;
   *)
     echo "fake-director: unknown FAKE_DIRECTOR_MODE '$mode'" >&2
     exit 1

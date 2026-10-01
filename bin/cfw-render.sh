@@ -190,6 +190,43 @@ print(brand.get("slug") or "")
   mkdir -p "$order_dir/ingredients" "$order_dir/clips" "$order_dir/work" "$order_dir/final"
   printf '%s' "$order_json" > "$order_dir/order.json"
 
+  # [CFW-313] Brand-scoped provider credential gate. A HeyGen recipe must
+  # carry taskOrder.credentials.heygen — a brand-scoped OAuth credential
+  # cfw-social embeds into the order at claim time from THAT brand's own
+  # connected HeyGen account. This worker NEVER falls back to any
+  # worker-local/vault HeyGen key — absent or malformed means this brand
+  # simply hasn't connected HeyGen yet (or the companion cfw-social piece of
+  # CFW-313 hasn't shipped), and the honest answer is to block, not to
+  # borrow another brand's credential.
+  local heygen_mode="" heygen_token="" heygen_expires="" heygen_pool="" heygen_expired=""
+  if cr_recipe_needs_heygen "$recipe"; then
+    IFS=$'\x1f' read -r heygen_mode heygen_token heygen_expires heygen_pool heygen_expired <<< "$(python3 -c '
+import datetime, json, sys
+o = json.load(sys.stdin)
+cred = ((o.get("taskOrder") or {}).get("credentials") or {}).get("heygen") or {}
+mode = cred.get("mode") or ""
+token = cred.get("accessToken") or ""
+expires = cred.get("expiresAt") or ""
+pool = cred.get("creditPool") or ""
+expired = "0"
+if expires:
+    try:
+        exp_dt = datetime.datetime.fromisoformat(expires.replace("Z", "+00:00"))
+        expired = "1" if exp_dt <= datetime.datetime.now(datetime.timezone.utc) else "0"
+    except Exception:
+        expired = "1"  # unparsable expiresAt — fail closed, treat as expired
+print("\x1f".join([mode, token, expires, pool, expired]))
+' <<< "$order_json" 2>/dev/null)"
+
+    if [[ "$heygen_mode" != "oauth" || -z "$heygen_token" || "$heygen_expired" == "1" ]]; then
+      cr_log "spawn_director: order $order_id (recipe=$recipe) has no usable brand-scoped HeyGen OAuth credential on taskOrder.credentials.heygen (mode=$heygen_mode expired=$heygen_expired) — blocking (never falling back to a worker-local key)"
+      cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"this brand'"'"'s HeyGen account isn'"'"'t connected — connect it in brand settings","needs":"decision"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
+        || cr_log "order $order_id — block_render_order (no-heygen-credential) call failed; lease expiry is the backstop"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "blocked" "" "" >> "$JOURNAL"
+      return 1
+    fi
+  fi
+
   # Integrity gate (doc §5): verify ONLY this order's recipe against the
   # bundle's index.json before spending a Director on it. A genuine checksum
   # mismatch (a pinned file changed under us — e.g. a pull landed mid-tick)
@@ -277,6 +314,18 @@ print(tpl)
     export CFW_RENDER_STATE_DIR
     export CFW_RENDER_OLLAMA_KEYS_FILE
     export CFW_RENDER_FANOUT_MODELS
+    # [CFW-313] Brand-scoped HeyGen credential, if the gate above resolved
+    # one — exported under its own name (never HEYGEN_API_KEY, which implies
+    # api-key auth to anyone reading the env later) so the recipe can assert
+    # it got an OAuth token billing the brand's own plan credits, not a
+    # shared worker-vault key. Absent entirely when this order doesn't need
+    # HeyGen (the gate above never ran) or (impossible here — the gate
+    # already blocked and returned) when it's missing.
+    if [[ -n "$heygen_token" ]]; then
+      export HEYGEN_OAUTH_TOKEN="$heygen_token"
+      export HEYGEN_CREDIT_POOL="$heygen_pool"
+      export HEYGEN_TOKEN_EXPIRES_AT="$heygen_expires"
+    fi
     export PATH="$SELF_DIR:$PATH"
     if [[ -n "$CFW_RENDER_DIRECTOR_CMD" ]]; then
       # shellcheck disable=SC2086
