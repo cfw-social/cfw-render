@@ -133,6 +133,32 @@ cr_verify_skills_bundle() {
 }
 
 # ---------------------------------------------------------------------------
+# cr_recipe_needs_heygen <recipe> — [CFW-313] true (0) iff this recipe's
+# render path calls into c-heygen and therefore MUST carry a brand-scoped
+# HeyGen OAuth credential (taskOrder.credentials.heygen, embedded by
+# cfw-social at claim time) before spawn_director() may start a Director for
+# it — the worker itself never falls back to a worker-local/vault key.
+#
+# Hand-maintained name list (same style as _CR_REQUIRED_BINS below) —
+# config/skills-version.json carries no per-recipe dependency-closure data
+# today to derive this from automatically; revisit if that ever lands.
+# p-longform / p-clone-reel can ALSO route through c-heygen for one scene
+# among several, but taskOrder carries no finer "this order actually uses a
+# HeyGen scene" signal yet (CFW-313 open question) — they are deliberately
+# NOT in this list to avoid over-blocking every order from those two
+# recipes just because HeyGen is one of several possible scene sources.
+# ---------------------------------------------------------------------------
+_CR_HEYGEN_RECIPES=(p-reels-pip-heygen p-reels-spotlight-heygen p-reels-split-heygen)
+cr_recipe_needs_heygen() {
+  local recipe="${1:-}" r
+  [[ -z "$recipe" ]] && return 1
+  for r in "${_CR_HEYGEN_RECIPES[@]}"; do
+    [[ "$recipe" == "$r" ]] && return 0
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # cr_load_config — env cascade: /etc/cfw-render.env (Linux box) → $CFW_RENDER_ENV
 # (default ~/ecosystem/vault/cfw-render.env) → process env wins over both files
 # (a file only fills vars that are still unset). Fails fast on missing
@@ -532,6 +558,22 @@ cr_heartbeat_stop() {
   cr_kill_tree "$pid" TERM
   wait "$pid" 2>/dev/null
   return 0
+}
+
+# ---------------------------------------------------------------------------
+# cr_heartbeat_stop_if_pending — [CFW-315] stop a pulse (if one is running)
+# BEFORE reporting a terminal outcome. Reads the pid dropped by spawn_director
+# at $PWD/.heartbeat.pid (CWD is always the order's scratch dir, for both the
+# Director's foreground run and any backgrounded straggler it forks — same
+# assumption cfw-render-report.sh already makes for .outcome). Best-effort,
+# idempotent, silent if no pidfile exists (heartbeat cadence 0, or already
+# stopped).
+# ---------------------------------------------------------------------------
+cr_heartbeat_stop_if_pending() {
+  [[ -f .heartbeat.pid ]] || return 0
+  local pid; pid="$(cat .heartbeat.pid 2>/dev/null)"
+  rm -f .heartbeat.pid
+  cr_heartbeat_stop "$pid"
 }
 
 # ---------------------------------------------------------------------------

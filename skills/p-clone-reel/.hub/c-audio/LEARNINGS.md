@@ -14,7 +14,7 @@
 ## Feedback Log
 
 ### 2026-05-22 — COM-40 PAL v3 Module 1 batch TTS run
-- ELEVENLABS_API_KEY was available in `~/.gsai/secrets.env` the whole time — agents blocked for 11 days unnecessarily. Always source secrets.env before declaring a key missing.
+- ELEVENLABS_API_KEY was available in the vault the whole time — agents blocked for 11 days unnecessarily. Always read the vault before declaring a key missing. *(Path corrected 2026-09-14, GSAI-35: the file is `~/ecosystem/vault/secrets.env`. The home-dotfolder path this entry originally named was torn down 2026-08-30 and sourcing it silently loads nothing.)*
 - FLOE_API_KEY was not set; direct ElevenLabs API worked fine as fallback (eleven_turbo_v2_5).
 - Single-pass loudnorm undershot -14 LUFS target by ~1.5 LUFS on TTS speech. Two-pass + volume trim got within 0.4–0.5 LUFS — acceptable.
 - Five lessons produced: 1.1 (285s), 1.2 (348s), 1.3 (335s), 1.4 (290s), 1.5 (332s). All in productions/pal-v3-module-1/interim/audio/.

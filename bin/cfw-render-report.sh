@@ -155,6 +155,7 @@ if captions:
 print(json.dumps(d))
 ' "$CFW_ORDER_ID" "$CFW_WORKER_ID" "$output_url" "$director_model" "$fanout_json" "$urls_json" "$captions_json")"
 
+    cr_heartbeat_stop_if_pending
     resp="$(cr_mcp_call complete_render_order "$complete_args")" || { echo "cfw-render-report: complete_render_order failed" >&2; exit 1; }
     ok="$(python3 -c 'import json,sys; print("1" if json.loads(sys.stdin.read()).get("ok") else "0")' <<< "$resp" 2>/dev/null)"
     if [[ "$ok" != "1" ]]; then
@@ -187,6 +188,7 @@ if sys.argv[4]:
     d["needs"] = sys.argv[4]
 print(json.dumps(d))
 ' "$CFW_ORDER_ID" "$CFW_WORKER_ID" "$reason" "$needs")"
+    cr_heartbeat_stop_if_pending
     resp="$(cr_mcp_call block_render_order "$args")" || { echo "cfw-render-report: block_render_order failed" >&2; exit 1; }
     echo "block" > .outcome
     echo "$resp"

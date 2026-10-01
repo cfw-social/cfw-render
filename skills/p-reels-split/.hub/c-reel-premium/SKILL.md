@@ -36,8 +36,7 @@ layer, then muxes the original audio + SFX and grades in ONE ffmpeg pass.
 | brand | Yes | — | `{accent, fg}` 6-digit hexes via the Visual Identity Gate. Never hard-code. |
 
 ```bash
-PREMIUM_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" -maxdepth 4 -type d -name c-reel-premium 2>/dev/null | head -1)
-[ -n "$PREMIUM_DIR" ] || PREMIUM_DIR="$SKILL_DIR/.hub/c-reel-premium"   # pack form
+PREMIUM_DIR="${CFW_RENDER_SKILLS_DIR:?CFW_RENDER_SKILLS_DIR not set}/p-reels-split/.hub/c-reel-premium"
 PW="$W/premium" ; mkdir -p "$PW"
 DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$REEL_IN")
 ```

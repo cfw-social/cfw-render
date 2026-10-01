@@ -90,10 +90,18 @@ check "SKILL.md force_original=decrease"   grep -q "force_original_aspect_ratio=
 check "SKILL.md top/bottom trim step"      grep -q "top-trimmed\|Step 7.5" "$SKILL_DIR/SKILL.md"
 check "SKILL.md vstack inputs=2"           grep -q "vstack=inputs=2" "$SKILL_DIR/SKILL.md"
 
+# CTA end-card alpha contract (GSAI-36) — the card must be an alpha MOV with the scrim on an inner layer
+check "Step 9 CTA renders --format mov"        grep -q 'render --format mov --output "$W/cta-card.mov"' "$SKILL_DIR/SKILL.md"
+check_absent "Step 9 CTA never overlays an mp4 card" 'cta-card\.mp4' "$SKILL_DIR/SKILL.md"
+check "Step 9 CTA html/body transparent"       grep -q '^html,body{.*background:transparent;}' "$SKILL_DIR/SKILL.md"
+check "Step 9 CTA scrim on inner .scrim layer" grep -q '^\.scrim{position:absolute;.*rgba(15,23,42,0.85)' "$SKILL_DIR/SKILL.md"
+check "Step 9 CTA copy in absolute .cta layer" grep -q '^\.cta{position:absolute;.*justify-content:center' "$SKILL_DIR/SKILL.md"
+check "Step 9 CTA card pix_fmt gate"           grep -q 'yuva\*|rgba|argb' "$SKILL_DIR/SKILL.md"
+check "Step 9 CTA bottom-55% colour gate"      grep -q 'crop=iw:ih\*0.55:0:ih\*0.45' "$SKILL_DIR/SKILL.md"
+
 # Component skill directories
 _find_skill() {
-  find "$HOME/.claude/skills" "$HOME/.hermes/skills" /Users/vasanth/ecosystem/harness/skills \
-    -maxdepth 4 -type d -name "$1" 2>/dev/null | head -1
+  echo "$SKILL_DIR/../$1"
 }
 BROLL_SYNC=$(_find_skill c-broll-sync)
 PREMIUM=$(_find_skill c-reel-premium)
