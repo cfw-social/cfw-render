@@ -535,6 +535,22 @@ cr_heartbeat_stop() {
 }
 
 # ---------------------------------------------------------------------------
+# cr_heartbeat_stop_if_pending — [CFW-315] stop a pulse (if one is running)
+# BEFORE reporting a terminal outcome. Reads the pid dropped by spawn_director
+# at $PWD/.heartbeat.pid (CWD is always the order's scratch dir, for both the
+# Director's foreground run and any backgrounded straggler it forks — same
+# assumption cfw-render-report.sh already makes for .outcome). Best-effort,
+# idempotent, silent if no pidfile exists (heartbeat cadence 0, or already
+# stopped).
+# ---------------------------------------------------------------------------
+cr_heartbeat_stop_if_pending() {
+  [[ -f .heartbeat.pid ]] || return 0
+  local pid; pid="$(cat .heartbeat.pid 2>/dev/null)"
+  rm -f .heartbeat.pid
+  cr_heartbeat_stop "$pid"
+}
+
+# ---------------------------------------------------------------------------
 # claude_ollama_failover <label> <model> <outfile> -- <claude args...>
 # BASH PORT of ~/ecosystem/ab-hustler/ab-lib.sh:76-105 (claude_ollama_failover).
 # Same account order goofy_hugle -> recursing_pike, same rate-limit regex,
