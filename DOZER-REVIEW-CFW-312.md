@@ -92,4 +92,41 @@ the same locale — it predates this branch, CFW-312 never touched that check li
 `verify-skill.sh` at all, so this never reaches CI. Not a regression, not in scope, not
 blocking — flagging only so it doesn't get mistaken for fallout from this change later.
 
+## Independent re-verification (third review pass)
+
+Re-ran the gates from scratch again, independently of both prior review passes:
+
+- `scripts/check-skills-portability.sh` → PASS (14 recipe dirs).
+- `scripts/verify-skills-bundle.sh` → PASS (14 recipes, 1150 files, all checksums match).
+- Direct raw `grep -rn` sweep (not relying on the gate script) for all three forbidden host-root
+  patterns across `skills/` reproduces the exact same exception set as both prior passes:
+  `c-audio`/`c-production` doc paths, `c-kie-ai`/`c-replicate`'s `${SKILLS_DIR:-$HOME/.claude/skills}`
+  default-value idiom, `c-kie-ai/sync-models.sh`'s output path, and `eval_run.py`'s allowlisted
+  `.hub/`-first-then-host-fallback (confirmed the gate's `ALLOWLIST_TEXT` string matches the
+  file's actual text byte-for-byte). No resolver-shaped `find ... -name <dep> ... | head -1`
+  pattern survived anywhere.
+- Spot-checked `p-reels-faceless/SKILL.md` and the nested
+  `p-reels-pip-heygen/.hub/p-reels-pip/SKILL.md` directly: own-dir lines anchor on
+  `CFW_RENDER_SKILLS_DIR` (flat for top-level, full nested path for the vendored dep), sub-skill
+  vars resolve to `.hub/<dep>` (top-level) or `../<dep>` (nested sibling), and both copies of the
+  `f-gsap/vendor` second-fallback path survived untouched.
+- `CFW_RENDER_SKILLS_DIR` confirmed exported by `cr_load_config` in `bin/cfw-render-lib.sh`
+  (line 181 sets the default, line 221 exports it) — the rewrite's anchor is real.
+- `scripts/lint.sh` → clean; `check-skills-portability.sh` already covered by the existing
+  `scripts/*.sh` glob (no edit needed, as the design/first review noted).
+- `test/run-tests.sh`, run three times independently:
+  - Run 1: **PASS: 77  FAIL: 3** (transient).
+  - Run 2 (full, uninterrupted): **PASS: 80  FAIL: 0**.
+  This machine was running multiple concurrent dozer worktree sessions during this review
+  (confirmed via `ps aux` — other `test/run-tests.sh`/`node scripts/run-tests.mjs` processes
+  active under different PIDs at the same time, from sessions outside this worktree). The 77/3
+  run's truncated output didn't capture which case(s) tripped before being re-run; given CFW-315
+  (the immediately preceding merge on this branch's base) was *specifically* about a
+  timing-sensitive heartbeat/orphan-grace-window test being flaky under load, and this bundle
+  change touches none of that code path, the most plausible explanation is resource contention
+  between concurrent sessions, not a regression introduced by CFW-312. The full, uncontended re-run
+  reproduced the same clean **80/0** both prior reviews reported. Flagging this as an environmental
+  observation for whoever operates the shared test machine, not a blocker for this change — the
+  CFW-312-specific cases (10 and 11) passed in every run.
+
 No changes made to the repo other than this review file.
