@@ -1,4 +1,4 @@
-{"synced_at": "2026-04-30T03:31:54.285214", "count": 43, "source": "floe-registry", "registry": "/Users/vasanth/Code/video-apps/floe/src/integrations/ai/kie-ai/models/index.ts"}
+{"synced_at": "2026-04-30T03:31:54.285214", "count": 43, "source": "floe-registry", "registry": "/Users/<redacted>/Code/video-apps/floe/src/integrations/ai/kie-ai/models/index.ts"}
 {"key": "grok-imagine:text-to-image", "provider": "grok-imagine", "operation": "text-to-image", "api_model": "grok-imagine/text-to-image", "endpoint": "standard", "api_operation": null, "deprecated": false}
 {"key": "grok-imagine:text-to-video", "provider": "grok-imagine", "operation": "text-to-video", "api_model": "grok-imagine/text-to-video", "endpoint": "standard", "api_operation": null, "deprecated": false}
 {"key": "grok-imagine:image-to-video", "provider": "grok-imagine", "operation": "image-to-video", "api_model": "grok-imagine/image-to-video", "endpoint": "standard", "api_operation": null, "deprecated": false}

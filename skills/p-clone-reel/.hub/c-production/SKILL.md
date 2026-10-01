@@ -24,7 +24,7 @@ requires: ffmpeg, python3
 
 | Variable | Required | Source | Description |
 |----------|----------|--------|-------------|
-| `{brand_local_path}` | Yes | Caller / ecosystem.yaml | Absolute path to brand folder (e.g. `/Users/vasanth/initiatives/brands/royal-mysorian`) |
+| `{brand_local_path}` | Yes | Caller / ecosystem.yaml | Absolute path to brand folder (e.g. `/Users/<redacted>/initiatives/brands/royal-mysorian`) |
 | `{production-name}` | Yes | Caller | Short slug for this production (e.g. `ai-shortcuts-ep01`) |
 
 ## Production Folder Structure
@@ -47,7 +47,7 @@ Create this structure at `{brand_local_path}/creatives/productions/{production-n
 ```
 
 **AI-generated images** → `{brand_local_path}/creatives/brolls/images/` (NEVER in interim/)
-**SFX** → `/Users/vasanth/ecosystem/harness/skills/sfx/` (NEVER in audio/)
+**SFX** → `/Users/<redacted>/ecosystem/harness/skills/sfx/` (NEVER in audio/)
 **Deliverables** → `final/` only — never copy to brand `creatives/` before delivery
 
 ```bash
