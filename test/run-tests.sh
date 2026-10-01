@@ -1101,7 +1101,7 @@ chmod +x "$q4_tmp/claude"
 (
   # shellcheck source=/dev/null
   source "$REPO_DIR/bin/cfw-render-lib.sh"
-  cr_probe_claude_headless "$q4_tmp"
+  cr_probe_claude_headless "$q4_tmp:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
 ) >/dev/null 2>&1
 q4_rc=$?
 if [[ "$q4_rc" == "0" ]]; then
@@ -1120,7 +1120,7 @@ chmod +x "$q4_empty/claude"
 (
   # shellcheck source=/dev/null
   source "$REPO_DIR/bin/cfw-render-lib.sh"
-  cr_probe_claude_headless "$q4_empty"
+  cr_probe_claude_headless "$q4_empty:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
 ) >/dev/null 2>&1
 q4_empty_rc=$?
 if [[ "$q4_empty_rc" != "0" ]]; then
