@@ -53,6 +53,38 @@ print(json.dumps([order]))
 
 empty_queue() { echo '[]'; }
 
+order_fixture_heygen() {
+  # order_fixture_heygen <id> <brandId> <kind> [cred-json]
+  # [CFW-313] Same shape as order_fixture() but on a `*-heygen` recipe, with
+  # an optional taskOrder.credentials.heygen literal (compact JSON, NO
+  # spaces — this string travels through run_case's unquoted word-split, so
+  # a space inside it would split into extra, wrong positional args).
+  # Omitting the 4th arg entirely means "this brand has no HeyGen account
+  # connected" — taskOrder.credentials.heygen is absent, same as real life.
+  local id="$1" brand="$2" kind="$3" cred="${4:-}"
+  python3 -c '
+import json, sys
+oid, brand, kind, cred_raw = sys.argv[1:5]
+task = {
+    "version": 1, "orderId": oid,
+    "brand": {"id": brand, "slug": "test-brand", "brief": "test brand"},
+    "kind": kind, "recipe": "p-reels-spotlight-heygen", "workspaceId": "ws-1",
+    "intent": "test render", "ingredients": [],
+    "targets": ["instagram", "tiktok", "youtube", "threads"],
+    "acceptance": {"gate": "c-shorts-qa-gate"},
+}
+if cred_raw:
+    task["credentials"] = {"heygen": json.loads(cred_raw)}
+order = {
+    "id": oid, "brandId": brand, "workspaceId": "ws-1", "kind": kind,
+    "recipe": "p-reels-spotlight-heygen", "status": "queued",
+    "taskOrder": task,
+    "priority": 0, "attempts": 1,
+}
+print(json.dumps([order]))
+' "$id" "$brand" "$kind" "$cred"
+}
+
 start_mock() {
   # NOTE: must redirect the background server's stdout/stderr away from the
   # inherited pipe — backgrounding inside a `$(...)` command substitution
@@ -790,6 +822,110 @@ if "$REPO_DIR/scripts/check-skills-portability.sh" >/dev/null 2>&1; then
 else
   c312_real_out="$("$REPO_DIR/scripts/check-skills-portability.sh" 2>&1)"
   fail "static guard: host-path resolver in committed bundle" "$c312_real_out"
+fi
+
+echo "=== Case 12: static guard — no worker-vault HeyGen credential in bin/lib/config (CFW-313) ==="
+if "$REPO_DIR/scripts/check-no-worker-heygen-credential.sh" >/dev/null 2>&1; then
+  pass "static guard: no worker-vault HeyGen credential reference in bin/lib/config"
+else
+  c313_guard_out="$("$REPO_DIR/scripts/check-no-worker-heygen-credential.sh" 2>&1)"
+  fail "static guard: worker-vault HeyGen credential reference found" "$c313_guard_out"
+fi
+
+echo "=== Case 13: HeyGen credential present + unexpired — exported into the Director's env, never HEYGEN_API_KEY (CFW-313) ==="
+run_case "heygen-present" "heygen-cred" \
+  'order_fixture_heygen order-heygen-ok-1 brand-1 video {"mode":"oauth","accessToken":"test-heygen-oauth-token-abc123","expiresAt":"2099-01-01T00:00:00Z","creditPool":"plan_credits"}' \
+  true
+if [[ "$(calls_count block_render_order)" == "1" ]]; then
+  pass "heygen-present: Director spawned and ran (it blocked itself — this fixture is a probe, not a real render)"
+else
+  fail "heygen-present: director spawn" "expected exactly 1 block_render_order (from the Director's own probe block), got $(calls_count block_render_order)"
+fi
+heygen_env_file="$CASE_SCRATCH/test-brand/order-heygen-ok-1/heygen-env.txt"
+if [[ -f "$heygen_env_file" ]]; then
+  pass "heygen-present: Director's env was captured"
+else
+  fail "heygen-present: env capture" "heygen-env.txt not found at $heygen_env_file"
+fi
+heygen_env_check="$(python3 -c '
+import sys
+vals = {}
+try:
+    for line in open(sys.argv[1] if len(sys.argv) > 1 else "/dev/null"):
+        if "=" in line:
+            k, v = line.rstrip("\n").split("=", 1)
+            vals[k] = v
+except FileNotFoundError:
+    print("BAD file missing"); raise SystemExit
+problems = []
+if vals.get("HEYGEN_OAUTH_TOKEN") != "test-heygen-oauth-token-abc123":
+    problems.append("HEYGEN_OAUTH_TOKEN=%r" % vals.get("HEYGEN_OAUTH_TOKEN"))
+if vals.get("HEYGEN_CREDIT_POOL") != "plan_credits":
+    problems.append("HEYGEN_CREDIT_POOL=%r" % vals.get("HEYGEN_CREDIT_POOL"))
+if vals.get("HEYGEN_TOKEN_EXPIRES_AT") != "2099-01-01T00:00:00Z":
+    problems.append("HEYGEN_TOKEN_EXPIRES_AT=%r" % vals.get("HEYGEN_TOKEN_EXPIRES_AT"))
+if vals.get("HEYGEN_API_KEY"):
+    problems.append("HEYGEN_API_KEY was set (%r) — must never be, this is an OAuth credential" % vals.get("HEYGEN_API_KEY"))
+print("OK" if not problems else "BAD " + "; ".join(problems))
+' "$heygen_env_file" 2>/dev/null || echo "BAD could not read $heygen_env_file")"
+if [[ "$heygen_env_check" == "OK" ]]; then
+  pass "heygen-present: HEYGEN_OAUTH_TOKEN/HEYGEN_CREDIT_POOL/HEYGEN_TOKEN_EXPIRES_AT landed correctly, HEYGEN_API_KEY never set"
+else
+  fail "heygen-present: env values" "$heygen_env_check"
+fi
+
+echo "=== Case 13b: HeyGen credential absent — blocked with needs=decision, Director never spawned (CFW-313) ==="
+run_case "heygen-absent" "heygen-cred" "order_fixture_heygen order-heygen-absent-1 brand-1 video" true
+if [[ "$(calls_count append_render_event)" == "0" ]]; then
+  pass "heygen-absent: no append_render_event — the Director was never spawned"
+else
+  fail "heygen-absent: no spawn" "expected 0 append_render_event calls, got $(calls_count append_render_event)"
+fi
+if [[ "$(calls_count complete_render_order)" == "0" ]]; then
+  pass "heygen-absent: no complete_render_order"
+else
+  fail "heygen-absent: complete" "expected 0 complete_render_order calls"
+fi
+heygen_absent_check="$(python3 -c '
+import json, sys
+calls = [json.loads(l) for l in open(sys.argv[1])]
+blocks = [c for c in calls if c.get("tool") == "block_render_order"]
+if len(blocks) != 1:
+    print("BAD block_render_order called %d times (expected 1)" % len(blocks)); raise SystemExit
+a = blocks[0]["args"]
+problems = []
+if a.get("needs") != "decision":
+    problems.append("needs=%r" % a.get("needs"))
+if "connect" not in (a.get("reason") or "").lower():
+    problems.append("reason does not mention connecting the account: %r" % a.get("reason"))
+if not blocks[0].get("ok"):
+    problems.append("block rejected by the server")
+print("OK" if not problems else "BAD " + "; ".join(problems))
+' "$CASE_MOCKSTATE/calls.jsonl" 2>/dev/null || echo "BAD could not read calls.jsonl")"
+if [[ "$heygen_absent_check" == "OK" ]]; then
+  pass "heygen-absent: block_render_order carries needs=decision + an owner-actionable reason"
+else
+  fail "heygen-absent" "$heygen_absent_check"
+fi
+if grep -q "order-heygen-absent-1.*block" "$CASE_STATE/journal.tsv" 2>/dev/null; then
+  pass "heygen-absent: journal row outcome=blocked"
+else
+  fail "heygen-absent: journal row" "no blocked journal row found"
+fi
+
+echo "=== Case 13c: HeyGen credential present but expired — treated identically to absent (CFW-313) ==="
+run_case "heygen-expired" "heygen-cred" \
+  'order_fixture_heygen order-heygen-expired-1 brand-1 video {"mode":"oauth","accessToken":"test-heygen-oauth-token-expired","expiresAt":"2000-01-01T00:00:00Z","creditPool":"plan_credits"}' \
+  true
+if [[ "$(calls_count append_render_event)" == "0" ]]; then
+  pass "heygen-expired: no append_render_event — the Director was never spawned"
+else
+  fail "heygen-expired: no spawn" "expected 0 append_render_event calls, got $(calls_count append_render_event)"
+fi
+if grep -q "order-heygen-expired-1.*block" "$CASE_STATE/journal.tsv" 2>/dev/null; then
+  pass "heygen-expired: journal row outcome=blocked (expired token treated as absent)"
+else
+  fail "heygen-expired: journal row" "no blocked journal row found"
 fi
 
 echo "=== Case P: toolchain preflight refuses to claim on a half-provisioned host ==="

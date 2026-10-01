@@ -123,6 +123,33 @@ retired 2026-09-01).
   needs that cron. **Retiring it on the live box `hst` is a human, supervised
   step** (not done by this repo change); see `docs/deploy.md`.
 
+## Provider credentials are brand-scoped, never the worker's (CFW-313)
+
+Same principle as `CFW_RENDER_WORKER_KEY` vs a brand/user-scoped
+`RenderWorkerKey` above — applied to the *provider* credentials a recipe
+calls out to (today: HeyGen). A HeyGen recipe (the `*-heygen` reel variants)
+needs a brand-scoped OAuth credential billing that brand's own HeyGen plan
+credits, never one shared worker-local key covering every brand the fleet
+renders for. cfw-social resolves/refreshes the brand's connected HeyGen
+account server-side and embeds a short-lived, scoped credential into
+`taskOrder.credentials.heygen` when the order is claimed — the same pattern
+already used for `AVATAR_ID`/`VOICE_ID` (`Source: Caller / brand config`).
+`spawn_director()` in `bin/cfw-render.sh` (`cr_recipe_needs_heygen` in
+`bin/cfw-render-lib.sh`) requires that field for any recipe that needs it and
+**blocks cleanly** (`needs: "decision"`) if it's absent or malformed —
+**never** a fallback to a worker-local/vault key. When present, it's exported
+into the Director's subprocess env as `HEYGEN_OAUTH_TOKEN` /
+`HEYGEN_CREDIT_POOL` / `HEYGEN_TOKEN_EXPIRES_AT` (deliberately not
+`HEYGEN_API_KEY` — that name implies api-key auth, not OAuth). See
+`config/cfw-render.env.example`'s "Provider credentials" note and
+`scripts/check-no-worker-heygen-credential.sh`, the static guard that keeps a
+future "just read the vault key here, it's faster" shortcut from
+reintroducing this bug. This repo's own piece of CFW-313 cannot alone
+produce a working HeyGen render — it depends on a companion cfw-social
+change (the OAuth connection + order-embedding) and a companion
+`c-heygen` skill change (call the v1 remote MCP instead of the stdio
+MCP/REST); see `DOZER-DESIGN-CFW-313.md` for the full three-repo scope.
+
 ## Toolchain preflight (CFW-199)
 
 `cfw-render` shells out to a real toolchain — ffmpeg, ImageMagick 7, headless
