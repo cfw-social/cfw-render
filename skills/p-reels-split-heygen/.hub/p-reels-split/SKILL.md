@@ -179,12 +179,12 @@ TH="<path to downloaded talking-head mp4>"
 W="<production>/interim/split" ; mkdir -p "$W" "$W/src" "$W/top_beats"
 OUT="<production>/final/split-reel-with-cover.mp4" ; mkdir -p "$(dirname "$OUT")"
 FF="ffmpeg"
-SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/harness/skills -maxdepth 5 -type d -name p-reels-split 2>/dev/null | head -1)
+SKILL_DIR="${CFW_RENDER_SKILLS_DIR:?CFW_RENDER_SKILLS_DIR not set}/p-reels-split-heygen/.hub/p-reels-split"
 
-BROLL_SYNC_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/harness/skills -maxdepth 5 -type d -name c-broll-sync 2>/dev/null | head -1)
-PREMIUM_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/harness/skills -maxdepth 5 -type d -name c-reel-premium 2>/dev/null | head -1)
-TYPING_UI_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/harness/skills -maxdepth 5 -type d -name c-typing-ui 2>/dev/null | head -1)
-WOWX_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/harness/skills -maxdepth 5 -type d -name wowx-motions 2>/dev/null | head -1)
+BROLL_SYNC_DIR="$SKILL_DIR/../c-broll-sync"
+PREMIUM_DIR="$SKILL_DIR/../c-reel-premium"
+TYPING_UI_DIR="$SKILL_DIR/../c-typing-ui"
+WOWX_DIR="$SKILL_DIR/../wowx-motions"
 
 BROLL_COVERAGE_PCT="${broll_coverage_pct:-30}"
 BROLL_CLIP_SECS="${broll_clip_seconds:-4}"
@@ -768,8 +768,17 @@ ffprobe -v error -select_streams v:0 \
 
 ### Step 9 — CTA end-card (tail TAKEOVER — does NOT extend the reel)
 
-Render a 2.5–3s brand CTA card (HyperFrames, 1080×1920, silent), overlay on the FINAL seconds
-of the composed reel using a time-gated `enable=` window. The reel ends when the speaker ends.
+Render a 2.5–3s brand CTA card (HyperFrames, 1080×1920, silent, **with alpha**), overlay on the FINAL
+seconds of the composed reel using a time-gated `enable=` window. The reel ends when the speaker ends.
+The card is a **semi-transparent scrim** — the speaker stays visible behind it for the last 3 s.
+
+> **Alpha contract (GSAI-36).** An mp4 card is `yuv420p` and carries **no alpha channel**: the 0.85 scrim
+> is silently discarded at encode and the card lands as an opaque slate. So the card is rendered with
+> `--format mov` (ProRes 4444, `yuva444p*`) and `overlay` blends it. HyperFrames' alpha capture forces
+> `html`, `body` and `[data-composition-id]` to `background:transparent !important`, so the scrim and the
+> copy live on **inner absolute layers**, never on the root. The absolute-inset `.cta` layer is also what
+> centres the copy: flex centering declared on `body`/root is **not honoured by the render capture**
+> (text lands in the top ~28% of the frame). `padding-bottom:288px` (15%) keeps the copy above platform UI.
 
 ```bash
 CTA_DURATION="${CTA_DURATION:-3.0}"
@@ -782,15 +791,22 @@ cat > "$W/cta/index.html" <<HTML
 <html><head><meta charset="utf-8">
 <script src="gsap.min.js"></script>
 <style>
-html,body{margin:0;padding:0;width:1080px;height:1920px;overflow:hidden;background:rgba(15,23,42,0.85);display:flex;flex-direction:column;align-items:center;justify-content:center;}
-h1{color:#F1F5F9;font-family:Oswald,sans-serif;font-size:120px;font-weight:900;text-align:center;margin:0;padding:0 80px;}
-p{color:#F97316;font-family:Inter,sans-serif;font-size:56px;opacity:0.9;margin-top:40px;}
+html,body{margin:0;padding:0;width:1080px;height:1920px;overflow:hidden;background:transparent;}
+/* scrim + copy are INNER absolute layers: the alpha render forces html/body/root transparent, and
+   flex centering on body/root is not honoured by the capture (GSAI-36). Never move these to the root. */
+.scrim{position:absolute;left:0;top:0;width:1080px;height:1920px;background:rgba(15,23,42,0.85);}
+.cta{position:absolute;left:0;top:0;width:1080px;height:1920px;box-sizing:border-box;padding:0 80px 288px;display:flex;flex-direction:column;align-items:center;justify-content:center;}
+h1{color:#F1F5F9;font-family:Oswald,sans-serif;font-size:120px;font-weight:900;text-align:center;margin:0;}
+p{color:#F97316;font-family:Inter,sans-serif;font-size:56px;opacity:0.9;margin:40px 0 0;text-align:center;}
 </style>
 </head>
 <body>
-<div data-composition-id="root" data-start="0" data-duration="${CTA_DURATION}" data-width="1080" data-height="1920" style="display:flex;flex-direction:column;align-items:center;justify-content:center;width:1080px;height:1920px;">
-  <h1 id="cta-text">${CTA_TEXT}</h1>
-  <p id="cta-handle">${CTA_HANDLE}</p>
+<div data-composition-id="root" data-start="0" data-duration="${CTA_DURATION}" data-width="1080" data-height="1920">
+  <div class="scrim"></div>
+  <div class="cta">
+    <h1 id="cta-text">${CTA_TEXT}</h1>
+    <p id="cta-handle">${CTA_HANDLE}</p>
+  </div>
 </div>
 <script>
 (function(){
@@ -813,13 +829,23 @@ sed -i 's/##/#/g' "$W/cta/index.html"
 GSAP=$(for p in "$SKILL_DIR/.hub/f-gsap/vendor" "$SKILL_DIR/../f-gsap/vendor"; do [ -f "$p/gsap.min.js" ] && echo "$p/gsap.min.js" && break; done)
 [ -n "$GSAP" ] || { echo "[p-reels-split] FATAL: vendored gsap.min.js not found (expected under .hub/f-gsap/vendor/ or ../f-gsap/vendor/) — NEVER fall back to a CDN"; exit 1; }
 cp "$GSAP" "$W/cta/gsap.min.js"
-cd "$W/cta" && npx hyperframes@0.7.5 lint && npx hyperframes@0.7.5 render --output "$W/cta-card.mp4" --fps 30 --quality high
+# --format mov = ProRes 4444 with alpha. NEVER render the card to mp4 — yuv420p drops the scrim.
+cd "$W/cta" && npx hyperframes@0.7.5 lint && npx hyperframes@0.7.5 render --format mov --output "$W/cta-card.mov" --fps 30 --quality high
 cd -
+
+# Gate 1 — the CARD must carry alpha (yuva444p10le / yuva444p12le). Fail fast, no opaque fallback.
+CTA_PIX=$(ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 "$W/cta-card.mov")
+case "$CTA_PIX" in
+  yuva*|rgba|argb|bgra|abgr|gbrap*) echo "CTA card alpha OK: pix_fmt=$CTA_PIX" ;;
+  *) echo "[p-reels-split] FATAL: CTA card has no alpha channel (pix_fmt=$CTA_PIX) — the scrim would ship opaque"; exit 1 ;;
+esac
 
 COMPOSED_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$W/composed.mp4")
 CTA_START=$(python3 -c "print(round(${COMPOSED_DUR} - ${CTA_DURATION}, 3))")
 
-$FF -y -i "$W/composed.mp4" -itsoffset "${CTA_START}" -i "$W/cta-card.mp4" \
+# overlay blends the card's alpha over the reel; the FINAL reel stays yuv420p (correct — alpha is
+# only needed on the card). Do not add format= tricks that flatten the card before overlay.
+$FF -y -i "$W/composed.mp4" -itsoffset "${CTA_START}" -i "$W/cta-card.mov" \
   -filter_complex "[0:v][1:v]overlay=enable='between(t,${CTA_START},${COMPOSED_DUR})':eof_action=pass[v]" \
   -map "[v]" -map 0:a \
   -c:v libx264 -pix_fmt yuv420p -c:a copy -movflags +faststart "$W/with-cta.mp4"
@@ -830,6 +856,14 @@ dur, final = float('$COMPOSED_DUR'), float('$FINAL_DUR')
 assert abs(dur - final) < 0.1, f'CTA extended the reel: {dur:.2f}s → {final:.2f}s'
 print(f'CTA OK: {final:.2f}s (was {dur:.2f}s)')
 "
+
+# Gate 2 — the speaker must be visible THROUGH the card (Honey's measurement, GSAI-36): the bottom 55%
+# of the final frame must be more than one flat colour. One colour = the alpha did not survive.
+$FF -y -v error -ss "$(python3 -c "print(max(0.0, ${COMPOSED_DUR} - 0.5))")" -i "$W/with-cta.mp4" -frames:v 1 "$W/cta-proof.png"
+CTA_COLOURS=$($FF -v error -i "$W/cta-proof.png" -vf "crop=iw:ih*0.55:0:ih*0.45" -f rawvideo -pix_fmt rgb24 - \
+  | python3 -c "import sys; b=sys.stdin.buffer.read(); print(len({b[i:i+3] for i in range(0, len(b), 3)}))")
+[ "${CTA_COLOURS:-0}" -gt 1 ] || { echo "[p-reels-split] FATAL: CTA scrim shipped OPAQUE — bottom 55% of the last frame is one flat colour (GSAI-36)"; exit 1; }
+echo "CTA scrim OK: ${CTA_COLOURS} distinct colours in the bottom 55% of the final frame"
 
 if [ -n "${OUTRO_PATH:-}" ] && [ -f "$OUTRO_PATH" ]; then
   $FF -y -i "$OUTRO_PATH" \
@@ -994,7 +1028,7 @@ cover the face or the HyperFrames title/captions.
 # Each spec also carries brand context. Empty/unset → skip entirely (default).
 OVERLAY_BEATS="${overlay_beats:-[]}"
 if [ "$(echo "$OVERLAY_BEATS" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)" -gt 0 ]; then
-  OVERLAY_FX_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" "$HOME/.hermes/profiles" /Users/vasanth/ecosystem/harness/skills -maxdepth 5 -type d -name c-overlay-fx 2>/dev/null | head -1)
+  OVERLAY_FX_DIR="$SKILL_DIR/../c-overlay-fx"
   [ -z "$OVERLAY_FX_DIR" ] && { echo "[p-reels-split] overlay_beats set but c-overlay-fx not found — skipping"; OVERLAY_BEATS="[]"; }
 fi
 if [ "$(echo "$OVERLAY_BEATS" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)" -gt 0 ]; then
@@ -1235,6 +1269,12 @@ Clean up `$W` after the URL is confirmed.
   a root element with `data-composition-id="root"` + `data-width/height/start/duration`, and a registered
   `window.__timelines["root"]`. (Both the Step 9 CTA fallback and the Step 6 graphics builder already
   satisfy this.)
+- **CTA card = alpha MOV, scrim on an inner layer (GSAI-36).** Render the Step 9 card with
+  `--format mov` (ProRes 4444) and overlay `cta-card.mov` — an mp4 card is `yuv420p`, has no alpha, and
+  ships the 0.85 scrim as an opaque slate. Keep the scrim and the copy on inner `position:absolute`
+  layers: the alpha capture forces `html`/`body`/root transparent, and flex centering on `body`/root is
+  not honoured by the render capture (copy lands top-anchored). Two gates enforce it — the card's
+  `pix_fmt` must be `yuva*`, and the bottom 55% of the final frame must be >1 distinct colour.
 - **`##` CSS guard.** gpt-5.5 occasionally emits a double-hash hex (`--bg: ##0F172A`) → white background.
   After writing ANY generated HyperFrames HTML, collapse double-hash to single — `sed -i 's/##/#/g'`
   (Step 9 CTA) or `idx_html.replace("##","#")` (Step 6 graphics builder).

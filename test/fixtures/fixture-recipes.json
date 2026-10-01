@@ -1,0 +1,8 @@
+{
+  "_comment": "CFW-312 test fixture allowlist — points at test/fixtures/skills-src/, NOT the real private source repo. See test/run-tests.sh static-guard case.",
+  "source": "test/fixtures/skills-src",
+  "recipes": [
+    { "name": "p-fixture-recipe", "version": "1.0.0", "providers": [] },
+    { "name": "c-fixture-clean", "version": "1.0.0", "providers": [] }
+  ]
+}

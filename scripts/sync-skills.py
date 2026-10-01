@@ -9,8 +9,19 @@ from the private source skills repo into <out-dir>/<recipe>/ (own files) and
 writes <out-dir>/index.json in the shape scripts/verify-skills-bundle.sh and
 scripts/gen-skills-manifest.sh expect.
 
-Plain copy — no body rewriting, no path rewriting. The source SKILL.md/script
-bodies already reference `.hub/<dep>/...`-relative paths directly.
+Mostly a plain copy — EXCEPT for one deliberate rewrite (CFW-312):
+rewrite_host_path_resolvers() patches the source's "locate my own dir / locate
+a sub-skill dir" bash idiom, which does a `find` over host install locations
+($HOME/.claude/skills, $HOME/.hermes/*, the source library's own absolute
+path). That idiom is correct for the SOURCE library (where Hermes/Claude Code
+install skills as siblings under those host roots) but wrong for cfw-render's
+vendored, runtime-free bundle, where none of those host roots exist — it was
+silently resolving to "" or "/.hub/<dep>" on the render box. The rewrite
+anchors "my own dir" on $CFW_RENDER_SKILLS_DIR (already exported into the
+Director's env by cr_load_config) and "a sub-skill dir" on the bundle's own
+.hub/<dep>/, computed and baked in as literals at sync time — no runtime
+`find` needed. Runs after copy_tree, before list_files/hashing, so the hashes
+in index.json cover the rewritten bytes (what actually ships).
 
 No third-party deps — stdlib only (json, re, hashlib, shutil, pathlib).
 """
@@ -61,6 +72,114 @@ def copy_tree(src: Path, dest: Path):
     if dest.exists():
         shutil.rmtree(dest)
     shutil.copytree(src, dest, ignore=ignore_junk)
+
+
+# ---- CFW-312: rewrite host-path sub-skill resolvers to bundle-relative ----
+#
+# Source shape (correct for the source library, wrong for this bundle):
+#   SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" \
+#     "$HOME/.hermes/profiles" /Users/<user>/ecosystem/harness/skills \
+#     -maxdepth N -type d -name <literal-name> 2>/dev/null | head -1)
+# optionally followed by a dead-on-arrival fallback line:
+#   [ -n "$VAR" ] || VAR="$SKILL_DIR/.hub/<dep>"
+_HOST_ROOT_ALT = (
+    r'(?:"\$HOME/\.claude/skills"|"\$HOME/\.hermes/skills"|"\$HOME/\.hermes/profiles"'
+    r'|/Users/[A-Za-z0-9_.\-]+/ecosystem/harness/skills)'
+)
+_FIND_ASSIGN_RE = re.compile(
+    r'(?P<indent>[ \t]*)(?P<var>[A-Za-z_][A-Za-z0-9_]*)=\$\(\s*find\s+'
+    r'(?P<roots>(?:' + _HOST_ROOT_ALT + r'[ \t]*(?:\\\n[ \t]*)?)+)'
+    r'-maxdepth\s+\d+\s+-type\s+d\s+-name\s+"?(?P<name>[A-Za-z0-9_.\-]+)"?[ \t]+'
+    r'2>/dev/null[ \t]*\|[ \t]*head[ \t]+-1[ \t]*\)'
+)
+_HOST_COMMENT_RE = re.compile(
+    r'^[ \t]*#.*(?:\$HOME/\.claude|\$HOME/\.hermes|/Users/[A-Za-z0-9_.\-]+/ecosystem/harness/skills).*\n?',
+    re.MULTILINE,
+)
+# The same idiom, wrapped in a parameterized helper (scripts/verify-skill.sh):
+#   _find_skill() {
+#     find "$HOME/.claude/skills" "$HOME/.hermes/skills" /Users/<user>/ecosystem/harness/skills \
+#       -maxdepth N -type d -name "$1" 2>/dev/null | head -1
+#   }
+_FIND_SKILL_FN_RE = re.compile(
+    r'(?P<indent>[ \t]*)_find_skill\(\) \{\n'
+    r'[ \t]*find\s+"\$HOME/\.claude/skills"\s+"\$HOME/\.hermes/skills"\s+'
+    r'/Users/[A-Za-z0-9_.\-]+/ecosystem/harness/skills[ \t]*\\\n'
+    r'[ \t]*-maxdepth\s+\d+\s+-type\s+d\s+-name\s+"\$1"\s+2>/dev/null\s*\|\s*head\s+-1\n'
+    r'(?P=indent)\}\n'
+)
+
+
+def rewrite_host_path_resolvers(directory: Path, own_rel_path: str, is_nested: bool) -> int:
+    """Rewrite the host-path `find` sub-skill resolver idiom (CFW-312) in every
+    text file under `directory` to resolve against the bundle instead of host
+    skill install locations.
+
+    `own_rel_path` is this directory's own path relative to the bundle root
+    (e.g. "p-reels-pip" for a top-level recipe, "p-reels-pip-heygen/.hub/p-reels-pip"
+    for a vendored dependency that is itself a recipe) — baked in as a sync-time
+    literal, so no runtime `find` is needed for a file to locate itself.
+
+    `is_nested` is True when `directory` sits inside a parent's .hub/ (i.e. this
+    call is rewriting a vendored dependency, not a top-level recipe). copy_tree
+    strips any nested `.hub/` out of what it copies (IGNORE_NAMES), so a
+    dependency's OWN sub-skill-dir references must resolve as a flattened
+    SIBLING — "$SKILL_DIR/../<dep>" — not "$SKILL_DIR/.hub/<dep>" (which would
+    point at a .hub/ that was never copied). Mirrors the second-fallback
+    pattern the source already uses for deeper deps (e.g. "$SKILL_DIR/../f-gsap/vendor").
+
+    Returns the number of files changed.
+    """
+    own_name = own_rel_path.rsplit("/", 1)[-1]
+    changed = 0
+    for path in sorted(directory.rglob("*")):
+        if not path.is_file() or path.name in IGNORE_NAMES:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, ValueError):
+            continue  # binary file — nothing to rewrite
+
+        rewritten_vars = {m.group("var") for m in _FIND_ASSIGN_RE.finditer(text)}
+        if not rewritten_vars and not _FIND_SKILL_FN_RE.search(text) and not _HOST_COMMENT_RE.search(text):
+            continue
+
+        def _sub_find_assign(m: "re.Match[str]") -> str:
+            indent, var, name = m.group("indent"), m.group("var"), m.group("name")
+            if name == own_name:
+                return (
+                    f'{indent}{var}="${{CFW_RENDER_SKILLS_DIR:?CFW_RENDER_SKILLS_DIR not set}}'
+                    f'/{own_rel_path}"'
+                )
+            sub_path = f"$SKILL_DIR/../{name}" if is_nested else f"$SKILL_DIR/.hub/{name}"
+            return f'{indent}{var}="{sub_path}"'
+
+        new_text = _FIND_ASSIGN_RE.sub(_sub_find_assign, text)
+
+        if rewritten_vars:
+            var_alt = "|".join(re.escape(v) for v in rewritten_vars)
+            fallback_re = re.compile(
+                r'[ \t]*\[ -n "\$(?:' + var_alt + r')" \] \|\| (?:' + var_alt
+                + r')="\$SKILL_DIR/\.hub/[A-Za-z0-9_.\-]+"(?:[ \t]*#[^\n]*)?\n'
+            )
+            new_text = fallback_re.sub("", new_text)
+
+        def _sub_find_skill_fn(m: "re.Match[str]") -> str:
+            indent = m.group("indent")
+            sub_path = '"$SKILL_DIR/../$1"' if is_nested else '"$SKILL_DIR/.hub/$1"'
+            return f'{indent}_find_skill() {{\n{indent}  echo {sub_path}\n{indent}}}\n'
+
+        new_text = _FIND_SKILL_FN_RE.sub(_sub_find_skill_fn, new_text)
+
+        # Stale comments describing the now-removed host-path find — not
+        # executable, but still a forbidden substring the portability gate
+        # would otherwise keep tripping on forever.
+        new_text = _HOST_COMMENT_RE.sub("", new_text)
+
+        if new_text != text:
+            path.write_text(new_text, encoding="utf-8")
+            changed += 1
+    return changed
 
 
 def walk_closure(src_root: Path, start_deps: list[str]) -> list[str]:
@@ -139,6 +258,7 @@ def main():
 
         recipe_dest = out_root / recipe
         copy_tree(recipe_src, recipe_dest)
+        rewrite_host_path_resolvers(recipe_dest, recipe, is_nested=False)
 
         recipe_fm = read_frontmatter(recipe_src / "SKILL.md")
         start_deps = recipe_fm.get("dependsOn", []) or []
@@ -151,6 +271,7 @@ def main():
             hub_dir.mkdir(parents=True, exist_ok=True)
             for dep in closure:
                 copy_tree(src_root / dep, hub_dir / dep)
+                rewrite_host_path_resolvers(hub_dir / dep, f"{recipe}/.hub/{dep}", is_nested=True)
 
         files = list_files(recipe_dest)
         file_hashes = {f: sha256_file(recipe_dest / f) for f in files}
