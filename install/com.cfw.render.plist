@@ -2,9 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
   com.cfw.render.plist — launchd template (macOS dev box / macOS render host).
-  Placeholders {{PREFIX}}, {{ENV_FILE}}, {{HOME}} are substituted by
-  install/install.sh. NOT loaded by this task (AB-RNDR-WORKER is code-authoring
-  only) — a human loads it later per docs/deploy.md.
+  Placeholders {{PREFIX}}, {{ENV_FILE}}, {{HOME}}, {{WORKER_PATH}} are
+  substituted by install/install.sh. NOT loaded by this task (AB-RNDR-WORKER
+  is code-authoring only) — a human loads it later per docs/deploy.md.
+
+  PATH (CFW-291): {{WORKER_PATH}} is computed once in install.sh by
+  cr_resolve_worker_path — a *resolved* location for every required binary
+  (curl/python3/node/npx/ffmpeg/ffprobe/magick/claude), not a guessed static
+  list. See bin/cfw-render-lib.sh and DOZER-DESIGN-CFW-291.md.
 
   Cadence: every 15 min, offset :05/:20/:35/:50 to avoid stacking with
   ab-hustler's :22/:52 schedule on the same Mac (plan §2).
@@ -25,7 +30,7 @@
     <key>CFW_RENDER_ENV</key>
     <string>{{ENV_FILE}}</string>
     <key>PATH</key>
-    <string>{{HOME}}/.local/bin:{{HOME}}/bin:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    <string>{{WORKER_PATH}}</string>
   </dict>
 
   <key>StartCalendarInterval</key>
