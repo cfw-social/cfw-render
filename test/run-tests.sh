@@ -928,6 +928,127 @@ else
   fail "heygen-expired: journal row" "no blocked journal row found"
 fi
 
+echo "=== Case 14: sync-skills.py strips brand-overrides host paths + redacts bare host paths + stamps index.json sourceSha (CFW-318) ==="
+# Copy the fixture source tree OUTSIDE this repo's working tree first — a
+# `git -C <dir> rev-parse HEAD` resolves upward to the nearest enclosing
+# repo, so pointing CFW_SKILLS_SRC straight at test/fixtures/skills-src (a
+# subdir OF this repo) would silently return cfw-render's own HEAD instead
+# of exercising git_head_sha()'s non-git soft-fail path.
+c318_src_copy="$(mktemp -d)"
+cp -R "$TEST_DIR/fixtures/skills-src/." "$c318_src_copy/"
+c318_out="$(mktemp -d)"
+c318_sync_log="$(
+  CFW_SKILLS_SRC="$c318_src_copy" "$REPO_DIR/scripts/sync-skills.sh" \
+    --recipes "$TEST_DIR/fixtures/fixture-recipes.json" --out-dir "$c318_out" --skip-manifest 2>&1
+)"
+c318_sync_rc=$?
+if [[ "$c318_sync_rc" == "0" ]]; then
+  pass "sync-skills.sh: fixture sync + check-no-host-paths gate exit 0 (CFW-318)"
+else
+  fail "sync-skills.sh: fixture sync (CFW-318)" "expected exit 0, got $c318_sync_rc — log: $c318_sync_log"
+fi
+
+c318_brand_json="$c318_out/p-fixture-recipe/brand-overrides/fixture-brand/brand.json"
+c318_outro_path="$(python3 -c "import json; print(json.load(open('$c318_brand_json'))['outro']['path'])" 2>/dev/null)"
+if [[ "$c318_outro_path" == "None" ]]; then
+  pass "sync-skills.py: brand-overrides outro.path nulled (CFW-318)"
+else
+  fail "sync-skills.py: outro.path strip" "got: $c318_outro_path"
+fi
+
+c318_outro_relative="$(python3 -c "import json; print(json.load(open('$c318_brand_json'))['outro']['relative'])" 2>/dev/null)"
+if [[ "$c318_outro_relative" == "fixture-assets/outro.png" ]]; then
+  pass "sync-skills.py: outro.relative survives untouched (CFW-318)"
+else
+  fail "sync-skills.py: outro.relative" "got: $c318_outro_relative"
+fi
+
+if python3 -c "import json,sys; d=json.load(open('$c318_brand_json')); sys.exit(0 if 'hero_portrait' not in d else 1)"; then
+  pass "sync-skills.py: hero_portrait key dropped entirely (CFW-318)"
+else
+  fail "sync-skills.py: hero_portrait" "key still present in $c318_brand_json"
+fi
+
+c318_doc="$c318_out/p-fixture-recipe/docs/HOST-PATH-NOTE.md"
+if grep -q '/Users/<redacted>/some/scratch/path/mirror' "$c318_doc" 2>/dev/null; then
+  pass "sync-skills.py: bare host-path string redacted in a doc file (CFW-318)"
+else
+  fail "sync-skills.py: generic redaction" "redacted placeholder not found in $c318_doc"
+fi
+
+if grep -q 'testuser' "$c318_doc" 2>/dev/null && ! grep -q '/Users/testuser' "$c318_doc" 2>/dev/null; then
+  pass "sync-skills.py: negative case — bare 'testuser' with no /Users/ prefix left untouched (CFW-318)"
+else
+  fail "sync-skills.py: negative case" "unexpected content in $c318_doc"
+fi
+
+if "$REPO_DIR/scripts/check-no-host-paths.sh" --skills-dir "$c318_out" >/dev/null 2>&1; then
+  pass "check-no-host-paths.sh: PASS on the rewritten fixture bundle (CFW-318)"
+else
+  fail "check-no-host-paths.sh: fixture bundle" "expected exit 0 after rewrite"
+fi
+
+c318_sha="$(python3 -c "import json; print(json.load(open('$c318_out/index.json'))['sourceSha'])" 2>/dev/null)"
+if [[ "$c318_sha" == "None" ]]; then
+  pass "sync-skills.py: index.json sourceSha stays null for a non-git fixture source (soft-fail path, CFW-318)"
+else
+  fail "sync-skills.py: sourceSha soft-fail" "expected None, got: $c318_sha"
+fi
+rm -rf "$c318_out" "$c318_src_copy"
+
+echo "=== Case 14a: check-no-host-paths.sh red/green — FAILs on a deliberately unrewritten host path (CFW-318) ==="
+c318_dirty_base="$(mktemp -d)"
+mkdir -p "$c318_dirty_base/p-dirty-recipe"
+printf 'leftover path: /Users/testuser/leftover/path\n' > "$c318_dirty_base/p-dirty-recipe/NOTE.md"
+if "$REPO_DIR/scripts/check-no-host-paths.sh" --skills-dir "$c318_dirty_base" >/dev/null 2>&1; then
+  fail "check-no-host-paths.sh: red case" "expected exit 1 on a deliberately unrewritten fixture"
+else
+  pass "check-no-host-paths.sh: FAILs on a deliberately unrewritten host path (red/green proof, CFW-318)"
+fi
+rm -rf "$c318_dirty_base"
+
+echo "=== Case 14b: static guard — no bare host path anywhere in the committed skills/ bundle (CFW-318) ==="
+if "$REPO_DIR/scripts/check-no-host-paths.sh" >/dev/null 2>&1; then
+  pass "static guard: committed skills/ bundle has no bare host path"
+else
+  c318_real_out="$("$REPO_DIR/scripts/check-no-host-paths.sh" 2>&1)"
+  fail "static guard: bare host path found in committed bundle" "$c318_real_out"
+fi
+
+echo "=== Case 14c: index.json sourceSha stamped from a real git source repo (CFW-318) ==="
+c318_git_src="$(mktemp -d)"
+mkdir -p "$c318_git_src/p-git-fixture"
+cat > "$c318_git_src/p-git-fixture/SKILL.md" <<'EOF'
+---
+name: p-git-fixture
+kind: pipeline
+visibility: catalog
+---
+
+# p-git-fixture (CFW-318 test fixture — git sourceSha stamping)
+EOF
+(
+  cd "$c318_git_src" &&
+  git init -q &&
+  git config user.email test@example.com &&
+  git config user.name test &&
+  git add -A &&
+  git commit -q -m fixture
+) >/dev/null 2>&1
+c318_git_recipes="$(mktemp)"
+python3 -c "import json; json.dump({'recipes': [{'name': 'p-git-fixture', 'version': '1.0.0', 'providers': []}]}, open('$c318_git_recipes', 'w'))"
+c318_git_out="$(mktemp -d)"
+CFW_SKILLS_SRC="$c318_git_src" "$REPO_DIR/scripts/sync-skills.sh" \
+  --recipes "$c318_git_recipes" --out-dir "$c318_git_out" --skip-manifest >/dev/null 2>&1
+c318_expected_sha="$(git -C "$c318_git_src" rev-parse HEAD)"
+c318_got_sha="$(python3 -c "import json; print(json.load(open('$c318_git_out/index.json'))['sourceSha'])" 2>/dev/null)"
+if [[ "$c318_got_sha" == "$c318_expected_sha" ]]; then
+  pass "sync-skills.py: index.json sourceSha matches git rev-parse HEAD of the source repo (CFW-318)"
+else
+  fail "sync-skills.py: sourceSha from real git source" "expected $c318_expected_sha, got $c318_got_sha"
+fi
+rm -rf "$c318_git_src" "$c318_git_out" "$c318_git_recipes"
+
 echo "=== Case P: toolchain preflight refuses to claim on a half-provisioned host ==="
 # CFW-199 / CFW-188. hst had NO ImageMagick and was one `systemctl enable` from
 # claiming production orders it could not finish. The drainer must now refuse.

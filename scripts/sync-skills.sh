@@ -28,7 +28,12 @@
 #      (non-zero exit, offending lines printed) if any host-path resolver
 #      survived the rewrite — belt-and-suspenders against a future recipe
 #      whose source uses a resolver shape the rewrite doesn't yet recognize.
-#   6. Unless --skip-manifest or --out-dir points somewhere other than the
+#   6. Runs scripts/check-no-host-paths.sh against <out-dir> and aborts if any
+#      bare `/Users/<anyone>/...` string survived sync-skills.py's
+#      brand-overrides strip / generic redaction (CFW-318) — the bundle must
+#      never leak the author's identity/filesystem layout, `.hub/**` and
+#      `brand-overrides/**` included.
+#   7. Unless --skip-manifest or --out-dir points somewhere other than the
 #      real <repo>/skills, refreshes config/skills-version.json (rollup via
 #      gen-skills-manifest.sh, then provenance fields patched to point at the
 #      private source instead of the retired git-subtree).
@@ -127,6 +132,13 @@ python3 "$SELF_DIR/sync-skills.py" \
 # rewrite doesn't yet recognize must fail HERE — loudly, at sync time — not
 # ship a silently-broken recipe that only shows up as a render failure later.
 "$SELF_DIR/check-skills-portability.sh" --skills-dir "$OUT_DIR"
+
+# CFW-318 bundle gate — abort the sync if any bare `/Users/<anyone>/...`
+# string survived sync-skills.py's brand-overrides strip (Part 2) or generic
+# redaction (Part 3). The rewrite passes should make this impossible, but a
+# future field/file shape they don't yet recognize must fail HERE, loudly,
+# not ship a bundle that leaks the author's own filesystem layout.
+"$SELF_DIR/check-no-host-paths.sh" --skills-dir "$OUT_DIR"
 
 if (( SKIP_MANIFEST == 0 )) && [[ "$OUT_DIR" == "$REPO_DIR/skills" ]]; then
   SOURCE_COMMIT="$(git -C "$CFW_SKILLS_SRC" rev-parse HEAD 2>/dev/null || echo unknown)"
