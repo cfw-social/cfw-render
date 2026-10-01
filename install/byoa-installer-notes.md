@@ -50,7 +50,13 @@ brand DNA, or the full brand MCP surface — it is the narrow render worker only
 
 See `docs/deploy.md` §4 for the full note. Short version: launchd never
 inherits your login shell's PATH, so `com.cfw.render.plist`'s
-`EnvironmentVariables.PATH` is the *only* PATH the scheduled tick sees. It now
-prepends `~/.local/bin` and `~/bin` (CFW-279) so a native/user-level `claude`
-install resolves — but an already-installed box needs `install.sh` re-run (or
-the plist manually re-rendered + reloaded) to pick up the fix.
+`EnvironmentVariables.PATH` is the *only* PATH the scheduled tick sees.
+`install.sh` (CFW-291) now writes a **resolved** `WORKER_PATH` there —
+computed by walking every required binary with `command -v` in the shell
+`install.sh` itself runs from, not a guessed static list — and refuses to
+install at all unless it can also prove `claude` runs headless under that
+exact PATH (`env -i`, mirroring what launchd/systemd actually hand a
+scheduled tick). An already-installed box needs `install.sh` re-run (or the
+plist/unit manually re-rendered + reloaded) to pick up a re-resolved
+`WORKER_PATH`. The Linux `cfw-render.service` unit carries the identical
+resolved `WORKER_PATH` now too — this used to be macOS-only.
