@@ -69,17 +69,33 @@ All rows must PASS before enabling the timer. `install.sh` already runs this
 at the end of installation and refuses to leave you in a broken state
 silently (it exits non-zero on FAIL).
 
-**macOS BYOA troubleshooting — `FAIL binary:claude not on PATH`:** launchd
-agents never source a login shell, so the LaunchAgent's PATH is exactly the
-literal string baked into `com.cfw.render.plist` at install time (plus
-`~/.local/bin` and `~/bin`, prepended since CFW-279). If `--dry` still
-reports this FAIL on a customer Mac, confirm `claude` actually resolves at
-`~/.local/bin/claude` (or wherever `which claude` points in the customer's
-normal shell), then re-run `install/install.sh` to regenerate
-`~/Library/LaunchAgents/com.cfw.render.plist` from the current template — an
-already-installed plist is a static copy and won't pick up a template change
-until the installer is re-run (or you `launchctl bootout` + `bootstrap` after
-manually re-rendering it).
+**Worker PATH is resolved, not guessed (CFW-291).** `install.sh` no longer
+bakes a hand-guessed list of directories into the plist/unit. It walks every
+binary a recipe needs (`curl python3 node npx ffmpeg ffprobe magick claude`),
+resolves each one with `command -v` **in the shell you run `install.sh`
+from**, and writes that resolved `WORKER_PATH` into both
+`com.cfw.render.plist` (macOS) and `cfw-render.service` (Linux) — so run
+`install.sh` from the same normal login shell where `which claude` (and the
+rest of the toolchain) actually resolves, not from a restricted/CI-shaped
+shell. Before it will write anything, `install.sh` also **proves `claude`
+actually runs** under that exact resolved PATH, in a fully stripped
+environment (`env -i` — the same narrow environment launchd/systemd hand a
+scheduled tick, not this installer's rich shell): if `claude` resolves via
+`command -v` but is really a shell function/alias/nvm-or-asdf-init-hook
+wrapper that only works with ambient shell state, the probe fails and
+`install.sh` **aborts and installs nothing**, printing the resolved
+`WORKER_PATH`, the probe's captured output, and what to fix — so you get an
+actionable message here instead of the `FAIL binary:claude not on PATH` this
+note used to send you chasing manually. If you still hit that FAIL from
+`--dry` after `install.sh` succeeded, `claude` (or a dependency) moved since
+install — re-run `install/install.sh` to re-resolve and re-render both
+templates; an already-installed plist/unit is a static copy and won't pick
+up a re-resolved `WORKER_PATH` until the installer is re-run (or you
+`launchctl bootout` + `bootstrap` / `systemctl daemon-reload` after manually
+re-rendering it). This applies identically on Linux now — the systemd unit
+carries the same resolved `WORKER_PATH` as the plist, closing the gap
+CFW-279 left open there (systemd gives a oneshot unit its own minimal
+default search path, not the service user's login-shell PATH).
 
 ## 5. Enable the timer
 

@@ -23,13 +23,26 @@ Director's env by cr_load_config) and "a sub-skill dir" on the bundle's own
 `find` needed. Runs after copy_tree, before list_files/hashing, so the hashes
 in index.json cover the rewritten bytes (what actually ships).
 
-No third-party deps — stdlib only (json, re, hashlib, shutil, pathlib).
+Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
+and before list_files/hashing, same ordering guarantee:
+  strip_brand_override_host_paths() nulls/drops the two host-path fields
+    (outro.path, hero_portrait) that brand-overrides/<slug>/brand.json files
+    can carry.
+  redact_literal_host_paths() replaces any remaining bare `/Users/<user>`
+    segment in any file with `/Users/<redacted>` — a generic safety net over
+    prose/doc/tooling references with no structured shape to null out.
+index["sourceSha"] is also stamped here, from `git rev-parse HEAD` of --src,
+so index.json is self-describing independent of sync-skills.sh's separate
+skills-version.json patch.
+
+No third-party deps — stdlib only (json, re, hashlib, shutil, subprocess, pathlib).
 """
 import argparse
 import hashlib
 import json
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -182,6 +195,105 @@ def rewrite_host_path_resolvers(directory: Path, own_rel_path: str, is_nested: b
     return changed
 
 
+# ---- CFW-318 Part 2: strip brand-overrides host-path fields ----
+#
+# brand-overrides/<slug>/brand.json is a live, documented mechanism
+# (brand-overrides/README.md, CFW-128) — not dead vendored cruft. Two fields
+# in it can carry an absolute, host-only, dead-at-render-time path:
+#   outro.path       -> null when absolute (outro.relative is the field
+#                        actually meant to travel; null is the existing,
+#                        already-shipped shape for "no outro asset", see
+#                        b-vasanth/brand.json)
+#   hero_portrait    -> key dropped entirely when absolute (no relative
+#                        counterpart exists; an absent key is the existing
+#                        convention for "not available")
+# Nothing else in brand.json is touched — palette/fonts/voice/captions/cta/
+# cfw_brand_id are documented, intended content, not path leaks.
+_ABS_HOST_PATH_RE = re.compile(r'^/Users/[^/]+/')
+
+
+def strip_brand_override_host_paths(directory: Path) -> int:
+    """Null/drop the two leaking host-path fields in every
+    brand-overrides/<slug>/brand.json under `directory`. No-op (no write) on
+    a file that doesn't need touching, so untouched recipes' files/hashes
+    don't needlessly change."""
+    changed = 0
+    for path in sorted(directory.rglob("brand-overrides/*/brand.json")):
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, ValueError):
+            continue
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+
+        mutated = False
+        outro = data.get("outro")
+        if isinstance(outro, dict):
+            outro_path = outro.get("path")
+            if isinstance(outro_path, str) and _ABS_HOST_PATH_RE.match(outro_path):
+                outro["path"] = None
+                mutated = True
+        hero_portrait = data.get("hero_portrait")
+        if isinstance(hero_portrait, str) and _ABS_HOST_PATH_RE.match(hero_portrait):
+            del data["hero_portrait"]
+            mutated = True
+
+        if mutated:
+            path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            changed += 1
+    return changed
+
+
+# ---- CFW-318 Part 3: generic host-path redaction (the other 18 files) ----
+#
+# Prose/doc/tooling references with no structured shape to null out — redact
+# the literal `/Users/<user>` segment, user-agnostic (same style as
+# _HOST_ROOT_ALT above, so a BYOA customer's own home dir is caught too, not
+# just "vasanth"), leaving the rest of the path/sentence intact so a doc read
+# on a future maintainer's own machine still reads as a path.
+_LITERAL_HOST_PATH_RE = re.compile(r'/Users/[A-Za-z0-9_.\-]+(?=/)')
+
+
+def redact_literal_host_paths(directory: Path) -> int:
+    """Replace every bare `/Users/<user>` segment under `directory` with
+    `/Users/<redacted>`. Runs AFTER strip_brand_override_host_paths (Part 2
+    must structurally null/drop first) as a safety net over every file,
+    brand.json included — by design it should find nothing left there once
+    Part 2 has run."""
+    changed = 0
+    for path in sorted(directory.rglob("*")):
+        if not path.is_file() or path.name in IGNORE_NAMES:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, ValueError):
+            continue  # binary file — nothing to redact
+        new_text = _LITERAL_HOST_PATH_RE.sub("/Users/<redacted>", text)
+        if new_text != text:
+            path.write_text(new_text, encoding="utf-8")
+            changed += 1
+    return changed
+
+
+def git_head_sha(repo: Path) -> str | None:
+    """Best-effort `git rev-parse HEAD` of `repo`. Returns None (never
+    raises) when `repo` isn't a git checkout — e.g. a test fixture dir — so
+    index["sourceSha"] just stays null for fixture syncs rather than failing
+    the sync."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        )
+        return out.stdout.strip()
+    except Exception:
+        return None
+
+
 def walk_closure(src_root: Path, start_deps: list[str]) -> list[str]:
     """BFS the transitive dependsOn graph from start_deps. Cycle-safe (visited
     set). Deps may themselves be recipes (p-* depending on p-*, e.g. the HeyGen
@@ -242,13 +354,20 @@ def main():
 
     index = {
         "generatedAt": None,  # filled by caller-visible timestamp below
+        # release/rawBase: vestigial from the retired git-subtree/fetch-mode
+        # pipeline — rawBase has no reader anywhere in this repo; release is
+        # read defensively by gen-skills-manifest.sh but immediately
+        # discarded again by sync-skills.sh. Intentionally left null rather
+        # than removed, to avoid an index.json schema change no consumer
+        # asked for (CFW-318).
         "release": None,
-        "sourceSha": None,
+        "sourceSha": None,  # stamped below, from CFW_SKILLS_SRC's own HEAD (CFW-318)
         "rawBase": None,
         "recipes": {},
     }
     import datetime
     index["generatedAt"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    index["sourceSha"] = git_head_sha(src_root)
 
     for recipe in allowlist:
         recipe_src = src_root / recipe
@@ -259,6 +378,8 @@ def main():
         recipe_dest = out_root / recipe
         copy_tree(recipe_src, recipe_dest)
         rewrite_host_path_resolvers(recipe_dest, recipe, is_nested=False)
+        strip_brand_override_host_paths(recipe_dest)
+        redact_literal_host_paths(recipe_dest)
 
         recipe_fm = read_frontmatter(recipe_src / "SKILL.md")
         start_deps = recipe_fm.get("dependsOn", []) or []
@@ -272,6 +393,8 @@ def main():
             for dep in closure:
                 copy_tree(src_root / dep, hub_dir / dep)
                 rewrite_host_path_resolvers(hub_dir / dep, f"{recipe}/.hub/{dep}", is_nested=True)
+                strip_brand_override_host_paths(hub_dir / dep)
+                redact_literal_host_paths(hub_dir / dep)
 
         files = list_files(recipe_dest)
         file_hashes = {f: sha256_file(recipe_dest / f) for f in files}

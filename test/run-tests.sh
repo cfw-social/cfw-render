@@ -928,6 +928,127 @@ else
   fail "heygen-expired: journal row" "no blocked journal row found"
 fi
 
+echo "=== Case 14: sync-skills.py strips brand-overrides host paths + redacts bare host paths + stamps index.json sourceSha (CFW-318) ==="
+# Copy the fixture source tree OUTSIDE this repo's working tree first — a
+# `git -C <dir> rev-parse HEAD` resolves upward to the nearest enclosing
+# repo, so pointing CFW_SKILLS_SRC straight at test/fixtures/skills-src (a
+# subdir OF this repo) would silently return cfw-render's own HEAD instead
+# of exercising git_head_sha()'s non-git soft-fail path.
+c318_src_copy="$(mktemp -d)"
+cp -R "$TEST_DIR/fixtures/skills-src/." "$c318_src_copy/"
+c318_out="$(mktemp -d)"
+c318_sync_log="$(
+  CFW_SKILLS_SRC="$c318_src_copy" "$REPO_DIR/scripts/sync-skills.sh" \
+    --recipes "$TEST_DIR/fixtures/fixture-recipes.json" --out-dir "$c318_out" --skip-manifest 2>&1
+)"
+c318_sync_rc=$?
+if [[ "$c318_sync_rc" == "0" ]]; then
+  pass "sync-skills.sh: fixture sync + check-no-host-paths gate exit 0 (CFW-318)"
+else
+  fail "sync-skills.sh: fixture sync (CFW-318)" "expected exit 0, got $c318_sync_rc — log: $c318_sync_log"
+fi
+
+c318_brand_json="$c318_out/p-fixture-recipe/brand-overrides/fixture-brand/brand.json"
+c318_outro_path="$(python3 -c "import json; print(json.load(open('$c318_brand_json'))['outro']['path'])" 2>/dev/null)"
+if [[ "$c318_outro_path" == "None" ]]; then
+  pass "sync-skills.py: brand-overrides outro.path nulled (CFW-318)"
+else
+  fail "sync-skills.py: outro.path strip" "got: $c318_outro_path"
+fi
+
+c318_outro_relative="$(python3 -c "import json; print(json.load(open('$c318_brand_json'))['outro']['relative'])" 2>/dev/null)"
+if [[ "$c318_outro_relative" == "fixture-assets/outro.png" ]]; then
+  pass "sync-skills.py: outro.relative survives untouched (CFW-318)"
+else
+  fail "sync-skills.py: outro.relative" "got: $c318_outro_relative"
+fi
+
+if python3 -c "import json,sys; d=json.load(open('$c318_brand_json')); sys.exit(0 if 'hero_portrait' not in d else 1)"; then
+  pass "sync-skills.py: hero_portrait key dropped entirely (CFW-318)"
+else
+  fail "sync-skills.py: hero_portrait" "key still present in $c318_brand_json"
+fi
+
+c318_doc="$c318_out/p-fixture-recipe/docs/HOST-PATH-NOTE.md"
+if grep -q '/Users/<redacted>/some/scratch/path/mirror' "$c318_doc" 2>/dev/null; then
+  pass "sync-skills.py: bare host-path string redacted in a doc file (CFW-318)"
+else
+  fail "sync-skills.py: generic redaction" "redacted placeholder not found in $c318_doc"
+fi
+
+if grep -q 'testuser' "$c318_doc" 2>/dev/null && ! grep -q '/Users/testuser' "$c318_doc" 2>/dev/null; then
+  pass "sync-skills.py: negative case — bare 'testuser' with no /Users/ prefix left untouched (CFW-318)"
+else
+  fail "sync-skills.py: negative case" "unexpected content in $c318_doc"
+fi
+
+if "$REPO_DIR/scripts/check-no-host-paths.sh" --skills-dir "$c318_out" >/dev/null 2>&1; then
+  pass "check-no-host-paths.sh: PASS on the rewritten fixture bundle (CFW-318)"
+else
+  fail "check-no-host-paths.sh: fixture bundle" "expected exit 0 after rewrite"
+fi
+
+c318_sha="$(python3 -c "import json; print(json.load(open('$c318_out/index.json'))['sourceSha'])" 2>/dev/null)"
+if [[ "$c318_sha" == "None" ]]; then
+  pass "sync-skills.py: index.json sourceSha stays null for a non-git fixture source (soft-fail path, CFW-318)"
+else
+  fail "sync-skills.py: sourceSha soft-fail" "expected None, got: $c318_sha"
+fi
+rm -rf "$c318_out" "$c318_src_copy"
+
+echo "=== Case 14a: check-no-host-paths.sh red/green — FAILs on a deliberately unrewritten host path (CFW-318) ==="
+c318_dirty_base="$(mktemp -d)"
+mkdir -p "$c318_dirty_base/p-dirty-recipe"
+printf 'leftover path: /Users/testuser/leftover/path\n' > "$c318_dirty_base/p-dirty-recipe/NOTE.md"
+if "$REPO_DIR/scripts/check-no-host-paths.sh" --skills-dir "$c318_dirty_base" >/dev/null 2>&1; then
+  fail "check-no-host-paths.sh: red case" "expected exit 1 on a deliberately unrewritten fixture"
+else
+  pass "check-no-host-paths.sh: FAILs on a deliberately unrewritten host path (red/green proof, CFW-318)"
+fi
+rm -rf "$c318_dirty_base"
+
+echo "=== Case 14b: static guard — no bare host path anywhere in the committed skills/ bundle (CFW-318) ==="
+if "$REPO_DIR/scripts/check-no-host-paths.sh" >/dev/null 2>&1; then
+  pass "static guard: committed skills/ bundle has no bare host path"
+else
+  c318_real_out="$("$REPO_DIR/scripts/check-no-host-paths.sh" 2>&1)"
+  fail "static guard: bare host path found in committed bundle" "$c318_real_out"
+fi
+
+echo "=== Case 14c: index.json sourceSha stamped from a real git source repo (CFW-318) ==="
+c318_git_src="$(mktemp -d)"
+mkdir -p "$c318_git_src/p-git-fixture"
+cat > "$c318_git_src/p-git-fixture/SKILL.md" <<'EOF'
+---
+name: p-git-fixture
+kind: pipeline
+visibility: catalog
+---
+
+# p-git-fixture (CFW-318 test fixture — git sourceSha stamping)
+EOF
+(
+  cd "$c318_git_src" &&
+  git init -q &&
+  git config user.email test@example.com &&
+  git config user.name test &&
+  git add -A &&
+  git commit -q -m fixture
+) >/dev/null 2>&1
+c318_git_recipes="$(mktemp)"
+python3 -c "import json; json.dump({'recipes': [{'name': 'p-git-fixture', 'version': '1.0.0', 'providers': []}]}, open('$c318_git_recipes', 'w'))"
+c318_git_out="$(mktemp -d)"
+CFW_SKILLS_SRC="$c318_git_src" "$REPO_DIR/scripts/sync-skills.sh" \
+  --recipes "$c318_git_recipes" --out-dir "$c318_git_out" --skip-manifest >/dev/null 2>&1
+c318_expected_sha="$(git -C "$c318_git_src" rev-parse HEAD)"
+c318_got_sha="$(python3 -c "import json; print(json.load(open('$c318_git_out/index.json'))['sourceSha'])" 2>/dev/null)"
+if [[ "$c318_got_sha" == "$c318_expected_sha" ]]; then
+  pass "sync-skills.py: index.json sourceSha matches git rev-parse HEAD of the source repo (CFW-318)"
+else
+  fail "sync-skills.py: sourceSha from real git source" "expected $c318_expected_sha, got $c318_got_sha"
+fi
+rm -rf "$c318_git_src" "$c318_git_out" "$c318_git_recipes"
+
 echo "=== Case P: toolchain preflight refuses to claim on a half-provisioned host ==="
 # CFW-199 / CFW-188. hst had NO ImageMagick and was one `systemctl enable` from
 # claiming production orders it could not finish. The drainer must now refuse.
@@ -1011,6 +1132,318 @@ fi
 
 kill "$pf_pid" 2>/dev/null; wait "$pf_pid" 2>/dev/null
 rm -rf "$pf_shim"
+
+# ===========================================================================
+# CFW-291: resolved-binary worker PATH + headless claude probe + Linux
+# coverage. None of the cases below need the mock server — these are pure
+# bash-function and template-rendering checks (same "no live services" rule
+# already governing this file).
+# ===========================================================================
+
+echo "=== Case Q1: cr_resolve_worker_path finds a nonstandard binary location ==="
+q1_tmp="$(mktemp -d)"
+mkdir -p "$q1_tmp/weird"
+cp "$TEST_DIR/fake-claude.sh" "$q1_tmp/weird/claude"
+chmod +x "$q1_tmp/weird/claude"
+q1_out="$(
+  export PATH="$q1_tmp/weird:$PATH"
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_resolve_worker_path
+)"
+if [[ ":$q1_out:" == *":$q1_tmp/weird:"* ]]; then
+  pass "cr_resolve_worker_path: resolves a nonstandard claude location (not the CFW-279 guessed list)"
+else
+  fail "cr_resolve_worker_path: nonstandard location" "expected $q1_tmp/weird in: $q1_out"
+fi
+rm -rf "$q1_tmp"
+
+echo "=== Case Q2: cr_resolve_worker_path dedups + preserves the static fallback dirs ==="
+q2_tmp="$(mktemp -d)"
+mkdir -p "$q2_tmp/custom"
+for q2_b in curl python3; do
+  q2_real="$(command -v "$q2_b")"
+  [[ -n "$q2_real" ]] && ln -s "$q2_real" "$q2_tmp/custom/$q2_b"
+done
+q2_out="$(
+  export PATH="$q2_tmp/custom:$PATH"
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_resolve_worker_path
+)"
+q2_count="$(printf '%s\n' "$q2_out" | tr ':' '\n' | grep -c "^$q2_tmp/custom\$")"
+if [[ "$q2_count" == "1" ]]; then
+  pass "cr_resolve_worker_path: two bins resolved into the same custom dir → that dir appears exactly once"
+else
+  fail "cr_resolve_worker_path: dedup" "expected 1 occurrence of $q2_tmp/custom, got $q2_count in: $q2_out"
+fi
+if [[ ":$q2_out:" == *":/usr/local/bin:"* && ":$q2_out:" == *":/opt/homebrew/bin:"* && ":$q2_out:" == *":/usr/bin:"* && ":$q2_out:" == *":/bin:"* ]]; then
+  pass "cr_resolve_worker_path: static fallback dirs still present (CFW-279's Homebrew-case regression, now automated)"
+else
+  fail "cr_resolve_worker_path: fallback preserved" "missing a fallback dir in: $q2_out"
+fi
+rm -rf "$q2_tmp"
+
+echo "=== Case Q3: cr_probe_claude_headless — the money test (catches what CFW-279's naive check could not) ==="
+q3_tmp="$(mktemp -d)"
+cp "$TEST_DIR/fake-claude-env-dependent.sh" "$q3_tmp/claude"
+chmod +x "$q3_tmp/claude"
+q3_naive_rc=1
+(
+  export PATH="$q3_tmp:$PATH"
+  export FAKE_NVM_DIR=1
+  command -v claude >/dev/null 2>&1 && claude --version >/dev/null 2>&1
+)
+q3_naive_rc=$?
+if [[ "$q3_naive_rc" == "0" ]]; then
+  pass "money test setup: naive 'command -v claude && claude --version' succeeds in the harness's own (rich) env — the exact CFW-279 gap"
+else
+  fail "money test setup" "naive command -v/claude --version unexpectedly failed in the harness's own env (rc=$q3_naive_rc)"
+fi
+(
+  export PATH="$q3_tmp:$PATH"
+  export FAKE_NVM_DIR=1
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_probe_claude_headless "$q3_tmp:/usr/local/bin:/usr/bin:/bin"
+) >/dev/null 2>&1
+q3_probe_rc=$?
+if [[ "$q3_probe_rc" != "0" ]]; then
+  pass "money test: cr_probe_claude_headless FAILS under env -i (FAKE_NVM_DIR stripped) — caught at install time, not the first real tick"
+else
+  fail "money test: probe" "expected non-zero, cr_probe_claude_headless returned 0"
+fi
+rm -rf "$q3_tmp"
+
+echo "=== Case Q4: cr_probe_claude_headless — success case, and empty-output-is-still-a-failure ==="
+q4_tmp="$(mktemp -d)"
+cp "$TEST_DIR/fake-claude.sh" "$q4_tmp/claude"
+chmod +x "$q4_tmp/claude"
+(
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_probe_claude_headless "$q4_tmp:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
+) >/dev/null 2>&1
+q4_rc=$?
+if [[ "$q4_rc" == "0" ]]; then
+  pass "cr_probe_claude_headless: succeeds against a claude that prints output and exits 0"
+else
+  fail "cr_probe_claude_headless: success case" "expected 0, got $q4_rc"
+fi
+rm -rf "$q4_tmp"
+
+q4_empty="$(mktemp -d)"
+cat > "$q4_empty/claude" <<'FAKECLAUDE'
+#!/usr/bin/env bash
+exit 0
+FAKECLAUDE
+chmod +x "$q4_empty/claude"
+(
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_probe_claude_headless "$q4_empty:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
+) >/dev/null 2>&1
+q4_empty_rc=$?
+if [[ "$q4_empty_rc" != "0" ]]; then
+  pass "cr_probe_claude_headless: exit 0 but empty output is still a FAIL (mirrors cr_preflight's own claude --version rule)"
+else
+  fail "cr_probe_claude_headless: empty output" "expected non-zero, got 0"
+fi
+rm -rf "$q4_empty"
+
+echo "=== Case Q5: cr_probe_claude_headless respects the stub-Director skip ==="
+q5_empty_path="$(mktemp -d)"
+(
+  export PATH="$q5_empty_path"
+  export CFW_RENDER_DIRECTOR_CMD="$TEST_DIR/fake-director.sh"
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_probe_claude_headless "$q5_empty_path"
+) >/dev/null 2>&1
+q5_rc=$?
+if [[ "$q5_rc" == "0" ]]; then
+  pass "cr_probe_claude_headless: SKIPs (returns 0) when CFW_RENDER_DIRECTOR_CMD is set, even with no claude anywhere on PATH"
+else
+  fail "cr_probe_claude_headless: stub skip" "expected 0 (SKIP), got $q5_rc"
+fi
+rm -rf "$q5_empty_path"
+
+# ---------------------------------------------------------------------------
+# _q291_relocate_bin <full_path> <custom_dir> <relocate_bin>
+# Shared helper for Cases Q6/Q7 below — resolves <relocate_bin> on
+# <full_path> and symlinks it alone into <custom_dir>. Unlike Case P (which
+# must HIDE one tool while keeping everything else reachable, hence a full
+# PATH mirror), Q6/Q7 only need to prove a relocated bin is found in a
+# nonstandard location while every other tool keeps resolving normally — so
+# the caller just puts <custom_dir> ahead of the real PATH; ordinary PATH
+# precedence does the rest without mirroring every binary on the system
+# (mirroring is what made this loop O(size of $PATH) and slow on boxes with
+# a large ambient PATH).
+# ---------------------------------------------------------------------------
+_q291_relocate_bin() {
+  local full_path="$1" custom="$2" relocate="$3" real
+  real="$(PATH="$full_path" command -v "$relocate" 2>/dev/null)" || return 0
+  ln -s "$real" "$custom/$relocate" 2>/dev/null
+}
+
+echo "=== Case Q6: install.sh renders the resolved WORKER_PATH into the macOS plist ==="
+q6_real_home="$HOME"
+q6_home="$(mktemp -d)"
+q6_prefix="$(mktemp -d)"
+q6_custom="$(mktemp -d)"
+q6_env="$(mktemp)"
+cat > "$q6_env" <<EOF
+CFW_API_BASE=http://127.0.0.1:1
+CFW_RENDER_WORKER_KEY=cfw_render_test0000000000000000
+CFW_RENDER_STATE_DIR=$q6_home/cfw-render-state
+CFW_RENDER_SCRATCH=$q6_home/cfw-render-scratch
+EOF
+
+_q291_relocate_bin "$REPO_DIR/bin:$FAKE_BIN:$PATH" "$q6_custom" ffmpeg
+q6_test_path="$q6_custom:$REPO_DIR/bin:$FAKE_BIN:$PATH"
+
+q6_expected_worker_path="$(
+  export PATH="$q6_test_path"
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_resolve_worker_path
+)"
+
+(
+  export HOME="$q6_home"
+  export PATH="$q6_test_path"
+  # PLAYWRIGHT_BROWSERS_PATH: cr_preflight_chromium's search is $HOME-relative
+  # by default; since HOME is deliberately overridden to a scratch dir for
+  # this hermetic test, point it back at the real cache so the unrelated
+  # chromium/fonts preflight rows still PASS on a dev box that has Playwright
+  # installed under the real $HOME — this test is about WORKER_PATH
+  # rendering, not about re-testing chromium discovery.
+  export PLAYWRIGHT_BROWSERS_PATH="$q6_real_home/Library/Caches/ms-playwright"
+  "$REPO_DIR/install/install.sh" --mode byoa --prefix "$q6_prefix" --env-file "$q6_env" >"$q6_home/install.log" 2>&1
+)
+
+q6_plist="$q6_home/Library/LaunchAgents/com.cfw.render.plist"
+if [[ -f "$q6_plist" ]]; then
+  pass "install.sh: renders com.cfw.render.plist"
+else
+  fail "install.sh: plist written" "not found at $q6_plist — install.log tail: $(tail -20 "$q6_home/install.log" 2>/dev/null)"
+fi
+
+if [[ -f "$q6_plist" ]] && grep -qF '{{WORKER_PATH}}' "$q6_plist"; then
+  fail "install.sh: leftover WORKER_PATH token" "plist still contains the literal {{WORKER_PATH}} placeholder"
+else
+  pass "install.sh: no leftover {{WORKER_PATH}} token in the plist"
+fi
+
+q6_plist_path_value=""
+if [[ -f "$q6_plist" ]]; then
+  q6_plist_path_value="$(python3 -c '
+import plistlib, sys
+try:
+    with open(sys.argv[1], "rb") as f:
+        d = plistlib.load(f)
+    print(d.get("EnvironmentVariables", {}).get("PATH", ""))
+except Exception as e:
+    print("ERR " + str(e))
+' "$q6_plist")"
+fi
+if [[ "$q6_plist_path_value" == "$q6_expected_worker_path" ]]; then
+  pass "install.sh: plist PATH == cr_resolve_worker_path's output for the same PATH"
+else
+  fail "install.sh: plist PATH value" "expected [$q6_expected_worker_path] got [$q6_plist_path_value]"
+fi
+
+if [[ -f "$q6_plist" ]]; then
+  if command -v plutil >/dev/null 2>&1; then
+    if plutil -lint "$q6_plist" >/dev/null 2>&1; then
+      pass "install.sh: rendered plist is well-formed XML (plutil -lint)"
+    else
+      fail "install.sh: plist XML" "plutil -lint reported malformed XML"
+    fi
+  else
+    if python3 -c "import xml.dom.minidom, sys; xml.dom.minidom.parse(sys.argv[1])" "$q6_plist" >/dev/null 2>&1; then
+      pass "install.sh: rendered plist is well-formed XML (xml.dom.minidom fallback)"
+    else
+      fail "install.sh: plist XML" "xml.dom.minidom failed to parse the rendered plist"
+    fi
+  fi
+fi
+
+rm -rf "$q6_home" "$q6_prefix" "$q6_custom"
+rm -f "$q6_env"
+
+echo "=== Case Q7: install.sh renders WORKER_PATH into the Linux systemd unit, from this macOS dev box (CFW_RENDER_TEST_OS seam) ==="
+q7_real_home="$HOME"
+q7_home="$(mktemp -d)"
+q7_prefix="$(mktemp -d)"
+q7_custom="$(mktemp -d)"
+q7_env="$(mktemp)"
+cat > "$q7_env" <<EOF
+CFW_API_BASE=http://127.0.0.1:1
+CFW_RENDER_WORKER_KEY=cfw_render_test0000000000000000
+CFW_RENDER_STATE_DIR=$q7_home/cfw-render-state
+CFW_RENDER_SCRATCH=$q7_home/cfw-render-scratch
+EOF
+
+_q291_relocate_bin "$REPO_DIR/bin:$FAKE_BIN:$PATH" "$q7_custom" ffmpeg
+q7_test_path="$q7_custom:$REPO_DIR/bin:$FAKE_BIN:$PATH"
+
+q7_expected_worker_path="$(
+  export PATH="$q7_test_path"
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_resolve_worker_path
+)"
+
+(
+  export HOME="$q7_home"
+  export PATH="$q7_test_path"
+  export PLAYWRIGHT_BROWSERS_PATH="$q7_real_home/Library/Caches/ms-playwright"
+  export CFW_RENDER_TEST_OS="Linux"
+  "$REPO_DIR/install/install.sh" --mode byoa --prefix "$q7_prefix" --env-file "$q7_env" >"$q7_home/install.log" 2>&1 &
+  echo $! > "$q7_home/install.pid"
+  wait $!
+)
+q7_pid="$(cat "$q7_home/install.pid" 2>/dev/null)"
+q7_service="/tmp/cfw-render.service.$q7_pid"
+q7_timer="/tmp/cfw-render.timer.$q7_pid"
+
+if [[ -n "$q7_pid" && -f "$q7_service" ]]; then
+  pass "install.sh: renders cfw-render.service under CFW_RENDER_TEST_OS=Linux (first automated coverage the Linux unit has ever had)"
+else
+  fail "install.sh: linux unit written" "not found at $q7_service — install.log tail: $(tail -20 "$q7_home/install.log" 2>/dev/null)"
+fi
+
+if [[ -f "$q7_service" ]] && grep -qF '{{WORKER_PATH}}' "$q7_service"; then
+  fail "install.sh: leftover WORKER_PATH token (linux)" "unit still contains the literal {{WORKER_PATH}} placeholder"
+else
+  pass "install.sh: no leftover {{WORKER_PATH}} token in the linux unit"
+fi
+
+if [[ -f "$q7_service" ]]; then
+  q7_order_check="$(python3 -c '
+import sys
+lines = open(sys.argv[1]).read().splitlines()
+env_file_idx = next((i for i, l in enumerate(lines) if l.startswith("EnvironmentFile=")), None)
+path_idx = next((i for i, l in enumerate(lines) if l.startswith("Environment=PATH=")), None)
+if env_file_idx is None or path_idx is None:
+    print("BAD missing EnvironmentFile= or Environment=PATH= line")
+else:
+    val = lines[path_idx][len("Environment=PATH="):]
+    if path_idx > env_file_idx and val == sys.argv[2]:
+        print("OK")
+    else:
+        print("BAD env_file_idx=%d path_idx=%d val=%r" % (env_file_idx, path_idx, val))
+' "$q7_service" "$q7_expected_worker_path")"
+  if [[ "$q7_order_check" == "OK" ]]; then
+    pass "install.sh: linux unit's Environment=PATH matches the resolved WORKER_PATH, positioned after EnvironmentFile= (env file can't clobber it)"
+  else
+    fail "install.sh: linux unit PATH/ordering" "$q7_order_check"
+  fi
+fi
+
+rm -rf "$q7_home" "$q7_prefix" "$q7_custom"
+rm -f "$q7_env" "$q7_service" "$q7_timer"
 
 echo ""
 echo "=== Lint ==="

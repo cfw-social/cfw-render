@@ -1,0 +1,18 @@
+{
+  "brand": "Fixture Brand",
+  "slug": "fixture-brand",
+  "cfw_brand_id": "fixture-brand-id",
+  "palette": {
+    "bg": "#000000"
+  },
+  "outro": {
+    "type": "png-still",
+    "path": "/Users/testuser/initiatives/brands/fixture-brand/outro.png",
+    "relative": "fixture-assets/outro.png",
+    "size": "1080x1920",
+    "duration_s": 3.0,
+    "mode": "append-after-cta-takeover",
+    "_note": "CFW-318 test fixture — path must be nulled, relative must survive untouched."
+  },
+  "hero_portrait": "/Users/testuser/initiatives/brands/fixture-brand/hero.png"
+}

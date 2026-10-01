@@ -56,7 +56,7 @@
   },
   "outro": {
     "type": "png-still",
-    "path": "/Users/vasanth/initiatives/brands/mr-growth-guide/marketing-mirror-import/brand-assets/outros/mgg-outro-vertical-1080x1920.png",
+    "path": null,
     "relative": "marketing-mirror-import/brand-assets/outros/mgg-outro-vertical-1080x1920.png",
     "size": "1080x1920",
     "duration_s": 3.0,
@@ -74,6 +74,5 @@
       "threads",
       "facebook"
     ]
-  },
-  "hero_portrait": "/Users/vasanth/initiatives/brands/mr-growth-guide/vasanth-portrait-amber-1080x1920.png"
+  }
 }

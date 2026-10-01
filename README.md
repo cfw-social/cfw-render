@@ -418,4 +418,12 @@ race directly: a Director that backgrounds a step finishing just inside the
 grace window still lands `outcome=complete`, while one that backgrounds a
 step past the grace window is reaped and lands the distinct `outcome=orphaned`
 (never `crashed`, and never a stray `complete_render_order` call racing the
-block).
+block). Also covers (CFW-291): `cr_resolve_worker_path` finding a binary in a
+nonstandard location and deduping/preserving the static fallback dirs;
+`cr_probe_claude_headless` catching a `claude` that only "works" via an
+ambient env var a rich shell would supply but `env -i` strips (the exact
+CFW-279 gap), its empty-output-is-still-a-failure rule, and its
+stub-Director skip; and `install/install.sh` rendering the resolved
+`WORKER_PATH` into both the macOS plist and the Linux systemd unit
+(exercised via the `CFW_RENDER_TEST_OS` test seam), well-formed and ordered
+correctly relative to `EnvironmentFile=`.
