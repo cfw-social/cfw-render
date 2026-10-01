@@ -244,6 +244,11 @@ print(tpl)
   # watchdog kill, crash) so no heartbeat can land after the order is terminal.
   local heartbeat_pid
   heartbeat_pid="$(cr_heartbeat_start "$order_id")"
+  # [CFW-315] Let the Director's own process (cfw-render-report.sh, running
+  # inside it) stop the pulse itself, synchronously, right before it reports a
+  # terminal outcome — stopping it here, after wait, is too late: the Director
+  # already called complete/block from inside its own tree before it exits.
+  [[ -n "$heartbeat_pid" ]] && echo "$heartbeat_pid" > "$order_dir/.heartbeat.pid"
 
   local ts out_file model_state_file
   ts="$(date +%s)"
