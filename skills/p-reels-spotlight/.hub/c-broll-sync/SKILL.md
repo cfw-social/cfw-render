@@ -167,8 +167,7 @@ The script writes `beat_list.json`:
 ## Usage — calling pattern
 
 ```bash
-BROLL_SYNC_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" -maxdepth 4 -type d -name c-broll-sync 2>/dev/null | head -1)
-[ -n "$BROLL_SYNC_DIR" ] || BROLL_SYNC_DIR="$SKILL_DIR/.hub/c-broll-sync"
+BROLL_SYNC_DIR="${CFW_RENDER_SKILLS_DIR:?CFW_RENDER_SKILLS_DIR not set}/p-reels-spotlight/.hub/c-broll-sync"
 
 node "$BROLL_SYNC_DIR/scripts/plan.js" \
   --transcript "$W/transcript.json" \

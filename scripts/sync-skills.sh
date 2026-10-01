@@ -14,12 +14,21 @@
 #      $CFW_SKILLS_SRC/<recipe>/ into <out-dir>/<recipe>/, then computes the
 #      transitive closure of its `dependsOn` graph (cycle-safe) and copies
 #      each dependency into <out-dir>/<recipe>/.hub/<dep>/ (flattened, not
-#      nested). No body/path rewriting — the source already uses
-#      `.hub/<dep>/...`-relative paths.
+#      nested). ONE body rewrite is applied per copied dir (CFW-312): the
+#      source's "find my own/a sub-skill dir under a host skill-install root"
+#      idiom — correct for the source library's other (Hermes/Claude Code)
+#      consumers, wrong for this runtime-free bundle — is rewritten to resolve
+#      against $CFW_RENDER_SKILLS_DIR and the bundle's own .hub/<dep>/. See
+#      scripts/sync-skills.py's rewrite_host_path_resolvers().
 #   4. Regenerates <out-dir>/index.json (recipe list, per-file fileHashes,
 #      version, checksum) in the shape scripts/verify-skills-bundle.sh and
-#      scripts/gen-skills-manifest.sh expect.
-#   5. Unless --skip-manifest or --out-dir points somewhere other than the
+#      scripts/gen-skills-manifest.sh expect — hashed AFTER the rewrite, so
+#      the pinned hashes match what actually ships.
+#   5. Runs scripts/check-skills-portability.sh against <out-dir> and aborts
+#      (non-zero exit, offending lines printed) if any host-path resolver
+#      survived the rewrite — belt-and-suspenders against a future recipe
+#      whose source uses a resolver shape the rewrite doesn't yet recognize.
+#   6. Unless --skip-manifest or --out-dir points somewhere other than the
 #      real <repo>/skills, refreshes config/skills-version.json (rollup via
 #      gen-skills-manifest.sh, then provenance fields patched to point at the
 #      private source instead of the retired git-subtree).
@@ -110,6 +119,14 @@ python3 "$SELF_DIR/sync-skills.py" \
   --src "$CFW_SKILLS_SRC" \
   --recipes "$RECIPES_CONFIG" \
   --out-dir "$OUT_DIR"
+
+# CFW-312 bundle gate — abort the sync if any recipe still resolves a
+# sub-skill (or itself) via a host-path `find` instead of the bundle's own
+# .hub/<dep>/. sync-skills.py's rewrite pass should make this impossible, but
+# a future recipe whose source SKILL.md uses some new resolver shape the
+# rewrite doesn't yet recognize must fail HERE — loudly, at sync time — not
+# ship a silently-broken recipe that only shows up as a render failure later.
+"$SELF_DIR/check-skills-portability.sh" --skills-dir "$OUT_DIR"
 
 if (( SKIP_MANIFEST == 0 )) && [[ "$OUT_DIR" == "$REPO_DIR/skills" ]]; then
   SOURCE_COMMIT="$(git -C "$CFW_SKILLS_SRC" rev-parse HEAD 2>/dev/null || echo unknown)"

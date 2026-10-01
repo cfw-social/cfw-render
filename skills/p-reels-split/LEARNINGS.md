@@ -11,6 +11,12 @@
 
 ## Feedback Log
 
+### 2026-09-07 — GSAI-36 CTA end card: alpha dropped at render + copy top-anchored (every brand)
+- Every reel from every brand ended on a flat opaque navy slate with the CTA jammed against the top edge. Two defects, one cause: the card was rendered to **mp4 (`yuv420p`, no alpha channel)** so the `rgba(...,0.85)` scrim was discarded at encode; and the copy was top-anchored despite `justify-content:center` on `body` and the root — HyperFrames' render capture does not honour flex centering on `body`/root (verified: the same compiled HTML centres correctly in plain Chrome; the worker's captured frames put the copy in rows 40–531 of 1920).
+- Fix (Step 9): render with `--format mov` (ProRes 4444, `yuva444p12le`) and overlay `cta-card.mov`; move the scrim and the copy to **inner `position:absolute` layers** (the alpha capture forces `html`/`body`/root transparent); `padding-bottom:288px` keeps the copy above the bottom 15%. Two fail-fast gates: card `pix_fmt` must be `yuva*`, and the bottom 55% of the final frame must be >1 distinct colour.
+- Proof on the same source reel (`05.15-day16-automate-instagram-postforme`): before = 1 distinct colour in the bottom 55%, after = 19 708; card alpha 218/255 (= 0.85); copy rows 594–1080 (centre 837, safe-zone centre 816). Reel duration unchanged (55.893 s).
+- Merge gate: `scripts/tests/p-reels-cta-card.test.sh` checks both templates statically and proves the ffmpeg alpha path with a synthetic card (no Chrome needed); `CTA_RENDER=1` adds a real HyperFrames render.
+
 ### 2026-09-04 — CFW-128 headless certification (MGG, reused 1920×1080 `05.15-day14-week2-recap-top3-tools` raw avatar, $0)
 - End-to-end on the Mac in ≈6 min: 11 top cards (26 s, 4-way parallel), cut-zoom bottom, vstack, CTA takeover, outro PNG, premium (Opus planner, 40 groups / 9 SFX, 3.5 min render), cover freeze. c-shorts-qa-gate PASS (-14.6 LUFS, frame-0 YAVG 55), c-eval-runner PASS after the `luma_floor` engine fix (it point-sampled navy frames as 4–13; true mean 33).
 - The split-motion-card template is title-only; put chips/bignum HTML inside `TITLE_HTML` to satisfy the "illustrative, not just titles" rule.

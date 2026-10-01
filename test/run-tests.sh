@@ -731,6 +731,67 @@ else
   fail "static guard: retired vault path" "found live references: $c289_grep_out"
 fi
 
+echo "=== Case 10: sync-skills.py rewrites host-path sub-skill resolvers to .hub/ (CFW-312) ==="
+c312_out="$(mktemp -d)"
+c312_sync_log="$(
+  CFW_SKILLS_SRC="$TEST_DIR/fixtures/skills-src" "$REPO_DIR/scripts/sync-skills.sh" \
+    --recipes "$TEST_DIR/fixtures/fixture-recipes.json" --out-dir "$c312_out" --skip-manifest 2>&1
+)"
+c312_sync_rc=$?
+if [[ "$c312_sync_rc" == "0" ]]; then
+  pass "sync-skills.sh: fixture sync + portability gate exit 0"
+else
+  fail "sync-skills.sh: fixture sync" "expected exit 0, got $c312_sync_rc — log: $c312_sync_log"
+fi
+
+c312_top_skill_dir="$(grep '^SKILL_DIR=' "$c312_out/p-fixture-recipe/SKILL.md" 2>/dev/null)"
+if [[ "$c312_top_skill_dir" == 'SKILL_DIR="${CFW_RENDER_SKILLS_DIR:?CFW_RENDER_SKILLS_DIR not set}/p-fixture-recipe"' ]]; then
+  pass "sync-skills.py: top-level recipe's own-dir line anchors on CFW_RENDER_SKILLS_DIR"
+else
+  fail "sync-skills.py: own-dir rewrite" "got: $c312_top_skill_dir"
+fi
+
+c312_sub_dir="$(grep '^FIXTURE_DEP_DIR=' "$c312_out/p-fixture-recipe/SKILL.md" 2>/dev/null)"
+if [[ "$c312_sub_dir" == 'FIXTURE_DEP_DIR="$SKILL_DIR/.hub/c-fixture-dep"' ]]; then
+  pass "sync-skills.py: sub-skill-dir line resolves against bundled .hub/, not a host find"
+else
+  fail "sync-skills.py: sub-skill-dir rewrite" "got: $c312_sub_dir"
+fi
+
+if grep -q '\[ -n "\$FIXTURE_DEP_DIR" \]' "$c312_out/p-fixture-recipe/SKILL.md" 2>/dev/null; then
+  fail "sync-skills.py: dead fallback" "the now-dead '[ -n ... ] || ...' fallback line should have been dropped"
+else
+  pass "sync-skills.py: dead fallback line dropped (rewritten assignment is unconditional)"
+fi
+
+c312_nested_skill_dir="$(grep '^SKILL_DIR=' "$c312_out/p-fixture-recipe/.hub/c-fixture-dep/SKILL.md" 2>/dev/null)"
+if [[ "$c312_nested_skill_dir" == 'SKILL_DIR="${CFW_RENDER_SKILLS_DIR:?CFW_RENDER_SKILLS_DIR not set}/p-fixture-recipe/.hub/c-fixture-dep"' ]]; then
+  pass "sync-skills.py: vendored dep's own-dir line resolves to its actual on-disk .hub/ location"
+else
+  fail "sync-skills.py: vendored dep own-dir rewrite" "got: $c312_nested_skill_dir"
+fi
+
+if "$REPO_DIR/scripts/check-skills-portability.sh" --skills-dir "$c312_out" >/dev/null 2>&1; then
+  pass "check-skills-portability.sh: PASS on the rewritten fixture bundle"
+else
+  fail "check-skills-portability.sh: fixture bundle" "expected exit 0 after rewrite"
+fi
+
+if "$REPO_DIR/scripts/check-skills-portability.sh" --skills-dir "$c312_out" c-fixture-clean >/dev/null 2>&1; then
+  pass "check-skills-portability.sh: clean recipe (no dependsOn, no resolver) doesn't false-positive"
+else
+  fail "check-skills-portability.sh: clean recipe" "expected exit 0 for c-fixture-clean"
+fi
+rm -rf "$c312_out"
+
+echo "=== Case 11: static guard — bundled skills resolve sub-skills from .hub/, not host paths (CFW-312) ==="
+if "$REPO_DIR/scripts/check-skills-portability.sh" >/dev/null 2>&1; then
+  pass "static guard: committed skills/ bundle has no host-path sub-skill resolver"
+else
+  c312_real_out="$("$REPO_DIR/scripts/check-skills-portability.sh" 2>&1)"
+  fail "static guard: host-path resolver in committed bundle" "$c312_real_out"
+fi
+
 echo "=== Case P: toolchain preflight refuses to claim on a half-provisioned host ==="
 # CFW-199 / CFW-188. hst had NO ImageMagick and was one `systemctl enable` from
 # claiming production orders it could not finish. The drainer must now refuse.

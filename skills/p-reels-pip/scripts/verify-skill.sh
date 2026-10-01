@@ -82,8 +82,7 @@ check "SKILL.md hf-fmt5 mapping documented" grep -q "hf-fmt5" "$SKILL_DIR/SKILL.
 
 # Component skill directories — search all known skill locations
 _find_skill() {
-  find "$HOME/.claude/skills" "$HOME/.hermes/skills" /Users/vasanth/ecosystem/harness/skills \
-    -maxdepth 4 -type d -name "$1" 2>/dev/null | head -1
+  echo "$SKILL_DIR/.hub/$1"
 }
 BROLL_SYNC=$(_find_skill c-broll-sync)
 PREMIUM=$(_find_skill c-reel-premium)

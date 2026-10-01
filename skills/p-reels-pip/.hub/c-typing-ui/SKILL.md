@@ -74,7 +74,7 @@ Both templates use `{{PLACEHOLDER}}` substitution (same pattern as `p-reels-hf-f
 ## Usage — standalone render (one beat)
 
 ```bash
-SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" -maxdepth 4 -type d -name c-typing-ui 2>/dev/null | head -1)
+SKILL_DIR="${CFW_RENDER_SKILLS_DIR:?CFW_RENDER_SKILLS_DIR not set}/p-reels-pip/.hub/c-typing-ui"
 BEAT_DIR="$W/beat_typing_0"
 mkdir -p "$BEAT_DIR"
 
