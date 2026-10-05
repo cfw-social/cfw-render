@@ -106,6 +106,14 @@ else
   exit 1
 fi
 [[ -f "$REPO_DIR/config/skills-version.json" ]] && cp -a "$REPO_DIR/config/skills-version.json" "$PREFIX/config/skills-version.json"
+# Open-box guide: AGENTS.md (+ the CLAUDE.md pointer) ship with the install so
+# any coding assistant on this computer can find and use the recipes in
+# $PREFIX/skills for local renders outside CFW.
+for guide in AGENTS.md CLAUDE.md; do
+  if [[ -f "$REPO_DIR/$guide" ]]; then
+    cp -a "$REPO_DIR/$guide" "$PREFIX/$guide"
+  fi
+done
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "install.sh: NOTE — $ENV_FILE does not exist yet. Per AB-RNDR-AUTH §5.2, this" >&2

@@ -1369,6 +1369,14 @@ if [[ -f "$q6_plist" ]]; then
   fi
 fi
 
+# Open-box guide ships with the install (AGENTS.md + the CLAUDE.md pointer).
+for q6_guide in AGENTS.md CLAUDE.md; do
+  if [[ -f "$q6_prefix/$q6_guide" ]] && cmp -s "$REPO_DIR/$q6_guide" "$q6_prefix/$q6_guide"; then
+    pass "install.sh: copies $q6_guide into the prefix"
+  else
+    fail "install.sh: $q6_guide in prefix" "missing or differs at $q6_prefix/$q6_guide"
+  fi
+done
 rm -rf "$q6_home" "$q6_prefix" "$q6_custom"
 rm -f "$q6_env"
 
