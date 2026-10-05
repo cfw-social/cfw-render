@@ -76,6 +76,16 @@ if (( DRY )); then
   else
     row "dir:state" 1 "$CFW_RENDER_STATE_DIR not writable"
   fi
+  if [[ -w "$CFW_RENDER_LOG_DIR" ]]; then
+    row "dir:logs" 0 "$CFW_RENDER_LOG_DIR"
+  else
+    row "dir:logs" 1 "$CFW_RENDER_LOG_DIR not writable"
+  fi
+  if [[ "$CFW_RENDER_KEEP_OUTPUTS" == "1" ]]; then
+    row "dir:outputs" 0 "$CFW_RENDER_OUTPUTS (finished renders are kept here)"
+  else
+    warn_row "dir:outputs" "off — finished renders are not kept on this computer"
+  fi
 
   row "key:shape" 0 "CFW_RENDER_WORKER_KEY matches ^cfw_render_"  # cr_load_config already enforced this
 
@@ -150,7 +160,9 @@ if [[ -d "$CFW_RENDER_SCRATCH" ]]; then
 fi
 
 JOURNAL="$CFW_RENDER_STATE_DIR/journal.tsv"
-RUNS_DIR="$CFW_RENDER_STATE_DIR/runs"
+# Per-render transcripts are logs: "$HOME/CFW Render/logs/runs" on an owner's
+# computer, the state dir on the fleet (CFW_RENDER_LOG_DIR default).
+RUNS_DIR="$CFW_RENDER_LOG_DIR/runs"
 mkdir -p "$RUNS_DIR"
 
 sanitize_slug() {
@@ -312,6 +324,11 @@ print(tpl)
     export CFW_RENDER_WORKER_KEY
     export CFW_RENDER_SCRATCH_DIR="$order_dir"
     export CFW_RENDER_STATE_DIR
+    export CFW_RENDER_LOG_DIR
+    # Where cfw-render-report.sh keeps a local copy of the finished files once
+    # CFW has accepted them (empty = keep none, e.g. the fleet).
+    CFW_RENDER_KEEP_DIR="$(cr_keep_output_dir "$brand_slug" "$order_id")"
+    export CFW_RENDER_KEEP_DIR
     export CFW_RENDER_OLLAMA_KEYS_FILE
     export CFW_RENDER_FANOUT_MODELS
     # [CFW-313] Brand-scoped HeyGen credential, if the gate above resolved

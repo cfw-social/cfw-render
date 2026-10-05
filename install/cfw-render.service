@@ -1,6 +1,7 @@
 # cfw-render.service — systemd oneshot unit (Linux — hst).
-# Placeholders {{PREFIX}}, {{ENV_FILE}}, {{USER}}, {{WORKER_PATH}}
-# substituted by install/install.sh. NOT installed by this task
+# Placeholders {{PREFIX}}, {{ENV_FILE}}, {{USER}}, {{WORKER_PATH}}, {{RW_PATHS}}
+# substituted by install/install.sh. Paths may contain spaces (the byoa
+# prefix is "$HOME/CFW Render/app"), so every path-bearing value is quoted. NOT installed by this task
 # (AB-RNDR-WORKER is code-authoring only) — a human installs it later per
 # docs/deploy.md, as a SEPARATE service pool decoupled from the
 # cfw-gw@<slug> gateway units.
@@ -23,13 +24,15 @@ EnvironmentFile={{ENV_FILE}}
 # Environment=/EnvironmentFile= directives for the same key in file order,
 # last one wins, so the resolved worker PATH must always win over anything
 # {{ENV_FILE}} declares. See CFW-291.
-Environment=PATH={{WORKER_PATH}}
-ExecStart={{PREFIX}}/bin/cfw-render.sh --once
+Environment="PATH={{WORKER_PATH}}"
+ExecStart="{{PREFIX}}/bin/cfw-render.sh" --once
 TimeoutStartSec=2100
 
 # Hardening
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
-ReadWritePaths={{PREFIX}} %h/.cfw-render %h/cfw-render-scratch
+# install.sh renders the absolute, quoted list: prefix, state dir, scratch,
+# logs and (byoa) outputs.
+ReadWritePaths={{RW_PATHS}}
 ProtectHome=read-only

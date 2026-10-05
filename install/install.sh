@@ -7,9 +7,16 @@
 # Usage:
 #   install.sh --user <u> --prefix <dir> [--env-file <path>] [--mode server|byoa] [--yes-really]
 #
-# --prefix     where bin/ + lib/ + skills/ + scripts/ get copied (default /opt/cfw-render)
-# --env-file   env file the installed unit will read (default /etc/cfw-render.env)
+# --prefix     where bin/ + lib/ + skills/ + scripts/ get copied
+#              (default: server /opt/cfw-render; byoa "$HOME/CFW Render/app")
+# --env-file   env file the installed unit will read
+#              (default: server /etc/cfw-render.env; byoa ~/.cfw-render/cfw-render.env,
+#              or the legacy ~/ecosystem/vault/cfw-render.env when only that exists)
 # --mode       deploy mode written to the env file (server|byoa, default server) — doc §4
+#
+# byoa folder layout (the owner's own computer — see AGENTS.md "Where things are"):
+#   "$HOME/CFW Render/"  app/ (prefix), outputs/<brand>/ (kept renders), logs/
+#   ~/.cfw-render/       worker-id, cfw-render.env (chmod 600), scratch/
 # --user       user the systemd unit runs as (Linux only; ignored on macOS)
 # --yes-really required to run as root (refuses otherwise — guard rail)
 set -euo pipefail
@@ -17,8 +24,8 @@ set -euo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SELF_DIR/.." && pwd)"
 
-PREFIX="/opt/cfw-render"
-ENV_FILE="/etc/cfw-render.env"
+PREFIX=""
+ENV_FILE=""
 RUN_USER="${SUDO_USER:-$(id -un)}"
 MODE="server"
 YES_REALLY=0
@@ -38,6 +45,51 @@ case "$MODE" in
   server|byoa) : ;;
   *) echo "install.sh: --mode must be server|byoa (got '$MODE')" >&2; exit 2 ;;
 esac
+
+# The service user's home. When the installer runs as that user, $HOME is it
+# (and stays correct under a test harness that points HOME at a temp dir).
+if [[ "$RUN_USER" == "$(id -un)" ]]; then
+  RUN_HOME="$HOME"
+else
+  RUN_HOME="$(eval echo "~$RUN_USER" 2>/dev/null || echo "$HOME")"
+fi
+
+# env_value <KEY> — the last KEY=value in the env file (if any), with a
+# leading $HOME / ${HOME} / ~ expanded to the service user's home.
+env_value() {
+  local v=""
+  [[ -n "$ENV_FILE" && -f "$ENV_FILE" ]] || return 0
+  v="$(grep -E "^[[:space:]]*$1=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' || true)"
+  case "$v" in
+    '$HOME'*) v="$RUN_HOME${v#\$HOME}" ;;
+    '${HOME}'*) v="$RUN_HOME${v#\$\{HOME\}}" ;;
+    '~'*) v="$RUN_HOME${v#\~}" ;;
+  esac
+  printf '%s' "$v"
+}
+
+# Mode-dependent defaults for --env-file / --prefix (explicit flags win).
+if [[ -z "$ENV_FILE" ]]; then
+  if [[ "$MODE" == "byoa" ]]; then
+    ENV_FILE="$RUN_HOME/.cfw-render/cfw-render.env"
+    if [[ ! -e "$ENV_FILE" && -r "$RUN_HOME/ecosystem/vault/cfw-render.env" ]]; then
+      ENV_FILE="$RUN_HOME/ecosystem/vault/cfw-render.env"
+      echo "install.sh: NOTE — using the existing settings file at its older location $ENV_FILE." >&2
+      echo "  New installs keep it at ~/.cfw-render/cfw-render.env; move it there whenever convenient." >&2
+    fi
+  else
+    ENV_FILE="/etc/cfw-render.env"
+  fi
+fi
+CFW_HOME="${CFW_RENDER_HOME:-$(env_value CFW_RENDER_HOME)}"
+CFW_HOME="${CFW_HOME:-$RUN_HOME/CFW Render}"
+if [[ -z "$PREFIX" ]]; then
+  if [[ "$MODE" == "byoa" ]]; then
+    PREFIX="$CFW_HOME/app"
+  else
+    PREFIX="/opt/cfw-render"
+  fi
+fi
 
 if [[ "$(id -u)" -eq 0 && "$YES_REALLY" -ne 1 ]]; then
   echo "install.sh: refusing to run as root without --yes-really (guard rail)" >&2
@@ -153,15 +205,35 @@ fi
 # defeat CFW-V2-068's per-workerId circuit breaker. Resolve the state dir from
 # the env file if it declares one, else the run-user's default ~/.cfw-render.
 # shellcheck source=/dev/null
-STATE_DIR=""
-if [[ -f "$ENV_FILE" ]]; then
-  STATE_DIR="$(grep -E '^[[:space:]]*CFW_RENDER_STATE_DIR=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' || true)"
-fi
-if [[ -z "$STATE_DIR" ]]; then
-  RUN_HOME="$(eval echo "~$RUN_USER" 2>/dev/null || echo "$HOME")"
-  STATE_DIR="$RUN_HOME/.cfw-render"
-fi
+STATE_DIR="$(env_value CFW_RENDER_STATE_DIR)"
+STATE_DIR="${STATE_DIR:-$RUN_HOME/.cfw-render}"
 WORKER_ID_FILE="$STATE_DIR/worker-id"
+SCRATCH_DIR="$(env_value CFW_RENDER_SCRATCH)"
+SCRATCH_DIR="${SCRATCH_DIR:-$RUN_HOME/.cfw-render/scratch}"
+
+# ── Folder layout. byoa: one visible "CFW Render" folder for the app, kept
+# renders and logs; the settings file stays private (600) in ~/.cfw-render.
+# server (fleet): logs stay where they always were; nothing is kept locally.
+if [[ "$MODE" == "byoa" ]]; then
+  LOG_DIR="$(env_value CFW_RENDER_LOG_DIR)"
+  LOG_DIR="${LOG_DIR:-$CFW_HOME/logs}"
+  OUTPUTS_DIR="$(env_value CFW_RENDER_OUTPUTS)"
+  OUTPUTS_DIR="${OUTPUTS_DIR:-$CFW_HOME/outputs}"
+  mkdir -p "$LOG_DIR" "$OUTPUTS_DIR" "$STATE_DIR"
+  chmod 700 "$STATE_DIR" 2>/dev/null || true
+  if [[ -f "$ENV_FILE" ]]; then
+    chmod 600 "$ENV_FILE"
+    echo "install.sh: settings file $ENV_FILE is private to you (mode 600)"
+  fi
+  MAC_LOG_DIR="$LOG_DIR"
+else
+  LOG_DIR="$STATE_DIR"
+  OUTPUTS_DIR=""
+  MAC_LOG_DIR="$HOME/Library/Logs"
+fi
+
+# sed_escape <s> — make <s> safe as a sed s### replacement (\, &, #).
+sed_escape() { printf '%s' "$1" | sed -e 's/[\\&#]/\\&/g'; }
 # shellcheck source=/dev/null
 source "$REPO_DIR/bin/cfw-render-lib.sh"
 if [[ -s "$WORKER_ID_FILE" ]]; then
@@ -175,22 +247,32 @@ case "$OS" in
   Darwin)
     PLIST_SRC="$SELF_DIR/com.cfw.render.plist"
     PLIST_DST="$HOME/Library/LaunchAgents/com.cfw.render.plist"
-    mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+    mkdir -p "$HOME/Library/LaunchAgents" "$MAC_LOG_DIR"
     # NOTE: {{HOME}} here also seeds the plist's EnvironmentVariables PATH
     # (~/.local/bin, ~/bin) — must resolve to the *service user's* home, not
     # the installer's, for parity with the worker-id RUN_USER resolution
     # above. Unlike the Linux {{USER}} systemd path, a macOS LaunchAgent is
     # always per-logged-in-user, so plain $HOME is already correct here.
-    sed -e "s#{{PREFIX}}#$PREFIX#g" -e "s#{{ENV_FILE}}#$ENV_FILE#g" -e "s#{{HOME}}#$HOME#g" \
-        -e "s#{{WORKER_PATH}}#$WORKER_PATH#g" \
+    sed -e "s#{{PREFIX}}#$(sed_escape "$PREFIX")#g" -e "s#{{ENV_FILE}}#$(sed_escape "$ENV_FILE")#g" \
+        -e "s#{{HOME}}#$(sed_escape "$HOME")#g" -e "s#{{LOG_DIR}}#$(sed_escape "$MAC_LOG_DIR")#g" \
+        -e "s#{{WORKER_PATH}}#$(sed_escape "$WORKER_PATH")#g" \
       "$PLIST_SRC" > "$PLIST_DST"
     echo "install.sh: wrote $PLIST_DST"
     echo "install.sh: to load: launchctl bootstrap gui/\$(id -u) $PLIST_DST"
     ;;
   Linux)
     UNIT_DST=/etc/systemd/system
-    sed -e "s#{{PREFIX}}#$PREFIX#g" -e "s#{{ENV_FILE}}#$ENV_FILE#g" -e "s#{{USER}}#$RUN_USER#g" \
-        -e "s#{{WORKER_PATH}}#$WORKER_PATH#g" \
+    # Every writable path, absolute and double-quoted (a "CFW Render" path has
+    # a space; systemd unquotes each word). A leading '-' = skip if missing.
+    # Absolute paths, not %h: in a system unit %h is root's home even with
+    # User= set, so it never pointed at the service user's folders.
+    rw_paths=("$PREFIX" "-$STATE_DIR" "-$SCRATCH_DIR" "-$LOG_DIR")
+    [[ -n "$OUTPUTS_DIR" ]] && rw_paths+=("-$OUTPUTS_DIR")
+    RW_PATHS=""
+    for p in "${rw_paths[@]}"; do RW_PATHS+="${RW_PATHS:+ }\"$p\""; done
+    sed -e "s#{{PREFIX}}#$(sed_escape "$PREFIX")#g" -e "s#{{ENV_FILE}}#$(sed_escape "$ENV_FILE")#g" \
+        -e "s#{{USER}}#$(sed_escape "$RUN_USER")#g" -e "s#{{RW_PATHS}}#$(sed_escape "$RW_PATHS")#g" \
+        -e "s#{{WORKER_PATH}}#$(sed_escape "$WORKER_PATH")#g" \
       "$SELF_DIR/cfw-render.service" > "/tmp/cfw-render.service.$$"
     sed -e "s#{{PREFIX}}#$PREFIX#g" \
       "$SELF_DIR/cfw-render.timer" > "/tmp/cfw-render.timer.$$"
@@ -205,6 +287,23 @@ case "$OS" in
     exit 1
     ;;
 esac
+
+if [[ "$MODE" == "byoa" ]]; then
+  # Earlier versions installed to other places. The schedule written above now
+  # runs from $PREFIX, so an older copy is unused — say so, never delete it.
+  for old in "$RUN_HOME/.cfw-render/app" "$RUN_HOME/cfw-render" "/opt/cfw-render"; do
+    if [[ "$old" != "$PREFIX" && "$old" != "$REPO_DIR" && -f "$old/bin/cfw-render.sh" ]]; then
+      echo "install.sh: NOTE — an earlier copy is still at $old. The schedule now runs" >&2
+      echo "  from $PREFIX, so that copy is unused; the owner may delete it." >&2
+    fi
+  done
+  echo ""
+  echo "install.sh: where things are on this computer —"
+  echo "  finished renders: $OUTPUTS_DIR/<brand>/"
+  echo "  the app:          $PREFIX  (recipes in skills/, guide in AGENTS.md)"
+  echo "  logs:             $LOG_DIR"
+  echo "  private settings: $ENV_FILE  (and $STATE_DIR)"
+fi
 
 echo ""
 echo "install.sh: running validation (--dry) —"

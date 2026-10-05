@@ -1,8 +1,8 @@
 # cfw-render — guide for coding assistants
 
 This file is for any coding assistant (Codex, Claude Code, Cursor, Gemini CLI, …)
-working in a cfw-render checkout **or** in an installed copy (default
-`/opt/cfw-render`). `CLAUDE.md` points here.
+working in a cfw-render checkout **or** in an installed copy (on an owner's
+computer: `~/CFW Render/app`). `CLAUDE.md` points here.
 
 ## What this is
 
@@ -28,11 +28,37 @@ skills/<recipe>/SKILL.md      one recipe — the entrypoint to read
 skills/<recipe>/.hub/<dep>/   that recipe's dependencies, vendored so it works offline
 skills/index.json             manifest: every recipe, file list, checksums
 config/                       cfw-render.env.example, recipes.json, skills-version.json (pinned bundle)
-install/install.sh            installs the CFW renderer + recipes into --prefix (default /opt/cfw-render)
+install/install.sh            installs the CFW renderer + recipes into --prefix (owner's computer: ~/CFW Render/app)
 ```
 
 In an installed copy the same files live under the prefix: recipes at
 `<prefix>/skills`, this guide at `<prefix>/AGENTS.md`.
+
+## Where things are on the owner's computer
+
+`install/install.sh --mode byoa` sets up one visible folder the owner can open,
+and one hidden folder for private plumbing. The folder name has a space —
+**always quote these paths** (`"$HOME/CFW Render/app/skills"`).
+
+| What | Where |
+| --- | --- |
+| The app (this guide, `bin/`, recipes) | `~/CFW Render/app/` — recipes in `~/CFW Render/app/skills/` |
+| Finished renders | `~/CFW Render/outputs/<brand>/<YYYY-MM-DD>_<order>/` — a copy of every render CFW accepted |
+| Logs | `~/CFW Render/logs/` — `cfw-render.log`, one transcript per render in `runs/`, and on a Mac `cfw-render.out.log` / `cfw-render.err.log` |
+| Settings (keys — private, mode 600) | `~/.cfw-render/cfw-render.env` — never print, copy or commit it |
+| Computer identity | `~/.cfw-render/worker-id` — keep it; deleting it makes CFW see a new computer |
+| Temporary working folders | `~/.cfw-render/scratch/` — cleared after each render, leftovers after 48 h |
+| Source checkout used for updates | `~/.cfw-render/source/` (when installed from CFW's install page) |
+
+Every location can be changed in the settings file (`CFW_RENDER_HOME`,
+`CFW_RENDER_LOG_DIR`, `CFW_RENDER_OUTPUTS`, `CFW_RENDER_KEEP_OUTPUTS`,
+`CFW_RENDER_SCRATCH`, `CFW_RENDER_STATE_DIR`); `config/cfw-render.env.example`
+documents each. An older install may still use `~/.cfw-render/app`,
+`~/cfw-render` or `~/cfw-render-scratch` until it is reinstalled.
+
+When you tell the owner where something is, use these plain words: "your
+finished videos and images are in the CFW Render folder in your home folder,
+under outputs, one folder per brand."
 
 ## Before rendering anything: preflight
 
@@ -56,8 +82,9 @@ install silently.
    it — recipes treat its "Active Feedback" as rules.
 3. Follow the steps yourself. Dependencies named in `dependsOn` are in that
    recipe's `.hub/<dep>/SKILL.md`; read them when a step refers to them.
-4. Work in a scratch folder **outside** `skills/` (for example
-   `~/cfw-local-renders/<name>/`). Never write into `skills/`.
+4. Work in a folder **outside** `skills/`, and put the finished files where the
+   owner already looks: `"$HOME/CFW Render/outputs/local/<name>/"`. Never write
+   into `skills/`.
 
 Things to know when running a recipe without CFW:
 
@@ -65,7 +92,7 @@ Things to know when running a recipe without CFW:
   fonts and voice). Without CFW, ask the owner for those facts once, or read
   them from a file they point you at, and carry on.
 - Steps that upload results or report progress to CFW do not apply; keep the
-  output files locally and tell the owner where they are.
+  output files in `"$HOME/CFW Render/outputs/local/"` and tell the owner where they are.
 - Recipes that use paid services (HeyGen, fal/kie, Replicate, Gemini) need the
   owner's own account and key for that service. Ask before spending money.
 - `p-ai-image` and `p-gfx-image` are **scaffolds** — their `SKILL.md` says
