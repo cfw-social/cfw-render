@@ -66,10 +66,10 @@ case "$VERB" in
   logs)
     n="${1:-50}"
     cr_load_config || exit 1
-    echo "== $CFW_RENDER_STATE_DIR/cfw-render.log (last $n) =="
-    tail -n "$n" "$CFW_RENDER_STATE_DIR/cfw-render.log" 2>/dev/null || echo "(no log yet)"
+    echo "== $CFW_RENDER_LOG_DIR/cfw-render.log (last $n) =="
+    tail -n "$n" "$CFW_RENDER_LOG_DIR/cfw-render.log" 2>/dev/null || echo "(no log yet)"
     echo ""
-    newest="$(ls -t "$CFW_RENDER_STATE_DIR"/runs/*.out 2>/dev/null | head -1)"
+    newest="$(ls -t "$CFW_RENDER_LOG_DIR"/runs/*.out 2>/dev/null | head -1)"
     if [[ -n "$newest" ]]; then
       echo "== newest run: $newest (last $n) =="
       tail -n "$n" "$newest"

@@ -12,7 +12,32 @@
 `install/install.sh --mode byoa …`:
 - writes `CFW_RENDER_MODE=byoa` into the env file (or tells you the line to add),
 - seeds the same **stable per-install `worker-id`** (PACKAGING-DESIGN.md §6.3),
-- lays down the same in-repo `skills/` bundle the server uses.
+- lays down the same in-repo `skills/` bundle the server uses,
+- uses the **owner folder layout** (defaults; every `--flag` / `CFW_RENDER_*` override
+  still wins):
+
+```
+~/CFW Render/                 visible — what the owner looks at
+  app/                        --prefix default: bin/, skills/, AGENTS.md, ...
+  outputs/<brand>/<date>_<order>/   a copy of each finished render, kept once CFW
+                              accepted the upload (CFW_RENDER_KEEP_OUTPUTS=0 turns it off)
+  logs/                       cfw-render.log, runs/*.out, macOS cfw-render.{out,err}.log
+~/.cfw-render/                hidden — private plumbing
+  cfw-render.env              --env-file default, chmod 600 by the installer
+  worker-id, journal.tsv, tick.lock, scratch/
+```
+
+The fleet (`--mode server`) keeps its old defaults (`/opt/cfw-render`,
+`/etc/cfw-render.env`, logs in the state dir, no local copies).
+
+**Existing installs keep working.** A settings file found only at the older
+`~/ecosystem/vault/cfw-render.env` is still used (by the renderer and by the
+installer when no `--env-file` is given). An install at an older prefix
+(`~/.cfw-render/app`, `~/cfw-render`, `/opt/cfw-render`) keeps running from its
+current schedule until `install.sh --mode byoa` is re-run; the re-run moves the
+schedule to `~/CFW Render/app` and names the old copy so the owner can delete it.
+An old Linux unit that cannot write to `~/CFW Render` logs to `~/.cfw-render` and
+keeps no local copies until re-installed.
 
 ## Skills: one source, git-pull to update (fetch mode retired)
 
@@ -26,7 +51,7 @@ never built, and the in-repo bundle makes them unnecessary.
 **To update a BYOA box's skills:**
 
 ```bash
-git -C <cfw-render-checkout> pull        # pulls new worker code AND the pinned skills/
+git -C ~/.cfw-render/source pull        # the checkout CFW's install page clones; pulls new worker code AND the pinned skills/
 # then restart the skills-consuming service/cron so it re-copies skills/ into place:
 systemctl --user restart cfw-render.timer   # or: re-run install/install.sh --mode byoa
 ```
