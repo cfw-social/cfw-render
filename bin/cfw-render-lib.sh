@@ -159,10 +159,40 @@ cr_recipe_needs_heygen() {
 }
 
 # ---------------------------------------------------------------------------
+# cr_default_env_file — where the settings file lives when CFW_RENDER_ENV is
+# not set: ~/.cfw-render/cfw-render.env. An install from before the folder
+# layout change may still keep it at the legacy ~/ecosystem/vault path; use
+# that only when the new file is absent, so an existing install keeps working.
+# ---------------------------------------------------------------------------
+cr_default_env_file() {
+  local new="$HOME/.cfw-render/cfw-render.env"
+  local legacy="$HOME/ecosystem/vault/cfw-render.env"
+  if [[ ! -e "$new" && -r "$legacy" ]]; then
+    printf '%s' "$legacy"
+  else
+    printf '%s' "$new"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Folder layout (owner's own computer, CFW_RENDER_MODE=byoa):
+#   visible  "$HOME/CFW Render/"  (CFW_RENDER_HOME)
+#              app/                    install prefix (install.sh --mode byoa)
+#              outputs/<brand>/<date>_<order>/  a copy of each finished render,
+#                                      kept after CFW confirmed the upload
+#              logs/                   cfw-render.log, runs/ transcripts,
+#                                      macOS schedule out/err logs
+#   hidden   ~/.cfw-render/            worker-id, cfw-render.env (600),
+#                                      scratch/, journal, tick lock
+# The fleet (mode=server) keeps logs in the state dir and keeps no local
+# copies — a VPS has no owner looking for files. Every path is overridable.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
 # cr_load_config — env cascade: /etc/cfw-render.env (Linux box) → $CFW_RENDER_ENV
-# (default ~/ecosystem/vault/cfw-render.env) → process env wins over both files
-# (a file only fills vars that are still unset). Fails fast on missing
-# required vars; never prints values.
+# (default ~/.cfw-render/cfw-render.env, see cr_default_env_file) → process env
+# wins over both files (a file only fills vars that are still unset). Fails
+# fast on missing required vars; never prints values.
 # ---------------------------------------------------------------------------
 cr_load_config() {
   # Capture every knob already set by the real process env BEFORE sourcing
@@ -176,6 +206,7 @@ cr_load_config() {
     CFW_RENDER_GATE_FAIL_CAP CFW_RENDER_OLLAMA_KEYS_FILE CFW_RENDER_DIRECTOR_CMD
     CFW_RENDER_MODE CFW_RENDER_WORKER_ID_FILE
     CFW_RENDER_HEARTBEAT_SECS CFW_RENDER_RENDERER_KIND CFW_RENDER_ORPHAN_GRACE_SECS
+    CFW_RENDER_HOME CFW_RENDER_LOG_DIR CFW_RENDER_OUTPUTS CFW_RENDER_KEEP_OUTPUTS
   )
   local _cr_preset=() _v
   for _v in "${_cr_vars[@]}"; do
@@ -187,7 +218,7 @@ cr_load_config() {
     source /etc/cfw-render.env
   fi
 
-  local env_file="${CFW_RENDER_ENV:-$HOME/ecosystem/vault/cfw-render.env}"
+  local env_file="${CFW_RENDER_ENV:-$(cr_default_env_file)}"
   if [[ -r "$env_file" ]]; then
     # shellcheck disable=SC1090
     source "$env_file"
@@ -202,7 +233,7 @@ cr_load_config() {
   done
 
   : "${CFW_RENDER_CONCURRENCY:=1}"
-  : "${CFW_RENDER_SCRATCH:=$HOME/cfw-render-scratch}"
+  : "${CFW_RENDER_SCRATCH:=$HOME/.cfw-render/scratch}"
   : "${CFW_RENDER_STATE_DIR:=$HOME/.cfw-render}"
   : "${CFW_RENDER_SKILLS_DIR:=$(cr_default_skills_dir)}"
   : "${CFW_RENDER_DIRECTOR_MODEL:=sonnet}"
@@ -219,6 +250,18 @@ cr_load_config() {
   # own skills/, git-pull to update; BYOA and server use the same source).
   : "${CFW_RENDER_MODE:=server}"
   : "${CFW_RENDER_WORKER_ID_FILE:=$CFW_RENDER_STATE_DIR/worker-id}"
+  # Visible folder layout (see the block above cr_load_config). byoa = the
+  # owner's own computer: logs and kept renders go in "$HOME/CFW Render".
+  # server = the fleet: logs stay in the state dir, no local copies.
+  : "${CFW_RENDER_HOME:=$HOME/CFW Render}"
+  if [[ "$CFW_RENDER_MODE" == "byoa" ]]; then
+    : "${CFW_RENDER_LOG_DIR:=$CFW_RENDER_HOME/logs}"
+    : "${CFW_RENDER_KEEP_OUTPUTS:=1}"
+  else
+    : "${CFW_RENDER_LOG_DIR:=$CFW_RENDER_STATE_DIR}"
+    : "${CFW_RENDER_KEEP_OUTPUTS:=0}"
+  fi
+  : "${CFW_RENDER_OUTPUTS:=$CFW_RENDER_HOME/outputs}"
   # [CFW-146] Heartbeat cadence (seconds) while a Director holds an order. The
   # order card in cfw-social treats silence > 3 min as "Still working — last
   # heard N min ago", so 60 s gives three chances before the owner sees that.
@@ -248,7 +291,8 @@ cr_load_config() {
     CFW_RENDER_TIMEOUT_VIDEO CFW_RENDER_TIMEOUT_IMAGE CFW_RENDER_GATE_FAIL_CAP \
     CFW_RENDER_OLLAMA_KEYS_FILE CFW_RENDER_DIRECTOR_CMD \
     CFW_RENDER_MODE CFW_RENDER_WORKER_ID_FILE \
-    CFW_RENDER_HEARTBEAT_SECS CFW_RENDER_RENDERER_KIND CFW_RENDER_ORPHAN_GRACE_SECS
+    CFW_RENDER_HEARTBEAT_SECS CFW_RENDER_RENDERER_KIND CFW_RENDER_ORPHAN_GRACE_SECS \
+    CFW_RENDER_HOME CFW_RENDER_LOG_DIR CFW_RENDER_OUTPUTS CFW_RENDER_KEEP_OUTPUTS
 
   local missing=()
   [[ -z "${CFW_API_BASE:-}" ]] && missing+=("CFW_API_BASE")
@@ -263,6 +307,7 @@ cr_load_config() {
     return 1
   fi
   mkdir -p "$CFW_RENDER_STATE_DIR" "$CFW_RENDER_SCRATCH" 2>/dev/null
+  cr_prepare_visible_dirs
 
   cr_log_skills_version
 
@@ -319,11 +364,44 @@ cr_seed_worker_id() {
 }
 
 # ---------------------------------------------------------------------------
-# cr_log <msg> — timestamped append to $CFW_RENDER_STATE_DIR/cfw-render.log
-# (mirrors ab-lib.sh:63).
+# cr_prepare_visible_dirs — create the log + outputs folders. Never fatal: an
+# install whose service sandbox predates the folder layout (an old Linux unit
+# whose ReadWritePaths lacks "$HOME/CFW Render") must keep rendering, so an
+# unwritable log dir falls back to the state dir and an unwritable outputs dir
+# just turns off local copies, with a log line saying so.
+# ---------------------------------------------------------------------------
+cr_prepare_visible_dirs() {
+  if ! mkdir -p "$CFW_RENDER_LOG_DIR" 2>/dev/null || [[ ! -w "$CFW_RENDER_LOG_DIR" ]]; then
+    local wanted="$CFW_RENDER_LOG_DIR"
+    CFW_RENDER_LOG_DIR="$CFW_RENDER_STATE_DIR"
+    export CFW_RENDER_LOG_DIR
+    cr_log "WARN: log folder $wanted is not writable — logging to $CFW_RENDER_LOG_DIR instead"
+  fi
+  if [[ "$CFW_RENDER_KEEP_OUTPUTS" == "1" ]]; then
+    if ! mkdir -p "$CFW_RENDER_OUTPUTS" 2>/dev/null || [[ ! -w "$CFW_RENDER_OUTPUTS" ]]; then
+      cr_log "WARN: outputs folder $CFW_RENDER_OUTPUTS is not writable — finished renders will not be kept on this computer"
+      CFW_RENDER_KEEP_OUTPUTS=0
+      export CFW_RENDER_KEEP_OUTPUTS
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# cr_keep_output_dir <brand_slug> <order_id> — the folder a finished render's
+# local copy goes in: "$CFW_RENDER_OUTPUTS/<brand>/<YYYY-MM-DD>_<order>".
+# Prints nothing when local copies are off.
+# ---------------------------------------------------------------------------
+cr_keep_output_dir() {
+  [[ "${CFW_RENDER_KEEP_OUTPUTS:-0}" == "1" && -n "${CFW_RENDER_OUTPUTS:-}" ]] || return 0
+  printf '%s/%s/%s_%s' "$CFW_RENDER_OUTPUTS" "$1" "$(date '+%Y-%m-%d')" "$2"
+}
+
+# ---------------------------------------------------------------------------
+# cr_log <msg> — timestamped append to $CFW_RENDER_LOG_DIR/cfw-render.log
+# (the state dir on the fleet / before config load; mirrors ab-lib.sh:63).
 # ---------------------------------------------------------------------------
 cr_log() {
-  local dir="${CFW_RENDER_STATE_DIR:-$HOME/.cfw-render}"
+  local dir="${CFW_RENDER_LOG_DIR:-${CFW_RENDER_STATE_DIR:-$HOME/.cfw-render}}"
   mkdir -p "$dir" 2>/dev/null
   printf '%s [cfw-render] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$dir/cfw-render.log"
 }
@@ -490,7 +568,7 @@ if model:
     d["model"] = model
 print(json.dumps(d))
 ' "$order_id" "$CFW_WORKER_ID" "$kind" "$stage" "$message" "$pct" "$model" 2>/dev/null)" || return 0
-  cr_mcp_call append_render_event "$args" >/dev/null 2>>"$CFW_RENDER_STATE_DIR/cfw-render.log" || \
+  cr_mcp_call append_render_event "$args" >/dev/null 2>>"${CFW_RENDER_LOG_DIR:-$CFW_RENDER_STATE_DIR}/cfw-render.log" || \
     cr_log "cr_event: append_render_event failed (best-effort, ignored) — order=$order_id kind=$kind stage=$stage"
   return 0
 }

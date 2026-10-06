@@ -248,6 +248,51 @@ if grep -q "order-happy-1.*complete" "$CASE_STATE/journal.tsv" 2>/dev/null; then
 else
   fail "happy: journal row" "no complete journal row found"
 fi
+if ! grep -q "kept .* finished file" "$CASE_STATE/cfw-render.log" 2>/dev/null; then
+  pass "happy (fleet/server mode): no local copy kept"
+else
+  fail "happy (server mode): local copy" "server mode kept a local copy"
+fi
+
+echo "=== Case 2g: owner computer (byoa) layout — finished files kept in 'CFW Render/outputs' after CFW accepted them; logs in 'CFW Render/logs' ==="
+c2g_root="$(mktemp -d)"
+c2g_home="$c2g_root/CFW Render"   # the space is deliberate: the real folder name has one
+run_case "byoa-keep" "happy" "order_fixture order-keep-1 brand-1 video" \
+  export CFW_RENDER_MODE=byoa "CFW_RENDER_HOME=$c2g_home"
+if [[ "$(calls_count complete_render_order)" -ge 1 ]]; then
+  pass "byoa-keep: complete_render_order called"
+else
+  fail "byoa-keep: complete" "no complete_render_order call"
+fi
+c2g_kept="$(find "$c2g_home/outputs/test-brand" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)"
+if [[ "$(basename "$c2g_kept" 2>/dev/null)" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}_order-keep-1$ ]]; then
+  pass "byoa-keep: kept folder is outputs/<brand>/<YYYY-MM-DD>_<order>"
+else
+  fail "byoa-keep: kept folder" "expected outputs/test-brand/<date>_order-keep-1, found: '$c2g_kept' ($(find "$c2g_root" 2>/dev/null | head -20 | tr '\n' ' '))"
+fi
+c2g_uploaded="$(grep -c "order-keep-1" "$CASE_MOCKSTATE/uploads.jsonl" 2>/dev/null || true)"
+c2g_kept_n="$(find "$c2g_kept" -type f 2>/dev/null | wc -l | tr -d ' ')"
+if [[ -n "$c2g_kept" && "$c2g_kept_n" -ge 2 && "$c2g_kept_n" == "$c2g_uploaded" ]]; then
+  pass "byoa-keep: every uploaded file kept locally ($c2g_kept_n of $c2g_uploaded, incl. $(find "$c2g_kept" -type f -name '*.png' | wc -l | tr -d ' ') png)"
+else
+  fail "byoa-keep: kept files" "kept=$c2g_kept_n uploaded=$c2g_uploaded"
+fi
+if grep -q "order order-keep-1 — kept $c2g_kept_n finished file" "$c2g_home/logs/cfw-render.log" 2>/dev/null \
+   && [[ ! -f "$CASE_STATE/cfw-render.log" ]]; then
+  pass "byoa-keep: renderer log is in 'CFW Render/logs', not the hidden state dir"
+else
+  fail "byoa-keep: log location" "logs/: $(ls "$c2g_home/logs" 2>&1 | tr '\n' ' ') state: $(ls "$CASE_STATE" 2>&1 | tr '\n' ' ')"
+fi
+if compgen -G "$c2g_home/logs/runs/order-keep-1-*.out" >/dev/null; then
+  pass "byoa-keep: render transcript in 'CFW Render/logs/runs'"
+else
+  fail "byoa-keep: transcript" "no logs/runs/order-keep-1-*.out"
+fi
+if [[ -f "$CASE_STATE/journal.tsv" && ! -d "$CASE_SCRATCH/test-brand/order-keep-1" ]]; then
+  pass "byoa-keep: journal stays in the hidden state dir; scratch wiped"
+else
+  fail "byoa-keep: state/scratch" "journal or scratch wrong"
+fi
 
 echo "=== Case 2b: carousel — outputUrls[] + outputs[] (CFW-135) ==="
 run_case "carousel" "carousel" "order_fixture order-carousel-1 brand-1 image" true
@@ -417,6 +462,16 @@ if grep -q "order-gatefail-1.*block" "$CASE_STATE/journal.tsv" 2>/dev/null; then
   pass "gate-fail: journal row outcome=block"
 else
   fail "gate-fail: journal row" "no block journal row found"
+fi
+
+echo "=== Case 3b: owner computer (byoa) — a blocked render keeps nothing in outputs ==="
+c3b_home="$(mktemp -d)/CFW Render"
+run_case "byoa-gate-fail" "gate-fail" "order_fixture order-gatefail-2 brand-1 video" \
+  export CFW_RENDER_MODE=byoa "CFW_RENDER_HOME=$c3b_home"
+if [[ "$(calls_count block_render_order)" -ge 1 && -z "$(find "$c3b_home/outputs" -type f 2>/dev/null)" ]]; then
+  pass "byoa-gate-fail: blocked, and outputs/ holds no file"
+else
+  fail "byoa-gate-fail: outputs" "files: $(find "$c3b_home/outputs" -type f 2>/dev/null | tr '\n' ' ')"
 fi
 
 echo "=== Case 4: watchdog timeout ==="
@@ -688,7 +743,7 @@ fi
 
 kill "$fleet_pid" 2>/dev/null; wait "$fleet_pid" 2>/dev/null
 
-echo "=== Case 8: default credential paths resolve into ~/ecosystem/vault, not ~/.gsai/secrets (CFW-289) ==="
+echo "=== Case 8: default settings file is ~/.cfw-render/cfw-render.env (legacy ~/ecosystem/vault only as fallback); no ~/.gsai/secrets (CFW-289) ==="
 # Regression for CFW-289: bin/cfw-render-lib.sh's three credential-path
 # defaults used to point at the retired ~/.gsai/secrets vault. Each sub-case
 # runs under a throwaway $HOME so the assertions don't depend on (or touch)
@@ -705,11 +760,48 @@ c289_out="$(
     cr_load_config
   ' 2>&1
 )"
-if echo "$c289_out" | grep -q "ecosystem/vault/cfw-render.env" && ! echo "$c289_out" | grep -q '\.gsai'; then
-  pass "cr_load_config: default env path is ~/ecosystem/vault, not ~/.gsai/secrets"
+if echo "$c289_out" | grep -qF "$c289_home/.cfw-render/cfw-render.env" && ! echo "$c289_out" | grep -q 'ecosystem/vault\|\.gsai'; then
+  pass "cr_load_config: default env path is ~/.cfw-render/cfw-render.env (no ecosystem/vault, no .gsai)"
 else
-  fail "cr_load_config: default env path" "expected ecosystem/vault/cfw-render.env with no .gsai mention, got: $c289_out"
+  fail "cr_load_config: default env path" "expected ~/.cfw-render/cfw-render.env with no ecosystem/vault or .gsai mention, got: $c289_out"
 fi
+
+# 1b. An install from before the folder layout change keeps its settings file
+#     at ~/ecosystem/vault — still read when the new file is absent.
+c8_legacy_home="$(mktemp -d)"
+mkdir -p "$c8_legacy_home/ecosystem/vault"
+printf 'CFW_API_BASE=http://legacy.example\nCFW_RENDER_WORKER_KEY=cfw_render_legacykey\n' > "$c8_legacy_home/ecosystem/vault/cfw-render.env"
+c8_legacy_out="$(
+  env -i HOME="$c8_legacy_home" PATH="$PATH" bash -c '
+    set -u
+    source "'"$REPO_DIR"'/bin/cfw-render-lib.sh"
+    CFW_WORKER_ID=test-worker cr_load_config >/dev/null 2>&1 || { echo LOAD_FAILED; exit 0; }
+    echo "base=$CFW_API_BASE"
+  ' 2>&1
+)"
+if [[ "$c8_legacy_out" == "base=http://legacy.example" ]]; then
+  pass "cr_load_config: legacy ~/ecosystem/vault/cfw-render.env still loads when the new file is absent"
+else
+  fail "cr_load_config: legacy env fallback" "got: $c8_legacy_out"
+fi
+
+# 1c. When both exist, the new location wins.
+mkdir -p "$c8_legacy_home/.cfw-render"
+printf 'CFW_API_BASE=http://new.example\nCFW_RENDER_WORKER_KEY=cfw_render_newkey\n' > "$c8_legacy_home/.cfw-render/cfw-render.env"
+c8_both_out="$(
+  env -i HOME="$c8_legacy_home" PATH="$PATH" bash -c '
+    set -u
+    source "'"$REPO_DIR"'/bin/cfw-render-lib.sh"
+    CFW_WORKER_ID=test-worker cr_load_config >/dev/null 2>&1 || { echo LOAD_FAILED; exit 0; }
+    echo "base=$CFW_API_BASE"
+  ' 2>&1
+)"
+if [[ "$c8_both_out" == "base=http://new.example" ]]; then
+  pass "cr_load_config: ~/.cfw-render/cfw-render.env wins over the legacy file"
+else
+  fail "cr_load_config: new env file precedence" "got: $c8_both_out"
+fi
+rm -rf "$c8_legacy_home"
 
 # 2. cr_load_admin_config: default CFW_RENDER_ADMIN_ENV path.
 c289_admin_out="$(
@@ -761,6 +853,16 @@ if [[ -z "$c289_grep_out" ]]; then
   pass "static guard: no live bin/lib/config/docs reference to ~/.gsai/secrets"
 else
   fail "static guard: retired vault path" "found live references: $c289_grep_out"
+fi
+
+echo "=== Case 9b: static guard — the guides installed on an owner's computer never point at the maintainer's ~/ecosystem/vault ==="
+# install/*.md are maintainer/fleet docs and may name the legacy location to
+# explain the fallback; AGENTS.md + CLAUDE.md ship into every owner install.
+c9b_out="$(grep -n 'ecosystem/vault' "$REPO_DIR/AGENTS.md" "$REPO_DIR/CLAUDE.md" 2>/dev/null)"
+if [[ -z "$c9b_out" ]]; then
+  pass "static guard: AGENTS.md and CLAUDE.md mention no ecosystem/vault path"
+else
+  fail "static guard: ecosystem/vault in a public guide" "$c9b_out"
 fi
 
 echo "=== Case 10: sync-skills.py rewrites host-path sub-skill resolvers to .hub/ (CFW-312) ==="
@@ -1369,6 +1471,102 @@ if [[ -f "$q6_plist" ]]; then
   fi
 fi
 
+# Open-box guide ships with the install (AGENTS.md + the CLAUDE.md pointer).
+for q6_guide in AGENTS.md CLAUDE.md; do
+  if [[ -f "$q6_prefix/$q6_guide" ]] && cmp -s "$REPO_DIR/$q6_guide" "$q6_prefix/$q6_guide"; then
+    pass "install.sh: copies $q6_guide into the prefix"
+  else
+    fail "install.sh: $q6_guide in prefix" "missing or differs at $q6_prefix/$q6_guide"
+  fi
+done
+# ── Q6b: --mode byoa with NO --prefix / --env-file → the owner folder layout.
+q6b_home="$(mktemp -d)"
+mkdir -p "$q6b_home/.cfw-render"
+q6b_env="$q6b_home/.cfw-render/cfw-render.env"
+printf 'CFW_API_BASE=http://127.0.0.1:1\nCFW_RENDER_WORKER_KEY=cfw_render_q6bkey\n' > "$q6b_env"
+chmod 644 "$q6b_env"
+(
+  export HOME="$q6b_home"
+  export PATH="$q6_test_path"
+  export PLAYWRIGHT_BROWSERS_PATH="$q6_real_home/Library/Caches/ms-playwright"
+  "$REPO_DIR/install/install.sh" --mode byoa >"$q6b_home/install.log" 2>&1
+)
+q6b_app="$q6b_home/CFW Render/app"
+if [[ -x "$q6b_app/bin/cfw-render.sh" && -f "$q6b_app/skills/index.json" && -f "$q6b_app/AGENTS.md" ]]; then
+  pass "install.sh --mode byoa: default prefix is '\$HOME/CFW Render/app' (bin, skills, AGENTS.md)"
+else
+  fail "install.sh: default byoa prefix" "missing under $q6b_app — install.log tail: $(tail -15 "$q6b_home/install.log" 2>/dev/null)"
+fi
+if [[ -d "$q6b_home/CFW Render/outputs" && -d "$q6b_home/CFW Render/logs" ]]; then
+  pass "install.sh --mode byoa: creates 'CFW Render/outputs' and 'CFW Render/logs'"
+else
+  fail "install.sh: visible folders" "$(ls -la "$q6b_home/CFW Render" 2>&1 | tr '\n' ' ')"
+fi
+q6b_mode="$(python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777))' "$q6b_env" 2>/dev/null)"
+if [[ "$q6b_mode" == "0o600" ]]; then
+  pass "install.sh --mode byoa: settings file ~/.cfw-render/cfw-render.env is mode 600"
+else
+  fail "install.sh: env file mode" "expected 0o600, got $q6b_mode"
+fi
+q6b_plist_check="$(python3 -c '
+import plistlib, sys
+home = sys.argv[2]
+with open(sys.argv[1], "rb") as f:
+    d = plistlib.load(f)
+want = {
+  "program": home + "/CFW Render/app/bin/cfw-render.sh",
+  "env": home + "/.cfw-render/cfw-render.env",
+  "out": home + "/CFW Render/logs/cfw-render.out.log",
+  "err": home + "/CFW Render/logs/cfw-render.err.log",
+}
+got = {
+  "program": d.get("ProgramArguments", [""])[0],
+  "env": d.get("EnvironmentVariables", {}).get("CFW_RENDER_ENV", ""),
+  "out": d.get("StandardOutPath", ""),
+  "err": d.get("StandardErrorPath", ""),
+}
+bad = [k + "=" + repr(got[k]) for k in want if got[k] != want[k]]
+print("OK" if not bad else "BAD " + "; ".join(bad))
+' "$q6b_home/Library/LaunchAgents/com.cfw.render.plist" "$q6b_home" 2>&1)"
+if [[ "$q6b_plist_check" == "OK" ]]; then
+  pass "install.sh --mode byoa: plist runs from 'CFW Render/app', reads ~/.cfw-render/cfw-render.env, logs to 'CFW Render/logs'"
+else
+  fail "install.sh: byoa plist paths" "$q6b_plist_check"
+fi
+if [[ -s "$q6b_home/.cfw-render/worker-id" && ! -e "$q6b_home/cfw-render-scratch" && ! -e "$q6b_home/cfw-render" && ! -e "$q6b_home/ecosystem" ]]; then
+  pass "install.sh --mode byoa: worker-id in ~/.cfw-render; nothing else sprayed into \$HOME"
+else
+  fail "install.sh: stray folders" "home has: $(ls -A "$q6b_home" | tr '\n' ' ')"
+fi
+if grep -qF "finished renders: $q6b_home/CFW Render/outputs/<brand>/" "$q6b_home/install.log"; then
+  pass "install.sh --mode byoa: prints where renders, the app and logs live"
+else
+  fail "install.sh: where-things-are summary" "not in install.log"
+fi
+
+# ── Q6c: an older install whose settings file is only at ~/ecosystem/vault
+#    keeps using it (no --env-file given).
+q6c_home="$(mktemp -d)"
+mkdir -p "$q6c_home/ecosystem/vault"
+printf 'CFW_API_BASE=http://127.0.0.1:1\nCFW_RENDER_WORKER_KEY=cfw_render_q6ckey\n' > "$q6c_home/ecosystem/vault/cfw-render.env"
+(
+  export HOME="$q6c_home"
+  export PATH="$q6_test_path"
+  export PLAYWRIGHT_BROWSERS_PATH="$q6_real_home/Library/Caches/ms-playwright"
+  "$REPO_DIR/install/install.sh" --mode byoa >"$q6c_home/install.log" 2>&1
+)
+q6c_env="$(python3 -c '
+import plistlib, sys
+with open(sys.argv[1], "rb") as f:
+    print(plistlib.load(f).get("EnvironmentVariables", {}).get("CFW_RENDER_ENV", ""))
+' "$q6c_home/Library/LaunchAgents/com.cfw.render.plist" 2>&1)"
+if [[ "$q6c_env" == "$q6c_home/ecosystem/vault/cfw-render.env" ]]; then
+  pass "install.sh --mode byoa: an existing legacy settings file keeps working"
+else
+  fail "install.sh: legacy env fallback" "plist CFW_RENDER_ENV=$q6c_env"
+fi
+rm -rf "$q6b_home" "$q6c_home"
+
 rm -rf "$q6_home" "$q6_prefix" "$q6_custom"
 rm -f "$q6_env"
 
@@ -1425,11 +1623,12 @@ if [[ -f "$q7_service" ]]; then
 import sys
 lines = open(sys.argv[1]).read().splitlines()
 env_file_idx = next((i for i, l in enumerate(lines) if l.startswith("EnvironmentFile=")), None)
-path_idx = next((i for i, l in enumerate(lines) if l.startswith("Environment=PATH=")), None)
+path_idx = next((i for i, l in enumerate(lines) if l.startswith("Environment=\"PATH=")), None)
 if env_file_idx is None or path_idx is None:
-    print("BAD missing EnvironmentFile= or Environment=PATH= line")
+    print("BAD missing EnvironmentFile= or Environment=\"PATH=...\" line")
 else:
-    val = lines[path_idx][len("Environment=PATH="):]
+    import shlex
+    val = shlex.split(lines[path_idx][len("Environment="):])[0][len("PATH="):]
     if path_idx > env_file_idx and val == sys.argv[2]:
         print("OK")
     else:
@@ -1439,6 +1638,29 @@ else:
     pass "install.sh: linux unit's Environment=PATH matches the resolved WORKER_PATH, positioned after EnvironmentFile= (env file can't clobber it)"
   else
     fail "install.sh: linux unit PATH/ordering" "$q7_order_check"
+  fi
+  q7_paths_check="$(python3 -c '
+import shlex, sys
+unit, prefix, home, state, scratch = sys.argv[1:6]
+lines = open(unit).read().splitlines()
+ex = [l for l in lines if l.startswith("ExecStart=")]
+rw = [l for l in lines if l.startswith("ReadWritePaths=")]
+bad = []
+if ex != ["ExecStart=\"%s/bin/cfw-render.sh\" --once" % prefix]: bad.append("ExecStart=%r" % ex)
+if len(rw) != 1: bad.append("ReadWritePaths lines=%d" % len(rw))
+else:
+    raw = rw[0][len("ReadWritePaths="):]
+    words = shlex.split(raw)
+    want = [prefix, "-" + state, "-" + scratch, "-" + home + "/CFW Render/logs", "-" + home + "/CFW Render/outputs"]
+    if "%h" in raw: bad.append("still uses %h")
+    if words != want: bad.append("words=%r want=%r" % (words, want))
+    if raw.count(chr(34)) != 2 * len(want): bad.append("not every path quoted: %r" % raw)
+print("OK" if not bad else "BAD " + "; ".join(bad))
+' "$q7_service" "$q7_prefix" "$q7_home" "$q7_home/cfw-render-state" "$q7_home/cfw-render-scratch" 2>&1)"
+  if [[ "$q7_paths_check" == "OK" ]]; then
+    pass "install.sh: linux unit quotes ExecStart and lists absolute, quoted ReadWritePaths (prefix, state, scratch, CFW Render logs + outputs; no %h)"
+  else
+    fail "install.sh: linux unit paths" "$q7_paths_check"
   fi
 fi
 

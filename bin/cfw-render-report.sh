@@ -59,6 +59,7 @@ case "$VERB" in
     fi
     # Upload every file (local paths); a URL arg is passed through as-is.
     urls=()
+    local_files=()
     for f in "$@"; do
       if [[ "$f" == http://* || "$f" == https://* ]]; then
         urls+=("$f")
@@ -66,6 +67,7 @@ case "$VERB" in
         [[ -f "$f" ]] || { echo "cfw-render-report: complete — file not found: $f" >&2; exit 1; }
         u="$("$SELF_DIR/cfw-render-upload.sh" "$f")" || { echo "cfw-render-report: upload failed for $f" >&2; exit 1; }
         urls+=("$u")
+        local_files+=("$f")
       fi
     done
     output_url="${urls[0]}"
@@ -161,6 +163,18 @@ print(json.dumps(d))
     if [[ "$ok" != "1" ]]; then
       echo "cfw-render-report: complete_render_order returned ok:false — treating as fatal: $resp" >&2
       exit 1
+    fi
+
+    # Keep a local copy of every finished file on the owner's computer
+    # ("$HOME/CFW Render/outputs/<brand>/<date>_<order>/") — only now, after
+    # each upload succeeded and CFW accepted the order, so a kept file is
+    # always one CFW has too. Never fatal: the order is already complete.
+    if [[ -n "${CFW_RENDER_KEEP_DIR:-}" && ${#local_files[@]} -gt 0 ]]; then
+      if mkdir -p "$CFW_RENDER_KEEP_DIR" 2>/dev/null && cp -p "${local_files[@]}" "$CFW_RENDER_KEEP_DIR/" 2>/dev/null; then
+        cr_log "order $CFW_ORDER_ID — kept ${#local_files[@]} finished file(s) in $CFW_RENDER_KEEP_DIR"
+      else
+        cr_log "WARN: order $CFW_ORDER_ID — could not keep a local copy in $CFW_RENDER_KEEP_DIR (the render is complete in CFW)"
+      fi
     fi
 
     # CFW-135: NO post-complete event — the order is terminal after
