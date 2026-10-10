@@ -72,6 +72,8 @@ at any timestamp the VO is silent during a takeover, the reel is broken (continu
 | `grade` | No | planner picks | `warm-amber` or `clean-bright`. |
 | `cover_at` | No | planner picks | Timestamp (seconds) past the hook to use as the money-shot for the 0.4s cover freeze. The OPUS plan should emit this; if absent, Step 10 picks mid-content automatically. |
 | `cta_card` | No | brand default | Auto-generated end-card takeover (2.5–3s) overlaying the final 2.5–3s of the bed — does NOT extend the reel. Pass `off` to skip. |
+| `cta_text` | No | brand's `cta.line` | CTA headline on the end card. Resolved from the active brand's `brand-overrides/<slug>/brand.json`. Never hard-code another brand's copy. |
+| `cta_handle` | No | brand's `cta.handle` | Handle/URL on the end card. Same resolution rule as `cta_text`. |
 | `avatar_layout` | No | `fill` | `fill` (band-clean → scale-to-cover) or `letterbox`. |
 | `target_duration` | No | = bed length | The VO is the master; the edit covers exactly it. |
 | `topic` / `script` | Conditional | — | Only when producing a fresh avatar via `c-heygen`. |
@@ -85,6 +87,12 @@ CTA end-card. Both artifacts uploaded to R2 — **the MP4 R2 public URL is the d
 
 ## Steps
 
+> **CTA copy/handle is per-brand — never hard-code (CFW-354).** `CTA_TEXT` / `CTA_HANDLE` below
+> are PLACEHOLDERS ONLY. Before running this skill, resolve both from the active brand's own
+> `cta.line` / `cta.handle` in `brand-overrides/<brand-slug>/brand.json` and export them as
+> `CTA_TEXT` / `CTA_HANDLE`. If the brand config has no `cta` block, ask rather than guessing or
+> reusing another brand's copy.
+
 Set up variables:
 
 ```bash
@@ -96,8 +104,8 @@ BROLL_MIN_SECS="${BROLL_MIN_SECONDS:-2}"
 BROLL_MAX_SECS="${BROLL_MAX_SECONDS:-6}"
 BROLL_ORDER="${BROLL_ORDER:-transcript-match}"
 BROLL_REUSE="${BROLL_REUSE:-false}"
-CTA_TEXT="${CTA_TEXT:-FOLLOW FOR DAILY AI BUILDS}"
-CTA_HANDLE="${CTA_HANDLE:-@mr.growthguide}"
+CTA_TEXT="${CTA_TEXT:-FOLLOW FOR MORE}"
+CTA_HANDLE="${CTA_HANDLE:-@handle}"
 CTA_DURATION="${CTA_DURATION:-3}"
 W="{production}/interim/spotlight" ; mkdir -p "$W"
 OUT_BASE="{production}/final/spotlight-reel"
