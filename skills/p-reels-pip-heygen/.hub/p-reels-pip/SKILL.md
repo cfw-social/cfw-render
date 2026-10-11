@@ -759,7 +759,14 @@ Total reel duration = `BED_DUR`.
 ```bash
 CTA_DURATION="${CTA_DURATION:-3.0}"
 CTA_TEXT="${CTA_TEXT:-FOLLOW FOR MORE}"
-CTA_HANDLE="${CTA_HANDLE:-@handle}"
+# Per-brand (CFW-354 / M1-00): resolve CTA_HANDLE from the ACTIVE brand (brand-overrides `cta.handle`
+# or the brand's primary account). Empty = the card ships with NO handle line — never a placeholder,
+# never another brand's handle.
+CTA_HANDLE="${CTA_HANDLE:-}"
+CTA_HANDLE_HTML=""
+if [[ -n "$CTA_HANDLE" ]]; then
+  CTA_HANDLE_HTML="<p id=\"cta-handle\">${CTA_HANDLE}</p>"
+fi
 
 # ALPHA CONTRACT (GSAI-36): the card is a semi-transparent scrim over the speaker. An mp4 card is
 # yuv420p and carries NO alpha channel — the scrim silently ships as an opaque slate — so the card is
@@ -791,7 +798,7 @@ p{color:#F97316;font-family:Inter,sans-serif;font-size:56px;opacity:0.9;margin:4
   <div class="scrim"></div>
   <div class="cta">
     <h1 id="cta-text">${CTA_TEXT}</h1>
-    <p id="cta-handle">${CTA_HANDLE}</p>
+    ${CTA_HANDLE_HTML}
   </div>
 </div>
 <script>
@@ -799,8 +806,10 @@ p{color:#F97316;font-family:Inter,sans-serif;font-size:56px;opacity:0.9;margin:4
   var gsap = window.__gsap || window.gsap;
   if(!gsap){return;}
   var tl = gsap.timeline({paused:true});
-  tl.from("#cta-text",{opacity:0,y:40,duration:0.4,ease:"power2.out"},0.1)
-    .from("#cta-handle",{opacity:0,y:20,duration:0.35,ease:"power2.out"},0.3);
+  tl.from("#cta-text",{opacity:0,y:40,duration:0.4,ease:"power2.out"},0.1);
+  if(document.getElementById("cta-handle")){
+    tl.from("#cta-handle",{opacity:0,y:20,duration:0.35,ease:"power2.out"},0.3);
+  }
   if(!window.__timelines) window.__timelines={};
   window.__timelines["root"]=tl;
 })();

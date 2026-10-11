@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-10-01T13:35:30Z",
+  "generatedAt": "2026-10-11T01:51:21Z",
   "release": null,
-  "sourceSha": "4c247e1484fcf762ee647bfcf455b6a1e6738a9d",
+  "sourceSha": "2baab9f1c37c09635b5e7bba2f70ecc4694d0f04",
   "rawBase": null,
   "recipes": {
     "p-ai-character": {
@@ -943,7 +943,7 @@
     },
     "p-reels-pip": {
       "version": "1.0.0",
-      "checksum": "sha256:58743c872631bf6e431c899c0469ca7aa6cb631ffc5c01426fabe4bcb79033df",
+      "checksum": "sha256:c663973da5b656a36d72dc526ed7d8bc0b87e25fc35546bbc46757fd189f968a",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1137,7 +1137,7 @@
         ".hub/f-hyperframes/scripts/animation-map.mjs": "sha256:44166b4bf1eb7fa03e3a51648df7c70838ccc9af7b63de8de1a7d93b764b28d2",
         ".hub/f-hyperframes/scripts/contrast-report.mjs": "sha256:a916382bd40f197ee0109160241f6e35f317158f281dc643d200eb006dff29be",
         ".hub/f-hyperframes/visual-styles.md": "sha256:d173663b4342d830e46c5cc14a1ffafe6dbc6daca0702b0a451db3ce914693cc",
-        "SKILL.md": "sha256:457d2cf6434e7786b3766d89a24656dfa0479556ded5968232d2be6d0cd63997",
+        "SKILL.md": "sha256:26fb6517a76c50bc5de095595111ed9340bf56586b2e86753ff1ee94ec9b0a9c",
         "acceptance.json": "sha256:4349cb471c0294335ef2e09154c5c3f660c522fb1e3951b070e99f6460b31bc4",
         "scripts/verify-skill.sh": "sha256:b0172830053e07d08015046f3ffc9ef6d7ebe440f00a7345703ca32540072ad3",
         "templates/motion-card.html": "sha256:81f0a62270ed98a5d5e75e26b715562c24d681fb72406cbdf75ffb4c9c44bd60"
@@ -1160,7 +1160,7 @@
     },
     "p-reels-spotlight": {
       "version": "1.0.0",
-      "checksum": "sha256:7b5c5ea92f663a670838558f53138464c301c3a390bad49eb77d717f0347534d",
+      "checksum": "sha256:5378bb04c1357ddadc849ff2f9f5cc2f4d99247f5565c0709a4a7a6f8fadbe7b",
       "files": [
         ".hub/c-broll-sync/SCENE-PLAN.md",
         ".hub/c-broll-sync/SKILL.md",
@@ -1268,6 +1268,7 @@
         "assets/sfx/whoosh-air.wav",
         "assets/sfx/whoosh-deep.wav",
         "examples.json",
+        "scripts/cta-card.py",
         "templates/caption-overlay.html",
         "templates/root-shell.html",
         "templates/tk-keyword.html",
@@ -1371,7 +1372,7 @@
         ".hub/f-hyperframes/scripts/animation-map.mjs": "sha256:44166b4bf1eb7fa03e3a51648df7c70838ccc9af7b63de8de1a7d93b764b28d2",
         ".hub/f-hyperframes/scripts/contrast-report.mjs": "sha256:a916382bd40f197ee0109160241f6e35f317158f281dc643d200eb006dff29be",
         ".hub/f-hyperframes/visual-styles.md": "sha256:d173663b4342d830e46c5cc14a1ffafe6dbc6daca0702b0a451db3ce914693cc",
-        "SKILL.md": "sha256:a0c914b66aad12904827c5b9b650de9ed1fc4d49d1f573dd9224657ddd9d54ad",
+        "SKILL.md": "sha256:dc298cd675a9d426e99c7a190d8197846d3efef17127ac03e4872cd2773a9a12",
         "acceptance.json": "sha256:5ba662b5add6a3a2a0575f6b7c361a91d5b1e71130f076ace32c8b0ddff3a3f8",
         "assets/sfx/click.wav": "sha256:4fd295f33b4d942d0e66b92c94da7ac73b28e537ebb0bff351b8902bb6309d89",
         "assets/sfx/impact-punch.wav": "sha256:3e0c9c3e9747a01bf47508a636ae64dc365e9f0fef8ccbf09526d5dc124cb1b3",
@@ -1382,6 +1383,7 @@
         "assets/sfx/whoosh-air.wav": "sha256:0937dae925a0082754c5d70749d45abb0e3b57fce7ce753d2ba00bf9c188426e",
         "assets/sfx/whoosh-deep.wav": "sha256:76fc60b7464f76cfe168820eb15d55b76344f73360aa1b46103ea293b53c64df",
         "examples.json": "sha256:098b9152a46c470de40409f4c961ed862b4ea6ccfdc2166a3f99f59cc94e2c3f",
+        "scripts/cta-card.py": "sha256:96a26f0df369ad4f1952de26227f0eb2136a8595c24d8e0386d9aaaabfb378c0",
         "templates/caption-overlay.html": "sha256:5c840d82302d8fbd44690a99217065751ee54ae2c636b72e076c8cb6c110d5f8",
         "templates/root-shell.html": "sha256:ff739b2f48093d8070e2c9f484560d4861dab830c9a38d3532798e1af6a387ca",
         "templates/tk-keyword.html": "sha256:2bf4db233e2756eb60bf3500c5761581306f14451e63abcfcfce846fca1429a0",
@@ -1641,7 +1643,7 @@
     },
     "p-reels-split": {
       "version": "1.0.0",
-      "checksum": "sha256:22fc7ef621cbb773ac739942e55e380460fabfa74eda0f3580f4942cbf211e09",
+      "checksum": "sha256:290a53d6c5e013b47f81188561b2de13c43d021fea5f9aa8689b4c54161b02d3",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1844,7 +1846,7 @@
         ".hub/wowx-motions/SKILL.md": "sha256:5f138b1a35f29ad8ccd896a09a2bf037fb50ef596d19fa8e2af82544e8254d25",
         ".hub/wowx-motions/wowx_motion.py": "sha256:72439824e3e73fc13dc00aaedd632f4aed0f31cefb1748a93a64147e9245423a",
         "LEARNINGS.md": "sha256:0fe69e5f6aa464174fa501ffaf2e13370584f9473243b2bec1b99fa6ec864f8c",
-        "SKILL.md": "sha256:5cf3b124bfadcd2e56f0de2c787f1cb9eea22bacef5508216e8ff270d409cf97",
+        "SKILL.md": "sha256:e8aaae9c16eec0d6839eb6830061dfcd7b0755311dee59552b2be1ae64136bb6",
         "acceptance.json": "sha256:f6119b3a0eddac0ea5c5ed104f3e11147cdc6e0ef80a220b5e880b7be165da1b",
         "brand-overrides/README.md": "sha256:ba96dcd60132107bfdb629031252b2b0a53c3f603b9ca3f87336dbec4a36c02c",
         "brand-overrides/b-vasanth/brand.json": "sha256:5b20043e4db5030c8f401c739efd0c30f53689ad65d3ef2c16e7c76e4a4c0a80",
@@ -1871,7 +1873,7 @@
     },
     "p-reels-pip-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:6a4723077b0cd4d21ab87bdd53ac747634fc18c67f1d86aa645ce7512ef9baf7",
+      "checksum": "sha256:85277016182480ccc5ecbe871d1ebf61013bc2af0ba5a4f7272ad0f63c198aca",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -2072,7 +2074,7 @@
         ".hub/f-hyperframes/scripts/animation-map.mjs": "sha256:44166b4bf1eb7fa03e3a51648df7c70838ccc9af7b63de8de1a7d93b764b28d2",
         ".hub/f-hyperframes/scripts/contrast-report.mjs": "sha256:a916382bd40f197ee0109160241f6e35f317158f281dc643d200eb006dff29be",
         ".hub/f-hyperframes/visual-styles.md": "sha256:d173663b4342d830e46c5cc14a1ffafe6dbc6daca0702b0a451db3ce914693cc",
-        ".hub/p-reels-pip/SKILL.md": "sha256:2a4e1aefceacc40ed736c8467c3331c756e95b09aaa71891018e5dca5bff6554",
+        ".hub/p-reels-pip/SKILL.md": "sha256:c1cdfd495b2f74a4af015eddfe22b648940836b6f39fd0a04a04f30b9892f3cd",
         ".hub/p-reels-pip/acceptance.json": "sha256:4349cb471c0294335ef2e09154c5c3f660c522fb1e3951b070e99f6460b31bc4",
         ".hub/p-reels-pip/scripts/verify-skill.sh": "sha256:3d5117e6489360ae8da0144d46204696bc32abea36d5ed88bc5a09292c5c5488",
         ".hub/p-reels-pip/templates/motion-card.html": "sha256:81f0a62270ed98a5d5e75e26b715562c24d681fb72406cbdf75ffb4c9c44bd60",
@@ -2098,7 +2100,7 @@
     },
     "p-reels-spotlight-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:9e54551af430e57fd953df6023792f35b8b8f1ef9cf4e9940cf4427e5cca819c",
+      "checksum": "sha256:187839d61cc014ed3d837e828bfa40028396836fcd4b925a3ba112eb9fc707be",
       "files": [
         ".hub/c-broll-sync/SCENE-PLAN.md",
         ".hub/c-broll-sync/SKILL.md",
@@ -2209,6 +2211,7 @@
         ".hub/p-reels-spotlight/assets/sfx/whoosh-air.wav",
         ".hub/p-reels-spotlight/assets/sfx/whoosh-deep.wav",
         ".hub/p-reels-spotlight/examples.json",
+        ".hub/p-reels-spotlight/scripts/cta-card.py",
         ".hub/p-reels-spotlight/templates/caption-overlay.html",
         ".hub/p-reels-spotlight/templates/root-shell.html",
         ".hub/p-reels-spotlight/templates/tk-keyword.html",
@@ -2316,7 +2319,7 @@
         ".hub/f-hyperframes/scripts/animation-map.mjs": "sha256:44166b4bf1eb7fa03e3a51648df7c70838ccc9af7b63de8de1a7d93b764b28d2",
         ".hub/f-hyperframes/scripts/contrast-report.mjs": "sha256:a916382bd40f197ee0109160241f6e35f317158f281dc643d200eb006dff29be",
         ".hub/f-hyperframes/visual-styles.md": "sha256:d173663b4342d830e46c5cc14a1ffafe6dbc6daca0702b0a451db3ce914693cc",
-        ".hub/p-reels-spotlight/SKILL.md": "sha256:961b8b28dc7873d41a2ec348979e97e75daa1020b9a3b286468122435105a7b3",
+        ".hub/p-reels-spotlight/SKILL.md": "sha256:6536be59efdfc78440a46efe69ff76238c2742e87ee10d8ff365a25c6687cace",
         ".hub/p-reels-spotlight/acceptance.json": "sha256:5ba662b5add6a3a2a0575f6b7c361a91d5b1e71130f076ace32c8b0ddff3a3f8",
         ".hub/p-reels-spotlight/assets/sfx/click.wav": "sha256:4fd295f33b4d942d0e66b92c94da7ac73b28e537ebb0bff351b8902bb6309d89",
         ".hub/p-reels-spotlight/assets/sfx/impact-punch.wav": "sha256:3e0c9c3e9747a01bf47508a636ae64dc365e9f0fef8ccbf09526d5dc124cb1b3",
@@ -2327,6 +2330,7 @@
         ".hub/p-reels-spotlight/assets/sfx/whoosh-air.wav": "sha256:0937dae925a0082754c5d70749d45abb0e3b57fce7ce753d2ba00bf9c188426e",
         ".hub/p-reels-spotlight/assets/sfx/whoosh-deep.wav": "sha256:76fc60b7464f76cfe168820eb15d55b76344f73360aa1b46103ea293b53c64df",
         ".hub/p-reels-spotlight/examples.json": "sha256:098b9152a46c470de40409f4c961ed862b4ea6ccfdc2166a3f99f59cc94e2c3f",
+        ".hub/p-reels-spotlight/scripts/cta-card.py": "sha256:96a26f0df369ad4f1952de26227f0eb2136a8595c24d8e0386d9aaaabfb378c0",
         ".hub/p-reels-spotlight/templates/caption-overlay.html": "sha256:5c840d82302d8fbd44690a99217065751ee54ae2c636b72e076c8cb6c110d5f8",
         ".hub/p-reels-spotlight/templates/root-shell.html": "sha256:ff739b2f48093d8070e2c9f484560d4861dab830c9a38d3532798e1af6a387ca",
         ".hub/p-reels-spotlight/templates/tk-keyword.html": "sha256:2bf4db233e2756eb60bf3500c5761581306f14451e63abcfcfce846fca1429a0",
@@ -2356,7 +2360,7 @@
     },
     "p-reels-split-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:bb336170fa3d7bb76a378659b43a1d53f98c7b5a9b7fdd2977b2eeaaba21e540",
+      "checksum": "sha256:ff70bc87980c9be6332532111f9272c2f18e49d1f4e3de5b7be47e45c5e1ff13",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -2566,7 +2570,7 @@
         ".hub/f-hyperframes/scripts/contrast-report.mjs": "sha256:a916382bd40f197ee0109160241f6e35f317158f281dc643d200eb006dff29be",
         ".hub/f-hyperframes/visual-styles.md": "sha256:d173663b4342d830e46c5cc14a1ffafe6dbc6daca0702b0a451db3ce914693cc",
         ".hub/p-reels-split/LEARNINGS.md": "sha256:0fe69e5f6aa464174fa501ffaf2e13370584f9473243b2bec1b99fa6ec864f8c",
-        ".hub/p-reels-split/SKILL.md": "sha256:cf31a5cea99022944bfe2319a60a6e211bd3c9d812b1edd4f946205607e18e5c",
+        ".hub/p-reels-split/SKILL.md": "sha256:0d66a853a44c4e59c3755c29041b74bd0b93a9ea23f890efa4addde564dcd520",
         ".hub/p-reels-split/acceptance.json": "sha256:f6119b3a0eddac0ea5c5ed104f3e11147cdc6e0ef80a220b5e880b7be165da1b",
         ".hub/p-reels-split/brand-overrides/README.md": "sha256:ba96dcd60132107bfdb629031252b2b0a53c3f603b9ca3f87336dbec4a36c02c",
         ".hub/p-reels-split/brand-overrides/b-vasanth/brand.json": "sha256:5b20043e4db5030c8f401c739efd0c30f53689ad65d3ef2c16e7c76e4a4c0a80",

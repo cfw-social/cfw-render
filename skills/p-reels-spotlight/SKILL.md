@@ -72,8 +72,9 @@ at any timestamp the VO is silent during a takeover, the reel is broken (continu
 | `grade` | No | planner picks | `warm-amber` or `clean-bright`. |
 | `cover_at` | No | planner picks | Timestamp (seconds) past the hook to use as the money-shot for the 0.4s cover freeze. The OPUS plan should emit this; if absent, Step 10 picks mid-content automatically. |
 | `cta_card` | No | brand default | Auto-generated end-card takeover (2.5–3s) overlaying the final 2.5–3s of the bed — does NOT extend the reel. Pass `off` to skip. |
-| `cta_text` | No | brand's `cta.line` | CTA headline on the end card. Resolved from the active brand's `brand-overrides/<slug>/brand.json`. Never hard-code another brand's copy. |
-| `cta_handle` | No | brand's `cta.handle` | Handle/URL on the end card. Same resolution rule as `cta_text`. |
+| `cta_text` | No | `FOLLOW FOR MORE` | Hero line on the end card. Resolve from the active brand (`brand-overrides/<slug>/brand.json` `cta.line`, or the order's `copy.cta`). The fallback is generic and carries no brand. |
+| `cta_handle` | No | — (no handle line) | Handle/URL on the end card. Resolve from the active brand (`brand-overrides/<slug>/brand.json` `cta.handle`, or the brand's primary social account in the order's brand context). **If the brand has no handle, leave it empty: the card renders without a handle line.** Never invent one and never reuse another brand's. |
+| `brand_name` | No | — (no kicker) | Brand name for the kicker line above the hero. Resolve from the brand context; empty → kicker omitted. |
 | `avatar_layout` | No | `fill` | `fill` (band-clean → scale-to-cover) or `letterbox`. |
 | `target_duration` | No | = bed length | The VO is the master; the edit covers exactly it. |
 | `topic` / `script` | Conditional | — | Only when producing a fresh avatar via `c-heygen`. |
@@ -87,11 +88,11 @@ CTA end-card. Both artifacts uploaded to R2 — **the MP4 R2 public URL is the d
 
 ## Steps
 
-> **CTA copy/handle is per-brand — never hard-code (CFW-354).** `CTA_TEXT` / `CTA_HANDLE` below
-> are PLACEHOLDERS ONLY. Before running this skill, resolve both from the active brand's own
-> `cta.line` / `cta.handle` in `brand-overrides/<brand-slug>/brand.json` and export them as
-> `CTA_TEXT` / `CTA_HANDLE`. If the brand config has no `cta` block, ask rather than guessing or
-> reusing another brand's copy.
+> **End-card copy is per-brand — never hard-code (CFW-354 / M1-00).** Before running, resolve
+> `CTA_TEXT`, `CTA_HANDLE` and `BRAND_NAME` from the ACTIVE brand (its `brand-overrides/<slug>/brand.json`
+> `cta.line` / `cta.handle` / `brand` when present, else the brand context the order carries) and export
+> them. If the brand has no handle, leave `CTA_HANDLE` empty: Step 8 then renders the end card **without a
+> handle line**. Never reuse another brand's copy or handle, and never invent a handle.
 
 Set up variables:
 
@@ -105,7 +106,8 @@ BROLL_MAX_SECS="${BROLL_MAX_SECONDS:-6}"
 BROLL_ORDER="${BROLL_ORDER:-transcript-match}"
 BROLL_REUSE="${BROLL_REUSE:-false}"
 CTA_TEXT="${CTA_TEXT:-FOLLOW FOR MORE}"
-CTA_HANDLE="${CTA_HANDLE:-@handle}"
+CTA_HANDLE="${CTA_HANDLE:-}"    # empty = no handle line on the end card (per-brand; never a placeholder)
+BRAND_NAME="${BRAND_NAME:-}"    # empty = no kicker line on the end card
 CTA_DURATION="${CTA_DURATION:-3}"
 W="{production}/interim/spotlight" ; mkdir -p "$W"
 OUT_BASE="{production}/final/spotlight-reel"
@@ -826,22 +828,11 @@ ACCENT_HEX=$(python3 -c "import json; print(json.load(open('$W/plan.json'))['bra
 FG_HEX=$(python3 -c "import json; print(json.load(open('$W/plan.json'))['brand']['fg'].lstrip('#'))")
 
 CTA_DURATION="${CTA_DURATION:-3.0}"
-cat > "$W/cta-card.json" <<JSON
-{
-  "duration": ${CTA_DURATION},
-  "fps": 30,
-  "size": [1080, 1920],
-  "background": "#${BG_HEX}",
-  "layers": [
-    { "type": "kicker", "text": "MR GROWTH GUIDE",       "color": "#${ACCENT_HEX}", "y": 540  },
-    { "type": "hero",   "text": "${CTA_TEXT}",           "color": "#${FG_HEX}",     "y": 760, "fontSize": 110, "weight": 800, "wrap": true },
-    { "type": "handle", "text": "${CTA_HANDLE}",         "color": "#${FG_HEX}",     "y": 1180, "fontSize": 56, "opacity": 0.72 },
-    { "type": "arrow",  "from": [540, 1320], "to": [540, 1420], "color": "#${ACCENT_HEX}", "appearAt": 0.5 }
-  ],
-  "entry": { "type": "scale-pop", "from": 0.92, "to": 1.0, "duration": 0.35, "sfx": "impact-sub" },
-  "exit":  { "type": "none" }
-}
-JSON
+# Per-brand end card (CFW-354 / M1-00): kicker = BRAND_NAME, hero = CTA_TEXT, handle = CTA_HANDLE.
+# scripts/cta-card.py OMITS the kicker/handle layer when its variable is empty — a brand with no
+# known handle gets a card with no handle line, never a placeholder or another brand's handle.
+CTA_DURATION="$CTA_DURATION" CTA_TEXT="$CTA_TEXT" CTA_HANDLE="${CTA_HANDLE:-}" BRAND_NAME="${BRAND_NAME:-}" \
+  python3 "$SKILL_DIR/scripts/cta-card.py" "$W/plan.json" "$W/cta-card.json"
 
 hyperframes render "$W/cta-card.json" "$W/cta-card.mp4" 2>/dev/null || {
   # Fallback: ffmpeg drawtext CTA card.
@@ -849,10 +840,13 @@ hyperframes render "$W/cta-card.json" "$W/cta-card.mp4" 2>/dev/null || {
   # on a 1080px canvas. Fix: fontsize=64 with x=(w-text_w)/2 centering.
   # NOTE: a proper HTML CTA composition is the long-term fix; this drawtext path is
   # the emergency fallback only (used when hyperframes render fails after doctor check).
+  CTA_VF="drawtext=text='${CTA_TEXT}':fontcolor=#${FG_HEX}:fontsize=64:x=(w-text_w)/2:y=760:font=Oswald:fontweight=800"
+  if [[ -n "${CTA_HANDLE:-}" ]]; then
+    CTA_VF="${CTA_VF},drawtext=text='${CTA_HANDLE}':fontcolor=#${ACCENT_HEX}:fontsize=48:x=(w-text_w)/2:y=900:font=Inter"
+  fi
   ffmpeg -y -f lavfi \
     -i "color=c=#${BG_HEX}:s=1080x1920:r=30:d=${CTA_DURATION}" \
-    -vf "drawtext=text='${CTA_TEXT}':fontcolor=#${FG_HEX}:fontsize=64:x=(w-text_w)/2:y=760:font=Oswald:fontweight=800,
-         drawtext=text='${CTA_HANDLE}':fontcolor=#${ACCENT_HEX}:fontsize=48:x=(w-text_w)/2:y=900:font=Inter" \
+    -vf "$CTA_VF" \
     -c:v libx264 -pix_fmt yuv420p -r 30 \
     "$W/cta-card.mp4"
 }
