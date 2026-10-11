@@ -948,9 +948,13 @@ CR_CAPACITY_HARD_MAX=6
 CR_CAPACITY_FREE_MB_FLOOR=3072
 # D89: idle claim cadence and the claim-error back-off (base, cap). The unit is
 # a test seam only (1 s in the suite) — production is 60 s → 10 min.
+# Read by bin/cfw-render.sh's --loop (not in this file):
+# shellcheck disable=SC2034
 CR_CAPACITY_IDLE_CLAIM_SECS="${CFW_RENDER_CAPACITY_UNIT_SECS:-60}"
+# shellcheck disable=SC2034
 CR_CLAIM_BACKOFF_BASE_SECS="${CFW_RENDER_CAPACITY_UNIT_SECS:-60}"
 # awk, not $(( )): the test seam may be fractional (0.05 s).
+# shellcheck disable=SC2034
 CR_CLAIM_BACKOFF_MAX_SECS="$(awk -v u="${CFW_RENDER_CAPACITY_UNIT_SECS:-60}" 'BEGIN { print u * 10 }')"
 
 # [M2-04, D78] cr_capacity_setup_note — the setup summary line when max is 1.

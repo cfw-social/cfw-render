@@ -1421,6 +1421,9 @@ q6_expected_worker_path="$(
   # installed under the real $HOME — this test is about WORKER_PATH
   # rendering, not about re-testing chromium discovery.
   export PLAYWRIGHT_BROWSERS_PATH="$q6_real_home/Library/Caches/ms-playwright"
+  # [M2-04] install.sh now bootout/bootstraps the LaunchAgent on re-run; never
+  # load a real job from the test suite.
+  export CFW_RENDER_INSTALL_NO_LAUNCHCTL=1
   "$REPO_DIR/install/install.sh" --mode byoa --prefix "$q6_prefix" --env-file "$q6_env" >"$q6_home/install.log" 2>&1
 )
 
@@ -1489,6 +1492,9 @@ chmod 644 "$q6b_env"
   export HOME="$q6b_home"
   export PATH="$q6_test_path"
   export PLAYWRIGHT_BROWSERS_PATH="$q6_real_home/Library/Caches/ms-playwright"
+  # [M2-04] install.sh now bootout/bootstraps the LaunchAgent on re-run; never
+  # load a real job from the test suite.
+  export CFW_RENDER_INSTALL_NO_LAUNCHCTL=1
   "$REPO_DIR/install/install.sh" --mode byoa >"$q6b_home/install.log" 2>&1
 )
 q6b_app="$q6b_home/CFW Render/app"
@@ -1553,6 +1559,9 @@ printf 'CFW_API_BASE=http://127.0.0.1:1\nCFW_RENDER_WORKER_KEY=cfw_render_q6ckey
   export HOME="$q6c_home"
   export PATH="$q6_test_path"
   export PLAYWRIGHT_BROWSERS_PATH="$q6_real_home/Library/Caches/ms-playwright"
+  # [M2-04] install.sh now bootout/bootstraps the LaunchAgent on re-run; never
+  # load a real job from the test suite.
+  export CFW_RENDER_INSTALL_NO_LAUNCHCTL=1
   "$REPO_DIR/install/install.sh" --mode byoa >"$q6c_home/install.log" 2>&1
 )
 q6c_env="$(python3 -c '
@@ -2274,6 +2283,225 @@ if "$REPO_DIR/scripts/check-no-host-paths.sh" --skills-dir "$REPO_DIR/skills" >/
 else
   fail "check-no-host-paths.sh after split" "expected exit 0 on the real skills/ tree"
 fi
+
+# ===========================================================================
+# M2-04: capacity, parallel claims, stop_after_step, resume, kept-alive loop
+# ===========================================================================
+# c21_setup <dir> <port> <manifest-name> <orders-json> [mock env...] — seeds N
+# manifest orders (orders-json is a list of {id, urgent?}), starts the mock.
+c21_setup() {
+  local dir="$1" port="$2" mname="$3" orders="$4"; shift 4
+  c21_state="$dir/mockstate"; c21_ctl="$dir/control"
+  mkdir -p "$c21_state" "$c21_ctl" "$dir/skills/$mname" "$dir/cr-scratch" "$dir/cr-state"
+  cp "$REPO_DIR/test/fixtures/manifests/$mname/manifest.json" "$dir/skills/$mname/manifest.json"
+  python3 -c '
+import json, sys
+mpath, mname, specs = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
+out = []
+for sp in specs:
+    out.append({"id": sp["id"], "brandId": "brand-1", "workspaceId": "ws-1", "kind": "video",
+      "recipe": mname, "recipeVersion": "1.0.0", "manifest": mpath, "inputs": {}, "urgent": bool(sp.get("urgent")),
+      "status": "queued", "priority": 0, "attempts": 1,
+      "taskOrder": {"version": 1, "orderId": sp["id"], "brand": {"id": "brand-1", "slug": "test-brand", "brief": "b"},
+                    "kind": "video", "recipe": mname, "workspaceId": "ws-1", "intent": "t", "ingredients": [], "targets": ["instagram"]}})
+print(json.dumps(out))' "$dir/skills/$mname/manifest.json" "$mname" "$orders" > "$dir/queue.json"
+  c21_pid="$(env CFW_MOCK_CONTROL_DIR="$c21_ctl" "$@" bash -c 'start_mock "$@"' _ "$dir/queue.json" "$c21_state" "$port")"
+}
+export -f start_mock
+# c21_worker <dir> <port> <mode: --once|--loop> [env assignments...]
+c21_worker() {
+  local dir="$1" port="$2" mode="$3"; shift 3
+  (
+    export PATH="$REPO_DIR/bin:$FAKE_BIN:$PATH"
+    export CFW_API_BASE="http://127.0.0.1:$port"
+    export CFW_RENDER_WORKER_KEY="cfw_render_test0000000000000000"
+    export CFW_RENDER_ENV="/nonexistent-cfw-render-env-for-tests"
+    export CFW_RENDER_STATE_DIR="$dir/cr-state"
+    export CFW_RENDER_SCRATCH="$dir/cr-scratch"
+    export CFW_RENDER_SKILLS_DIR="$dir/skills"
+    export CFW_RENDER_OLLAMA_KEYS_FILE="$OLLAMA_KEYS_FIXTURE"
+    export CFW_RENDER_DIRECTOR_CMD="$TEST_DIR/fake-director.sh"
+    export CFW_RENDER_ENGINE_CMD="$TEST_DIR/fake-engine.sh"
+    export CFW_RENDER_HEARTBEAT_SEC=1
+    export CFW_RENDER_CONCURRENCY=1
+    export CFW_WORKER_ID="w-m2"
+    export CFW_RENDER_UPLOAD_MODE=multipart
+    for kv in "$@"; do export "${kv?}"; done
+    "$REPO_DIR/bin/cfw-render.sh" "$mode" > "$dir/worker.out" 2>&1
+  )
+}
+# c21_claims <dir> — "running/max" per claim call, space-separated, in order
+c21_claims() { python3 -c '
+import json, sys
+out = []
+for l in open(sys.argv[1]):
+    d = json.loads(l)
+    if d["tool"] != "claim_render_order": continue
+    c = d["args"].get("capacity")
+    out.append("%s/%s" % (c["running"], c["max"]) if isinstance(c, dict) else "none")
+print(" ".join(out))' "$1/mockstate/calls.jsonl" 2>/dev/null; }
+c21_events_for() { python3 -c '
+import json, sys
+print(" ".join("%s:%s" % (d["event"], d.get("stepId") or "-") for d in (json.loads(l) for l in open(sys.argv[1]) if l.strip()) if d["event"] != "heartbeat" and d["orderId"] == sys.argv[2]))' "$1" "$2" 2>/dev/null; }
+
+echo "=== Case 21: capacity table via seams — 32 GB / 8 perf cores → 4; 8 GB → 1 and the setup line (M2-04, D52/D78) ==="
+c21a_max="$(CFW_RENDER_CONCURRENCY='' CFW_RENDER_CAPACITY_MEM_BYTES=$((32*1024*1024*1024)) CFW_RENDER_CAPACITY_PERF_CORES=8 bash -c 'source "$1/bin/cfw-render-lib.sh"; cr_capacity_max' _ "$REPO_DIR")"
+c21b_max="$(CFW_RENDER_CONCURRENCY='' CFW_RENDER_CAPACITY_MEM_BYTES=$((8*1024*1024*1024)) CFW_RENDER_CAPACITY_PERF_CORES=4 bash -c 'source "$1/bin/cfw-render-lib.sh"; cr_capacity_max' _ "$REPO_DIR")"
+c21b_note="$(CFW_RENDER_CONCURRENCY='' CFW_RENDER_CAPACITY_MEM_BYTES=$((8*1024*1024*1024)) CFW_RENDER_CAPACITY_PERF_CORES=4 bash -c 'source "$1/bin/cfw-render-lib.sh"; cr_capacity_setup_note' _ "$REPO_DIR")"
+c21c_max="$(CFW_RENDER_CONCURRENCY='' CFW_RENDER_CAPACITY_MEM_BYTES=$((32*1024*1024*1024)) CFW_RENDER_CAPACITY_PERF_CORES=4 bash -c 'source "$1/bin/cfw-render-lib.sh"; cr_capacity_max' _ "$REPO_DIR")"
+if [[ "$c21a_max" == "4" && "$c21b_max" == "1" && "$c21c_max" == "2" ]]; then
+  pass "capacity table: 32GB/8 cores → 4; 8GB → 1; 32GB/4 cores → 2 (cores ÷ 2 cap)"
+else
+  fail "capacity table" "32GB/8c=$c21a_max (want 4) 8GB=$c21b_max (want 1) 32GB/4c=$c21c_max (want 2)"
+fi
+if [[ "$c21b_note" == "This computer runs one request at a time. It still serves your brands; bigger jobs just take turns." ]]; then
+  pass "capacity: max 1 → setup summary says 'This computer runs one request at a time…' (D78)"
+else
+  fail "capacity setup line" "got: $c21b_note"
+fi
+if grep -q 'install.sh: \$(cr_capacity_setup_note)' "$REPO_DIR/install/install.sh"; then
+  pass "install.sh prints the capacity setup note"
+else
+  fail "install.sh capacity note" "install.sh does not call cr_capacity_setup_note"
+fi
+
+echo "=== Case 22: 3 running + a normal 4th queued → no 4th claim; urgent 4th → claimed alongside (M2-04, D51) ==="
+c22a="$(mktemp -d)"
+c21_setup "$c22a" $((MOCK_PORT_BASE + 920)) harness-3step '[{"id":"o1"},{"id":"o2"},{"id":"o3"},{"id":"o4"}]' CFW_MOCK_ORDERS_ARRAY=1
+c21_worker "$c22a" $((MOCK_PORT_BASE + 920)) --once CFW_RENDER_CONCURRENCY=3
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+c22a_claims="$(c21_claims "$c22a")"
+c22a_done="$(grep -c '"tool": "complete_render_order".*"ok": true' "$c22a/mockstate/calls.jsonl" 2>/dev/null || true)"
+c22a_o4="$(grep -c '"orderId": "o4"' "$c21_ctl/reports.ndjson" 2>/dev/null || true)"
+if [[ "$c22a_claims" == "0/3 3/3" && "$c22a_done" == "3" && "$c22a_o4" == "0" ]]; then
+  pass "capacity: orders[] claim 0/3 took three; the full ask (3/3) returned nothing for a normal o4; 3 completed"
+else
+  fail "capacity: 3 running + normal" "claims='$c22a_claims' (want '0/3 3/3') done=$c22a_done o4-reports=$c22a_o4; $(tail -3 "$c22a/worker.out")"
+fi
+rm -rf "$c22a"
+c22b="$(mktemp -d)"
+c21_setup "$c22b" $((MOCK_PORT_BASE + 921)) harness-3step '[{"id":"o1"},{"id":"o2"},{"id":"o3"},{"id":"o4","urgent":true}]' CFW_MOCK_ORDERS_ARRAY=1
+c21_worker "$c22b" $((MOCK_PORT_BASE + 921)) --once CFW_RENDER_CONCURRENCY=3
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+c22b_claims="$(c21_claims "$c22b")"
+c22b_done="$(grep -c '"tool": "complete_render_order".*"ok": true' "$c22b/mockstate/calls.jsonl" 2>/dev/null || true)"
+if [[ "$c22b_claims" == "0/3 3/3" && "$c22b_done" == "4" ]] && grep -q "urgent ask with running=3 max=3 returned 1 order" "$c22b/cr-state/cfw-render.log"; then
+  pass "capacity: full ask (3/3) returned the urgent o4 → started alongside; 4 completed"
+else
+  fail "capacity: 3 running + urgent" "claims='$c22b_claims' done=$c22b_done; log: $(grep -i 'capacity\|urgent' "$c22b/cr-state/cfw-render.log" | tail -3)"
+fi
+rm -rf "$c22b"
+
+echo "=== Case 23: free memory under the floor → no normal claim, urgent-only ask (M2-04) ==="
+c23="$(mktemp -d)"
+c21_setup "$c23" $((MOCK_PORT_BASE + 922)) harness-3step '[{"id":"o1"}]' CFW_MOCK_ORDERS_ARRAY=1
+c21_worker "$c23" $((MOCK_PORT_BASE + 922)) --once CFW_RENDER_CONCURRENCY=2 CFW_RENDER_CAPACITY_FREE_MB=1000
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+c23_claims="$(c21_claims "$c23")"
+c23_done="$(grep -c '"tool": "complete_render_order"' "$c23/mockstate/calls.jsonl" 2>/dev/null || true)"
+if [[ "$c23_claims" == "2/2" && "$c23_done" == "0" ]] && grep -q "normal claims skipped, urgent only" "$c23/cr-state/cfw-render.log"; then
+  pass "capacity: free 1000 MB < 3072 floor → only the urgent ask (2/2), normal o1 left queued, logged"
+else
+  fail "capacity: floor" "claims='$c23_claims' (want '2/2') done=$c23_done; log: $(grep capacity "$c23/cr-state/cfw-render.log" | tail -2)"
+fi
+rm -rf "$c23"
+
+echo "=== Case 24: stop_after_step → step finishes, uploads, attempt_released revoked, folder gone (M2-04, D76) ==="
+c24="$(mktemp -d)"
+c21_setup "$c24" $((MOCK_PORT_BASE + 923)) harness-3step '[{"id":"o1"}]' CFW_MOCK_STOP_AFTER_STEP=1
+c21_worker "$c24" $((MOCK_PORT_BASE + 923)) --once
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+c24_ev="$(c21_events_for "$c21_ctl/reports.ndjson" o1)"
+c24_rel="$(python3 -c '
+import json, sys
+for l in open(sys.argv[1]):
+    d = json.loads(l)
+    if d["event"] == "attempt_released": print(d.get("stepId"), d.get("reason"))' "$c21_ctl/reports.ndjson" 2>/dev/null)"
+c24_up="$(python3 -c '
+import json, sys
+for l in open(sys.argv[1]):
+    d = json.loads(l)
+    if d["event"] == "step_completed" and d.get("stepId") == "a": print(len(d.get("outputs") or []))' "$c21_ctl/reports.ndjson" 2>/dev/null)"
+if [[ "$c24_ev" == "step_started:a step_completed:a attempt_released:a" && "$c24_rel" == "a revoked" && "$c24_up" == "1" && ! -d "$c24/cr-scratch/test-brand/order-o1" ]]; then
+  pass "stop_after_step: a completed with its upload, attempt_released {stepId:a, reason:revoked}, no step c, order folder deleted"
+else
+  fail "stop_after_step" "events='$c24_ev' released='$c24_rel' uploads=$c24_up dir-exists=$([[ -d "$c24/cr-scratch/test-brand/order-o1" ]] && echo yes || echo no); $(tail -3 "$c24/worker.out")"
+fi
+rm -rf "$c24"
+
+echo "=== Case 25: resume with two saved outputs → a, b skipped; starts at plan_broll (M2-04, D30) ==="
+c25="$(mktemp -d)"
+c21_setup "$c25" $((MOCK_PORT_BASE + 924)) harness-resume '[{"id":"o1"}]' CFW_MOCK_RESUME_FROM=plan_broll
+c21_worker "$c25" $((MOCK_PORT_BASE + 924)) --once
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+c25_ev="$(c21_events_for "$c21_ctl/reports.ndjson" o1)"
+c25_done="$(grep -c '"tool": "complete_render_order".*"ok": true' "$c25/mockstate/calls.jsonl" 2>/dev/null || true)"
+if [[ "$c25_ev" == "step_started:plan_broll step_completed:plan_broll step_started:c step_completed:c attempt_completed:-" && "$c25_done" == "1" ]] && grep -q "resumes at plan_broll (2 saved output(s) restored)" "$c25/cr-state/cfw-render.log"; then
+  pass "resume: savedOutputs a/x + b/y restored, a and b never run, plan_broll → c → attempt_completed"
+else
+  fail "resume" "events='$c25_ev' done=$c25_done; log: $(grep -i 'resum' "$c25/cr-state/cfw-render.log" | tail -2)"
+fi
+rm -rf "$c25"
+
+echo "=== Case 26: a saved output 404s → step_failed 'Saved result from step a is missing' + attempt_failed (M2-04) ==="
+c26="$(mktemp -d)"
+c21_setup "$c26" $((MOCK_PORT_BASE + 925)) harness-resume '[{"id":"o1"}]' CFW_MOCK_RESUME_FROM=plan_broll CFW_MOCK_RESUME_404=a/x
+c21_worker "$c26" $((MOCK_PORT_BASE + 925)) --once
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+c26_ev="$(c21_events_for "$c21_ctl/reports.ndjson" o1)"
+c26_err="$(python3 -c '
+import json, sys
+for l in open(sys.argv[1]):
+    d = json.loads(l)
+    if d["event"] == "step_failed": print(d.get("stepId"), "|", d.get("error") or d.get("reason") or d.get("message") or json.dumps(d))' "$c21_ctl/reports.ndjson" 2>/dev/null)"
+if [[ "$c26_ev" == *"step_failed:"* && "$c26_ev" == *"attempt_failed:"* && "$c26_ev" != *"step_completed"* && "$c26_err" == *"Saved result from step a is missing"* ]]; then
+  pass "resume: a/x 404 → step_failed 'Saved result from step a is missing', attempt_failed, nothing completed"
+else
+  fail "resume 404" "events='$c26_ev' err='$c26_err'; $(tail -3 "$c26/worker.out")"
+fi
+rm -rf "$c26"
+
+echo "=== Case 27: old server ignores capacity → M1 behaviour, one order per claim, still fills max (M2-04) ==="
+c27="$(mktemp -d)"
+c21_setup "$c27" $((MOCK_PORT_BASE + 926)) harness-3step '[{"id":"o1"},{"id":"o2"},{"id":"o3"}]' CFW_MOCK_IGNORE_CAPACITY=1
+c21_worker "$c27" $((MOCK_PORT_BASE + 926)) --once CFW_RENDER_CONCURRENCY=2
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+c27_claims="$(c21_claims "$c27")"
+c27_done="$(grep -c '"tool": "complete_render_order".*"ok": true' "$c27/mockstate/calls.jsonl" 2>/dev/null || true)"
+c27_orders="$(python3 -c '
+import json, sys
+print(" ".join(sorted({json.loads(l)["orderId"] for l in open(sys.argv[1]) if l.strip()})))' "$c21_ctl/reports.ndjson" 2>/dev/null)"
+if [[ "$c27_claims" == "0/2 1/2 2/2" && "$c27_done" == "2" && "$c27_orders" == "o1 o2" ]]; then
+  pass "old server: capacity sent on every claim (0/2 1/2 2/2) but ignored → single order per reply; 2 ran, o3 stayed queued"
+else
+  fail "old server" "claims='$c27_claims' (want '0/2 1/2 2/2') done=$c27_done orders='$c27_orders'"
+fi
+rm -rf "$c27"
+
+echo "=== Case 28: --loop claim back-off grows 1u→2u→4u→8u→10u with ONE log line per step (M2-04, D89) ==="
+c28="$(mktemp -d)"
+c21_setup "$c28" $((MOCK_PORT_BASE + 927)) harness-3step '[{"id":"o1"}]' CFW_MOCK_CLAIM_ERROR=1
+c21_worker "$c28" $((MOCK_PORT_BASE + 927)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=0.05 &
+c28_w=$!
+sleep 5
+# the loop runs cfw-render.sh under a subshell; stop the whole tree
+pkill -P "$c28_w" 2>/dev/null; kill "$c28_w" 2>/dev/null; wait "$c28_w" 2>/dev/null
+pkill -f "cfw-render.sh --loop" 2>/dev/null || true
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+c28_steps="$(grep 'claim back-off: claim_render_order keeps failing' "$c28/cr-state/cfw-render.log" | sed -E 's/.*retrying every ([0-9.]+)s.*/\1/' | tr '\n' ' ' | sed 's/ $//')"
+c28_tries="$(grep -c '"tool": "claim_render_order"' "$c28/mockstate/calls.jsonl" 2>/dev/null || true)"
+c28_lines="$(grep -c 'claim back-off: claim_render_order keeps failing' "$c28/cr-state/cfw-render.log" 2>/dev/null || true)"
+if [[ "$c28_steps" == "0.05 0.1 0.2 0.4 0.5" && "$c28_tries" -gt "$c28_lines" ]]; then
+  pass "back-off: steps logged once each (0.05 0.1 0.2 0.4 0.5 = base→×2→cap 10u); $c28_tries failed claims, $c28_lines lines"
+else
+  fail "back-off" "steps='$c28_steps' (want '0.05 0.1 0.2 0.4 0.5') tries=$c28_tries lines=$c28_lines; $(tail -3 "$c28/cr-state/cfw-render.log")"
+fi
+if grep -q "pid=" "$c28/cr-state/tick.lock/info" 2>/dev/null || grep -q "loop: started" "$c28/cr-state/cfw-render.log"; then
+  pass "loop: started under the tick lock (touched each round)"
+else
+  fail "loop start" "no 'loop: started' line: $(head -3 "$c28/cr-state/cfw-render.log")"
+fi
+rm -rf "$c28"
 
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
