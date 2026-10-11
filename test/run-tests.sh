@@ -1852,6 +1852,110 @@ else
   fail "cta-card.py: Spotlight end-card script present" "expected $c354_cta_py (arrives with the CFW-354 skills re-sync) — not found"
 fi
 
+echo "=== Case 16: recipe manifest v1 — Spotlight manifest validates (M1-01) ==="
+c16_validator="$REPO_DIR/scripts/validate-manifests.py"
+c16_fixtures="$TEST_DIR/fixtures/manifests"
+c16_out="$(python3 "$c16_validator" 2>&1)"
+c16_rc=$?
+if [[ "$c16_rc" == "0" ]] && grep -q 'OK .*skills/p-reels-spotlight/manifest.json' <<< "$c16_out"; then
+  pass "validate-manifests.py: committed skills/*/manifest.json (Spotlight) validate, exit 0"
+else
+  fail "validate-manifests.py: committed manifests" "expected exit 0 + OK line for p-reels-spotlight, got rc=$c16_rc: $c16_out"
+fi
+c16_spot="$REPO_DIR/skills/p-reels-spotlight/manifest.json"
+c16_shape="$(python3 -c '
+import json, sys
+m = json.load(open(sys.argv[1]))
+print(m["recipeVersion"], ",".join(s["id"] for s in m["steps"]), ",".join(i["id"] for i in m["inputs"]), sum(s["weight"] for s in m["steps"]))
+' "$c16_spot" 2>/dev/null)"
+c16_want="2026.10.1 research,script,prepare_footage,transcribe,plan_edit,plan_broll,render_scenes,assemble,final_checks talking_head,broll,cta 100"
+if [[ "$c16_shape" == "$c16_want" ]]; then
+  pass "Spotlight manifest: recipeVersion 2026.10.1, 9 steps in contract order, 3 inputs, computer weights sum to 100"
+else
+  fail "Spotlight manifest shape" "expected '$c16_want', got '$c16_shape'"
+fi
+c16_steps_dir="$REPO_DIR/skills/p-reels-spotlight"
+c16_missing_ins=""
+while IFS= read -r rel; do
+  [[ -z "$rel" ]] && continue
+  [[ -f "$c16_steps_dir/$rel" ]] || c16_missing_ins="$c16_missing_ins $rel"
+done < <(python3 -c 'import json,sys; [print(s.get("instructions","")) for s in json.load(open(sys.argv[1]))["steps"] if s["runsOn"]=="computer"]' "$c16_spot" 2>/dev/null)
+if [[ -z "$c16_missing_ins" ]]; then
+  pass "Spotlight manifest: every computer step's instructions file exists under steps/"
+else
+  fail "Spotlight manifest: instructions files" "missing:$c16_missing_ins"
+fi
+if python3 "$c16_validator" "$c16_fixtures/valid-minimal/manifest.json" >/dev/null 2>&1; then
+  pass "validate-manifests.py: valid-minimal fixture passes (exit 0)"
+else
+  fail "validate-manifests.py: valid-minimal fixture" "expected exit 0"
+fi
+
+echo "=== Case 16a: validate-manifests.py red — canAsk names a missing input (M1-01) ==="
+c16a_out="$(python3 "$c16_validator" "$c16_fixtures/bad-canask-unknown-input/manifest.json" 2>&1)"
+c16a_rc=$?
+if [[ "$c16a_rc" == "1" ]]; then
+  pass "validate-manifests.py: exit 1 when canAsk references an unknown input"
+else
+  fail "validate-manifests.py: canAsk red case" "expected exit 1, got $c16a_rc: $c16a_out"
+fi
+if grep -q "steps\[prepare\].canAsk: references unknown input 'missing_input'" <<< "$c16a_out"; then
+  pass "validate-manifests.py: canAsk error names the step (prepare) and the input (missing_input)"
+else
+  fail "validate-manifests.py: canAsk error text" "expected step+input named in: $c16a_out"
+fi
+
+echo "=== Case 16b: validate-manifests.py red — two steps share an id (M1-01) ==="
+c16b_out="$(python3 "$c16_validator" "$c16_fixtures/bad-duplicate-step-id/manifest.json" 2>&1)"
+c16b_rc=$?
+if [[ "$c16b_rc" == "1" ]] && grep -q "steps: duplicate id 'prepare'" <<< "$c16b_out"; then
+  pass "validate-manifests.py: exit 1 + names the duplicate step id"
+else
+  fail "validate-manifests.py: duplicate step id" "expected exit 1 + duplicate id 'prepare', got rc=$c16b_rc: $c16b_out"
+fi
+
+echo "=== Case 16c: validate-manifests.py red — a step's instructions file is missing (M1-01) ==="
+c16c_out="$(python3 "$c16_validator" "$c16_fixtures/bad-missing-instructions/manifest.json" 2>&1)"
+c16c_rc=$?
+if [[ "$c16c_rc" == "1" ]]; then
+  pass "validate-manifests.py: exit 1 when a step's instructions file is missing"
+else
+  fail "validate-manifests.py: missing instructions red case" "expected exit 1, got $c16c_rc: $c16c_out"
+fi
+if grep -q "steps\[finish\].instructions: file not found: .*bad-missing-instructions/steps/99-does-not-exist.md" <<< "$c16c_out"; then
+  pass "validate-manifests.py: missing-instructions error names the step and the path"
+else
+  fail "validate-manifests.py: missing instructions error text" "expected path steps/99-does-not-exist.md in: $c16c_out"
+fi
+
+echo "=== Case 16d: validate-manifests.py red — alternatives[].runsSteps names a missing step; hand checks hold without jsonschema (M1-01) ==="
+c16d_out="$(python3 "$c16_validator" "$c16_fixtures/bad-runssteps-unknown-step/manifest.json" 2>&1)"
+c16d_rc=$?
+if [[ "$c16d_rc" == "1" ]] && grep -q "inputs\[clip\].alternatives\[0\].runsSteps: references unknown step 'nope'" <<< "$c16d_out"; then
+  pass "validate-manifests.py: exit 1 + names the input, alternative and unknown step"
+else
+  fail "validate-manifests.py: runsSteps red case" "expected exit 1 + unknown step 'nope', got rc=$c16d_rc: $c16d_out"
+fi
+# Same four red fixtures with the optional jsonschema package masked out, so the
+# gate is proven identical on a machine without it (runtime-free repo rule).
+c16d_nojs="$(python3 - "$c16_validator" "$c16_fixtures" <<'PY' 2>&1
+import runpy, sys
+validator, fixtures = sys.argv[1], sys.argv[2]
+sys.modules["jsonschema"] = None
+bad = ["bad-canask-unknown-input", "bad-duplicate-step-id", "bad-missing-instructions", "bad-runssteps-unknown-step"]
+sys.argv = [validator] + [f"{fixtures}/{b}/manifest.json" for b in bad] + [f"{fixtures}/valid-minimal/manifest.json"]
+try:
+    runpy.run_path(validator, run_name="__main__")
+except SystemExit as e:
+    print(f"RC={e.code}")
+PY
+)"
+if grep -q '^RC=1$' <<< "$c16d_nojs" && grep -q 'FAIL — 4 of 5' <<< "$c16d_nojs"; then
+  pass "validate-manifests.py: without jsonschema, hand-written checks still fail exactly the 4 bad fixtures"
+else
+  fail "validate-manifests.py: no-jsonschema mode" "expected RC=1 and 'FAIL — 4 of 5' in: $c16d_nojs"
+fi
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
