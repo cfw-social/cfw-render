@@ -4,8 +4,8 @@
   "sourceCommit": "8ab5d1fcdeacc6f8e6ec62e726d0a6ac65e8eea4",
   "sourceSha": "8ab5d1fcdeacc6f8e6ec62e726d0a6ac65e8eea4",
   "recipeCount": 14,
-  "aggregateChecksum": "sha256:a6f012575912ef34fb6244a218a8c6bad58734b35a417c8b49c8d56b0345d600",
-  "bundledAt": "2026-10-11T14:19:00Z",
+  "aggregateChecksum": "sha256:a9f9a72dc773dff84b037857c4866bd220e374d1e337c1bed4b2cb0fb5598ee9",
+  "bundledAt": "2026-10-11T19:52:45Z",
   "bundleMethod": "scripts/sync-skills.sh (direct copy from private source repo; git-subtree retired)",
   "updateCommand": "CFW_SKILLS_SRC=<path-to-private-skills-repo> scripts/sync-skills.sh",
   "recipes": {
@@ -16,18 +16,18 @@
     },
     "p-ai-character": {
       "version": "1.0.0",
-      "checksum": "sha256:a80bbac0de0e27da9f579607374b427a807dcb86c13c77a678e8e1ba5c078726",
-      "fileCount": 26
+      "checksum": "sha256:d241a7e3d4328cfd194f8967097fd0819ee19f74801ce91000582458066c9860",
+      "fileCount": 32
     },
     "p-ai-image": {
       "version": "1.0.0",
-      "checksum": "sha256:17a0e84b9206919c519cf352fed200fc7ca3b90d80139d335717e4cec10be8e7",
-      "fileCount": 76
+      "checksum": "sha256:28e4efe4e1b3e92e7a8b51c01efbac12338d064ed7d8425645396bee14278bbc",
+      "fileCount": 81
     },
     "p-carousel": {
       "version": "1.0.0",
-      "checksum": "sha256:f7fe630b64390ae6c79752ded43a9d415656552483f8bf014a59a410245ca8a1",
-      "fileCount": 19
+      "checksum": "sha256:6a2bb1c527bfc4262e2a8c8546b3762b90e8dea3bfd1abfc9b22c0e04bb53a8b",
+      "fileCount": 25
     },
     "p-clone-reel": {
       "version": "1.0.0",
@@ -36,8 +36,8 @@
     },
     "p-gfx-image": {
       "version": "1.0.0",
-      "checksum": "sha256:88aa1005bf4ead30c9960f7b61995ebf0e42bf25fc12e9b3ac5d602c776605bd",
-      "fileCount": 61
+      "checksum": "sha256:4d785c157f83858a4a2c2d992c87ba300278f93624eaab3921141dc5648f0fcf",
+      "fileCount": 67
     },
     "p-longform": {
       "version": "1.0.0",
@@ -46,8 +46,8 @@
     },
     "p-reels-faceless": {
       "version": "1.0.0",
-      "checksum": "sha256:bda5a96cffa56c877a5feb1a47cf999696bb2df5458169b012ad2f11e2bbbe72",
-      "fileCount": 104
+      "checksum": "sha256:6d113eb55cfb7fa91aad4b00dbe9a0e6586700278f595f34cb90a973032f9677",
+      "fileCount": 112
     },
     "p-reels-pip": {
       "version": "1.0.0",
