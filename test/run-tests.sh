@@ -1725,6 +1725,133 @@ else
   fail "fanout: subagent event" "no kind=subagent append_render_event in mock calls"
 fi
 
+echo "=== Case 15: check-no-handle-defaults.sh red — FAILs on a literal shell handle default (CFW-354) ==="
+c354_dirty_base="$(mktemp -d)"
+mkdir -p "$c354_dirty_base/p-dirty-recipe"
+printf '# setup\nCTA_TEXT="${CTA_TEXT:-FOLLOW}"\nCTA_HANDLE="${CTA_HANDLE:-@someone}"\n' > "$c354_dirty_base/p-dirty-recipe/SKILL.md"
+c354_dirty_out="$("$REPO_DIR/scripts/check-no-handle-defaults.sh" --skills-dir "$c354_dirty_base" 2>&1)"
+c354_dirty_rc=$?
+if [[ "$c354_dirty_rc" == "1" ]]; then
+  pass "check-no-handle-defaults.sh: FAILs (exit 1) on a literal \${VAR:-@…} default (red/green proof, CFW-354)"
+else
+  fail "check-no-handle-defaults.sh: red case" "expected exit 1, got $c354_dirty_rc: $c354_dirty_out"
+fi
+if grep -q 'p-dirty-recipe/SKILL.md:3' <<< "$c354_dirty_out"; then
+  pass "check-no-handle-defaults.sh: red case names the offending path:line"
+else
+  fail "check-no-handle-defaults.sh: red case output" "expected 'p-dirty-recipe/SKILL.md:3' in: $c354_dirty_out"
+fi
+rm -rf "$c354_dirty_base"
+
+echo "=== Case 15a: check-no-handle-defaults.sh red — FAILs on a literal @mr.growthguide anywhere (CFW-354) ==="
+c354_leak_base="$(mktemp -d)"
+mkdir -p "$c354_leak_base/p-dirty-recipe"
+printf 'Follow @mr.growthguide for more.\n' > "$c354_leak_base/p-dirty-recipe/NOTE.md"
+if "$REPO_DIR/scripts/check-no-handle-defaults.sh" --skills-dir "$c354_leak_base" >/dev/null 2>&1; then
+  fail "check-no-handle-defaults.sh: leaked-handle red case" "expected exit 1 on a literal @mr.growthguide in NOTE.md"
+else
+  pass "check-no-handle-defaults.sh: FAILs on a literal @mr.growthguide outside brand-overrides/ (CFW-354)"
+fi
+rm -rf "$c354_leak_base"
+
+echo "=== Case 15a1: check-no-handle-defaults.sh red — a backslash-continued default can't dodge the gate (CFW-354 QA F1) ==="
+c354_cont_base="$(mktemp -d)"
+mkdir -p "$c354_cont_base/p-dirty-recipe"
+printf 'x\nCTA_HANDLE="${CTA_HANDLE:-\\\n@split}"\n' > "$c354_cont_base/p-dirty-recipe/SKILL.md"
+c354_cont_out="$("$REPO_DIR/scripts/check-no-handle-defaults.sh" --skills-dir "$c354_cont_base" 2>&1)"
+c354_cont_rc=$?
+if [[ "$c354_cont_rc" == "1" && "$c354_cont_out" == *"p-dirty-recipe/SKILL.md:2"* ]]; then
+  pass "check-no-handle-defaults.sh: FAILs on a \${VAR:-@…} default split across a backslash continuation, naming line 2"
+else
+  fail "check-no-handle-defaults.sh: continuation red case" "expected exit 1 naming p-dirty-recipe/SKILL.md:2, got $c354_cont_rc: $c354_cont_out"
+fi
+rm -rf "$c354_cont_base"
+
+echo "=== Case 15a2: check-no-handle-defaults.sh — rendered kicker MR GROWTH GUIDE is red, prose 'Mr Growth Guide' is green (CFW-354 QA F2) ==="
+c354_kick_base="$(mktemp -d)"
+mkdir -p "$c354_kick_base/p-dirty-recipe"
+printf '{"type":"kicker","text":"MR GROWTH GUIDE"}\n' > "$c354_kick_base/p-dirty-recipe/cta-card.json"
+if "$REPO_DIR/scripts/check-no-handle-defaults.sh" --skills-dir "$c354_kick_base" >/dev/null 2>&1; then
+  fail "check-no-handle-defaults.sh: kicker red case" "expected exit 1 on a literal MR GROWTH GUIDE kicker"
+else
+  pass "check-no-handle-defaults.sh: FAILs on the rendered kicker literal MR GROWTH GUIDE outside brand-overrides/ (CFW-354)"
+fi
+printf 'This avatar serves both CFW and Mr Growth Guide.\n' > "$c354_kick_base/p-dirty-recipe/cta-card.json"
+c354_kick_out="$("$REPO_DIR/scripts/check-no-handle-defaults.sh" --skills-dir "$c354_kick_base" 2>&1)"
+c354_kick_rc=$?
+if [[ "$c354_kick_rc" == "0" ]]; then
+  pass "check-no-handle-defaults.sh: prose 'Mr Growth Guide' (not the rendered kicker) stays clean"
+else
+  fail "check-no-handle-defaults.sh: kicker prose green case" "expected exit 0, got $c354_kick_rc: $c354_kick_out"
+fi
+rm -rf "$c354_kick_base"
+
+echo "=== Case 15b: check-no-handle-defaults.sh green — empty default, prose @handle, brand.json handle all clean (CFW-354) ==="
+c354_clean_base="$(mktemp -d)"
+mkdir -p "$c354_clean_base/p-clean-recipe/brand-overrides/x"
+printf 'CTA_HANDLE="${CTA_HANDLE:-}"\nAdd the `@handle` if known.\n' > "$c354_clean_base/p-clean-recipe/SKILL.md"
+printf '{"cta":{"handle":"@legit"}}\n' > "$c354_clean_base/p-clean-recipe/brand-overrides/x/brand.json"
+c354_clean_out="$("$REPO_DIR/scripts/check-no-handle-defaults.sh" --skills-dir "$c354_clean_base" 2>&1)"
+c354_clean_rc=$?
+if [[ "$c354_clean_rc" == "0" ]]; then
+  pass "check-no-handle-defaults.sh: PASSes on empty default + prose @handle + brand-overrides/<slug>/brand.json handle"
+else
+  fail "check-no-handle-defaults.sh: green case" "expected exit 0, got $c354_clean_rc: $c354_clean_out"
+fi
+rm -rf "$c354_clean_base"
+
+echo "=== Case 15c: static guard — no literal handle default anywhere in the committed skills/ bundle (CFW-354) ==="
+if "$REPO_DIR/scripts/check-no-handle-defaults.sh" >/dev/null 2>&1; then
+  pass "static guard: committed skills/ bundle has no literal handle default"
+else
+  c354_real_out="$("$REPO_DIR/scripts/check-no-handle-defaults.sh" 2>&1)"
+  fail "static guard: literal handle default found in committed bundle" "$c354_real_out"
+fi
+
+echo "=== Case 15d: Spotlight end card (step 8) — handle/kicker layers are per-brand, omitted when unset (CFW-354) ==="
+c354_cta_py="$REPO_DIR/skills/p-reels-spotlight/scripts/cta-card.py"
+if [[ -f "$c354_cta_py" ]]; then
+  c354_cta_dir="$(mktemp -d)"
+  printf '{"brand":{"bg":"#0F172A","accent":"#F97316","fg":"#F1F5F9"}}\n' > "$c354_cta_dir/plan.json"
+  c354_cta_types() {  # $1 = out.json → comma-joined layer types
+    python3 -c 'import json,sys; print(",".join(l.get("type","") for l in json.load(open(sys.argv[1]))["layers"]))' "$1" 2>/dev/null
+  }
+  if CTA_HANDLE=@brand_a BRAND_NAME='Brand A' python3 "$c354_cta_py" "$c354_cta_dir/plan.json" "$c354_cta_dir/a.json" >/dev/null 2>&1; then
+    c354_a_types="$(c354_cta_types "$c354_cta_dir/a.json")"
+    if [[ "$c354_a_types" == "kicker,hero,handle,arrow" ]]; then
+      pass "cta-card.py: with CTA_HANDLE + BRAND_NAME set, layers are exactly kicker,hero,handle,arrow"
+    else
+      fail "cta-card.py: branded layer types" "expected kicker,hero,handle,arrow, got '$c354_a_types'"
+    fi
+    c354_a_handle="$(python3 -c 'import json,sys; print(next((l.get("text","") for l in json.load(open(sys.argv[1]))["layers"] if l.get("type")=="handle"), ""))' "$c354_cta_dir/a.json" 2>/dev/null)"
+    if [[ "$c354_a_handle" == "@brand_a" ]]; then
+      pass "cta-card.py: handle layer text is the brand's own handle (@brand_a)"
+    else
+      fail "cta-card.py: handle layer text" "expected '@brand_a', got '$c354_a_handle'"
+    fi
+  else
+    fail "cta-card.py: branded run" "python3 cta-card.py exited non-zero with CTA_HANDLE=@brand_a BRAND_NAME='Brand A'"
+  fi
+  if CTA_HANDLE="" BRAND_NAME="" python3 "$c354_cta_py" "$c354_cta_dir/plan.json" "$c354_cta_dir/b.json" >/dev/null 2>&1; then
+    c354_b_types="$(c354_cta_types "$c354_cta_dir/b.json")"
+    if [[ "$c354_b_types" == "hero,arrow" ]]; then
+      pass "cta-card.py: with CTA_HANDLE and BRAND_NAME empty, layers are exactly hero,arrow"
+    else
+      fail "cta-card.py: unbranded layer types" "expected hero,arrow, got '$c354_b_types'"
+    fi
+    if ! grep -qi 'growthguide' "$c354_cta_dir/b.json" && ! grep -q '@' "$c354_cta_dir/b.json"; then
+      pass "cta-card.py: unbranded output contains no growthguide and no @"
+    else
+      fail "cta-card.py: unbranded output leak" "found growthguide or @ in: $(cat "$c354_cta_dir/b.json")"
+    fi
+  else
+    fail "cta-card.py: unbranded run" "python3 cta-card.py exited non-zero with CTA_HANDLE='' BRAND_NAME=''"
+  fi
+  rm -rf "$c354_cta_dir"
+else
+  fail "cta-card.py: Spotlight end-card script present" "expected $c354_cta_py (arrives with the CFW-354 skills re-sync) — not found"
+fi
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
