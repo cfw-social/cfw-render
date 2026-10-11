@@ -1,12 +1,12 @@
 {
-  "generatedAt": "2026-10-11T14:18:58Z",
+  "generatedAt": "2026-10-11T19:52:44Z",
   "release": null,
   "sourceSha": "8ab5d1fcdeacc6f8e6ec62e726d0a6ac65e8eea4",
   "rawBase": null,
   "recipes": {
     "p-ai-character": {
       "version": "1.0.0",
-      "checksum": "sha256:a80bbac0de0e27da9f579607374b427a807dcb86c13c77a678e8e1ba5c078726",
+      "checksum": "sha256:d241a7e3d4328cfd194f8967097fd0819ee19f74801ce91000582458066c9860",
       "files": [
         ".hub/c-ai-media/LEARNINGS.md",
         ".hub/c-ai-media/SKILL.md",
@@ -33,7 +33,13 @@
         "LEARNINGS.md",
         "SKILL.md",
         "acceptance.json",
-        "examples.json"
+        "examples.json",
+        "manifest.json",
+        "steps/01-character-lock.md",
+        "steps/02-character-ref.md",
+        "steps/03-scene-images.md",
+        "steps/04-qa-gate.md",
+        "steps/_shared.md"
       ],
       "fileHashes": {
         ".hub/c-ai-media/LEARNINGS.md": "sha256:bc65543cccd0aae138f9cdba79705d94e73c158b607b5c5aab56e810ba13fa76",
@@ -61,7 +67,13 @@
         "LEARNINGS.md": "sha256:7c70aad420312edf08deed8329a52ef6167f2f2c20c1d41da480e8dd791e3a6d",
         "SKILL.md": "sha256:b64fac90fa2fadfc7d7e2a8eee5ee897c866aeddc662b8f3f756c1054f11a09a",
         "acceptance.json": "sha256:c2f05c53b7a1f89787f849450f9c12a838fbada093b5687abd091083f7ee5ab9",
-        "examples.json": "sha256:39c08c0f47baab2db3e1de5ea6f7b0cadd9cbaba29c4a25198160cef88b6bc9b"
+        "examples.json": "sha256:39c08c0f47baab2db3e1de5ea6f7b0cadd9cbaba29c4a25198160cef88b6bc9b",
+        "manifest.json": "sha256:8ea5717f65573eaf3952ec613ac2fd4c413563433250956a33723e70abd2f62e",
+        "steps/01-character-lock.md": "sha256:a6f6427296e4070bf4aa7085f3125de45d68a0fc1dcb14d358d325ff256a5231",
+        "steps/02-character-ref.md": "sha256:e1365d2cf673b0d1edb2a3d706774a763b72a80b3d22003369570a3ee3ef1c1f",
+        "steps/03-scene-images.md": "sha256:ae2cb5e1186d0dd9c2059d1ad76d945694f2f59697c44d73ea23df05140b839a",
+        "steps/04-qa-gate.md": "sha256:8428e88dec055aee3bb3f5892c087f99c08736045a8eed296698c12c9187a5db",
+        "steps/_shared.md": "sha256:2db6a7f705a64fe1cfb540d06d531e0ee2e4356894f8039d7c64fe68647df8a8"
       },
       "providers": [],
       "systemRequires": [],
@@ -76,7 +88,7 @@
     },
     "p-ai-image": {
       "version": "1.0.0",
-      "checksum": "sha256:17a0e84b9206919c519cf352fed200fc7ca3b90d80139d335717e4cec10be8e7",
+      "checksum": "sha256:28e4efe4e1b3e92e7a8b51c01efbac12338d064ed7d8425645396bee14278bbc",
       "files": [
         ".hub/c-ai-media/LEARNINGS.md",
         ".hub/c-ai-media/SKILL.md",
@@ -153,7 +165,12 @@
         ".hub/f-remotion/rules/voiceover.md",
         "SKILL.md",
         "acceptance.json",
-        "examples.json"
+        "examples.json",
+        "manifest.json",
+        "steps/01-plan-prompts.md",
+        "steps/02-generate.md",
+        "steps/03-qa-gate.md",
+        "steps/_shared.md"
       ],
       "fileHashes": {
         ".hub/c-ai-media/LEARNINGS.md": "sha256:bc65543cccd0aae138f9cdba79705d94e73c158b607b5c5aab56e810ba13fa76",
@@ -231,7 +248,12 @@
         ".hub/f-remotion/rules/voiceover.md": "sha256:60340034cf422052007183d031171b3c88422dd3fe85f0d915283dd8ec5df3e8",
         "SKILL.md": "sha256:8662142b016d4b0cdd9dd979873718ff5e789917b21003d3143605bcdbf30585",
         "acceptance.json": "sha256:b1b8d50c6a48377847a467660fb67c96c805e6c62b45535fea19691c25f51b5b",
-        "examples.json": "sha256:8678eea85b6f5b61e1961348f9580e3538de6947cd5f6b6a3815e5276e76df32"
+        "examples.json": "sha256:8678eea85b6f5b61e1961348f9580e3538de6947cd5f6b6a3815e5276e76df32",
+        "manifest.json": "sha256:6a1daa64b31b9bc45026c242569ab749339b847afca16eba2425088e74454bc9",
+        "steps/01-plan-prompts.md": "sha256:1a2ce8e76355d02bf5a4c503f303978509c157f4bf841aadeb9da2328855dd96",
+        "steps/02-generate.md": "sha256:d630a375c30f320db9b409161e4c091b61276c8c63c424064a6aa46b184e6a56",
+        "steps/03-qa-gate.md": "sha256:d5a647925f4f0ec693827d2fac7eb3936eba1bc227dca8fa24f39e82772c90fe",
+        "steps/_shared.md": "sha256:3c4116dd37a6d773635c988440c869603d1365f7d0da11d29102a460813757bb"
       },
       "providers": [],
       "systemRequires": [],
@@ -422,7 +444,7 @@
     },
     "p-carousel": {
       "version": "1.0.0",
-      "checksum": "sha256:f7fe630b64390ae6c79752ded43a9d415656552483f8bf014a59a410245ca8a1",
+      "checksum": "sha256:6a2bb1c527bfc4262e2a8c8546b3762b90e8dea3bfd1abfc9b22c0e04bb53a8b",
       "files": [
         ".hub/c-eval-runner/LEARNINGS.md",
         ".hub/c-eval-runner/SKILL.md",
@@ -441,7 +463,13 @@
         "brand-overrides/b-vasanth/template.html",
         "brand-overrides/vasanth-sek8tv/brand.json",
         "examples.json",
+        "manifest.json",
         "render.mjs",
+        "steps/01-outline.md",
+        "steps/02-author-slides.md",
+        "steps/03-render-slides.md",
+        "steps/04-captions.md",
+        "steps/_shared.md",
         "template.html"
       ],
       "fileHashes": {
@@ -462,7 +490,13 @@
         "brand-overrides/b-vasanth/template.html": "sha256:4cb9717b6d45dc9807eb0590fb5d0f58fa8f02e85db1e375ec860be0f6a3e7cd",
         "brand-overrides/vasanth-sek8tv/brand.json": "sha256:9d4b9b46dd91643860ebe9498d2b656f153a31c82d9a97cd0674e8f878e762d5",
         "examples.json": "sha256:6cbd143eaaa63653c29764993611f3633a35eb24faa3ee6c09bb0a6e6f0cf96d",
+        "manifest.json": "sha256:6294fc92961dfffb5aeb16f98469d4946c93102a8b3521faeb42b9d90c47e90e",
         "render.mjs": "sha256:115488eecd2889604c4e7fdd8938ca4282143f83df08fab8044a9fe2903257dd",
+        "steps/01-outline.md": "sha256:745c407c5abeecd019a1b5ee2b11edb4306ce3d029042472d6740a592678a442",
+        "steps/02-author-slides.md": "sha256:92c62ae87a2b59453f1411781065d691633847a392a660c97189e9f2435486eb",
+        "steps/03-render-slides.md": "sha256:610bda13e4518a327deb6dc329b54885ee2038332e2f5b957e77f66f5e16f461",
+        "steps/04-captions.md": "sha256:8baea49cf694ba320e437deb96c3ed89a49f95d87c1795dd9024c331a1f8d3d6",
+        "steps/_shared.md": "sha256:ccf2335acfda990d5700214f12b9dcdb97a5e22e58034330a977507da91800b4",
         "template.html": "sha256:c6260bca8cd6cc4009dc69ad664059fbd2ede417a4c1339099a81307746e2668"
       },
       "providers": [],
@@ -475,7 +509,7 @@
     },
     "p-gfx-image": {
       "version": "1.0.0",
-      "checksum": "sha256:88aa1005bf4ead30c9960f7b61995ebf0e42bf25fc12e9b3ac5d602c776605bd",
+      "checksum": "sha256:4d785c157f83858a4a2c2d992c87ba300278f93624eaab3921141dc5648f0fcf",
       "files": [
         ".hub/c-banner/SKILL.md",
         ".hub/c-eval-runner/LEARNINGS.md",
@@ -537,7 +571,13 @@
         ".hub/f-remotion/rules/voiceover.md",
         "SKILL.md",
         "acceptance.json",
-        "examples.json"
+        "examples.json",
+        "manifest.json",
+        "steps/01-plan-cards.md",
+        "steps/02-author-html.md",
+        "steps/03-render.md",
+        "steps/04-qa-gate.md",
+        "steps/_shared.md"
       ],
       "fileHashes": {
         ".hub/c-banner/SKILL.md": "sha256:d3aa705957625ade6f34c55c7d9d671cd51f8db6bdda11fddc2686da1615130b",
@@ -600,7 +640,13 @@
         ".hub/f-remotion/rules/voiceover.md": "sha256:60340034cf422052007183d031171b3c88422dd3fe85f0d915283dd8ec5df3e8",
         "SKILL.md": "sha256:6729bdb9faaf209e4f3c41c76d88e11f752333bb558980d41699e2ad35f874d0",
         "acceptance.json": "sha256:9dfc0ea8d8403e6a5e5f72741d4c808b1c5ff5ee79674867d0272d35543312dc",
-        "examples.json": "sha256:8e0ea79168c7e60d0b4e5740ec5394bf34e8683849b0b8e6962c6eac20747414"
+        "examples.json": "sha256:8e0ea79168c7e60d0b4e5740ec5394bf34e8683849b0b8e6962c6eac20747414",
+        "manifest.json": "sha256:aea730a2723620798f742ec543f44af243da75b46d1184fa7390c03486e3101a",
+        "steps/01-plan-cards.md": "sha256:14e9af1dc425bd95338289592ac770b78965541539410fa6327dd32989331605",
+        "steps/02-author-html.md": "sha256:cf6167c8d108be729e0e9196735be6be231b5c0ecf51c089b443056c85e3d6b5",
+        "steps/03-render.md": "sha256:aa6a18f378f65144b86406019944edc5f960b0479805436c59ec8d5d9b162031",
+        "steps/04-qa-gate.md": "sha256:9902a2f93a7d6b7c33947353260accb6c1c1942b689ee9b07c31126f9a40c5a6",
+        "steps/_shared.md": "sha256:6e4d9e995ee16bd961926f5a975325b88187f047592271831f1c80c4fbbe4c6c"
       },
       "providers": [],
       "systemRequires": [],
@@ -1444,7 +1490,7 @@
     },
     "p-reels-faceless": {
       "version": "1.0.0",
-      "checksum": "sha256:bda5a96cffa56c877a5feb1a47cf999696bb2df5458169b012ad2f11e2bbbe72",
+      "checksum": "sha256:6d113eb55cfb7fa91aad4b00dbe9a0e6586700278f595f34cb90a973032f9677",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1549,7 +1595,15 @@
         "brand-overrides/README.md",
         "brand-overrides/b-vasanth/brand.json",
         "brand-overrides/vasanth-sek8tv/brand.json",
-        "examples.json"
+        "examples.json",
+        "manifest.json",
+        "steps/01-voice-over.md",
+        "steps/02-transcribe.md",
+        "steps/03-plan-beats.md",
+        "steps/04-render-graphics.md",
+        "steps/05-assemble.md",
+        "steps/06-final-checks.md",
+        "steps/_shared.md"
       ],
       "fileHashes": {
         ".hub/c-audio/LEARNINGS.md": "sha256:a0b4d73ab2ccaf7a1040dce8f5fd2ecbb17a7b145f1f782bfb4e60ce154200a7",
@@ -1655,7 +1709,15 @@
         "brand-overrides/README.md": "sha256:ba96dcd60132107bfdb629031252b2b0a53c3f603b9ca3f87336dbec4a36c02c",
         "brand-overrides/b-vasanth/brand.json": "sha256:5b20043e4db5030c8f401c739efd0c30f53689ad65d3ef2c16e7c76e4a4c0a80",
         "brand-overrides/vasanth-sek8tv/brand.json": "sha256:9d4b9b46dd91643860ebe9498d2b656f153a31c82d9a97cd0674e8f878e762d5",
-        "examples.json": "sha256:3e2cf4a6af70a9cedd23df689f718890130bf5fd3196aac2f026436101952d62"
+        "examples.json": "sha256:3e2cf4a6af70a9cedd23df689f718890130bf5fd3196aac2f026436101952d62",
+        "manifest.json": "sha256:e698741cb65bd6fe2d91ab9b1d74af41220d5660e509c41570d2b54f0f7449e0",
+        "steps/01-voice-over.md": "sha256:22f185fddcbab1f13102be56aa4fa4e3f18441a069e434dad93ef52efe457771",
+        "steps/02-transcribe.md": "sha256:b984892c977d3d21f7a6a1f1f32c39c86d4f81f41ae5c39915f16dec148236e2",
+        "steps/03-plan-beats.md": "sha256:f13daf8dcfa79ca036b8d1d256716618d2042de19b7f50c64216ac22237ee02d",
+        "steps/04-render-graphics.md": "sha256:25fa9558cb7f5ccf77e9ff7bcefb9eda7e7b57d615957b0ce986d6307d9a13c5",
+        "steps/05-assemble.md": "sha256:f48211b7fab2df922bb40c96a64e6e6f5242b1b00f55c334c4741cc0c261d165",
+        "steps/06-final-checks.md": "sha256:b8417dd2f3ceabb603a9092ce450e9ceaf208688df48b862b34fdcdbb459ad8b",
+        "steps/_shared.md": "sha256:a40760f677cd91ea70141fa607756040bdff14ab0a25d14f0a74028ccc45ae9e"
       },
       "providers": [],
       "systemRequires": [],

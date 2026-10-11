@@ -1895,7 +1895,9 @@ else
   fail "Spotlight manifest: instructions files" "missing:$c16_missing_ins"
 fi
 # [M2-06 batch 1] the five new manifests + Spotlight: OK lines, instructions files, providers, no c-composio.
-c16_batch="p-reels-spotlight p-reels-pip p-reels-split p-reels-spotlight-heygen p-reels-pip-heygen p-reels-split-heygen"
+# M2-06 batch 1 (reels family), batch 2 (image recipes) and p-reels-faceless (batch 3, landed with batch 2 — the
+# sync regenerates the whole bundle, so every complete manifest at the source library ships together).
+c16_batch="p-reels-spotlight p-reels-pip p-reels-split p-reels-spotlight-heygen p-reels-pip-heygen p-reels-split-heygen p-carousel p-ai-image p-gfx-image p-ai-character p-reels-faceless"
 for c16_r in $c16_batch; do
   c16_m="$REPO_DIR/skills/$c16_r/manifest.json"
   if grep -q "OK .*skills/$c16_r/manifest.json" <<< "$c16_out"; then
@@ -1917,6 +1919,8 @@ for c16_r in $c16_batch; do
   case "$c16_r" in
     p-reels-split-heygen) c16_prov_want="elevenlabs,heygen" ;;
     *-heygen)             c16_prov_want="heygen" ;;
+    p-ai-image|p-ai-character) c16_prov_want="kie" ;;
+    p-reels-faceless)     c16_prov_want="elevenlabs" ;;
     *)                    c16_prov_want="" ;;
   esac
   if [[ "$c16_prov" == "$c16_prov_want" ]]; then
@@ -1943,6 +1947,33 @@ if [[ "$c16_shape_h" == "$c16_shape_h_want" ]]; then
   pass "-heygen manifests: leading generate_avatar (computer, canAsk script/avatar_id/voice_id), script neededAt start, weights sum to 100"
 else
   fail "-heygen manifest shape" "expected '$c16_shape_h_want', got '$c16_shape_h'"
+fi
+# M2-06 batch 2: image recipes — deliverable.kind image, first input neededAt start, weights sum to 100.
+c16_shape_i="$(python3 -c '
+import json, sys
+for r in sys.argv[1:]:
+    m = json.load(open(r)); st = m["steps"]
+    print(r.split("/")[-2], m["deliverable"]["kind"], len(st), m["inputs"][0]["id"], m["inputs"][0]["neededAt"], sum(s["weight"] for s in st))
+' "$REPO_DIR/skills/p-carousel/manifest.json" "$REPO_DIR/skills/p-ai-image/manifest.json" "$REPO_DIR/skills/p-gfx-image/manifest.json" "$REPO_DIR/skills/p-ai-character/manifest.json" 2>/dev/null)"
+c16_shape_i_want="p-carousel image 4 topic start 100
+p-ai-image image 3 prompt start 100
+p-gfx-image image 4 topic start 100
+p-ai-character image 4 story_concept start 100"
+if [[ "$c16_shape_i" == "$c16_shape_i_want" ]]; then
+  pass "batch-2 image manifests: kind image, first input at start, weights sum to 100"
+else
+  fail "batch-2 image manifest shape" "expected '$c16_shape_i_want', got '$c16_shape_i'"
+fi
+# M2-06 batch 3: p-reels-faceless — research/script server alternative like Spotlight, script input at start.
+c16_shape_f="$(python3 -c '
+import json, sys
+m = json.load(open(sys.argv[1])); st = m["steps"]
+print(st[0]["id"], st[0]["runsOn"], st[1]["id"], st[1]["runsOn"], m["inputs"][0]["id"], m["inputs"][0]["neededAt"], sum(s["weight"] for s in st))
+' "$REPO_DIR/skills/p-reels-faceless/manifest.json" 2>/dev/null)"
+if [[ "$c16_shape_f" == "research server script server script start 100" ]]; then
+  pass "p-reels-faceless manifest: research+script server steps, script input at start, weights sum to 100"
+else
+  fail "p-reels-faceless manifest shape" "got '$c16_shape_f'"
 fi
 if python3 "$c16_validator" "$c16_fixtures/valid-minimal/manifest.json" >/dev/null 2>&1; then
   pass "validate-manifests.py: valid-minimal fixture passes (exit 0)"
