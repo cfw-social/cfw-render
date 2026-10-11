@@ -33,7 +33,12 @@
 #      brand-overrides strip / generic redaction (CFW-318) — the bundle must
 #      never leak the author's identity/filesystem layout, `.hub/**` and
 #      `brand-overrides/**` included.
-#   7. Unless --skip-manifest or --out-dir points somewhere other than the
+#   7. Runs scripts/check-no-handle-defaults.sh against <out-dir> and aborts if
+#      any skill ships a literal handle default — another brand's handle or a
+#      placeholder (`${CTA_HANDLE:-@…}`, `"handle": "@…"` outside
+#      brand-overrides/<slug>/brand.json, `@mr.growthguide`) — because the end
+#      card must be per-brand (CFW-354).
+#   8. Unless --skip-manifest or --out-dir points somewhere other than the
 #      real <repo>/skills, refreshes config/skills-version.json (rollup via
 #      gen-skills-manifest.sh, then provenance fields patched to point at the
 #      private source instead of the retired git-subtree).
@@ -139,6 +144,13 @@ python3 "$SELF_DIR/sync-skills.py" \
 # future field/file shape they don't yet recognize must fail HERE, loudly,
 # not ship a bundle that leaks the author's own filesystem layout.
 "$SELF_DIR/check-no-host-paths.sh" --skills-dir "$OUT_DIR"
+
+# CFW-354 bundle gate — abort the sync if any skill ships a literal handle
+# default — another brand's handle or a placeholder — because the end card
+# must be per-brand. One brand's `@mr.growthguide` once shipped on every
+# brand's Spotlight reels via `CTA_HANDLE="${CTA_HANDLE:-…}"`; a future recipe
+# that re-introduces that shape must fail HERE, loudly, at sync time.
+"$SELF_DIR/check-no-handle-defaults.sh" --skills-dir "$OUT_DIR"
 
 if (( SKIP_MANIFEST == 0 )) && [[ "$OUT_DIR" == "$REPO_DIR/skills" ]]; then
   SOURCE_COMMIT="$(git -C "$CFW_SKILLS_SRC" rev-parse HEAD 2>/dev/null || echo unknown)"
