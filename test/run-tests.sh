@@ -1956,6 +1956,70 @@ else
   fail "validate-manifests.py: no-jsonschema mode" "expected RC=1 and 'FAIL — 4 of 5' in: $c16d_nojs"
 fi
 
+echo "=== Case 20a: check-step-files.py green — ok fixture PASSes, exit 0 (M1-09) ==="
+c20_checker="$REPO_DIR/scripts/check-step-files.py"
+c20_fixture="$TEST_DIR/fixtures/manifests/stepfiles-ok"
+c20_skills="$(mktemp -d)"
+cp -R "$c20_fixture" "$c20_skills/p-stepfiles-ok"
+c20a_out="$(python3 "$c20_checker" --skills-dir "$c20_skills" 2>&1)"
+c20a_rc=$?
+if [[ "$c20a_rc" == "0" ]] && grep -q '^PASS' <<< "$c20a_out"; then
+  pass "check-step-files.py: ok fixture → one-line PASS, exit 0"
+else
+  fail "check-step-files.py: ok fixture" "expected exit 0 + PASS line, got rc=$c20a_rc: $c20a_out"
+fi
+
+echo "=== Case 20b: check-step-files.py red — steps/_shared.md missing (M1-09) ==="
+rm -f "$c20_skills/p-stepfiles-ok/steps/_shared.md"
+c20b_out="$(python3 "$c20_checker" --skills-dir "$c20_skills" 2>&1)"
+c20b_rc=$?
+if [[ "$c20b_rc" == "1" ]] && grep -q 'steps/_shared.md:0: missing steps/_shared.md' <<< "$c20b_out"; then
+  pass "check-step-files.py: exit 1 naming the missing steps/_shared.md"
+else
+  fail "check-step-files.py: missing _shared.md" "expected exit 1 naming _shared.md, got rc=$c20b_rc: $c20b_out"
+fi
+cp "$c20_fixture/steps/_shared.md" "$c20_skills/p-stepfiles-ok/steps/_shared.md"
+
+echo "=== Case 20c: check-step-files.py red — planted /opt/cfw-agent/.env host path (M1-09) ==="
+printf 'source /opt/cfw-agent/.env\n' >> "$c20_skills/p-stepfiles-ok/steps/01.md"
+c20c_line="$(wc -l < "$c20_skills/p-stepfiles-ok/steps/01.md" | tr -d ' ')"
+c20c_out="$(python3 "$c20_checker" --skills-dir "$c20_skills" 2>&1)"
+c20c_rc=$?
+if [[ "$c20c_rc" == "1" ]] && grep -q "steps/01.md:${c20c_line}: banned token '/opt/'" <<< "$c20c_out"; then
+  pass "check-step-files.py: exit 1 with file:line for the planted /opt/ token (line $c20c_line)"
+else
+  fail "check-step-files.py: planted /opt/ path" "expected exit 1 + 01.md:$c20c_line, got rc=$c20c_rc: $c20c_out"
+fi
+cp "$c20_fixture/steps/01.md" "$c20_skills/p-stepfiles-ok/steps/01.md"
+
+echo "=== Case 20d: check-step-files.py red — step file stops mentioning saves/x. (M1-09) ==="
+sed -i.bak 's#saves/x\.json#saves/other.json#' "$c20_skills/p-stepfiles-ok/steps/01.md"
+rm -f "$c20_skills/p-stepfiles-ok/steps/01.md.bak"
+c20d_out="$(python3 "$c20_checker" --skills-dir "$c20_skills" 2>&1)"
+c20d_rc=$?
+if [[ "$c20d_rc" == "1" ]] && grep -q "steps\[one\] never mentions saves/x.<ext> for save 'x'" <<< "$c20d_out"; then
+  pass "check-step-files.py: exit 1 naming the unmentioned save id 'x'"
+else
+  fail "check-step-files.py: missing saves/x. mention" "expected exit 1 naming save 'x', got rc=$c20d_rc: $c20d_out"
+fi
+rm -rf "$c20_skills"
+
+echo "=== Case 20e: check-step-files.py on the committed skills/ bundle (M1-09) ==="
+c20e_out="$(python3 "$c20_checker" --skills-dir "$REPO_DIR/skills" 2>&1)"
+c20e_rc=$?
+if [[ "$c20e_rc" == "0" ]] && grep -q '^PASS' <<< "$c20e_out"; then
+  pass "check-step-files.py: real skills/ tree passes (Spotlight step files clean)"
+else
+  fail "check-step-files.py: real skills/ tree" "expected exit 0, got rc=$c20e_rc: $c20e_out"
+fi
+
+echo "=== Case 20f: check-no-host-paths.sh still green on the real tree after the Spotlight split (M1-09) ==="
+if "$REPO_DIR/scripts/check-no-host-paths.sh" --skills-dir "$REPO_DIR/skills" >/dev/null 2>&1; then
+  pass "check-no-host-paths.sh: real skills/ tree still PASSes after the Spotlight step split"
+else
+  fail "check-no-host-paths.sh after split" "expected exit 0 on the real skills/ tree"
+fi
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
