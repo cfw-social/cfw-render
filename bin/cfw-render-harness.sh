@@ -143,7 +143,11 @@ cr_h_directive() {
 }
 
 cr_harness_heartbeat_start() {
+  # Detach stdin/stdout: the caller may run cr_harness_run inside a command
+  # substitution, and an inherited stdout would keep that $(...) open until the
+  # loop dies.
   (
+    exec </dev/null >/dev/null
     while true; do
       sleep "$CFW_RENDER_HEARTBEAT_SEC"
       cr_h_report heartbeat '{}' >/dev/null 2>&1 || true

@@ -262,14 +262,18 @@ print("\x1f".join([mode, token, expires, pool, expired]))
   # LAST completed step's saves, exactly like the Director path does.
   if [[ "$(python3 -c 'import json,sys; print("1" if json.load(sys.stdin).get("manifest") else "0")' <<< "$order_json" 2>/dev/null)" == "1" ]]; then
     local h_rc=0 h_out="" h_outcome="harness-failed"
-    h_out="$(
+    # The harness result goes through a file, not $(...): the harness forks a
+    # heartbeat loop and the engine CLI, and any inherited stdout would hold a
+    # command substitution open after the step loop has already returned.
+    (
       cd "$order_dir" || exit 1
       export CFW_ORDER_ID="$order_id" CFW_WORKER_ID CFW_API_BASE CFW_RENDER_WORKER_KEY
       export CFW_RENDER_SCRATCH_DIR="$order_dir" CFW_RENDER_STATE_DIR CFW_RENDER_LOG_DIR
       CFW_RENDER_KEEP_DIR="$(cr_keep_output_dir "$brand_slug" "$order_id")"; export CFW_RENDER_KEEP_DIR
       export PATH="$SELF_DIR:$PATH"
-      cr_harness_run "$order_dir/order.json" "$order_dir" "$CFW_RENDER_SKILLS_DIR/$recipe"
-    )" || h_rc=$?
+      cr_harness_run "$order_dir/order.json" "$order_dir" "$CFW_RENDER_SKILLS_DIR/$recipe" > "$order_dir/harness-result.json"
+    ) </dev/null || h_rc=$?
+    h_out="$(cat "$order_dir/harness-result.json" 2>/dev/null || true)"
     if (( h_rc == 0 )); then
       local -a h_files=()
       while IFS= read -r f; do [[ -n "$f" ]] && h_files+=("$f"); done < <(python3 -c '

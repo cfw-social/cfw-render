@@ -48,7 +48,9 @@ PRESIGNS = {}  # storageKey -> {orderId, workerId, filename, mimeType, bytes}
 R2_OBJECTS = {}  # storageKey -> {bytes, contentType, md5, puts}
 VERCEL_BODY_CAP = 4_500_000  # the platform's request-body cap on Vercel Functions
 PRESIGN_MIMES = ("image/jpeg", "image/png", "image/gif", "image/webp",
-                 "video/mp4", "video/quicktime", "video/webm", "video/x-m4v", "application/pdf")
+                 "video/mp4", "video/quicktime", "video/webm", "video/x-m4v", "application/pdf",
+                 # M1: json/text step saves (cfw-social presigns them as the `data` kind)
+                 "application/json", "text/markdown", "text/plain")
 
 # ── Admin fleet-enable surface (mock of cfw-social's master-key admin brands
 # route, exercised by cfw-render-fleet.sh). Brands are seeded from the queue's
@@ -76,7 +78,7 @@ os.makedirs(CONTROL_DIR, exist_ok=True)
 REPORTS_LOG = open(os.path.join(CONTROL_DIR, "reports.ndjson"), "a", buffering=1)
 MOCK_ASKS = os.environ.get("CFW_MOCK_ASKS") == "1"
 ATTEMPTS = {}   # orderId -> {"id", "number", "lastSeq", "seen": set()}
-OUTPUT_HOSTS = ("media.cfw.social", "cfw-media.test", "localhost")
+OUTPUT_HOSTS = ("media.cfw.social", "media.mock.cfw.social", "cfw-media.test", "localhost")
 STEP_EVENTS = ("step_started", "step_completed", "step_skipped", "step_failed", "needs_input",
                "heartbeat", "attempt_completed", "attempt_failed", "attempt_cancelled")
 
@@ -123,7 +125,9 @@ def manifest_order_payload(order):
                             "stepIds": {s["id"] for s in steps}}
     out = dict(order)
     out.update({"attempt": attempt, "manifest": manifest, "resumeFromStepId": resume,
-                "savedOutputs": [], "inputs": {}, "answers": {}})
+                "savedOutputs": [],
+                # the fixture may seed inputs/answers (M1-03 fills them for real)
+                "inputs": order.get("inputs") or {}, "answers": order.get("answers") or {}})
     return out
 
 
