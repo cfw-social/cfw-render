@@ -1956,6 +1956,94 @@ else
   fail "validate-manifests.py: no-jsonschema mode" "expected RC=1 and 'FAIL — 4 of 5' in: $c16d_nojs"
 fi
 
+echo "=== Case 18: step harness mock — capability-gated claim, report_render_step, control files (M1-08 b) ==="
+c18_dir="$(mktemp -d)"
+c18_port=$((MOCK_PORT_BASE + 900))
+c18_state="$c18_dir/mockstate"; c18_ctl="$c18_dir/control"
+mkdir -p "$c18_state" "$c18_ctl"
+c18_manifest="$REPO_DIR/skills/p-reels-spotlight/manifest.json"
+python3 -c '
+import json, sys
+print(json.dumps([{"id": "order-m1", "brandId": "brand-1", "workspaceId": "ws-1", "kind": "video",
+  "recipe": "p-reels-spotlight", "recipeVersion": "2026.10.1", "manifest": sys.argv[1],
+  "status": "queued", "taskOrder": {"version": 1, "orderId": "order-m1"}, "priority": 0, "attempts": 1}]))
+' "$c18_manifest" > "$c18_dir/queue.json"
+c18_pid="$(CFW_MOCK_CONTROL_DIR="$c18_ctl" start_mock "$c18_dir/queue.json" "$c18_state" "$c18_port")"
+c18_run() {
+  # c18_run <bash-snippet>: sources the lib against the Case-18 mock; prints stdout, returns the snippet's rc.
+  CFW_API_BASE="http://127.0.0.1:$c18_port" CFW_RENDER_WORKER_KEY="[REDACTED]" \
+    bash -c 'set -uo pipefail; source "$1"; shift; eval "$*"' _ "$REPO_DIR/bin/cfw-render-lib.sh" "$1"
+}
+c18_caps='{"engine":"codex","os":"macos","manifests":[{"recipe":"p-reels-spotlight","recipeVersion":"2026.10.1"}]}'
+
+echo "--- 18a: claim without capabilities → order null"
+c18a_out="$(c18_run 'cr_mcp_call_soft claim_render_order "{\"workerId\":\"w1\"}"')"
+if [[ "$(python3 -c 'import json,sys; print(json.load(sys.stdin)["order"])' <<< "$c18a_out")" == "None" ]]; then
+  pass "claim: manifest order withheld when claim carries no capabilities"
+else
+  fail "claim: no-capabilities" "expected order null, got: $c18a_out"
+fi
+
+echo "--- 18b: claim with matching capabilities → attempt/manifest/resumeFromStepId"
+c18b_out="$(c18_run "cr_mcp_call_soft claim_render_order '{\"workerId\":\"w1\",\"capabilities\":$c18_caps}'")"
+c18b_shape="$(python3 -c '
+import json, sys
+o = json.load(sys.stdin)["order"]
+print(o["attempt"]["id"], o["attempt"]["number"], o["manifest"]["recipeVersion"], o["resumeFromStepId"], o["savedOutputs"], o["inputs"], o["answers"])
+' <<< "$c18b_out" 2>/dev/null)"
+if [[ "$c18b_shape" == "att_1 1 2026.10.1 prepare_footage [] {} {}" ]]; then
+  pass "claim: capability match returns attempt att_1/1, manifest, resumeFromStepId=prepare_footage, empty savedOutputs/inputs/answers"
+else
+  fail "claim: capabilities match" "expected 'att_1 1 2026.10.1 prepare_footage [] {} {}', got '$c18b_shape' from: $c18b_out"
+fi
+
+echo "--- 18c: report seq 1,1,2 → reports.ndjson has 2 lines, 2nd reply duplicate:true"
+c18c_1="$(c18_run 'cr_report_step order-m1 w1 att_1 1 step_started "{\"stepId\":\"prepare_footage\"}"')"
+c18c_2="$(c18_run 'cr_report_step order-m1 w1 att_1 1 step_started "{\"stepId\":\"prepare_footage\"}"')"
+c18c_3="$(c18_run 'cr_report_step order-m1 w1 att_1 2 step_completed "{\"stepId\":\"prepare_footage\",\"outputs\":[{\"id\":\"o1\",\"url\":\"https://media.cfw.social/x.mp4\"}]}"')"
+c18c_flags="$(python3 -c '
+import json, sys
+r = [json.loads(x) for x in sys.argv[1:]]
+print(" ".join("%s/%s/%s" % (x["ok"], x["duplicate"], x["directive"]) for x in r))
+' "$c18c_1" "$c18c_2" "$c18c_3" 2>/dev/null)"
+c18c_lines="$(wc -l < "$c18_ctl/reports.ndjson" | tr -d ' ')"
+c18c_seqs="$(python3 -c 'import json,sys; print(",".join(str(json.loads(l)["seq"]) for l in open(sys.argv[1]) if l.strip()))' "$c18_ctl/reports.ndjson")"
+if [[ "$c18c_flags" == "True/False/continue True/True/continue True/False/continue" && "$c18c_seqs" == "1,2" && "$c18c_lines" == "2" ]]; then
+  pass "report_render_step: seq 1,1,2 → second reply duplicate:true (stored nothing); reports.ndjson has 2 lines in order (1,2)"
+else
+  fail "report_render_step: duplicate seq" "flags='$c18c_flags' seqs='$c18c_seqs' lines=$c18c_lines"
+fi
+
+echo "--- 18d: seq 0 after 2 → seq_out_of_order"
+c18d_out="$(c18_run 'cr_report_step order-m1 w1 att_1 0 heartbeat')"
+if [[ "$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["ok"], d.get("code"), d["directive"])' <<< "$c18d_out")" == "False seq_out_of_order continue" ]]; then
+  pass "report_render_step: unseen seq below last → ok:false code seq_out_of_order directive continue"
+else
+  fail "report_render_step: seq_out_of_order" "got: $c18d_out"
+fi
+
+echo "--- 18e: control file directive=cancel → directive cancel"
+printf 'cancel' > "$c18_ctl/directive"
+c18e_out="$(c18_run 'cr_report_step order-m1 w1 att_1 3 heartbeat')"
+rm -f "$c18_ctl/directive"
+if [[ "$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["ok"], d["directive"])' <<< "$c18e_out")" == "True cancel" ]]; then
+  pass "report_render_step: \$CFW_MOCK_CONTROL_DIR/directive=cancel is echoed as directive cancel"
+else
+  fail "report_render_step: scripted cancel" "got: $c18e_out"
+fi
+
+echo "--- 18f: down file → cr_mcp_call_soft returns 75, prints nothing"
+touch "$c18_ctl/down"
+c18f_out="$(c18_run 'cr_report_step order-m1 w1 att_1 4 heartbeat 2>/dev/null; echo "rc=$?"')"
+rm -f "$c18_ctl/down"
+if [[ "$c18f_out" == "rc=75" ]]; then
+  pass "cr_mcp_call_soft: server down (503) → exit 75 (EX_TEMPFAIL), empty stdout, caller survives"
+else
+  fail "cr_mcp_call_soft: down" "expected 'rc=75' only, got: $c18f_out"
+fi
+kill "$c18_pid" 2>/dev/null; wait "$c18_pid" 2>/dev/null
+rm -rf "$c18_dir"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
