@@ -1,0 +1,363 @@
+{
+  "manifestFormat": 1,
+  "recipe": "p-reels-spotlight-heygen",
+  "recipeVersion": "2026.10.2",
+  "label": "Spotlight reel from a script (HeyGen avatar)",
+  "deliverable": {
+    "kind": "video",
+    "aspect": "9:16",
+    "width": 1080,
+    "height": 1920,
+    "durationSec": {
+      "min": 20,
+      "max": 60
+    }
+  },
+  "needs": {
+    "os": [
+      "macos"
+    ],
+    "engines": [
+      "codex",
+      "claude-code"
+    ],
+    "tools": [
+      "ffmpeg",
+      "imagemagick",
+      "node>=22",
+      "npx",
+      "chromium",
+      "python3"
+    ],
+    "providers": [
+      "heygen"
+    ]
+  },
+  "inputs": [
+    {
+      "id": "script",
+      "label": "Narration script",
+      "kinds": [
+        "text"
+      ],
+      "required": true,
+      "count": {
+        "min": 1,
+        "max": 1
+      },
+      "neededAt": "start"
+    },
+    {
+      "id": "avatar_id",
+      "label": "HeyGen avatar",
+      "kinds": [
+        "text"
+      ],
+      "required": false,
+      "count": {
+        "min": 0,
+        "max": 1
+      },
+      "neededAt": "start",
+      "default": "brand"
+    },
+    {
+      "id": "voice_id",
+      "label": "HeyGen voice",
+      "kinds": [
+        "text"
+      ],
+      "required": false,
+      "count": {
+        "min": 0,
+        "max": 1
+      },
+      "neededAt": "start",
+      "default": "brand"
+    },
+    {
+      "id": "broll",
+      "label": "B-roll clips",
+      "kinds": [
+        "video"
+      ],
+      "required": false,
+      "count": {
+        "min": 0,
+        "max": null
+      },
+      "constraints": {
+        "orientation": "any"
+      },
+      "neededAt": {
+        "step": "plan_broll"
+      }
+    },
+    {
+      "id": "cta",
+      "label": "Call to action",
+      "kinds": [
+        "text"
+      ],
+      "required": false,
+      "count": {
+        "min": 0,
+        "max": 1
+      },
+      "neededAt": {
+        "step": "assemble"
+      },
+      "default": "brand"
+    }
+  ],
+  "steps": [
+    {
+      "id": "generate_avatar",
+      "label": "Generate the avatar video",
+      "weight": 10,
+      "runsOn": "computer",
+      "when": "always",
+      "instructions": "steps/00-generate-avatar.md",
+      "saves": [
+        {
+          "id": "talking_head",
+          "kind": "video",
+          "preview": true
+        }
+      ],
+      "checks": [
+        {
+          "id": "avatar_has_audio",
+          "label": "Avatar video has an audio stream"
+        },
+        {
+          "id": "avatar_duration_window",
+          "label": "Avatar video is 20–60 s"
+        }
+      ],
+      "maxCheckRetries": 1,
+      "canAsk": [
+        "script",
+        "avatar_id",
+        "voice_id"
+      ]
+    },
+    {
+      "id": "prepare_footage",
+      "label": "Prepare footage",
+      "weight": 9,
+      "runsOn": "computer",
+      "when": "always",
+      "instructions": "steps/01-prepare-footage.md",
+      "saves": [
+        {
+          "id": "voice_track",
+          "kind": "video",
+          "preview": false
+        }
+      ],
+      "checks": [
+        {
+          "id": "bed_dims",
+          "label": "Frame is 1080×1920"
+        },
+        {
+          "id": "bed_not_black",
+          "label": "Video is not black"
+        }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "transcribe",
+      "label": "Transcribe",
+      "weight": 9,
+      "runsOn": "computer",
+      "when": "always",
+      "instructions": "steps/02-transcribe.md",
+      "saves": [
+        {
+          "id": "transcripts",
+          "kind": "json",
+          "preview": false
+        }
+      ],
+      "checks": [
+        {
+          "id": "words_found",
+          "label": "Words found in the transcript"
+        }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "plan_edit",
+      "label": "Plan the edit",
+      "weight": 14,
+      "runsOn": "computer",
+      "when": "always",
+      "instructions": "steps/03-plan-edit.md",
+      "saves": [
+        {
+          "id": "edit_plan",
+          "kind": "json",
+          "preview": false
+        }
+      ],
+      "checks": [
+        {
+          "id": "plan_valid",
+          "label": "Edit plan is valid"
+        }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "plan_broll",
+      "label": "Plan b-roll",
+      "weight": 4,
+      "runsOn": "computer",
+      "when": {
+        "inputPresent": "broll"
+      },
+      "instructions": "steps/04-plan-broll.md",
+      "saves": [
+        {
+          "id": "beat_list",
+          "kind": "json",
+          "preview": false
+        }
+      ],
+      "checks": [
+        {
+          "id": "beats_covered",
+          "label": "B-roll beats are covered"
+        }
+      ],
+      "maxCheckRetries": 2,
+      "canAsk": [
+        "broll"
+      ]
+    },
+    {
+      "id": "render_scenes",
+      "label": "Render scenes",
+      "weight": 31,
+      "runsOn": "computer",
+      "when": "always",
+      "instructions": "steps/05-render-scenes.md",
+      "saves": [
+        {
+          "id": "rendered_scenes",
+          "kind": "video",
+          "preview": false
+        }
+      ],
+      "checks": [
+        {
+          "id": "scenes_not_blank",
+          "label": "Rendered scenes are not blank"
+        }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "assemble",
+      "label": "Assemble",
+      "weight": 14,
+      "runsOn": "computer",
+      "when": "always",
+      "instructions": "steps/06-assemble.md",
+      "saves": [
+        {
+          "id": "assembled_video",
+          "kind": "video",
+          "preview": false
+        }
+      ],
+      "checks": [
+        {
+          "id": "vo_continuous_bed",
+          "label": "Voice is continuous under cutaways"
+        }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "final_checks",
+      "label": "Final checks and captions",
+      "weight": 9,
+      "runsOn": "computer",
+      "when": "always",
+      "instructions": "steps/07-final-checks.md",
+      "saves": [
+        {
+          "id": "final_video",
+          "kind": "video",
+          "preview": true
+        },
+        {
+          "id": "cover",
+          "kind": "image",
+          "preview": true
+        },
+        {
+          "id": "captions",
+          "kind": "json",
+          "preview": false
+        }
+      ],
+      "checks": [
+        {
+          "id": "qa_gate",
+          "label": "Reel passes the QA gate"
+        },
+        {
+          "id": "duration_window",
+          "label": "Duration is within the 20–62 s window"
+        },
+        {
+          "id": "canvas_1080x1920",
+          "label": "Canvas is 1080×1920"
+        },
+        {
+          "id": "frame_not_black",
+          "label": "Sampled frames are not black"
+        },
+        {
+          "id": "captions_legible_not_on_face",
+          "label": "Captions are legible and not over the face"
+        },
+        {
+          "id": "latin_script_only",
+          "label": "Captions use Latin script only"
+        },
+        {
+          "id": "takeover_frames_not_blank",
+          "label": "Takeover frames are not blank"
+        },
+        {
+          "id": "grade_is_subtle",
+          "label": "Colour grade is subtle"
+        },
+        {
+          "id": "no_black_empty_frames",
+          "label": "No black or empty frames"
+        },
+        {
+          "id": "broll_beats_correct",
+          "label": "B-roll beats show the planned clip"
+        },
+        {
+          "id": "vo_continuous_bed",
+          "label": "Voice is continuous under every takeover"
+        },
+        {
+          "id": "cover_is_moneyshot",
+          "label": "Cover is the money shot"
+        }
+      ],
+      "maxCheckRetries": 2
+    }
+  ]
+}

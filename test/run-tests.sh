@@ -1885,6 +1885,56 @@ if [[ -z "$c16_missing_ins" ]]; then
 else
   fail "Spotlight manifest: instructions files" "missing:$c16_missing_ins"
 fi
+# [M2-06 batch 1] the five new manifests + Spotlight: OK lines, instructions files, providers, no c-composio.
+c16_batch="p-reels-spotlight p-reels-pip p-reels-split p-reels-spotlight-heygen p-reels-pip-heygen p-reels-split-heygen"
+for c16_r in $c16_batch; do
+  c16_m="$REPO_DIR/skills/$c16_r/manifest.json"
+  if grep -q "OK .*skills/$c16_r/manifest.json" <<< "$c16_out"; then
+    pass "validate-manifests.py: OK line for $c16_r"
+  else
+    fail "validate-manifests.py: $c16_r" "no OK line in: $c16_out"
+  fi
+  c16_missing_ins=""
+  while IFS= read -r rel; do
+    [[ -z "$rel" ]] && continue
+    [[ -f "$REPO_DIR/skills/$c16_r/$rel" ]] || c16_missing_ins="$c16_missing_ins $rel"
+  done < <(python3 -c 'import json,sys; [print(s.get("instructions","")) for s in json.load(open(sys.argv[1]))["steps"] if s["runsOn"]=="computer"]' "$c16_m" 2>/dev/null)
+  if [[ -z "$c16_missing_ins" && -f "$REPO_DIR/skills/$c16_r/steps/_shared.md" ]]; then
+    pass "$c16_r manifest: every computer step's instructions file + steps/_shared.md exist"
+  else
+    fail "$c16_r manifest: instructions files" "missing:$c16_missing_ins (_shared.md present: $([[ -f "$REPO_DIR/skills/$c16_r/steps/_shared.md" ]] && echo yes || echo no))"
+  fi
+  c16_prov="$(python3 -c 'import json,sys; print(",".join(sorted(json.load(open(sys.argv[1]))["needs"]["providers"])))' "$c16_m" 2>/dev/null)"
+  case "$c16_r" in
+    p-reels-split-heygen) c16_prov_want="elevenlabs,heygen" ;;
+    *-heygen)             c16_prov_want="heygen" ;;
+    *)                    c16_prov_want="" ;;
+  esac
+  if [[ "$c16_prov" == "$c16_prov_want" ]]; then
+    pass "$c16_r manifest: needs.providers = [${c16_prov_want}]"
+  else
+    fail "$c16_r manifest: needs.providers" "expected '$c16_prov_want', got '$c16_prov'"
+  fi
+done
+if ! grep -q 'c-composio' <<< "$c16_out"; then
+  pass "validate-manifests.py: no c-composio line (component, not a recipe manifest)"
+else
+  fail "validate-manifests.py: c-composio" "unexpected line: $(grep c-composio <<< "$c16_out")"
+fi
+c16_shape_h="$(python3 -c '
+import json, sys
+for r in sys.argv[1:]:
+    m = json.load(open(r)); st = m["steps"]
+    print(r.split("/")[-2], st[0]["id"], st[0]["runsOn"], ",".join(st[0].get("canAsk", [])), m["inputs"][0]["id"], m["inputs"][0]["neededAt"], sum(s["weight"] for s in st))
+' "$REPO_DIR/skills/p-reels-spotlight-heygen/manifest.json" "$REPO_DIR/skills/p-reels-pip-heygen/manifest.json" "$REPO_DIR/skills/p-reels-split-heygen/manifest.json" 2>/dev/null)"
+c16_shape_h_want="p-reels-spotlight-heygen generate_avatar computer script,avatar_id,voice_id script start 100
+p-reels-pip-heygen generate_avatar computer script,avatar_id,voice_id script start 100
+p-reels-split-heygen generate_avatar computer script,avatar_id,voice_id script start 100"
+if [[ "$c16_shape_h" == "$c16_shape_h_want" ]]; then
+  pass "-heygen manifests: leading generate_avatar (computer, canAsk script/avatar_id/voice_id), script neededAt start, weights sum to 100"
+else
+  fail "-heygen manifest shape" "expected '$c16_shape_h_want', got '$c16_shape_h'"
+fi
 if python3 "$c16_validator" "$c16_fixtures/valid-minimal/manifest.json" >/dev/null 2>&1; then
   pass "validate-manifests.py: valid-minimal fixture passes (exit 0)"
 else
@@ -2210,6 +2260,55 @@ else
   fail "harness: credential leak" "$(grep -rl 'sk-abc123\|codex-fake-auth' "$c19h/cr-scratch" "$c19_ctl/reports.ndjson" "$c19h/worker.out" 2>/dev/null)"
 fi
 rm -rf "$c19h"
+
+echo "--- 19i: the five real batch-1 manifests (M2-06) — every computer step starts and completes against the mock"
+# c19i_setup <dir> <port> <recipe> — like c19_setup but on a real skills/<recipe> (manifest + steps copied in),
+# inputs {} (the fake engine writes every save; required-at-start inputs are not enforced by the harness),
+# and a brand-scoped HeyGen OAuth credential on *-heygen orders so the CFW-313 gate lets the claim through.
+c19i_setup() {
+  local dir="$1" port="$2" recipe="$3" cred=""
+  local man="$REPO_DIR/skills/$recipe/manifest.json"
+  c19_state="$dir/mockstate"; c19_ctl="$dir/control"
+  mkdir -p "$c19_state" "$c19_ctl" "$dir/skills/$recipe" "$dir/cr-scratch" "$dir/cr-state"
+  cp "$man" "$dir/skills/$recipe/manifest.json"; cp -R "$REPO_DIR/skills/$recipe/steps" "$dir/skills/$recipe/steps"
+  [[ "$recipe" == *-heygen ]] && cred='{"mode":"oauth","accessToken":"test-heygen-oauth-token-19i","expiresAt":"2099-01-01T00:00:00Z","creditPool":"plan_credits"}'
+  python3 -c '
+import json, sys
+man, recipe, cred = sys.argv[1], sys.argv[2], sys.argv[3]
+m = json.load(open(man))
+task = {"version": 1, "orderId": "order-19i", "brand": {"id": "brand-1", "slug": "test-brand", "brief": "b"},
+        "kind": "video", "recipe": recipe, "workspaceId": "ws-1", "intent": "t", "ingredients": [], "targets": ["instagram"]}
+if cred: task["credentials"] = {"heygen": json.loads(cred)}
+print(json.dumps([{"id": "order-19i", "brandId": "brand-1", "workspaceId": "ws-1", "kind": "video",
+  "recipe": recipe, "recipeVersion": m["recipeVersion"], "manifest": man, "inputs": {},
+  "status": "queued", "priority": 0, "attempts": 1, "taskOrder": task}]))
+' "$man" "$recipe" "$cred" > "$dir/queue.json"
+  c19_pid="$(CFW_MOCK_CONTROL_DIR="$c19_ctl" start_mock "$dir/queue.json" "$c19_state" "$port")"
+}
+c19i_port=$((MOCK_PORT_BASE + 918))
+for c19i_r in ${CFW_TEST_19I_RECIPES:-p-reels-pip p-reels-split p-reels-spotlight-heygen p-reels-pip-heygen p-reels-split-heygen}; do
+  c19i="$(mktemp -d)"; c19i_setup "$c19i" "$c19i_port" "$c19i_r"
+  c19_worker "$c19i" "$c19i_port"
+  kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
+  c19i_ev="$(c19_events "$c19_ctl/reports.ndjson")"
+  c19i_want="$(python3 -c '
+import json, sys
+m = json.load(open(sys.argv[1]))
+# With inputs {} and no alternative chosen: always-steps run; a step gated on an
+# optional input or an alternative is reported skipped; server steps never show.
+def one(s):
+    if s["runsOn"] != "computer": return ""
+    if s.get("when", "always") == "always": return "step_started:%s step_completed:%s" % (s["id"], s["id"])
+    return "step_skipped:%s" % s["id"]
+print(" ".join(x for x in (one(s) for s in m["steps"]) if x) + " attempt_completed:-")
+' "$REPO_DIR/skills/$c19i_r/manifest.json")"
+  if [[ "$c19i_ev" == "$c19i_want" && "$(c19_seqs_ok "$c19_ctl/reports.ndjson")" == "ok" && "$(c19_completed "$c19i")" == "1" ]]; then
+    pass "harness: $c19i_r — every computer step started+completed in manifest order, attempt_completed, complete_render_order ok"
+  else
+    fail "harness: $c19i_r" "events='$c19i_ev' want='$c19i_want' seqs=$(c19_seqs_ok "$c19_ctl/reports.ndjson") completed=$(c19_completed "$c19i"); worker.out: $(tail -n "${CFW_TEST_19I_TAIL:-5}" "$c19i/worker.out")"
+  fi
+  rm -rf "$c19i"; c19i_port=$((c19i_port + 1))
+done
 
 echo "=== Case 20a: check-step-files.py green — ok fixture PASSes, exit 0 (M1-09) ==="
 c20_checker="$REPO_DIR/scripts/check-step-files.py"
