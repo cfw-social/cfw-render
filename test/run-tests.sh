@@ -1897,7 +1897,7 @@ fi
 # [M2-06 batch 1] the five new manifests + Spotlight: OK lines, instructions files, providers, no c-composio.
 # M2-06 batch 1 (reels family), batch 2 (image recipes) and p-reels-faceless (batch 3, landed with batch 2 — the
 # sync regenerates the whole bundle, so every complete manifest at the source library ships together).
-c16_batch="p-reels-spotlight p-reels-pip p-reels-split p-reels-spotlight-heygen p-reels-pip-heygen p-reels-split-heygen p-carousel p-ai-image p-gfx-image p-ai-character p-reels-faceless"
+c16_batch="p-reels-spotlight p-reels-pip p-reels-split p-reels-spotlight-heygen p-reels-pip-heygen p-reels-split-heygen p-carousel p-ai-image p-gfx-image p-ai-character p-reels-faceless p-clone-reel p-longform"
 for c16_r in $c16_batch; do
   c16_m="$REPO_DIR/skills/$c16_r/manifest.json"
   if grep -q "OK .*skills/$c16_r/manifest.json" <<< "$c16_out"; then
@@ -1921,6 +1921,8 @@ for c16_r in $c16_batch; do
     *-heygen)             c16_prov_want="heygen" ;;
     p-ai-image|p-ai-character) c16_prov_want="kie" ;;
     p-reels-faceless)     c16_prov_want="elevenlabs" ;;
+    p-clone-reel)         c16_prov_want="elevenlabs,heygen" ;;
+    p-longform)           c16_prov_want="elevenlabs,heygen,kie" ;;
     *)                    c16_prov_want="" ;;
   esac
   if [[ "$c16_prov" == "$c16_prov_want" ]]; then
@@ -1974,6 +1976,20 @@ if [[ "$c16_shape_f" == "research server script server script start 100" ]]; the
   pass "p-reels-faceless manifest: research+script server steps, script input at start, weights sum to 100"
 else
   fail "p-reels-faceless manifest shape" "got '$c16_shape_f'"
+fi
+# M2-06 batch 3: p-clone-reel + p-longform — first input at start, deliverable aspect, weights sum to 100.
+c16_shape_b3="$(python3 -c '
+import json, sys
+for r in sys.argv[1:]:
+    m = json.load(open(r)); st = m["steps"]
+    print(r.split("/")[-2], m["deliverable"]["aspect"], len(st), m["inputs"][0]["id"], m["inputs"][0]["neededAt"], sum(s["weight"] for s in st))
+' "$REPO_DIR/skills/p-clone-reel/manifest.json" "$REPO_DIR/skills/p-longform/manifest.json" 2>/dev/null)"
+c16_shape_b3_want="p-clone-reel 9:16 5 source_reel start 100
+p-longform 16:9 10 script start 100"
+if [[ "$c16_shape_b3" == "$c16_shape_b3_want" ]]; then
+  pass "batch-3 manifests: first input at start, aspect declared, weights sum to 100"
+else
+  fail "batch-3 manifest shape" "expected '$c16_shape_b3_want', got '$c16_shape_b3'"
 fi
 if python3 "$c16_validator" "$c16_fixtures/valid-minimal/manifest.json" >/dev/null 2>&1; then
   pass "validate-manifests.py: valid-minimal fixture passes (exit 0)"
