@@ -1956,6 +1956,261 @@ else
   fail "validate-manifests.py: no-jsonschema mode" "expected RC=1 and 'FAIL — 4 of 5' in: $c16d_nojs"
 fi
 
+echo "=== Case 18: step harness mock — capability-gated claim, report_render_step, control files (M1-08 b) ==="
+c18_dir="$(mktemp -d)"
+c18_port=$((MOCK_PORT_BASE + 900))
+c18_state="$c18_dir/mockstate"; c18_ctl="$c18_dir/control"
+mkdir -p "$c18_state" "$c18_ctl"
+c18_manifest="$REPO_DIR/skills/p-reels-spotlight/manifest.json"
+python3 -c '
+import json, sys
+print(json.dumps([{"id": "order-m1", "brandId": "brand-1", "workspaceId": "ws-1", "kind": "video",
+  "recipe": "p-reels-spotlight", "recipeVersion": "2026.10.1", "manifest": sys.argv[1],
+  "status": "queued", "taskOrder": {"version": 1, "orderId": "order-m1"}, "priority": 0, "attempts": 1}]))
+' "$c18_manifest" > "$c18_dir/queue.json"
+c18_pid="$(CFW_MOCK_CONTROL_DIR="$c18_ctl" start_mock "$c18_dir/queue.json" "$c18_state" "$c18_port")"
+c18_run() {
+  # c18_run <bash-snippet>: sources the lib against the Case-18 mock; prints stdout, returns the snippet's rc.
+  CFW_API_BASE="http://127.0.0.1:$c18_port" CFW_RENDER_WORKER_KEY="cfw_render_test0000000000000000" \
+    bash -c 'set -uo pipefail; source "$1"; shift; eval "$*"' _ "$REPO_DIR/bin/cfw-render-lib.sh" "$1"
+}
+c18_caps='{"engine":"codex","os":"macos","manifests":[{"recipe":"p-reels-spotlight","recipeVersion":"2026.10.1"}]}'
+
+echo "--- 18a: claim without capabilities → order null"
+c18a_out="$(c18_run 'cr_mcp_call_soft claim_render_order "{\"workerId\":\"w1\"}"')"
+if [[ "$(python3 -c 'import json,sys; print(json.load(sys.stdin)["order"])' <<< "$c18a_out")" == "None" ]]; then
+  pass "claim: manifest order withheld when claim carries no capabilities"
+else
+  fail "claim: no-capabilities" "expected order null, got: $c18a_out"
+fi
+
+echo "--- 18b: claim with matching capabilities → attempt/manifest/resumeFromStepId"
+c18b_out="$(c18_run "cr_mcp_call_soft claim_render_order '{\"workerId\":\"w1\",\"capabilities\":$c18_caps}'")"
+c18b_shape="$(python3 -c '
+import json, sys
+o = json.load(sys.stdin)["order"]
+print(o["attempt"]["id"], o["attempt"]["number"], o["manifest"]["recipeVersion"], o["resumeFromStepId"], o["savedOutputs"], o["inputs"], o["answers"])
+' <<< "$c18b_out" 2>/dev/null)"
+if [[ "$c18b_shape" == "att_1 1 2026.10.1 prepare_footage [] {} {}" ]]; then
+  pass "claim: capability match returns attempt att_1/1, manifest, resumeFromStepId=prepare_footage, empty savedOutputs/inputs/answers"
+else
+  fail "claim: capabilities match" "expected 'att_1 1 2026.10.1 prepare_footage [] {} {}', got '$c18b_shape' from: $c18b_out"
+fi
+
+echo "--- 18c: report seq 1,1,2 → reports.ndjson has 2 lines, 2nd reply duplicate:true"
+c18c_1="$(c18_run 'cr_report_step order-m1 w1 att_1 1 step_started "{\"stepId\":\"prepare_footage\"}"')"
+c18c_2="$(c18_run 'cr_report_step order-m1 w1 att_1 1 step_started "{\"stepId\":\"prepare_footage\"}"')"
+c18c_3="$(c18_run 'cr_report_step order-m1 w1 att_1 2 step_completed "{\"stepId\":\"prepare_footage\",\"outputs\":[{\"id\":\"o1\",\"url\":\"https://media.cfw.social/x.mp4\"}]}"')"
+c18c_flags="$(python3 -c '
+import json, sys
+r = [json.loads(x) for x in sys.argv[1:]]
+print(" ".join("%s/%s/%s" % (x["ok"], x["duplicate"], x["directive"]) for x in r))
+' "$c18c_1" "$c18c_2" "$c18c_3" 2>/dev/null)"
+c18c_lines="$(wc -l < "$c18_ctl/reports.ndjson" | tr -d ' ')"
+c18c_seqs="$(python3 -c 'import json,sys; print(",".join(str(json.loads(l)["seq"]) for l in open(sys.argv[1]) if l.strip()))' "$c18_ctl/reports.ndjson")"
+if [[ "$c18c_flags" == "True/False/continue True/True/continue True/False/continue" && "$c18c_seqs" == "1,2" && "$c18c_lines" == "2" ]]; then
+  pass "report_render_step: seq 1,1,2 → second reply duplicate:true (stored nothing); reports.ndjson has 2 lines in order (1,2)"
+else
+  fail "report_render_step: duplicate seq" "flags='$c18c_flags' seqs='$c18c_seqs' lines=$c18c_lines"
+fi
+
+echo "--- 18d: seq 0 after 2 → seq_out_of_order"
+c18d_out="$(c18_run 'cr_report_step order-m1 w1 att_1 0 heartbeat')"
+if [[ "$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["ok"], d.get("code"), d["directive"])' <<< "$c18d_out")" == "False seq_out_of_order continue" ]]; then
+  pass "report_render_step: unseen seq below last → ok:false code seq_out_of_order directive continue"
+else
+  fail "report_render_step: seq_out_of_order" "got: $c18d_out"
+fi
+
+echo "--- 18e: control file directive=cancel → directive cancel"
+printf 'cancel' > "$c18_ctl/directive"
+c18e_out="$(c18_run 'cr_report_step order-m1 w1 att_1 3 heartbeat')"
+rm -f "$c18_ctl/directive"
+if [[ "$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["ok"], d["directive"])' <<< "$c18e_out")" == "True cancel" ]]; then
+  pass "report_render_step: \$CFW_MOCK_CONTROL_DIR/directive=cancel is echoed as directive cancel"
+else
+  fail "report_render_step: scripted cancel" "got: $c18e_out"
+fi
+
+echo "--- 18f: down file → cr_mcp_call_soft returns 75, prints nothing"
+touch "$c18_ctl/down"
+c18f_out="$(c18_run 'cr_report_step order-m1 w1 att_1 4 heartbeat 2>/dev/null; echo "rc=$?"')"
+rm -f "$c18_ctl/down"
+if [[ "$c18f_out" == "rc=75" ]]; then
+  pass "cr_mcp_call_soft: server down (503) → exit 75 (EX_TEMPFAIL), empty stdout, caller survives"
+else
+  fail "cr_mcp_call_soft: down" "expected 'rc=75' only, got: $c18f_out"
+fi
+kill "$c18_pid" 2>/dev/null; wait "$c18_pid" 2>/dev/null
+rm -rf "$c18_dir"
+
+echo "=== Case 19: step harness end-to-end — cfw-render.sh claim branch + cr_harness_run + fake engine (M1-08 c) ==="
+c19_manifest="$REPO_DIR/test/fixtures/manifests/harness-3step/manifest.json"
+# c19_setup <dir> <port> [inputs-json] — seed a manifest order, skills dir, start mock. Sets c19_pid/c19_ctl/c19_state.
+c19_setup() {
+  local dir="$1" port="$2" inputs="${3:-{\}}"
+  c19_state="$dir/mockstate"; c19_ctl="$dir/control"
+  mkdir -p "$c19_state" "$c19_ctl" "$dir/skills/harness-3step" "$dir/cr-scratch" "$dir/cr-state"
+  cp "$c19_manifest" "$dir/skills/harness-3step/manifest.json"
+  python3 -c '
+import json, sys
+print(json.dumps([{"id": "order-h1", "brandId": "brand-1", "workspaceId": "ws-1", "kind": "video",
+  "recipe": "harness-3step", "recipeVersion": "1.0.0", "manifest": sys.argv[1], "inputs": json.loads(sys.argv[2]),
+  "status": "queued", "priority": 0, "attempts": 1,
+  "taskOrder": {"version": 1, "orderId": "order-h1", "brand": {"id": "brand-1", "slug": "test-brand", "brief": "b"},
+                "kind": "video", "recipe": "harness-3step", "workspaceId": "ws-1", "intent": "t", "ingredients": [], "targets": ["instagram"]}}]))
+' "$c19_manifest" "$inputs" > "$dir/queue.json"
+  c19_pid="$(CFW_MOCK_CONTROL_DIR="$c19_ctl" start_mock "$dir/queue.json" "$c19_state" "$port")"
+}
+# c19_worker <dir> <port> [env assignments...] — one tick of cfw-render.sh against the mock.
+c19_worker() {
+  local dir="$1" port="$2"; shift 2
+  (
+    export PATH="$REPO_DIR/bin:$FAKE_BIN:$PATH"
+    export CFW_API_BASE="http://127.0.0.1:$port"
+    export CFW_RENDER_WORKER_KEY="cfw_render_test0000000000000000"
+    export CFW_RENDER_ENV="/nonexistent-cfw-render-env-for-tests"
+    export CFW_RENDER_STATE_DIR="$dir/cr-state"
+    export CFW_RENDER_SCRATCH="$dir/cr-scratch"
+    export CFW_RENDER_SKILLS_DIR="$dir/skills"
+    export CFW_RENDER_OLLAMA_KEYS_FILE="$OLLAMA_KEYS_FIXTURE"
+    export CFW_RENDER_DIRECTOR_CMD="$TEST_DIR/fake-director.sh"
+    export CFW_RENDER_ENGINE_CMD="$TEST_DIR/fake-engine.sh"
+    export CFW_RENDER_HEARTBEAT_SEC=1
+    export CFW_RENDER_CONCURRENCY=1
+    export CFW_WORKER_ID="w-h"
+    export CFW_RENDER_UPLOAD_MODE=multipart
+    for kv in "$@"; do export "${kv?}"; done
+    "$REPO_DIR/bin/cfw-render.sh" > "$dir/worker.out" 2>&1
+  )
+}
+c19_events() { python3 -c '
+import json, sys
+print(" ".join("%s:%s" % (d["event"], d.get("stepId") or "-") for d in (json.loads(l) for l in open(sys.argv[1]) if l.strip()) if d["event"] != "heartbeat"))' "$1" 2>/dev/null; }
+c19_seqs_ok() { python3 -c '
+import json, sys
+s = [json.loads(l)["seq"] for l in open(sys.argv[1]) if l.strip()]
+print("ok" if s == sorted(s) and len(s) == len(set(s)) else "bad:%s" % s)' "$1" 2>/dev/null; }
+c19_completed() { grep -c '"tool": "complete_render_order".*"ok": true' "$1/mockstate/calls.jsonl" 2>/dev/null || true; }
+
+echo "--- 19a: full run — a, c run; b skipped; attempt_completed; complete_render_order called"
+c19a="$(mktemp -d)"; c19_setup "$c19a" $((MOCK_PORT_BASE + 910))
+c19_worker "$c19a" $((MOCK_PORT_BASE + 910))
+kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
+c19a_ev="$(c19_events "$c19_ctl/reports.ndjson")"
+if [[ "$c19a_ev" == "step_started:a step_completed:a step_skipped:b step_started:c step_completed:c attempt_completed:-" && "$(c19_seqs_ok "$c19_ctl/reports.ndjson")" == "ok" && "$(c19_completed "$c19a")" == "1" ]]; then
+  pass "harness: a→(b skipped)→c→attempt_completed, strictly increasing seq, complete_render_order ok"
+else
+  fail "harness: full run" "events='$c19a_ev' seqs=$(c19_seqs_ok "$c19_ctl/reports.ndjson") completed=$(c19_completed "$c19a"); worker.out: $(tail -5 "$c19a/worker.out")"
+fi
+rm -rf "$c19a"
+
+echo "--- 19b: broll present → b runs"
+c19b="$(mktemp -d)"; c19_setup "$c19b" $((MOCK_PORT_BASE + 911)) '{"broll":[{"url":"https://cfw-media.test/broll.mp4"}]}'
+c19_worker "$c19b" $((MOCK_PORT_BASE + 911))
+kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
+c19b_ev="$(c19_events "$c19_ctl/reports.ndjson")"
+if [[ "$c19b_ev" == "step_started:a step_completed:a step_started:b step_completed:b step_started:c step_completed:c attempt_completed:-" ]]; then
+  pass "harness: when.inputPresent=broll satisfied → b runs"
+else
+  fail "harness: broll present" "events='$c19b_ev'"
+fi
+rm -rf "$c19b"
+
+echo "--- 19c: c fails its check twice (maxCheckRetries 2) → completes"
+c19c="$(mktemp -d)"; c19_setup "$c19c" $((MOCK_PORT_BASE + 912))
+c19_worker "$c19c" $((MOCK_PORT_BASE + 912)) FAKE_ENGINE_FAIL_STEP=c FAKE_ENGINE_FAIL_CHECK_TIMES=2
+kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
+c19c_ev="$(c19_events "$c19_ctl/reports.ndjson")"
+if [[ "$c19c_ev" == *"step_started:c step_started:c step_started:c step_completed:c attempt_completed:-" && "$(c19_completed "$c19c")" == "1" ]]; then
+  pass "harness: check fails 2× within maxCheckRetries=2 → third run completes"
+else
+  fail "harness: retries within cap" "events='$c19c_ev'"
+fi
+rm -rf "$c19c"
+
+echo "--- 19d: c fails 5× → step_failed c/z_ok then attempt_failed"
+c19d="$(mktemp -d)"; c19_setup "$c19d" $((MOCK_PORT_BASE + 913))
+c19_worker "$c19d" $((MOCK_PORT_BASE + 913)) FAKE_ENGINE_FAIL_STEP=c FAKE_ENGINE_FAIL_CHECK_TIMES=5
+kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
+c19d_ev="$(c19_events "$c19_ctl/reports.ndjson")"
+c19d_chk="$(python3 -c '
+import json, sys
+for l in open(sys.argv[1]):
+    d = json.loads(l)
+    if d["event"] == "step_failed": print(d["stepId"], d["checks"][0]["id"], d["checks"][0]["passed"])' "$c19_ctl/reports.ndjson" 2>/dev/null)"
+if [[ "$c19d_ev" == *"step_failed:c attempt_failed:c" && "$c19d_chk" == "c z_ok False" && "$(c19_completed "$c19d")" == "0" ]]; then
+  pass "harness: retries exhausted → step_failed {c, z_ok:false} then attempt_failed; no complete"
+else
+  fail "harness: retries exhausted" "events='$c19d_ev' chk='$c19d_chk'"
+fi
+rm -rf "$c19d"
+
+echo "--- 19e: directive cancel after a → attempt_cancelled, no c"
+c19e="$(mktemp -d)"; c19_setup "$c19e" $((MOCK_PORT_BASE + 914))
+# fake engine hook: a watcher writes the mock directive the moment step a's log appears
+( for _ in $(seq 1 200); do
+    if [[ -f "$c19e/cr-scratch/test-brand/order-h1/logs/a.log" ]]; then printf 'cancel' > "$c19_ctl/directive"; break; fi
+    sleep 0.1
+  done ) &
+c19e_w=$!
+c19_worker "$c19e" $((MOCK_PORT_BASE + 914))
+wait "$c19e_w" 2>/dev/null
+kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
+c19e_ev="$(c19_events "$c19_ctl/reports.ndjson")"
+if [[ "$c19e_ev" == *"attempt_cancelled"* && "$c19e_ev" != *"step_started:c"* ]]; then
+  pass "harness: directive cancel → attempt_cancelled, step c never started"
+else
+  fail "harness: cancel" "events='$c19e_ev'"
+fi
+rm -rf "$c19e"
+
+echo "--- 19f: server down ~3 s mid-run → after recovery every seq present once, in order"
+c19f="$(mktemp -d)"; c19_setup "$c19f" $((MOCK_PORT_BASE + 915)) '{"broll":[{"url":"https://cfw-media.test/broll.mp4"}]}'
+( for _ in $(seq 1 200); do
+    if [[ -d "$c19f/cr-scratch/test-brand/order-h1/steps/b" ]]; then touch "$c19_ctl/down"; sleep 3; rm -f "$c19_ctl/down"; break; fi
+    sleep 0.1
+  done ) &
+c19f_w=$!
+c19_worker "$c19f" $((MOCK_PORT_BASE + 915)) CFW_RENDER_STEP_TIMEOUT_SEC=60
+wait "$c19f_w" 2>/dev/null
+kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
+c19f_ev="$(c19_events "$c19_ctl/reports.ndjson")"
+c19f_gap="$(python3 -c '
+import json, sys
+s = [json.loads(l)["seq"] for l in open(sys.argv[1]) if l.strip()]
+print("ok" if s == list(range(1, len(s) + 1)) else "bad:%s" % s)' "$c19_ctl/reports.ndjson" 2>/dev/null)"
+if [[ "$c19f_ev" == *"attempt_completed:-" && "$c19f_gap" == "ok" ]]; then
+  pass "harness: 503 window buffered to pending-reports.ndjson and replayed — seqs 1..N contiguous, in order"
+else
+  fail "harness: down window" "events='$c19f_ev' seqs=$c19f_gap; $(tail -3 "$c19f/worker.out")"
+fi
+rm -rf "$c19f"
+
+echo "--- 19g: order without manifest → Director path unchanged"
+c19g="$(mktemp -d)"; mkdir -p "$c19g/mockstate" "$c19g/skills" "$c19g/cr-scratch" "$c19g/cr-state"
+order_fixture order-plain-1 brand-1 video > "$c19g/queue.json"
+c19g_pid="$(start_mock "$c19g/queue.json" "$c19g/mockstate" $((MOCK_PORT_BASE + 916)))"
+c19_worker "$c19g" $((MOCK_PORT_BASE + 916)) FAKE_DIRECTOR_MODE=happy
+kill "$c19g_pid" 2>/dev/null; wait "$c19g_pid" 2>/dev/null
+if grep -q '"tool": "complete_render_order"' "$c19g/mockstate/calls.jsonl" 2>/dev/null && grep -q '"tool": "append_render_event"' "$c19g/mockstate/calls.jsonl" 2>/dev/null; then
+  pass "harness: order without manifest still runs the Director path (stage events + complete)"
+else
+  fail "harness: director path" "calls: $(cat "$c19g/mockstate/calls.jsonl" 2>/dev/null | head -5)"
+fi
+rm -rf "$c19g"
+
+echo "--- 19h: no credential-looking env/paths leak into logs or reports"
+c19h="$(mktemp -d)"; c19_setup "$c19h" $((MOCK_PORT_BASE + 917))
+c19_worker "$c19h" $((MOCK_PORT_BASE + 917)) FAKE_TOKEN=sk-abc123 OPENAI_API_KEY=sk-abc123 CODEX_HOME="$HOME/.codex-fake-auth.json"
+kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
+if ! grep -rq 'sk-abc123\|codex-fake-auth' "$c19h/cr-scratch" "$c19_ctl/reports.ndjson" "$c19h/worker.out" 2>/dev/null; then
+  pass "harness: planted secret + fake credential path appear nowhere in ORDER_DIR, logs or reports"
+else
+  fail "harness: credential leak" "$(grep -rl 'sk-abc123\|codex-fake-auth' "$c19h/cr-scratch" "$c19_ctl/reports.ndjson" "$c19h/worker.out" 2>/dev/null)"
+fi
+rm -rf "$c19h"
+
 echo "=== Case 20a: check-step-files.py green — ok fixture PASSes, exit 0 (M1-09) ==="
 c20_checker="$REPO_DIR/scripts/check-step-files.py"
 c20_fixture="$TEST_DIR/fixtures/manifests/stepfiles-ok"

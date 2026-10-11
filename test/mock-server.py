@@ -48,7 +48,9 @@ PRESIGNS = {}  # storageKey -> {orderId, workerId, filename, mimeType, bytes}
 R2_OBJECTS = {}  # storageKey -> {bytes, contentType, md5, puts}
 VERCEL_BODY_CAP = 4_500_000  # the platform's request-body cap on Vercel Functions
 PRESIGN_MIMES = ("image/jpeg", "image/png", "image/gif", "image/webp",
-                 "video/mp4", "video/quicktime", "video/webm", "video/x-m4v", "application/pdf")
+                 "video/mp4", "video/quicktime", "video/webm", "video/x-m4v", "application/pdf",
+                 # M1: json/text step saves (cfw-social presigns them as the `data` kind)
+                 "application/json", "text/markdown", "text/plain")
 
 # ── Admin fleet-enable surface (mock of cfw-social's master-key admin brands
 # route, exercised by cfw-render-fleet.sh). Brands are seeded from the queue's
@@ -59,7 +61,126 @@ PRESIGN_MIMES = ("image/jpeg", "image/png", "image/gif", "image/webp",
 MASTER_KEY = os.environ.get("MOCK_MASTER_KEY")
 BRANDS_FLEET = {o.get("brandId"): False for o in QUEUE if o.get("brandId")}
 
-TOOLS = ["claim_render_order", "append_render_event", "complete_render_order", "block_render_order"]
+TOOLS = ["claim_render_order", "append_render_event", "complete_render_order", "block_render_order", "report_render_step"]
+
+# ── M1-08 step harness surface ────────────────────────────────────────────────
+# Orders carrying `recipeVersion` are manifest-driven: the fixture may name a
+# manifest JSON path in `manifest` (else env CFW_MOCK_MANIFEST). Such an order
+# is claimable ONLY when claim.capabilities.manifests lists its recipe +
+# recipeVersion. Control-file interface (all under $CFW_MOCK_CONTROL_DIR):
+#   directive        content continue|pause|cancel — read on every report
+#   down             exists ⇒ every HTTP request answers 503
+#   reports.ndjson   every report_render_step request, one JSON per line
+# CFW_MOCK_ASKS=1 ⇒ needs_input is accepted (directive pause) instead of
+# answering not_implemented.
+CONTROL_DIR = os.environ.get("CFW_MOCK_CONTROL_DIR") or os.path.join(STATE_DIR, "control")
+os.makedirs(CONTROL_DIR, exist_ok=True)
+REPORTS_LOG = open(os.path.join(CONTROL_DIR, "reports.ndjson"), "a", buffering=1)
+MOCK_ASKS = os.environ.get("CFW_MOCK_ASKS") == "1"
+ATTEMPTS = {}   # orderId -> {"id", "number", "lastSeq", "seen": set()}
+OUTPUT_HOSTS = ("media.cfw.social", "media.mock.cfw.social", "cfw-media.test", "localhost")
+STEP_EVENTS = ("step_started", "step_completed", "step_skipped", "step_failed", "needs_input",
+               "heartbeat", "attempt_completed", "attempt_failed", "attempt_cancelled")
+
+
+def mock_down():
+    return os.path.exists(os.path.join(CONTROL_DIR, "down"))
+
+
+def scripted_directive(default):
+    try:
+        with open(os.path.join(CONTROL_DIR, "directive")) as fh:
+            val = fh.read().strip()
+    except OSError:
+        return default
+    return val if val in ("continue", "pause", "cancel") else default
+
+
+def load_manifest(order):
+    path = order.get("manifest") or os.environ.get("CFW_MOCK_MANIFEST")
+    if isinstance(path, dict):
+        return path
+    if not path:
+        return None
+    with open(path) as fh:
+        return json.load(fh)
+
+
+def capability_matches(order, capabilities):
+    if not isinstance(capabilities, dict):
+        return False
+    for m in capabilities.get("manifests") or []:
+        if isinstance(m, dict) and m.get("recipe") == order.get("recipe") \
+                and m.get("recipeVersion") == order.get("recipeVersion"):
+            return True
+    return False
+
+
+def manifest_order_payload(order):
+    manifest = load_manifest(order) or {}
+    steps = manifest.get("steps") or []
+    resume = next((s["id"] for s in steps if s.get("runsOn") == "computer"), None)
+    attempt = {"id": "att_1", "number": 1}
+    ATTEMPTS[order["id"]] = {"id": attempt["id"], "number": 1, "lastSeq": 0, "seen": set(),
+                            "stepIds": {s["id"] for s in steps}}
+    out = dict(order)
+    out.update({"attempt": attempt, "manifest": manifest, "resumeFromStepId": resume,
+                "savedOutputs": [],
+                # the fixture may seed inputs/answers (M1-03 fills them for real)
+                "inputs": order.get("inputs") or {}, "answers": order.get("answers") or {}})
+    return out
+
+
+def step_reply(ok, code=None, error=None, directive="continue", duplicate=False):
+    payload = {"ok": ok, "duplicate": duplicate, "directive": directive}
+    if code is not None:
+        payload["code"] = code
+    if error is not None:
+        payload["error"] = error
+    return payload
+
+
+def record_report(args, reply):
+    # Every non-duplicate arrival (accepted or rejected) lands in reports.ndjson
+    # in arrival order; a duplicate seq stores nothing, per the contract.
+    if not reply.get("duplicate"):
+        REPORTS_LOG.write(json.dumps({**args, "_reply": reply}) + "\n")
+
+
+def handle_report_step(args):
+    order_id = args.get("orderId")
+    if CLAIMED.get(order_id) != args.get("workerId"):
+        return step_reply(False, "order_not_held", "order not held by this worker", "cancel")
+    att = ATTEMPTS.get(order_id)
+    if att is None or args.get("attemptId") != att["id"]:
+        return step_reply(False, "attempt_superseded", "attempt is not current", "cancel")
+    event = args.get("event")
+    if event not in STEP_EVENTS:
+        return step_reply(False, "bad_event", f"unknown event {event!r}", scripted_directive("continue"))
+    seq = args.get("seq")
+    if not isinstance(seq, int):
+        return step_reply(False, "bad_seq", "seq must be an integer", scripted_directive("continue"))
+    with LOCK:
+        if seq in att["seen"]:
+            return step_reply(True, directive=scripted_directive("continue"), duplicate=True)
+        if seq < att["lastSeq"]:
+            return step_reply(False, "seq_out_of_order", f"seq {seq} < last {att['lastSeq']}",
+                              scripted_directive("continue"))
+        step_id = args.get("stepId")
+        if step_id is not None and step_id not in att["stepIds"]:
+            return step_reply(False, "unknown_step", f"step {step_id!r} not in manifest",
+                              scripted_directive("continue"))
+        for o in args.get("outputs") or []:
+            host = (o.get("url", "").split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]) if isinstance(o, dict) else ""
+            if host not in OUTPUT_HOSTS:
+                return step_reply(False, "invalid_output_url", f"output url host {host!r} not allowed",
+                                  scripted_directive("continue"))
+        if event == "needs_input" and not MOCK_ASKS:
+            return step_reply(False, "not_implemented", "asks not implemented", "pause")
+        att["seen"].add(seq)
+        att["lastSeq"] = seq
+    default = "pause" if event == "needs_input" else "continue"
+    return step_reply(True, directive=scripted_directive(default))
 
 
 def log_call(name, args, result_ok):
@@ -81,12 +202,26 @@ def handle_tool_call(name, args):
         with LOCK:
             for o in QUEUE:
                 if STATUS.get(o["id"], "queued") == "queued":
+                    # M1-08: manifest-driven orders need a matching capability.
+                    if o.get("recipeVersion") is not None:
+                        if not capability_matches(o, args.get("capabilities")):
+                            continue
+                        STATUS[o["id"]] = "claimed"
+                        CLAIMED[o["id"]] = args["workerId"]
+                        log_call(name, args, True)
+                        return rpc_result({"order": manifest_order_payload(o)}), None
                     STATUS[o["id"]] = "claimed"
                     CLAIMED[o["id"]] = args["workerId"]
                     log_call(name, args, True)
                     return rpc_result({"order": o}), None
             log_call(name, args, True)
             return rpc_result({"order": None}), None
+
+    if name == "report_render_step":
+        reply = handle_report_step(args)
+        record_report(args, reply)
+        log_call(name, args, bool(reply.get("ok")))
+        return rpc_result(reply), None
 
     if name == "append_render_event":
         order_id = args.get("orderId")
@@ -247,6 +382,21 @@ class Handler(BaseHTTPRequestHandler):
             rest = self.path[len(prefix):]
             return rest.split("?", 1)[0].split("/", 1)[0] or None
         return None
+
+    def handle_one_request(self):
+        # M1-08 unreachable switch: $CFW_MOCK_CONTROL_DIR/down ⇒ 503 for everything.
+        if not mock_down():
+            return BaseHTTPRequestHandler.handle_one_request(self)
+        self.raw_requestline = self.rfile.readline(65537)
+        if not self.raw_requestline:
+            self.close_connection = True
+            return
+        if not self.parse_request():
+            return
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length:
+            self.rfile.read(length)
+        self._send_json({"error": "mock down"}, 503)
 
     def do_GET(self):
         brand_id = self._admin_brand_id()

@@ -56,6 +56,9 @@ mime_for() {
     mp4) echo video/mp4 ;;  mov) echo video/quicktime ;;  webm) echo video/webm ;;  m4v) echo video/x-m4v ;;
     png) echo image/png ;;  jpg|jpeg) echo image/jpeg ;;  gif) echo image/gif ;;  webp) echo image/webp ;;
     pdf) echo application/pdf ;;   # CFW-135: the LinkedIn-native carousel document, stored as a `doc` output
+    # M1: manifest step saves of kind json/text (transcript, edit plan, captions) — cfw-social
+    # presigns these as a small `data` kind so another computer can resume after the step.
+    json) echo application/json ;;  md) echo text/markdown ;;  txt) echo text/plain ;;
     *) echo "" ;;
   esac
 }
@@ -173,7 +176,7 @@ upload_one() {
   local file="$1" out="$2" mime bytes url path
   if [ ! -s "$file" ]; then echo "cfw-render-upload: file not found or empty: $file" >&2; echo ERROR > "$out"; return 1; fi
   mime="$(mime_for "$file")"
-  if [ -z "$mime" ]; then echo "cfw-render-upload: unsupported extension for $file (image/*, video/* or .pdf only)" >&2; echo ERROR > "$out"; return 1; fi
+  if [ -z "$mime" ]; then echo "cfw-render-upload: unsupported extension for $file (image/*, video/*, .pdf, .json, .md or .txt only)" >&2; echo ERROR > "$out"; return 1; fi
   bytes="$(file_size "$file")"
   case "$UPLOAD_MODE" in
     presign)   path=presign ;;

@@ -15,6 +15,10 @@ set -u
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$SELF_DIR/cfw-render-lib.sh"
+# shellcheck disable=SC1091
+source "$SELF_DIR/cfw-render-engine.sh"
+# shellcheck disable=SC1091
+source "$SELF_DIR/cfw-render-harness.sh"
 
 DRY=0
 for arg in "$@"; do
@@ -253,6 +257,42 @@ print("\x1f".join([mode, token, expires, pool, expired]))
     return 1
   fi
 
+  # [M1-08] Manifest-driven order → the step harness runs it instead of a
+  # Director. Completion goes through cfw-render-report.sh complete with the
+  # LAST completed step's saves, exactly like the Director path does.
+  if [[ "$(python3 -c 'import json,sys; print("1" if json.load(sys.stdin).get("manifest") else "0")' <<< "$order_json" 2>/dev/null)" == "1" ]]; then
+    local h_rc=0 h_out="" h_outcome="harness-failed"
+    # The harness result goes through a file, not $(...): the harness forks a
+    # heartbeat loop and the engine CLI, and any inherited stdout would hold a
+    # command substitution open after the step loop has already returned.
+    (
+      cd "$order_dir" || exit 1
+      export CFW_ORDER_ID="$order_id" CFW_WORKER_ID CFW_API_BASE CFW_RENDER_WORKER_KEY
+      export CFW_RENDER_SCRATCH_DIR="$order_dir" CFW_RENDER_STATE_DIR CFW_RENDER_LOG_DIR
+      CFW_RENDER_KEEP_DIR="$(cr_keep_output_dir "$brand_slug" "$order_id")"; export CFW_RENDER_KEEP_DIR
+      export PATH="$SELF_DIR:$PATH"
+      cr_harness_run "$order_dir/order.json" "$order_dir" "$CFW_RENDER_SKILLS_DIR/$recipe" > "$order_dir/harness-result.json"
+    ) </dev/null || h_rc=$?
+    h_out="$(cat "$order_dir/harness-result.json" 2>/dev/null || true)"
+    if (( h_rc == 0 )); then
+      local -a h_files=()
+      while IFS= read -r f; do [[ -n "$f" ]] && h_files+=("$f"); done < <(python3 -c '
+import json, sys
+a = json.loads(sys.argv[1] or "[]")
+for x in a: print(x["path"])' "$h_out" 2>/dev/null)
+      if (( ${#h_files[@]} > 0 )) && ( cd "$order_dir" && CFW_ORDER_ID="$order_id" CFW_RENDER_KEEP_DIR="$(cr_keep_output_dir "$brand_slug" "$order_id")" PATH="$SELF_DIR:$PATH" cfw-render-report.sh complete "${h_files[@]}" ); then
+        h_outcome="completed"
+      else
+        cr_log "order $order_id — harness finished but complete_render_order failed"
+      fi
+    else
+      case "$h_rc" in 20) h_outcome="cancelled" ;; 21) h_outcome="released" ;; 30) h_outcome="failed" ;; esac
+      cr_log "order $order_id — harness exited $h_rc ($h_outcome)"
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "$h_outcome" "$h_rc" "harness" >> "$JOURNAL"
+    return 0
+  fi
+
   local gate
   gate="$(python3 -c '
 import json, sys
@@ -456,11 +496,20 @@ print(tpl)
 # (plan §4 pseudocode) so CFW_RENDER_CONCURRENCY>1 renders in parallel.
 spawn_pids=()
 slot=0
+claim_caps="$(cr_engine_capabilities_json "$(cr_engine_detect)" "$CFW_RENDER_SKILLS_DIR")"
 while (( slot < CFW_RENDER_CONCURRENCY )); do
   slot=$(( slot + 1 ))
   # [CFW-146] the claim carries the renderer identity so the owner's order card
   # can say "Working on your Mac" / "on the box" instead of a bare "Cooking".
-  claim_resp="$(cr_mcp_call claim_render_order "$(python3 -c 'import json,sys; print(json.dumps({"workerId":sys.argv[1],"renderer":{"kind":sys.argv[2],"label":sys.argv[3]}}))' "$CFW_WORKER_ID" "$CFW_RENDER_RENDERER_KIND" "$(hostname -s 2>/dev/null || hostname)")")" || {
+  # [M1-08] Advertise the step-harness engine + the manifests this bundle
+  # carries so cfw-social can hand out manifest-driven orders. No engine
+  # detected → no `capabilities` field at all (legacy claim, old behaviour).
+  claim_resp="$(cr_mcp_call claim_render_order "$(python3 -c '
+import json, sys
+a = {"workerId": sys.argv[1], "renderer": {"kind": sys.argv[2], "label": sys.argv[3]}}
+if sys.argv[4]:
+    a["capabilities"] = json.loads(sys.argv[4])
+print(json.dumps(a))' "$CFW_WORKER_ID" "$CFW_RENDER_RENDERER_KIND" "$(hostname -s 2>/dev/null || hostname)" "$claim_caps")")" || {
     cr_log "claim_render_order call failed — stopping this tick's claim loop"
     break
   }

@@ -471,6 +471,93 @@ sys.stdout.write(inner)
 }
 
 # ---------------------------------------------------------------------------
+# cr_mcp_call_soft <tool> <json-args> — non-exiting sibling of cr_mcp_call for
+# the M1-08 step loop (which must decide what to do on a dead server rather
+# than die). Same request path (POST /api/v1/mcp, same headers, 3 tries).
+#   0  success              — prints the tool's text body
+#   70 MCP isError/JSON-RPC — prints the error text (EX_SOFTWARE)
+#   75 curl/HTTP failure    — prints nothing (EX_TEMPFAIL)
+# cr_mcp_call is deliberately untouched.
+# ---------------------------------------------------------------------------
+cr_mcp_call_soft() {
+  local tool="$1" args_json="$2"
+  local url="${CFW_API_BASE%/}/api/v1/mcp"
+  local body
+  body="$(python3 -c '
+import json, sys
+tool = sys.argv[1]
+args = json.loads(sys.argv[2]) if sys.argv[2] else {}
+print(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}}))
+' "$tool" "$args_json" 2>/dev/null)" || { printf 'cfw-render: cr_mcp_call_soft could not build request JSON for %s\n' "$tool" >&2; return 70; }
+
+  local attempt resp rc http_code
+  for attempt in 1 2 3; do
+    resp="$(curl -sS --max-time 30 -w '\n%{http_code}' -X POST "$url" \
+      -H "cfw-render-key: $CFW_RENDER_WORKER_KEY" \
+      -H "content-type: application/json" \
+      -H "accept: application/json, text/event-stream" \
+      -d "$body" 2>/dev/null)"
+    rc=$?
+    http_code="${resp##*$'\n'}"
+    resp="${resp%$'\n'*}"
+    if (( rc == 0 )) && [[ "$http_code" =~ ^2[0-9][0-9]$ ]] && [[ -n "$resp" ]]; then
+      break
+    fi
+    rc=75
+    (( attempt < 3 )) && sleep 1
+  done
+  if (( rc != 0 )); then
+    printf 'cfw-render: cr_mcp_call_soft %s — unreachable/HTTP %s after retries\n' "$tool" "${http_code:-?}" >&2
+    return 75
+  fi
+
+  python3 -c '
+import json, sys
+raw = sys.stdin.read()
+try:
+    env = json.loads(raw)
+except Exception as e:
+    print(f"non-JSON response: {e}")
+    sys.exit(70)
+if "error" in env:
+    print(json.dumps(env["error"]))
+    sys.exit(70)
+result = env.get("result", {})
+content = result.get("content", [])
+text = content[0].get("text", "") if content and isinstance(content[0], dict) else ""
+if result.get("isError"):
+    print(text or json.dumps(result))
+    sys.exit(70)
+if not text:
+    print(f"unexpected result shape: {result}")
+    sys.exit(70)
+json.loads(text)
+sys.stdout.write(text)
+' <<< "$resp"
+}
+
+# cr_report_step <orderId> <workerId> <attemptId> <seq> <event> [extra-json-object]
+# Merges the identity fields with <extra-json-object> (stepId/outputs/checks/
+# ask/message/atIso) and calls report_render_step via cr_mcp_call_soft; same
+# return codes. The reply text body ({ok,duplicate,directive,code?,error?}) is
+# printed verbatim for the caller to parse.
+cr_report_step() {
+  local order_id="$1" worker_id="$2" attempt_id="$3" seq="$4" event="$5" extra="${6:-{\}}"
+  local args
+  args="$(python3 -c '
+import json, sys
+oid, wid, aid, seq, event, extra = sys.argv[1:7]
+a = json.loads(extra) if extra.strip() else {}
+if not isinstance(a, dict):
+    raise SystemExit("extra must be a JSON object")
+a.update({"orderId": oid, "workerId": wid, "attemptId": aid, "seq": int(seq), "event": event})
+print(json.dumps(a))
+' "$order_id" "$worker_id" "$attempt_id" "$seq" "$event" "$extra" 2>/dev/null)" \
+    || { printf 'cfw-render: cr_report_step — bad extra JSON for seq %s\n' "$seq" >&2; return 70; }
+  cr_mcp_call_soft report_render_step "$args"
+}
+
+# ---------------------------------------------------------------------------
 # cr_load_admin_config — config loader for the OPERATOR fleet-enable surface
 # (cfw-render-fleet.sh, CFW-16). Distinct from cr_load_config on purpose:
 #   * requires CFW_API_BASE + CFW_MASTER_API_KEY (the master key), NOT the

@@ -1,0 +1,16 @@
+{
+  "recipe": "harness-3step",
+  "recipeVersion": "1.0.0",
+  "inputs": [
+    {"id": "talking_head", "kind": "video", "required": "start"},
+    {"id": "broll", "kind": "video", "required": "optional"}
+  ],
+  "steps": [
+    {"id": "a", "runsOn": "computer", "weight": 10, "instructions": "steps/a.md",
+     "saves": [{"id": "x", "kind": "json"}]},
+    {"id": "b", "runsOn": "computer", "weight": 10, "instructions": "steps/b.md",
+     "when": {"inputPresent": "broll"}, "saves": [{"id": "y", "kind": "json"}]},
+    {"id": "c", "runsOn": "computer", "weight": 80, "instructions": "steps/c.md",
+     "saves": [{"id": "z", "kind": "video"}], "maxCheckRetries": 2, "checks": [{"id": "z_ok"}]}
+  ]
+}
