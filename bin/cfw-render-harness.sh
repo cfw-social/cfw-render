@@ -142,6 +142,21 @@ cr_h_directive() {
   if [[ -f "$CR_H_ORDER_DIR/directive" ]]; then tr -d '[:space:]' < "$CR_H_ORDER_DIR/directive"; else echo continue; fi
 }
 
+# cr_h_upload_with_retry <file> — the presign/PUT/complete trio has per-call
+# retries, but a short CFW outage (the same one the report buffer absorbs) can
+# span all of them; retry the whole upload with backoff before failing the step.
+cr_h_upload_with_retry() {
+  local f="$1" url="" attempt
+  local max="${CFW_RENDER_UPLOAD_ATTEMPTS:-4}"
+  for (( attempt = 1; attempt <= max; attempt++ )); do
+    if url="$(CFW_ORDER_ID="$CR_H_ORDER_ID" "$CR_H_SELF_DIR/cfw-render-upload.sh" "$f")" && [[ -n "$url" ]]; then
+      printf '%s' "$url"; return 0
+    fi
+    (( attempt < max )) && sleep $(( attempt * 2 ))
+  done
+  return 1
+}
+
 cr_harness_heartbeat_start() {
   # Detach stdin/stdout: the caller may run cr_harness_run inside a command
   # substitution, and an inherited stdout would keep that $(...) open until the
@@ -406,7 +421,7 @@ o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alt
     for sv in $saves; do
       sid="${sv%%:*}"; ext="${sv##*:}"; f="$workdir/saves/$sid.$ext"
       [[ -f "$f" ]] || continue
-      if ! url="$(CFW_ORDER_ID="$CR_H_ORDER_ID" "$CR_H_SELF_DIR/cfw-render-upload.sh" "$f")"; then
+      if ! url="$(cr_h_upload_with_retry "$f")"; then
         cr_log "harness: upload failed for $f"
         cr_h_report step_failed "{\"stepId\":\"$step_id\",\"checks\":[{\"id\":\"upload\",\"passed\":false,\"detail\":\"upload failed\"}]}"
         cr_h_report attempt_failed "{\"stepId\":\"$step_id\",\"message\":\"upload failed\"}"

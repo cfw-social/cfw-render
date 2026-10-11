@@ -1965,7 +1965,7 @@ c18_manifest="$REPO_DIR/skills/p-reels-spotlight/manifest.json"
 python3 -c '
 import json, sys
 print(json.dumps([{"id": "order-m1", "brandId": "brand-1", "workspaceId": "ws-1", "kind": "video",
-  "recipe": "p-reels-spotlight", "recipeVersion": "2026.10.1", "manifest": sys.argv[1],
+  "recipe": "p-reels-spotlight", "recipeVersion": "2026.10.2", "manifest": sys.argv[1],
   "status": "queued", "taskOrder": {"version": 1, "orderId": "order-m1"}, "priority": 0, "attempts": 1}]))
 ' "$c18_manifest" > "$c18_dir/queue.json"
 c18_pid="$(CFW_MOCK_CONTROL_DIR="$c18_ctl" start_mock "$c18_dir/queue.json" "$c18_state" "$c18_port")"
@@ -1974,7 +1974,7 @@ c18_run() {
   CFW_API_BASE="http://127.0.0.1:$c18_port" CFW_RENDER_WORKER_KEY="cfw_render_test0000000000000000" \
     bash -c 'set -uo pipefail; source "$1"; shift; eval "$*"' _ "$REPO_DIR/bin/cfw-render-lib.sh" "$1"
 }
-c18_caps='{"engine":"codex","os":"macos","manifests":[{"recipe":"p-reels-spotlight","recipeVersion":"2026.10.1"}]}'
+c18_caps='{"engine":"codex","os":"macos","manifests":[{"recipe":"p-reels-spotlight","recipeVersion":"2026.10.2"}]}'
 
 echo "--- 18a: claim without capabilities → order null"
 c18a_out="$(c18_run 'cr_mcp_call_soft claim_render_order "{\"workerId\":\"w1\"}"')"
@@ -1991,10 +1991,10 @@ import json, sys
 o = json.load(sys.stdin)["order"]
 print(o["attempt"]["id"], o["attempt"]["number"], o["manifest"]["recipeVersion"], o["resumeFromStepId"], o["savedOutputs"], o["inputs"], o["answers"])
 ' <<< "$c18b_out" 2>/dev/null)"
-if [[ "$c18b_shape" == "att_1 1 2026.10.1 prepare_footage [] {} {}" ]]; then
+if [[ "$c18b_shape" == "att_1 1 2026.10.2 prepare_footage [] {} {}" ]]; then
   pass "claim: capability match returns attempt att_1/1, manifest, resumeFromStepId=prepare_footage, empty savedOutputs/inputs/answers"
 else
-  fail "claim: capabilities match" "expected 'att_1 1 2026.10.1 prepare_footage [] {} {}', got '$c18b_shape' from: $c18b_out"
+  fail "claim: capabilities match" "expected 'att_1 1 2026.10.2 prepare_footage [] {} {}', got '$c18b_shape' from: $c18b_out"
 fi
 
 echo "--- 18c: report seq 1,1,2 → reports.ndjson has 2 lines, 2nd reply duplicate:true"
