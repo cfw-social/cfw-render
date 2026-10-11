@@ -73,7 +73,13 @@ print("\x1f".join([str(d.get("directive") or ""), "1" if d.get("ok") else "0", s
   IFS=$'\x1f' read -r directive ok code err <<< "$parsed"
   if [[ "$ok" == "0" ]]; then
     case "$code" in
-      attempt_superseded|order_not_held)
+      attempt_superseded)
+        # [M2-04] Another computer now runs this request (CONTRACTS §4): stop
+        # at once, no further uploads or reports. The server's directive is
+        # `cancel`; locally it is sharper than cancel, so it gets its own word.
+        cr_log "harness: order $CR_H_ORDER_ID — attempt_superseded ($err) → stop immediately"
+        directive="superseded" ;;
+      order_not_held)
         cr_log "harness: order $CR_H_ORDER_ID — $code ($err) → cancel"
         directive="cancel" ;;
       not_implemented)
@@ -84,7 +90,15 @@ print("\x1f".join([str(d.get("directive") or ""), "1" if d.get("ok") else "0", s
       *) cr_log "harness: order $CR_H_ORDER_ID — report $event rejected: $code $err" ;;
     esac
   fi
-  [[ -n "$directive" ]] && printf '%s' "$directive" > "$CR_H_ORDER_DIR/directive"
+  if [[ -n "$directive" ]]; then
+    local cur; cur="$(cr_h_directive)"
+    # superseded / stop_after_step are sticky: a heartbeat's `continue` racing
+    # in afterwards must not un-stop the attempt.
+    if [[ "$cur" == "superseded" || ( "$cur" == "stop_after_step" && "$directive" != "superseded" ) ]]; then
+      return 0
+    fi
+    printf '%s' "$directive" > "$CR_H_ORDER_DIR/directive"
+  fi
   return 0
 }
 
@@ -180,13 +194,16 @@ cr_harness_heartbeat_stop() {
 }
 
 # cr_h_wait_pause — directive says pause: poll (heartbeat each loop) until it
-# changes. Returns 0 to continue, 20 cancel, 21 pause timeout.
+# changes. Returns 0 to continue, 20 cancel, 21 pause timeout, 22 stop_after_step
+# (release before the next step), 23 superseded.
 cr_h_wait_pause() {
   local waited=0 d
   while :; do
     d="$(cr_h_directive)"
     case "$d" in
       cancel) return 20 ;;
+      stop_after_step) return 22 ;;
+      superseded) return 23 ;;
       pause|not_implemented) ;;
       *) return 0 ;;
     esac
@@ -303,6 +320,73 @@ cr_h_run_checks() {
   return 0
 }
 
+# [M2-04] cr_h_release_revoked <stepId> — stop_after_step landed: report the
+# attempt as released (reason revoked, CONTRACTS §4) and let the caller wipe.
+cr_h_release_revoked() {
+  local step_id="$1"
+  cr_log "harness: order $CR_H_ORDER_ID — stop_after_step: releasing after step $step_id (revoked)"
+  cr_h_report attempt_released "{\"stepId\":\"$step_id\",\"reason\":\"revoked\"}"
+  return 0
+}
+
+# [M2-04] cr_h_restore_saved_outputs <order-file> <order-dir> — resume (D30).
+# Downloads each claim-reply savedOutputs[{stepId, saveId, url, checksum?}]
+# into <order-dir>/steps/<stepId>/saves/<saveId>.<ext> (ext from the manifest
+# step's save kind, as the step itself would have written). Verifies non-empty
+# and the checksum when given ("sha256:<hex>", "md5:<hex>", or a bare hex
+# digest sized for either). Writes:
+#   <order-dir>/resume-restored.txt   one restored path per line
+#   <order-dir>/resume-missing.txt    "stepId/saveId" tokens, space-separated
+cr_h_restore_saved_outputs() {
+  local order_file="$1" order_dir="$2" line step_id save_id url checksum ext dest rc missing=""
+  : > "$order_dir/resume-restored.txt"; : > "$order_dir/resume-missing.txt"
+  while IFS=$'\x1f' read -r step_id save_id url checksum ext; do
+    [[ -n "$step_id" && -n "$save_id" ]] || continue
+    dest="$order_dir/steps/$step_id/saves/$save_id.$ext"
+    mkdir -p "$(dirname "$dest")"
+    rc=0
+    if [[ -z "$url" ]]; then
+      rc=1
+    else
+      curl -fsSL --retry 2 --retry-delay 1 --max-time 600 -o "$dest" "$url" 2>/dev/null || rc=$?
+    fi
+    if (( rc == 0 )) && [[ -s "$dest" ]] && cr_h_checksum_ok "$dest" "$checksum"; then
+      printf '%s\n' "$dest" >> "$order_dir/resume-restored.txt"
+    else
+      cr_log "harness: order $CR_H_ORDER_ID — saved output $step_id/$save_id unusable (download rc=$rc, empty or checksum mismatch): $url"
+      rm -f "$dest"
+      missing+="${missing:+ }$step_id/$save_id"
+    fi
+  done < <(python3 -c '
+import json, sys
+o = json.load(open(sys.argv[1]))
+ext = {"video": "mp4", "image": "png", "json": "json", "text": "md"}
+kinds = {}
+for s in (o.get("manifest") or {}).get("steps", []):
+    for v in s.get("saves") or []:
+        kinds[(s["id"], v["id"])] = ext.get(v.get("kind"), "bin")
+for so in o.get("savedOutputs") or []:
+    if not isinstance(so, dict): continue
+    sid, vid = so.get("stepId") or "", so.get("saveId") or ""
+    print("\x1f".join([sid, vid, so.get("url") or "", so.get("checksum") or "", kinds.get((sid, vid), "bin")]))' "$order_file")
+  printf '%s' "$missing" > "$order_dir/resume-missing.txt"
+  [[ -z "$missing" ]]
+}
+
+# cr_h_checksum_ok <file> <checksum> — empty checksum = nothing to verify.
+cr_h_checksum_ok() {
+  local f="$1" want="${2:-}" algo hex got
+  [[ -n "$want" ]] || return 0
+  want="$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')"
+  case "$want" in
+    sha256:*) algo=sha256; hex="${want#sha256:}" ;;
+    md5:*) algo=md5; hex="${want#md5:}" ;;
+    *) hex="$want"; if (( ${#hex} == 64 )); then algo=sha256; elif (( ${#hex} == 32 )); then algo=md5; else return 1; fi ;;
+  esac
+  got="$(python3 -c 'import hashlib, sys; print(getattr(hashlib, sys.argv[1])(open(sys.argv[2], "rb").read()).hexdigest())' "$algo" "$f" 2>/dev/null)" || return 1
+  [[ "$got" == "$hex" ]]
+}
+
 # ---------------------------------------------------------------------------
 cr_harness_run() {
   local order_file="$1" order_dir="$2" recipe_dir="$3"
@@ -340,11 +424,22 @@ for s in (o.get("manifest") or {}).get("steps", []):
     checks = " ".join(c["id"] for c in s.get("checks") or [])
     print("\x1f".join([s["id"], s.get("runsOn", "computer"), str(s.get("maxCheckRetries", 0)), wk, wa, saves, checks]))' "$order_file" "$resume_from")"
 
+  # [M2-04] Resume (D30): pull every savedOutput into the path the step would
+  # have written it to, verify it, and remember what is missing so the first
+  # step we run can fail with a reason the server can act on.
+  local -a completed_saves=()
+  local resume_missing=""
+  if [[ -n "$resume_from" ]]; then
+    cr_h_restore_saved_outputs "$order_file" "$order_dir" || true
+    while IFS= read -r p; do [[ -n "$p" ]] && completed_saves+=("$p"); done < "$order_dir/resume-restored.txt"
+    resume_missing="$(cat "$order_dir/resume-missing.txt" 2>/dev/null || true)"
+    cr_log "harness: order $CR_H_ORDER_ID resumes at $resume_from (${#completed_saves[@]} saved output(s) restored${resume_missing:+; missing: $resume_missing})"
+  fi
+
   cr_harness_heartbeat_start
   trap 'cr_harness_heartbeat_stop' RETURN
 
   local step_id runs_on max_retries when_kind when_arg saves checks rc cond p
-  local -a completed_saves=()
   local final_outputs="[]"
   while IFS=$'\x1f' read -r step_id runs_on max_retries when_kind when_arg saves checks; do
     [[ -n "$step_id" ]] || continue
@@ -352,6 +447,21 @@ for s in (o.get("manifest") or {}).get("steps", []):
     rc=0; cr_h_wait_pause || rc=$?
     if (( rc == 20 )); then cr_h_report attempt_cancelled "{\"stepId\":\"$step_id\"}"; return 20; fi
     (( rc == 21 )) && { cr_log "harness: pause timeout — releasing order $CR_H_ORDER_ID"; return 21; }
+    (( rc == 22 )) && { cr_h_release_revoked "$step_id"; return 22; }
+    (( rc == 23 )) && return 23
+
+    if [[ -n "$resume_missing" ]]; then
+      # The first step that runs is the first that needs the earlier saves.
+      local miss_checks="[" miss_step
+      for miss_step in $resume_missing; do
+        miss_checks+="$(python3 -c 'import json,sys; print(json.dumps({"id": "saved_output:" + sys.argv[1], "passed": False, "detail": "Saved result from step %s is missing" % sys.argv[1].split("/")[0]}))' "$miss_step"),"
+      done
+      miss_checks="${miss_checks%,}]"
+      local first_missing="${resume_missing%% *}"; first_missing="${first_missing%%/*}"
+      cr_h_report step_failed "{\"stepId\":\"$step_id\",\"message\":\"Saved result from step $first_missing is missing\",\"checks\":$miss_checks}"
+      cr_h_report attempt_failed "{\"stepId\":\"$step_id\",\"message\":\"Saved result from step $first_missing is missing\"}"
+      return 30
+    fi
 
     cond=1
     case "$when_kind" in
@@ -396,6 +506,8 @@ o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alt
         while :; do
           d="$(cr_h_directive)"
           [[ "$d" == "cancel" ]] && { cr_h_report attempt_cancelled "{\"stepId\":\"$step_id\"}"; return 20; }
+          [[ "$d" == "superseded" ]] && return 23
+          [[ "$d" == "stop_after_step" ]] && { cr_h_release_revoked "$step_id"; return 22; }
           [[ "$d" == "continue" ]] && break
           (( waited >= CFW_RENDER_PAUSE_MAX_SEC )) && return 21
           sleep 10; waited=$((waited + 10))
@@ -410,6 +522,10 @@ o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alt
       (( run > max_retries )) && break
       cr_log "harness: step $step_id checks failed (run $run/$((max_retries + 1))) — retrying"
     done
+
+    # [M2-04] attempt_superseded (set by any report/heartbeat reply) → stop
+    # now, before a single upload. Nothing else is sent.
+    [[ "$(cr_h_directive)" == "superseded" ]] && return 23
 
     if (( ! passed )); then
       cr_h_report step_failed "{\"stepId\":\"$step_id\",\"checks\":$checks_json}"
@@ -433,7 +549,13 @@ o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alt
     done
     outputs="${outputs%,}]"
     cr_h_report step_completed "{\"stepId\":\"$step_id\",\"outputs\":$outputs,\"checks\":$checks_json}"
-    [[ "$(cr_h_directive)" == "cancel" ]] && { cr_h_report attempt_cancelled "{\"stepId\":\"$step_id\"}"; return 20; }
+    case "$(cr_h_directive)" in
+      cancel) cr_h_report attempt_cancelled "{\"stepId\":\"$step_id\"}"; return 20 ;;
+      # [M2-04] D76: the step finished and its saves are up; end the attempt
+      # here as revoked. The caller deletes the folder and held keys.
+      stop_after_step) cr_h_release_revoked "$step_id"; return 22 ;;
+      superseded) return 23 ;;
+    esac
   done <<< "$steps"
 
   cr_h_report attempt_completed '{}'

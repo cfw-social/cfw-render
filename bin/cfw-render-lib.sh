@@ -232,7 +232,10 @@ cr_load_config() {
     _i=$(( _i + 1 ))
   done
 
-  : "${CFW_RENDER_CONCURRENCY:=1}"
+  # [M2-04] Parallel requests (D52). Empty = measure this computer
+  # (cr_capacity_max: memory + performance cores table). A value set by the
+  # owner overrides the table, still capped at 6.
+  : "${CFW_RENDER_CONCURRENCY:=}"
   : "${CFW_RENDER_SCRATCH:=$HOME/.cfw-render/scratch}"
   : "${CFW_RENDER_STATE_DIR:=$HOME/.cfw-render}"
   : "${CFW_RENDER_SKILLS_DIR:=$(cr_default_skills_dir)}"
@@ -906,6 +909,156 @@ cr_tick_lock_release() {
   local dir="${CFW_RENDER_STATE_DIR:-$HOME/.cfw-render}"
   rm -rf "$dir/tick.lock" 2>/dev/null
   return 0
+}
+
+# [M2-04] cr_tick_lock_touch — the kept-alive loop (D89) holds the lock for
+# days; refresh ts so the staleness rule above (timeout + 10 min) never lets a
+# second copy retake a lock whose owner is alive and merely idle.
+cr_tick_lock_touch() {
+  local dir="${CFW_RENDER_STATE_DIR:-$HOME/.cfw-render}"
+  [[ -d "$dir/tick.lock" ]] || return 0
+  printf 'pid=%s\nts=%s\n' "$$" "$(date +%s)" > "$dir/tick.lock/info" 2>/dev/null
+  return 0
+}
+
+# ===========================================================================
+# CAPACITY (M2-04, D52 / D78 / D51)
+# ===========================================================================
+# ONE table, in ONE place. `max` = how many requests this computer runs at
+# once, 1..6, from physical memory, capped by performance cores ÷ 2:
+#
+#   memory         max        (then: min(max, perfCores ÷ 2), floor 1)
+#   < 16 GB   →    1          (D78: still serves, one at a time; setup says so)
+#   16 GB     →    2
+#   24 GB     →    3
+#   32 GB     →    4
+#   48 GB     →    5
+#   64 GB +   →    6
+#
+# Before each pickup (cr_capacity_now): free memory must be at least
+# CR_CAPACITY_FREE_MB_FLOOR per request and the 1-min load average at most the
+# logical CPU count — otherwise only an urgent request may be claimed (the
+# worker then reports itself full: capacity.running = capacity.max).
+#
+# Test seams (never set in production): CFW_RENDER_CAPACITY_MEM_BYTES,
+# CFW_RENDER_CAPACITY_PERF_CORES, CFW_RENDER_CAPACITY_FREE_MB,
+# CFW_RENDER_CAPACITY_LOAD, CFW_RENDER_CAPACITY_NCPU replace the sysctl /
+# vm_stat probes one-for-one so the table and the floor can be driven locally.
+CR_CAPACITY_HARD_MAX=6
+CR_CAPACITY_FREE_MB_FLOOR=3072
+# D89: idle claim cadence and the claim-error back-off (base, cap). The unit is
+# a test seam only (1 s in the suite) — production is 60 s → 10 min.
+CR_CAPACITY_IDLE_CLAIM_SECS="${CFW_RENDER_CAPACITY_UNIT_SECS:-60}"
+CR_CLAIM_BACKOFF_BASE_SECS="${CFW_RENDER_CAPACITY_UNIT_SECS:-60}"
+CR_CLAIM_BACKOFF_MAX_SECS=$(( ${CFW_RENDER_CAPACITY_UNIT_SECS:-60} * 10 ))
+
+cr_capacity_sysctl() { # cr_capacity_sysctl <key> — "" when unavailable
+  command -v sysctl >/dev/null 2>&1 || { printf ''; return 0; }
+  sysctl -n "$1" 2>/dev/null | head -n1 | tr -d '[:space:]' || printf ''
+}
+
+# cr_capacity_table <mem_bytes> <perf_cores> — pure function of the table above.
+cr_capacity_table() {
+  local mem_bytes="${1:-0}" cores="${2:-0}" gb by_mem by_cores
+  gb=$(( mem_bytes / 1073741824 ))
+  if   (( gb >= 64 )); then by_mem=6
+  elif (( gb >= 48 )); then by_mem=5
+  elif (( gb >= 32 )); then by_mem=4
+  elif (( gb >= 24 )); then by_mem=3
+  elif (( gb >= 16 )); then by_mem=2
+  else by_mem=1; fi
+  by_cores=$(( cores / 2 ))
+  (( by_cores < 1 )) && by_cores=1
+  (( by_mem > by_cores )) && by_mem=$by_cores
+  (( by_mem > CR_CAPACITY_HARD_MAX )) && by_mem=$CR_CAPACITY_HARD_MAX
+  printf '%s' "$by_mem"
+}
+
+# cr_capacity_max — prints 1..6. CFW_RENDER_CONCURRENCY (owner) wins, capped.
+cr_capacity_max() {
+  local override="${CFW_RENDER_CONCURRENCY:-}" mem cores
+  if [[ "$override" =~ ^[0-9]+$ ]] && (( override >= 1 )); then
+    (( override > CR_CAPACITY_HARD_MAX )) && override=$CR_CAPACITY_HARD_MAX
+    printf '%s' "$override"; return 0
+  fi
+  mem="${CFW_RENDER_CAPACITY_MEM_BYTES:-}"
+  cores="${CFW_RENDER_CAPACITY_PERF_CORES:-}"
+  if [[ -z "$mem" ]]; then
+    if [[ "$(uname -s 2>/dev/null)" == "Darwin" ]]; then
+      mem="$(cr_capacity_sysctl hw.memsize)"
+    elif [[ -r /proc/meminfo ]]; then
+      mem="$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0) * 1024 ))"
+    fi
+  fi
+  if [[ -z "$cores" ]]; then
+    if [[ "$(uname -s 2>/dev/null)" == "Darwin" ]]; then
+      cores="$(cr_capacity_sysctl hw.perflevel0.physicalcpu)"
+      [[ -n "$cores" ]] || cores="$(cr_capacity_sysctl hw.physicalcpu)"
+    else
+      cores="$(nproc 2>/dev/null || echo 1)"
+    fi
+  fi
+  [[ "$mem" =~ ^[0-9]+$ ]] || mem=0
+  [[ "$cores" =~ ^[0-9]+$ ]] || cores=1
+  cr_capacity_table "$mem" "$cores"
+}
+
+# cr_capacity_probe — prints "<free_mb>\x1f<load_1min>\x1f<ncpu>"; blanks when
+# a probe is unavailable (treated as "no constraint" by cr_capacity_ok).
+cr_capacity_probe() {
+  local free_mb="${CFW_RENDER_CAPACITY_FREE_MB:-}" load="${CFW_RENDER_CAPACITY_LOAD:-}" ncpu="${CFW_RENDER_CAPACITY_NCPU:-}"
+  local os; os="$(uname -s 2>/dev/null)"
+  if [[ -z "$free_mb" ]]; then
+    if [[ "$os" == "Darwin" ]] && command -v vm_stat >/dev/null 2>&1; then
+      # free + inactive pages: inactive is reclaimable, so counting only "free"
+      # would call a healthy Mac full. Page size comes from vm_stat's header.
+      free_mb="$(vm_stat 2>/dev/null | awk '
+        /page size of/ { for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+$/) ps = $i }
+        /^Pages free:/ { gsub(/\./, "", $3); f = $3 }
+        /^Pages inactive:/ { gsub(/\./, "", $3); ia = $3 }
+        END { if (ps == "") ps = 4096; printf "%d", (f + ia) * ps / 1048576 }')"
+    elif [[ -r /proc/meminfo ]]; then
+      free_mb="$(awk '/^MemAvailable:/ {printf "%d", $2 / 1024}' /proc/meminfo 2>/dev/null)"
+    fi
+  fi
+  if [[ -z "$load" ]]; then
+    if [[ "$os" == "Darwin" ]]; then
+      load="$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | awk '{print $1}')"
+    elif [[ -r /proc/loadavg ]]; then
+      load="$(awk '{print $1}' /proc/loadavg 2>/dev/null)"
+    fi
+  fi
+  if [[ -z "$ncpu" ]]; then
+    if [[ "$os" == "Darwin" ]]; then ncpu="$(cr_capacity_sysctl hw.ncpu)"; else ncpu="$(nproc 2>/dev/null)"; fi
+  fi
+  printf '%s\x1f%s\x1f%s' "$free_mb" "$load" "$ncpu"
+}
+
+# cr_capacity_ok <free_mb> <load> <ncpu> — 0 when a NORMAL request may be
+# claimed; 1 when only urgent work should be (floor or load breached).
+cr_capacity_ok() {
+  local free_mb="$1" load="$2" ncpu="$3" load_int
+  if [[ "$free_mb" =~ ^[0-9]+$ ]] && (( free_mb < CR_CAPACITY_FREE_MB_FLOOR )); then return 1; fi
+  if [[ "$load" =~ ^[0-9]+(\.[0-9]+)?$ && "$ncpu" =~ ^[0-9]+$ ]]; then
+    load_int="${load%%.*}"
+    (( load_int > ncpu )) && return 1
+  fi
+  return 0
+}
+
+# cr_capacity_json <running> <max> <free_mb> <load> — the claim's `capacity`
+# field (plans/m2/CONTRACTS.md §3): {running, max, freeMemoryMb?, cpuLoad?}.
+cr_capacity_json() {
+  python3 -c '
+import json, sys
+running, mx, free_mb, load = sys.argv[1:5]
+c = {"running": int(running), "max": int(mx)}
+if free_mb.isdigit(): c["freeMemoryMb"] = int(free_mb)
+try:
+    if load: c["cpuLoad"] = float(load)
+except ValueError:
+    pass
+print(json.dumps(c))' "$1" "$2" "${3:-}" "${4:-}"
 }
 
 # ===========================================================================
