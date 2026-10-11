@@ -4,8 +4,15 @@
 # narrow cfw-render worker credential, spawns a headless Claude Creative
 # Director per order, watches it, and reconciles the outcome.
 #
-# Usage: cfw-render.sh [--once] [--dry]
-#   --once   accepted for AC compat; this script always does exactly one tick.
+# Usage: cfw-render.sh [--once] [--loop] [--dry]
+#   --once   one tick: claim up to capacity, run, wait, exit (default; the
+#            Linux timer and the test suite use this).
+#   --loop   [M2-04, D89] stay running: the LaunchAgent keeps this alive. Idle
+#            → one claim every CR_CAPACITY_IDLE_CLAIM_SECS; busy → heartbeats
+#            per order as today + a claim check whenever a request finishes or
+#            every 60 s while there is spare capacity. Tick lock held and
+#            touched for the whole life of the process. Claim errors back off
+#            60 s → 10 min, one log line per back-off step.
 #   --dry    validation only — checks binaries/dirs/keys + a live tools/list
 #            call. Claims NOTHING. Exit 0 = all PASS, 1 = any FAIL.
 #
@@ -21,10 +28,12 @@ source "$SELF_DIR/cfw-render-engine.sh"
 source "$SELF_DIR/cfw-render-harness.sh"
 
 DRY=0
+LOOP=0
 for arg in "$@"; do
   case "$arg" in
     --dry) DRY=1 ;;
-    --once) : ;; # default behavior; accepted for AC compat
+    --once) LOOP=0 ;;
+    --loop) LOOP=1 ;;
     *) printf 'cfw-render.sh: unknown flag %s\n' "$arg" >&2; exit 2 ;;
   esac
 done
@@ -286,8 +295,21 @@ for x in a: print(x["path"])' "$h_out" 2>/dev/null)
         cr_log "order $order_id — harness finished but complete_render_order failed"
       fi
     else
-      case "$h_rc" in 20) h_outcome="cancelled" ;; 21) h_outcome="released" ;; 30) h_outcome="failed" ;; esac
+      case "$h_rc" in 20) h_outcome="cancelled" ;; 21) h_outcome="released" ;; 22) h_outcome="revoked" ;; 23) h_outcome="superseded" ;; 30) h_outcome="failed" ;; esac
       cr_log "order $order_id — harness exited $h_rc ($h_outcome)"
+      # [M2-04, D76] stop_after_step (22) and attempt_superseded (23): this
+      # brand is no longer ours to serve from this computer — delete the
+      # order folder (order.json carries the brand's credentials/providerKeys,
+      # steps/ carries its files) and any key material held for it. No further
+      # reports: the attempt is already released (22) or belongs to another
+      # computer (23).
+      if (( h_rc == 22 || h_rc == 23 )); then
+        rm -rf "$order_dir"
+        rm -rf "$(cr_keep_output_dir "$brand_slug" "$order_id")" 2>/dev/null
+        cr_log "order $order_id — brand files and keys deleted after $h_outcome"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "$h_outcome" "$h_rc" "harness" >> "$JOURNAL"
+        return 0
+      fi
     fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "$h_outcome" "$h_rc" "harness" >> "$JOURNAL"
     return 0
@@ -491,45 +513,159 @@ print(tpl)
     "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "$outcome" "$director_exit" "$model_served" >> "$JOURNAL"
 }
 
-# Claim loop (sequential — each claim is a fast DB CAS), then spawn one
-# Director subprocess per claimed order IN BACKGROUND, then wait for all
-# (plan §4 pseudocode) so CFW_RENDER_CONCURRENCY>1 renders in parallel.
+# ---------------------------------------------------------------------------
+# [M2-04] Claims with capacity (CONTRACTS.md §3, D52/D51/D78).
+# ---------------------------------------------------------------------------
 spawn_pids=()
-slot=0
 claim_caps="$(cr_engine_capabilities_json "$(cr_engine_detect)" "$CFW_RENDER_SKILLS_DIR")"
-while (( slot < CFW_RENDER_CONCURRENCY )); do
-  slot=$(( slot + 1 ))
-  # [CFW-146] the claim carries the renderer identity so the owner's order card
-  # can say "Working on your Mac" / "on the box" instead of a bare "Cooking".
-  # [M1-08] Advertise the step-harness engine + the manifests this bundle
-  # carries so cfw-social can hand out manifest-driven orders. No engine
-  # detected → no `capabilities` field at all (legacy claim, old behaviour).
-  claim_resp="$(cr_mcp_call claim_render_order "$(python3 -c '
+claim_label="$(hostname -s 2>/dev/null || hostname)"
+CLAIM_MAX="$(cr_capacity_max)"
+cr_log "capacity: max=$CLAIM_MAX request(s) at once${CFW_RENDER_CONCURRENCY:+ (CFW_RENDER_CONCURRENCY=$CFW_RENDER_CONCURRENCY)}"
+
+# prune_running — drop finished order processes; sets RUNNING (live count).
+# Never call these helpers inside $(...): they mutate spawn_pids and start
+# background jobs, and a command substitution would both lose the array and
+# hang on the children's inherited stdout.
+RUNNING=0
+prune_running() {
+  local -a live=() ; local p
+  for p in "${spawn_pids[@]:-}"; do
+    [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null && live+=("$p")
+  done
+  spawn_pids=()
+  for p in "${live[@]:-}"; do [[ -n "$p" ]] && spawn_pids+=("$p"); done
+  RUNNING=${#spawn_pids[@]}
+}
+
+# claim_once <running> <max> <free_mb> <load> — one claim_render_order call.
+# Prints the orders handed back, one JSON per line (`orders[]` from an M2
+# server, or the single `order` from an older one). rc 1 = call failed.
+claim_once() {
+  local capacity resp
+  capacity="$(cr_capacity_json "$1" "$2" "$3" "$4")"
+  # [CFW-146] renderer identity → "Working on your Mac"; [M1-08] capabilities
+  # → manifest orders; [M2-04] capacity → the server hands out at most
+  # max - running, or one urgent request when running == max.
+  resp="$(cr_mcp_call claim_render_order "$(python3 -c '
 import json, sys
 a = {"workerId": sys.argv[1], "renderer": {"kind": sys.argv[2], "label": sys.argv[3]}}
 if sys.argv[4]:
     a["capabilities"] = json.loads(sys.argv[4])
-print(json.dumps(a))' "$CFW_WORKER_ID" "$CFW_RENDER_RENDERER_KIND" "$(hostname -s 2>/dev/null || hostname)" "$claim_caps")")" || {
-    cr_log "claim_render_order call failed — stopping this tick's claim loop"
-    break
-  }
-  order_json="$(python3 -c '
+a["capacity"] = json.loads(sys.argv[5])
+print(json.dumps(a))' "$CFW_WORKER_ID" "$CFW_RENDER_RENDERER_KIND" "$claim_label" "$claim_caps" "$capacity")")" || return 1
+  python3 -c '
 import json, sys
 d = json.loads(sys.stdin.read())
-o = d.get("order")
-print(json.dumps(o) if o else "")
-' <<< "$claim_resp" 2>/dev/null)"
-  if [[ -z "$order_json" ]]; then
-    cr_log "queue empty or lost claim race — tick done ($((slot-1)) order(s) claimed)"
-    break
+orders = d.get("orders")
+if not isinstance(orders, list):
+    orders = [d.get("order")] if d.get("order") else []
+for o in orders:
+    if isinstance(o, dict) and o.get("id"): print(json.dumps(o))
+' <<< "$resp" 2>/dev/null
+}
+
+# spawn_orders <file> — start one order process per JSON line; sets SPAWNED.
+SPAWNED=0
+spawn_orders() {
+  local line
+  SPAWNED=0
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    spawn_director "$line" </dev/null &
+    spawn_pids+=($!); SPAWNED=$(( SPAWNED + 1 ))
+  done < "$1"
+}
+
+# claim_round — claim up to max - running, then once more for urgent work
+# when full (or when the host is under the memory/load floor). The server
+# decides what, if anything, comes back for that last ask; the worker takes
+# whatever it gets. Sets STARTED (orders started). rc 2 = a claim call
+# failed (the loop backs off), 0 otherwise.
+STARTED=0
+claim_round() {
+  local running free_mb load ncpu started=0 n=0 normal_ok=1 rc=0 drained=0 tmp
+  tmp="$(mktemp)"
+  prune_running; running=$RUNNING
+  IFS=$'\x1f' read -r free_mb load ncpu <<< "$(cr_capacity_probe)"
+  cr_capacity_ok "$free_mb" "$load" "$ncpu" || normal_ok=0
+  if (( ! normal_ok )); then
+    cr_log "capacity: free=${free_mb:-?}MB load=${load:-?} (floor ${CR_CAPACITY_FREE_MB_FLOOR}MB / ncpu ${ncpu:-?}) — normal claims skipped, urgent only"
   fi
-  spawn_director "$order_json" &
-  spawn_pids+=($!)
-done
+  while (( normal_ok && running < CLAIM_MAX )); do
+    if ! claim_once "$running" "$CLAIM_MAX" "$free_mb" "$load" > "$tmp"; then rc=2; break; fi
+    spawn_orders "$tmp"; n=$SPAWNED
+    if (( n == 0 )); then drained=1; break; fi
+    running=$(( running + n )); started=$(( started + n ))
+  done
+  # Full (or floor breached): one more ask, reporting running >= max, so an
+  # urgent request can start alongside (D51). Not when the queue just ran dry.
+  if (( rc == 0 && ! drained )) && { (( ! normal_ok )) || (( running >= CLAIM_MAX )); }; then
+    local ask_running=$running
+    (( ask_running < CLAIM_MAX )) && ask_running=$CLAIM_MAX
+    if claim_once "$ask_running" "$CLAIM_MAX" "$free_mb" "$load" > "$tmp"; then
+      spawn_orders "$tmp"; n=$SPAWNED
+      (( n > 0 )) && cr_log "capacity: urgent ask with running=$ask_running max=$CLAIM_MAX returned $n order(s) — starting alongside"
+      started=$(( started + n ))
+    else
+      rc=2
+    fi
+  fi
+  rm -f "$tmp"
+  STARTED=$started
+  return $rc
+}
 
-for pid in "${spawn_pids[@]:-}"; do
-  [[ -n "$pid" ]] && wait "$pid"
-done
+if (( ! LOOP )); then
+  # One tick (--once): one claim round, then wait for every order it started.
+  claim_round || cr_log "claim_render_order call failed — stopping this tick's claim loop"
+  cr_log "claim round done — $STARTED order(s) started"
+  for pid in "${spawn_pids[@]:-}"; do
+    [[ -n "$pid" ]] && wait "$pid"
+  done
+  cr_log "tick complete"
+  exit 0
+fi
 
-cr_log "tick complete"
-exit 0
+# ---------------------------------------------------------------------------
+# [M2-04, D89] --loop: stay running. Sleeps are in units of
+# CR_CAPACITY_IDLE_CLAIM_SECS (60 s; CFW_RENDER_CAPACITY_UNIT_SECS scales them
+# for tests). A finished request wakes the loop early so the freed slot is
+# re-filled at once.
+# ---------------------------------------------------------------------------
+loop_sleep() { # loop_sleep <secs> — returns early when a running order ends
+  local secs="$1" step before after i
+  step="$(awk -v s="$secs" 'BEGIN { s = s / 10; if (s < 0.05) s = 0.05; printf "%.3f", s }')"
+  prune_running; before=$RUNNING
+  for (( i = 0; i < 10; i++ )); do
+    sleep "$step"
+    prune_running; after=$RUNNING
+    (( after < before )) && return 0
+  done
+  return 0
+}
+
+backoff=0
+cr_log "loop: started (pid $$) — idle claim every ${CR_CAPACITY_IDLE_CLAIM_SECS}s, back-off ${CR_CLAIM_BACKOFF_BASE_SECS}s..${CR_CLAIM_BACKOFF_MAX_SECS}s"
+while true; do
+  cr_tick_lock_touch
+  claim_round && round_rc=0 || round_rc=$?
+  started=$STARTED
+  if (( round_rc == 2 )); then
+    # One line per back-off STEP: the value only changes 60→120→240→480→600,
+    # so a 5-minute outage logs five lines, not fifty.
+    next="$(awk -v b="$backoff" -v base="$CR_CLAIM_BACKOFF_BASE_SECS" -v mx="$CR_CLAIM_BACKOFF_MAX_SECS" \
+      'BEGIN { n = (b == 0) ? base : b * 2; if (n > mx) n = mx; print n }')"
+    if [[ "$next" != "$backoff" ]]; then
+      backoff="$next"
+      cr_log "claim back-off: claim_render_order keeps failing — retrying every ${backoff}s (cap ${CR_CLAIM_BACKOFF_MAX_SECS}s)"
+    fi
+    loop_sleep "$backoff"
+    continue
+  fi
+  if [[ "$backoff" != "0" ]]; then
+    cr_log "claim back-off: cleared — claims are succeeding again"
+    backoff=0
+  fi
+  if (( started > 0 )); then prune_running; cr_log "loop: $started order(s) started ($RUNNING running)"; fi
+  loop_sleep "$CR_CAPACITY_IDLE_CLAIM_SECS"
+done

@@ -11,8 +11,11 @@
   (curl/python3/node/npx/ffmpeg/ffprobe/magick/claude), not a guessed static
   list. See bin/cfw-render-lib.sh and DOZER-DESIGN-CFW-291.md.
 
-  Cadence: every 15 min, offset :05/:20/:35/:50 to avoid stacking with
-  ab-hustler's :22/:52 schedule on the same Mac (plan §2).
+  Cadence (M2-04, D89): kept alive. launchd starts the worker at login
+  (RunAtLoad) and restarts it whenever it exits (KeepAlive), no sooner than
+  ThrottleInterval seconds after the last start. The worker itself loops:
+  one claim every 60 s while idle, re-fills freed slots at once while busy.
+  The tick lock inside the worker stops a second copy from claiming.
 -->
 <plist version="1.0">
 <dict>
@@ -22,7 +25,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>{{PREFIX}}/bin/cfw-render.sh</string>
-    <string>--once</string>
+    <string>--loop</string>
   </array>
 
   <key>EnvironmentVariables</key>
@@ -33,13 +36,10 @@
     <string>{{WORKER_PATH}}</string>
   </dict>
 
-  <key>StartCalendarInterval</key>
-  <array>
-    <dict><key>Minute</key><integer>5</integer></dict>
-    <dict><key>Minute</key><integer>20</integer></dict>
-    <dict><key>Minute</key><integer>35</integer></dict>
-    <dict><key>Minute</key><integer>50</integer></dict>
-  </array>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
 
   <key>StandardOutPath</key>
   <string>{{LOG_DIR}}/cfw-render.out.log</string>
@@ -47,6 +47,6 @@
   <string>{{LOG_DIR}}/cfw-render.err.log</string>
 
   <key>RunAtLoad</key>
-  <false/>
+  <true/>
 </dict>
 </plist>

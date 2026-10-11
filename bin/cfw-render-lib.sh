@@ -950,7 +950,20 @@ CR_CAPACITY_FREE_MB_FLOOR=3072
 # a test seam only (1 s in the suite) — production is 60 s → 10 min.
 CR_CAPACITY_IDLE_CLAIM_SECS="${CFW_RENDER_CAPACITY_UNIT_SECS:-60}"
 CR_CLAIM_BACKOFF_BASE_SECS="${CFW_RENDER_CAPACITY_UNIT_SECS:-60}"
-CR_CLAIM_BACKOFF_MAX_SECS=$(( ${CFW_RENDER_CAPACITY_UNIT_SECS:-60} * 10 ))
+# awk, not $(( )): the test seam may be fractional (0.05 s).
+CR_CLAIM_BACKOFF_MAX_SECS="$(awk -v u="${CFW_RENDER_CAPACITY_UNIT_SECS:-60}" 'BEGIN { print u * 10 }')"
+
+# [M2-04, D78] cr_capacity_setup_note — the setup summary line when max is 1.
+# Wording mirrored in cfw-social labels.ts by M2-12 (docs/capacity.md).
+CR_CAPACITY_ONE_AT_A_TIME_MSG="This computer runs one request at a time. It still serves your brands; bigger jobs just take turns."
+cr_capacity_setup_note() {
+  local mx; mx="$(cr_capacity_max)"
+  if [[ "$mx" == "1" ]]; then
+    printf '%s\n' "$CR_CAPACITY_ONE_AT_A_TIME_MSG"
+  else
+    printf 'This computer runs up to %s requests at a time.\n' "$mx"
+  fi
+}
 
 cr_capacity_sysctl() { # cr_capacity_sysctl <key> — "" when unavailable
   command -v sysctl >/dev/null 2>&1 || { printf ''; return 0; }

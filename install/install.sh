@@ -258,7 +258,20 @@ case "$OS" in
         -e "s#{{WORKER_PATH}}#$(sed_escape "$WORKER_PATH")#g" \
       "$PLIST_SRC" > "$PLIST_DST"
     echo "install.sh: wrote $PLIST_DST"
-    echo "install.sh: to load: launchctl bootstrap gui/\$(id -u) $PLIST_DST"
+    # [M2-04, D89] The job is kept alive now (--loop). A computer already on
+    # the old 15-minute schedule must be unloaded and reloaded, or launchd
+    # keeps running the plist it has in memory: bootout (ignore "not loaded"),
+    # then bootstrap. Idempotent on a fresh install and on every re-run.
+    if command -v launchctl >/dev/null 2>&1 && [[ "${CFW_RENDER_INSTALL_NO_LAUNCHCTL:-0}" != "1" ]]; then
+      launchctl bootout "gui/$(id -u)/com.cfw.render" >/dev/null 2>&1 || true
+      if launchctl bootstrap "gui/$(id -u)" "$PLIST_DST" >/dev/null 2>&1; then
+        echo "install.sh: loaded com.cfw.render (kept-alive loop) via launchctl bootstrap"
+      else
+        echo "install.sh: could not load com.cfw.render — run: launchctl bootstrap \"gui/\$(id -u)\" \"$PLIST_DST\"" >&2
+      fi
+    else
+      echo "install.sh: to load: launchctl bootout \"gui/\$(id -u)/com.cfw.render\"; launchctl bootstrap \"gui/\$(id -u)\" \"$PLIST_DST\""
+    fi
     ;;
   Linux)
     UNIT_DST=/etc/systemd/system
@@ -304,6 +317,10 @@ if [[ "$MODE" == "byoa" ]]; then
   echo "  logs:             $LOG_DIR"
   echo "  private settings: $ENV_FILE  (and $STATE_DIR)"
 fi
+
+# [M2-04, D78] How many requests this computer runs at once (bin/cfw-render-lib.sh table).
+echo ""
+echo "install.sh: $(cr_capacity_setup_note)"
 
 echo ""
 echo "install.sh: running validation (--dry) —"
