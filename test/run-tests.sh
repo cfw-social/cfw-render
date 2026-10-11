@@ -1868,9 +1868,9 @@ import json, sys
 m = json.load(open(sys.argv[1]))
 print(m["recipeVersion"], ",".join(s["id"] for s in m["steps"]), ",".join(i["id"] for i in m["inputs"]), sum(s["weight"] for s in m["steps"]))
 ' "$c16_spot" 2>/dev/null)"
-c16_want="2026.10.1 research,script,prepare_footage,transcribe,plan_edit,plan_broll,render_scenes,assemble,final_checks talking_head,broll,cta 100"
+c16_want="2026.10.2 research,script,prepare_footage,transcribe,plan_edit,plan_broll,render_scenes,assemble,final_checks talking_head,broll,cta 100"
 if [[ "$c16_shape" == "$c16_want" ]]; then
-  pass "Spotlight manifest: recipeVersion 2026.10.1, 9 steps in contract order, 3 inputs, computer weights sum to 100"
+  pass "Spotlight manifest: recipeVersion 2026.10.2 (M1-09), 9 steps in contract order, 3 inputs, computer weights sum to 100"
 else
   fail "Spotlight manifest shape" "expected '$c16_want', got '$c16_shape'"
 fi

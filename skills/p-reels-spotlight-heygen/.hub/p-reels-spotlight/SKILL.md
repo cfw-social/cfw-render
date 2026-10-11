@@ -70,7 +70,7 @@ at any timestamp the VO is silent during a takeover, the reel is broken (continu
 | `captions` | No | **on** | Kinetic word-synced caption overlay. `off` only if the brief says no captions. |
 | `sfx` | No | **on** | Sound design from shipped pack (`assets/sfx/` — CC0). |
 | `grade` | No | planner picks | `warm-amber` or `clean-bright`. |
-| `cover_at` | No | planner picks | Timestamp (seconds) past the hook to use as the money-shot for the 0.4s cover freeze. The OPUS plan should emit this; if absent, Step 10 picks mid-content automatically. |
+| `cover_at` | No | planner picks | Timestamp (seconds) past the hook to use as the money-shot for the 0.4s cover freeze. The Step 4 edit plan should emit this; if absent, Step 10 picks mid-content automatically. |
 | `cta_card` | No | brand default | Auto-generated end-card takeover (2.5–3s) overlaying the final 2.5–3s of the bed — does NOT extend the reel. Pass `off` to skip. |
 | `cta_text` | No | `FOLLOW FOR MORE` | Hero line on the end card. Resolve from the active brand (`brand-overrides/<slug>/brand.json` `cta.line`, or the order's `copy.cta`). The fallback is generic and carries no brand. |
 | `cta_handle` | No | — (no handle line) | Handle/URL on the end card. Resolve from the active brand (`brand-overrides/<slug>/brand.json` `cta.handle`, or the brand's primary social account in the order's brand context). **If the brand has no handle, leave it empty: the card renders without a handle line.** Never invent one and never reuse another brand's. |
@@ -221,14 +221,14 @@ fi
 > **`references/transcript-guide.md`** (NOT under `p-reels-spotlight`, which has no `references/` dir).
 
 ```bash
-# Fallback chain: cfw-transcribe (preferred) → mlx_whisper → whisper → npx hyperframes@0.7.5 transcribe.
+# LOCAL transcription is the default (M1-09 / D13): mlx_whisper → whisper → npx hyperframes@0.7.5
+# transcribe (whisper.cpp). The hosted Gemini backend (`cfw-transcribe`) runs ONLY when the order
+# carries the brand's `gemini` provider key — the runner exports it as GEMINI_API_KEY from the
+# order's brand provider keys. NEVER read a key from a file on this machine; when the variable is
+# unset the Gemini branch is skipped and local Whisper runs.
 # known_transcript path: if provided externally (e.g. by p-reels-spotlight-heygen wrapper), write
 # it to $W/words.json and skip this block.
-# box-compat: cfw-transcribe (Gemini backend) needs GEMINI_API_KEY; source from box
-# env file when not already in the environment. Harmless no-op off-box.
-[ -z "${GEMINI_API_KEY:-}" ] && GEMINI_API_KEY=$(grep GEMINI_API_KEY /opt/cfw-agent/.env 2>/dev/null | cut -d= -f2-) || true
-export GEMINI_API_KEY
-if command -v cfw-transcribe >/dev/null 2>&1; then
+if [ -n "${GEMINI_API_KEY:-}" ] && command -v cfw-transcribe >/dev/null 2>&1; then
   cfw-transcribe --input "$W/base.mp4" --out "$W/transcript.srt" --format srt
   # Convert SRT → words.json
   python3 - "$W/transcript.srt" "$W/words.json" <<'PY'
@@ -245,11 +245,11 @@ for block in lines:
 json.dump(words, open(sys.argv[2], 'w'))
 PY
 elif command -v mlx_whisper >/dev/null 2>&1; then
-  echo "[spotlight] cfw-transcribe not found — falling back to mlx_whisper"
+  echo "[spotlight] local transcription: mlx_whisper"
   mlx_whisper "$W/base.mp4" --model mlx-community/whisper-small --output-dir "$W" --output-format json
   python3 -c "import json; d=json.load(open('$W/base.json')); words=[{'text':s['text'],'start':s['start'],'end':s['end']} for s in d.get('segments',[])] ; json.dump(words,open('$W/words.json','w'))"
 elif command -v whisper >/dev/null 2>&1; then
-  echo "[spotlight] cfw-transcribe not found — falling back to whisper CLI"
+  echo "[spotlight] local transcription: whisper CLI"
   whisper "$W/base.mp4" --model small --output_dir "$W" --output_format srt
   python3 - "$W/base.srt" "$W/words.json" <<'PY'
 import re, json, sys
@@ -265,7 +265,7 @@ for block in lines:
 json.dump(words, open(sys.argv[2], 'w'))
 PY
 else
-  echo "[spotlight] falling back to npx hyperframes@0.7.5 transcribe"
+  echo "[spotlight] local transcription: npx hyperframes@0.7.5 transcribe (whisper.cpp)"
   cd "$W" && npx hyperframes@0.7.5 transcribe base.mp4 --model small
 fi
 # NO .en suffix unless audio is confirmed English — .en models TRANSLATE non-English.
@@ -333,43 +333,44 @@ else
 fi
 ```
 
-### Step 4 — PLAN the edit with OPUS (the brain; kimi fallback)
+### Step 4 — PLAN the edit (YOU write the plan — the engine running this recipe is the planner)
 
-Plan-on-Opus, execute-on-kimi. Opus reads the word transcript + brand and writes ONE curated
-`plan.json` — the executor never invents anything. The plan now also emits a `cover_at` timestamp
-(a content beat past the hook, used for the first-frame cover in Step 10):
+**You — the signed-in engine executing this recipe (Codex or Claude Code) — are the planner.** Read
+`$W/words.json` and the brand, think, and write ONE curated `$W/plan.json` yourself, following the
+brief below as your spec. There is NO separate model call, NO API key and NO fallback model: planning
+through an Anthropic/Gemini API key from a file on this machine is removed (M1-09 / D13, D39). The
+later steps are mechanical executors — they fill templates from your plan and never invent anything.
+The plan also emits a `cover_at` timestamp (a content beat past the hook, used for the first-frame
+cover in Step 10).
 
-```bash
-# box-compat: the Opus/kimi planning fallback (no subscription auth on-box) needs
-# ANTHROPIC_API_KEY; source from box env file when not already set. No-op off-box.
-[ -z "${ANTHROPIC_API_KEY:-}" ] && ANTHROPIC_API_KEY=$(grep ANTHROPIC_API_KEY /opt/cfw-agent/.env 2>/dev/null | cut -d= -f2-) || true
-export ANTHROPIC_API_KEY
+The planning brief (what `plan.json` must contain):
 
-PLAN_PROMPT="You are planning a PREMIUM 9:16 talking-head reel edit (speaker full-frame, never cut).
-Output STRICT JSON ONLY (one object, no prose).
-Word transcript: $(cat "$W/words.json")
+```text
+You are planning a PREMIUM 9:16 talking-head reel edit (speaker full-frame, never cut).
+Output STRICT JSON ONLY (one object, no prose) to $W/plan.json.
+Word transcript: $W/words.json ([{text,start,end}]).
 Total duration: $DUR seconds.
 Brand: <from brief via Visual Identity Gate; default bg #0F172A, accent #F97316, fg #F1F5F9>.
 Schema:
-{ \"duration\": $DUR, \"energy\": \"high|medium|low\", \"grade\": \"warm-amber|clean-bright\",
-  \"cover_at\": <float seconds — a content beat past the hook, NOT at t=0, NOT in the hook scene>,
-  \"brand\": {\"bg\":\"#hex6\",\"accent\":\"#hex6\",\"fg\":\"#hex6\"},
-  \"takeovers\": [ {\"start\":s,\"end\":s,\"template\":\"tk-stat|tk-keyword|tk-list|tk-quote|tk-typing-ui\",
-                    \"fill\":{<per-template keys below>}} ],
-  \"caption_groups\": [ {\"start\":s,\"end\":s,\"style\":0|1|2,
-        \"words\":[{\"w\":\"TEXT\",\"s\":start,\"e\":end,\"em\":false}] } ],
-  \"sfx\": [ {\"t\":s,\"name\":\"whoosh-deep|whoosh-air|impact-sub|impact-punch|riser|click|pop|swipe\",\"gain\":0.0-0.8} ] }
+{ "duration": $DUR, "energy": "high|medium|low", "grade": "warm-amber|clean-bright",
+  "cover_at": <float seconds — a content beat past the hook, NOT at t=0, NOT in the hook scene>,
+  "brand": {"bg":"#hex6","accent":"#hex6","fg":"#hex6"},
+  "takeovers": [ {"start":s,"end":s,"template":"tk-stat|tk-keyword|tk-list|tk-quote|tk-typing-ui",
+                  "fill":{<per-template keys below>}} ],
+  "caption_groups": [ {"start":s,"end":s,"style":0|1|2,
+        "words":[{"w":"TEXT","s":start,"e":end,"em":false}] } ],
+  "sfx": [ {"t":s,"name":"whoosh-deep|whoosh-air|impact-sub|impact-punch|riser|click|pop|swipe","gain":0.0-0.8} ] }
 Template fill keys — tk-stat: EYEBROW, STAT (short e.g. '3X' or '70%'), LABEL.
 tk-keyword: WORD (one word), SUPPORT (short line). tk-list: TITLE, ITEM1, ITEM2, ITEM3.
-tk-quote: QUOTE, ATTR. TITLE and QUOTE may wrap ONE key word in <span class=\"accent\">WORD</span>.
+tk-quote: QUOTE, ATTR. TITLE and QUOTE may wrap ONE key word in <span class="accent">WORD</span>.
 tk-typing-ui: LABEL (e.g. 'claude.ai'), PROMPT (the typed text), TYPING_SPEED (0.5-1.5), BOTTOM_TAG.
 RULES:
 1. caption_groups cover the FULL duration, 2-4 words each, non-overlapping, break on sentence
    boundaries or pauses >=150ms. Words VERBATIM from the transcript.
 2. LATIN SCRIPT ONLY: if any transcript word is in Devanagari (or any non-Latin script),
    transliterate it to Latin characters phonetically. NEVER translate.
-3. At most ONE word per group gets \"em\":true. Some groups have none.
-4. \"style\" cycles 0/1/2 — never the same style on adjacent groups.
+3. At most ONE word per group gets "em":true. Some groups have none.
+4. "style" cycles 0/1/2 — never the same style on adjacent groups.
 5. takeovers: 2-4 windows, 3-6s each, first no earlier than t=2, none in the final 2s, >=4s of
    speaker between windows, never the same template twice in a row. Content must restate what is
    SAID in that window. Use tk-typing-ui only when the content involves AI/prompts/terminal workflows.
@@ -377,21 +378,13 @@ RULES:
    biggest takeover, click/pop on at most 3 emphasis words. Max 12 cues, gain <=0.6.
 7. cover_at: pick a frame from mid-content (ideally mid-sentence at peak energy) — NEVER t=0 or the
    first 3s (hook animates in from black). Typically 20-60% of total duration.
-8. A visible change (takeover, emphasis pop, or caption style shift) every 2-4 seconds."
+8. A visible change (takeover, emphasis pop, or caption style shift) every 2-4 seconds.
+```
 
-PLAN_JSON=$(env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_API_KEY \
-  -u ANTHROPIC_DEFAULT_OPUS_MODEL -u ANTHROPIC_DEFAULT_SONNET_MODEL -u ANTHROPIC_DEFAULT_HAIKU_MODEL \
-  -u CLAUDE_CODE_SUBAGENT_MODEL \
-  timeout 240 claude --print "$PLAN_PROMPT" 2>/dev/null \
-  | python3 -c "import sys,re; m=re.search(r'\{.*\}', sys.stdin.read(), re.S); print(m.group(0) if m else '')")
+Write the object to `$W/plan.json` with your file-writing tool (no prose around it), then run the
+mechanical guard — fix the plan and re-run until it prints `plan OK`:
 
-if ! echo "$PLAN_JSON" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
-  echo "[spotlight] Opus planning unavailable — falling back to kimi planning"
-  PLAN_JSON=$(claude --print "$PLAN_PROMPT" 2>/dev/null \
-    | python3 -c "import sys,re; m=re.search(r'\{.*\}', sys.stdin.read(), __import__('re').S); print(m.group(0) if m else '')")
-fi
-echo "$PLAN_JSON" > "$W/plan.json"
-
+```bash
 python3 - "$W/plan.json" "$DUR" <<'PY'
 import json,re,sys
 p=json.load(open(sys.argv[1])); dur=float(sys.argv[2])
@@ -410,7 +403,7 @@ PY
 
 When `broll[]` is supplied, run `c-broll-sync` to compute the takeover beat list. The beats from
 c-broll-sync are **merged** with the graphics takeovers from plan.json — b-roll beats become
-additional full-frame takeovers; they do not replace the OPUS-planned graphics takeovers.
+additional full-frame takeovers; they do not replace the graphics takeovers planned in Step 4.
 
 > **`scene_plan.json` is MANDATORY (CFW-131).** `plan.js` emits graphics beats with no copy and now exits 1 rather than hand a blank card downstream. Before this call, author `$W/scene_plan.json` (contract: `.hub/c-broll-sync/SCENE-PLAN.md` — one `graphic` scene per 4–6 s idea with `headline` / `eyebrow` / `ghost` / `type`, `avatar` scenes for talking-head windows, optional `broll` scenes to pin clips, `cover: true` on the cover scene) and validate it: `node "$BROLL_SYNC_DIR/scripts/validate-scene-plan.js" "$W/scene_plan.json" --bed-dur "$BED_DUR" --transcript <words.json>`. Every `graphics` beat then carries `scene.title_html` + a `slug` (`beat<N>-<id>`).
 
@@ -915,8 +908,8 @@ Per frame CHECK:
 ### Step 10 — First-frame cover (§2d — MANDATORY)
 
 IG/TikTok use frame 1 as the feed poster. The hook scene animates in from black, so frame 1 is
-blank → blank thumbnail. Fix: prepend a **0.4s freeze of the money-shot frame** tagged by the OPUS
-plan's `cover_at` timestamp (a content beat past the hook).
+blank → blank thumbnail. Fix: prepend a **0.4s freeze of the money-shot frame** tagged by the Step 4
+edit plan's `cover_at` timestamp (a content beat past the hook).
 
 ```bash
 COVER_AT=$(python3 -c "import json; p=json.load(open('$W/plan.json')); print(p.get('cover_at', $DUR * 0.4))")
@@ -1109,8 +1102,8 @@ way as Step 6b. The cover rule (Step 10) still runs.
   Step 6b, not HyperFrames sub-compositions. This avoids loading external video inside
   HyperFrames compositions (which can stall headless chromium).
 - **c-broll-sync is a planner — it does not render.** Its beat_list.json drives Step 5A + 6b.
-- **Plan on Opus, execute on kimi.** The executor fills templates — it never authors HTML or picks
-  takeover content.
+- **The engine running the recipe plans (Step 4); the later steps execute.** The executor fills
+  templates — it never authors HTML or picks takeover content. No API key is involved in planning.
 - **Hinglish / non-English captions stay Latin-script.** The planner transliterates; the mechanical
   guard + Visual QA Gate (b) both reject Devanagari. Never translate.
 - **cover_at must be past the hook (≥ 2s).** The plan guard enforces this. If the plan omits
@@ -1129,12 +1122,9 @@ way as Step 6b. The cover rule (Step 10) still runs.
 
 ### Box-compat gotchas (Ubuntu 22.04 / Hermes — folded from on-box validation)
 
-- **No `--dangerously-skip-permissions`.** That flag is blocked for `root` on the box — drop it from
-  every `claude --print` call (Step 4 planning). The call still works without it.
-- **Source `GEMINI_API_KEY` before `cfw-transcribe`** (Step 3). cfw-transcribe's Gemini backend reads
-  it from the env; on-box it lives in `/opt/cfw-agent/.env`. The guard is a no-op off-box.
-- **Source `ANTHROPIC_API_KEY` before the Opus/kimi planner** (Step 4). On-box there is no subscription
-  auth, so the planner fallback needs the key from `/opt/cfw-agent/.env`. No-op off-box.
+- **No key files, no hosted-box paths (M1-09).** The recipe never reads a `.env` or any other
+  machine-specific file. `GEMINI_API_KEY` (Step 3) exists only if the runner exported it from the
+  order's brand provider keys; planning (Step 4) is done by the engine running the recipe itself.
 - **`##` CSS guard.** gpt-5.5 occasionally emits a double-hash hex (`--bg: ##0F172A`) → white background.
   After writing the generated HyperFrames comp (Step 5), collapse double-hash to single
   (`sed -i 's/##/#/g' "$W/comp/index.html"`) before lint/render.
