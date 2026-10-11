@@ -1,0 +1,395 @@
+{
+  "manifestFormat": 1,
+  "recipe": "p-reels-split-heygen",
+  "recipeVersion": "2026.10.2",
+  "label": "Split-screen reel from a script (HeyGen avatar)",
+  "deliverable": {
+    "kind": "video",
+    "aspect": "9:16",
+    "width": 1080,
+    "height": 1920,
+    "durationSec": {
+      "min": 20,
+      "max": 60
+    }
+  },
+  "needs": {
+    "os": [
+      "macos"
+    ],
+    "engines": [
+      "codex",
+      "claude-code"
+    ],
+    "tools": [
+      "ffmpeg",
+      "node>=22",
+      "npx",
+      "chromium",
+      "python3"
+    ],
+    "providers": [
+      "heygen",
+      "elevenlabs"
+    ]
+  },
+  "inputs": [
+    {
+      "id": "script",
+      "label": "Narration script",
+      "kinds": [
+        "text"
+      ],
+      "required": true,
+      "count": {
+        "min": 1,
+        "max": 1
+      },
+      "neededAt": "start"
+    },
+    {
+      "id": "avatar_id",
+      "label": "HeyGen avatar",
+      "kinds": [
+        "text"
+      ],
+      "required": false,
+      "count": {
+        "min": 0,
+        "max": 1
+      },
+      "neededAt": "start",
+      "default": "brand"
+    },
+    {
+      "id": "voice_id",
+      "label": "ElevenLabs voice",
+      "kinds": [
+        "text"
+      ],
+      "required": false,
+      "count": {
+        "min": 0,
+        "max": 1
+      },
+      "neededAt": "start",
+      "default": "brand"
+    },
+    {
+      "id": "broll",
+      "label": "B-roll clips",
+      "kinds": [
+        "video"
+      ],
+      "required": false,
+      "count": {
+        "min": 0,
+        "max": null
+      },
+      "constraints": {
+        "orientation": "any"
+      },
+      "neededAt": {
+        "step": "plan_beats"
+      }
+    },
+    {
+      "id": "cta",
+      "label": "Call to action",
+      "kinds": [
+        "text"
+      ],
+      "required": false,
+      "count": {
+        "min": 0,
+        "max": 1
+      },
+      "neededAt": {
+        "step": "composite"
+      },
+      "default": "brand"
+    },
+    {
+      "id": "outro",
+      "label": "Outro clip",
+      "kinds": [
+        "video"
+      ],
+      "required": false,
+      "count": {
+        "min": 0,
+        "max": 1
+      },
+      "constraints": {
+        "orientation": "portrait"
+      },
+      "neededAt": {
+        "step": "composite"
+      }
+    }
+  ],
+  "steps": [
+    {
+      "id": "generate_avatar",
+      "label": "Generate the avatar video",
+      "weight": 10,
+      "runsOn": "computer",
+      "when": "always",
+      "instructions": "steps/00-generate-avatar.md",
+      "saves": [
+        {
+          "id": "talking_head",
+          "kind": "video",
+          "preview": true
+        }
+      ],
+      "checks": [
+        {
+          "id": "avatar_has_audio",
+          "label": "Avatar video has an audio stream"
+        },
+        {
+          "id": "avatar_duration_window",
+          "label": "Avatar video is 20–60 s"
+        }
+      ],
+      "maxCheckRetries": 1,
+      "canAsk": [
+        "script",
+        "avatar_id",
+        "voice_id"
+      ]
+    },
+    {
+      "id": "prepare_footage",
+      "label": "Prepare footage",
+      "weight": 9,
+      "runsOn": "computer",
+      "when": "always",
+      "instructions": "steps/01-prepare-footage.md",
+      "saves": [
+        {
+          "id": "voice_track",
+          "kind": "video",
+          "preview": false
+        }
+      ],
+      "checks": [
+        {
+          "id": "bed_has_audio",
+          "label": "Voice bed has an audio stream"
+        },
+        {
+          "id": "bed_not_black",
+          "label": "Video is not black"
+        }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "transcribe",
+      "label": "Transcribe",
+      "weight": 9,
+      "runsOn": "computer",
+      "when": "always",
+      "instructions": "steps/02-transcribe.md",
+      "saves": [
+        {
+          "id": "transcripts",
+          "kind": "json",
+          "preview": false
+        }
+      ],
+      "checks": [
+        {
+          "id": "words_found",
+          "label": "Words found in the transcript"
+        }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "plan_beats",
+      "label": "Plan the top-zone beats",
+      "weight": 14,
+      "runsOn": "computer",
+      "when": "always",
+      "instructions": "steps/03-plan-beats.md",
+      "saves": [
+        {
+          "id": "beat_list",
+          "kind": "json",
+          "preview": false
+        }
+      ],
+      "checks": [
+        {
+          "id": "beats_cover_bed",
+          "label": "Beats cover the whole voice bed"
+        }
+      ],
+      "maxCheckRetries": 2,
+      "canAsk": [
+        "broll"
+      ]
+    },
+    {
+      "id": "build_top",
+      "label": "Build the top-zone track",
+      "weight": 17,
+      "runsOn": "computer",
+      "when": "always",
+      "instructions": "steps/04-build-top.md",
+      "saves": [
+        {
+          "id": "top_track",
+          "kind": "video",
+          "preview": false
+        }
+      ],
+      "checks": [
+        {
+          "id": "top_track_dims",
+          "label": "Top track is 1080×960"
+        },
+        {
+          "id": "top_track_not_black",
+          "label": "Top zone is not black"
+        },
+        {
+          "id": "top_track_matches_bed",
+          "label": "Top track length matches the voice bed"
+        }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "build_bottom",
+      "label": "Build the face track",
+      "weight": 9,
+      "runsOn": "computer",
+      "when": "always",
+      "instructions": "steps/05-build-bottom.md",
+      "saves": [
+        {
+          "id": "bottom_track",
+          "kind": "video",
+          "preview": false
+        }
+      ],
+      "checks": [
+        {
+          "id": "bottom_track_dims",
+          "label": "Face track is 1080×960"
+        },
+        {
+          "id": "bottom_has_audio",
+          "label": "Face track carries the voice bed"
+        },
+        {
+          "id": "bottom_track_matches_bed",
+          "label": "Face track length matches the voice bed"
+        }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "composite",
+      "label": "Composite the split reel",
+      "weight": 18,
+      "runsOn": "computer",
+      "when": "always",
+      "instructions": "steps/06-composite.md",
+      "saves": [
+        {
+          "id": "assembled_video",
+          "kind": "video",
+          "preview": false
+        }
+      ],
+      "checks": [
+        {
+          "id": "vo_continuous_bed",
+          "label": "Voice is continuous under the whole reel"
+        },
+        {
+          "id": "split_seam_clean",
+          "label": "Hard seam at y=960, captions stay in the top zone"
+        }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "final_checks",
+      "label": "Final checks and captions",
+      "weight": 14,
+      "runsOn": "computer",
+      "when": "always",
+      "instructions": "steps/07-final-checks.md",
+      "saves": [
+        {
+          "id": "final_video",
+          "kind": "video",
+          "preview": true
+        },
+        {
+          "id": "cover",
+          "kind": "image",
+          "preview": true
+        },
+        {
+          "id": "captions",
+          "kind": "json",
+          "preview": false
+        }
+      ],
+      "checks": [
+        {
+          "id": "qa_gate",
+          "label": "Reel passes the QA gate"
+        },
+        {
+          "id": "duration_window",
+          "label": "Duration is within the 20–62 s window"
+        },
+        {
+          "id": "canvas_1080x1920",
+          "label": "Canvas is 1080×1920"
+        },
+        {
+          "id": "frame_not_black",
+          "label": "Sampled frames are not black"
+        },
+        {
+          "id": "top_zone_not_black",
+          "label": "Top zone is not black"
+        },
+        {
+          "id": "face_fills_bottom",
+          "label": "Face fills the bottom zone"
+        },
+        {
+          "id": "hard_seam_960",
+          "label": "Hard seam at y=960"
+        },
+        {
+          "id": "captions_top_only",
+          "label": "Captions stay in the top zone"
+        },
+        {
+          "id": "latin_script_only",
+          "label": "Captions use Latin script only"
+        },
+        {
+          "id": "broll_beats_correct",
+          "label": "B-roll beats show the planned clip"
+        },
+        {
+          "id": "cover_is_moneyshot",
+          "label": "Cover is the money shot"
+        }
+      ],
+      "maxCheckRetries": 2
+    }
+  ]
+}

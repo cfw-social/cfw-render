@@ -4,8 +4,8 @@
   "sourceCommit": "8ab5d1fcdeacc6f8e6ec62e726d0a6ac65e8eea4",
   "sourceSha": "8ab5d1fcdeacc6f8e6ec62e726d0a6ac65e8eea4",
   "recipeCount": 14,
-  "aggregateChecksum": "sha256:bc4440908f5e909b3c7207ac94390fab377d60417ef6e34ed5d54d2a8a58a66b",
-  "bundledAt": "2026-10-11T06:52:34Z",
+  "aggregateChecksum": "sha256:a6f012575912ef34fb6244a218a8c6bad58734b35a417c8b49c8d56b0345d600",
+  "bundledAt": "2026-10-11T14:19:00Z",
   "bundleMethod": "scripts/sync-skills.sh (direct copy from private source repo; git-subtree retired)",
   "updateCommand": "CFW_SKILLS_SRC=<path-to-private-skills-repo> scripts/sync-skills.sh",
   "recipes": {
@@ -51,23 +51,23 @@
     },
     "p-reels-pip": {
       "version": "1.0.0",
-      "checksum": "sha256:c663973da5b656a36d72dc526ed7d8bc0b87e25fc35546bbc46757fd189f968a",
-      "fileCount": 97
+      "checksum": "sha256:916db61e86a97af1eeac05d4d01a75194ac8728d2f6353ce5d812b434c0a39b1",
+      "fileCount": 105
     },
     "p-reels-pip-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:85277016182480ccc5ecbe871d1ebf61013bc2af0ba5a4f7272ad0f63c198aca",
-      "fileCount": 101
+      "checksum": "sha256:93d1bbedcbb9a927dc0b19e62f8d2f2df1eb4f8e9ed1a718879e7b400bb21877",
+      "fileCount": 118
     },
     "p-reels-split": {
       "version": "1.0.0",
-      "checksum": "sha256:290a53d6c5e013b47f81188561b2de13c43d021fea5f9aa8689b4c54161b02d3",
-      "fileCount": 103
+      "checksum": "sha256:0c9f3edf53e8a0510a123d81dd0841cc0cb333c473debd3db9814e76fce86247",
+      "fileCount": 112
     },
     "p-reels-split-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:ff70bc87980c9be6332532111f9272c2f18e49d1f4e3de5b7be47e45c5e1ff13",
-      "fileCount": 109
+      "checksum": "sha256:069e03cb983f87570abe02dccbe2d24d939ebc1c82d041f3c78d29952811c7c0",
+      "fileCount": 128
     },
     "p-reels-spotlight": {
       "version": "1.0.0",
@@ -76,8 +76,8 @@
     },
     "p-reels-spotlight-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:d9112988f089310c3a5aed982e2b330e1b21e7b81d9bfd01077e3b817c7f912e",
-      "fileCount": 126
+      "checksum": "sha256:0c9e2e2aa27cd713cb6b23e733a6962ee2603cc49b237a3183eceb46c67f914c",
+      "fileCount": 136
     }
   }
 }
