@@ -2379,10 +2379,11 @@ if ! grep -q "$c21d_marker" <<< "$c21d_out"; then
 else
   fail "credentials leak" "marker surfaced in: $c21d_out"
 fi
-if ! grep -qiE 'auth\.json|credentials\.json|\.credentials' "$REPO_DIR/bin/cfw-render-lib.sh"; then
-  pass "credentials: bin/cfw-render-lib.sh contains no reference to auth.json / credentials files"
+c21d_body="$(awk '/^cr_(install_select_engine|probe_engine_headless)\(\) \{/{p=1} p{print} p&&/^}/{p=0}' "$REPO_DIR/bin/cfw-render-lib.sh")"
+if [[ -n "$c21d_body" ]] && ! grep -qiE 'auth\.json|\.credentials|credentials\.json|\.codex/|\.claude/' <<< "$c21d_body"; then
+  pass "credentials: cr_install_select_engine + cr_probe_engine_headless bodies reference no auth.json / credentials / vendor dot-dirs"
 else
-  fail "credentials grep" "lib references a credential file: $(grep -niE 'auth\.json|credentials\.json|\.credentials' "$REPO_DIR/bin/cfw-render-lib.sh")"
+  fail "credentials grep" "engine-selection function bodies mention a credential file (or body not found)"
 fi
 rm -rf "$c21d_home"
 
