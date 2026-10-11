@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-11T19:52:44Z",
+  "generatedAt": "2026-10-11T20:10:08Z",
   "release": null,
   "sourceSha": "8ab5d1fcdeacc6f8e6ec62e726d0a6ac65e8eea4",
   "rawBase": null,
@@ -271,7 +271,7 @@
     },
     "p-clone-reel": {
       "version": "1.0.0",
-      "checksum": "sha256:0fe82e73ded535e98a1cd4dc6eeb00ac359b75b6ff376d2e4e77588000967f16",
+      "checksum": "sha256:fbb89cdf806782a43ee5ecd2b498782f8d8b5243d85e587c07571fdeef467706",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -347,7 +347,14 @@
         "LEARNINGS.md",
         "SKILL.md",
         "acceptance.json",
-        "examples.json"
+        "examples.json",
+        "manifest.json",
+        "steps/01-ingest-reference.md",
+        "steps/02-adapt-script.md",
+        "steps/03-generate-narration.md",
+        "steps/04-composite.md",
+        "steps/05-final-checks.md",
+        "steps/_shared.md"
       ],
       "fileHashes": {
         ".hub/c-audio/LEARNINGS.md": "sha256:a0b4d73ab2ccaf7a1040dce8f5fd2ecbb17a7b145f1f782bfb4e60ce154200a7",
@@ -424,7 +431,14 @@
         "LEARNINGS.md": "sha256:a8aa1e7334ebafb5793678f5cc6f724065795c47e9c6e8119cda174988b9bd6e",
         "SKILL.md": "sha256:2336a6c69f1ca9fe43be73c53230ef34c5437d90a26e96f9fd16cd7becbb35dd",
         "acceptance.json": "sha256:ac27c945f702e28bcc5e965d6d40766067c32416052eacba4212c08f62b729bd",
-        "examples.json": "sha256:57c7d12c47e46532de2ffc7bf148f462d301abef2d939fa0f752092a81ab6207"
+        "examples.json": "sha256:57c7d12c47e46532de2ffc7bf148f462d301abef2d939fa0f752092a81ab6207",
+        "manifest.json": "sha256:3489cc3232a4064ffef924f2aeaccef6720647e055dd61807648be0f38f492bb",
+        "steps/01-ingest-reference.md": "sha256:3756f88e3f1294e7a2870a8fa0e8c43d8fac0d30179d39d70e84fca35a8ed554",
+        "steps/02-adapt-script.md": "sha256:a59592ffaec45e9118630d2bc91163ee07271a3cf2398630ea074fa6f255293b",
+        "steps/03-generate-narration.md": "sha256:aba852d3376cb7519fbab7f717705fd45675461af20457d3563a16b1faceb9d1",
+        "steps/04-composite.md": "sha256:2a0649851328ff7512eb993283ca5ab9441c411257b60e076d201ea1412e057f",
+        "steps/05-final-checks.md": "sha256:93dfec9efc1882986bf480e84b46c3063db4eb051afca5a02f8117d9fe0a9dff",
+        "steps/_shared.md": "sha256:b1a3292fb5053c8cef745d5839b984b1a3e03c831cf2bc7bf2d26faae0e2c54b"
       },
       "providers": [],
       "systemRequires": [],
@@ -661,7 +675,7 @@
     },
     "p-longform": {
       "version": "1.0.0",
-      "checksum": "sha256:cfcb5abae097889bf426cff1a841d12c98ffe61a3660672a3c5436fdf27ee019",
+      "checksum": "sha256:7a09739f32ff9a894aa23c5e79e42d208baf25787a57cca674ba654df539c1fe",
       "files": [
         ".hub/c-ai-media/LEARNINGS.md",
         ".hub/c-ai-media/SKILL.md",
@@ -810,7 +824,17 @@
         ".hub/wowx-motions/wowx_motion.py",
         "SKILL.md",
         "acceptance.json",
-        "examples.json"
+        "examples.json",
+        "manifest.json",
+        "steps/01-prepare-script.md",
+        "steps/02-avatar-render.md",
+        "steps/03-transcribe.md",
+        "steps/04-build-visuals.md",
+        "steps/05-plan-broll.md",
+        "steps/06-composite.md",
+        "steps/07-post-process.md",
+        "steps/08-final-checks.md",
+        "steps/_shared.md"
       ],
       "fileHashes": {
         ".hub/c-ai-media/LEARNINGS.md": "sha256:bc65543cccd0aae138f9cdba79705d94e73c158b607b5c5aab56e810ba13fa76",
@@ -960,7 +984,17 @@
         ".hub/wowx-motions/wowx_motion.py": "sha256:72439824e3e73fc13dc00aaedd632f4aed0f31cefb1748a93a64147e9245423a",
         "SKILL.md": "sha256:240fc8dd831085c6634884b389108d42f3410135922ac90c4fb1152a65dfe627",
         "acceptance.json": "sha256:2794110c5b380b87699e3c6fead523da5040fcbb257ca254a88428ab16c50b45",
-        "examples.json": "sha256:50a5ce9affe598348697ae157f65725a4d04127a979dcfce8d764507fcf067e3"
+        "examples.json": "sha256:50a5ce9affe598348697ae157f65725a4d04127a979dcfce8d764507fcf067e3",
+        "manifest.json": "sha256:66f6d6ceed6a1d71ba60ba3c2319198a4358304031032b0406af86b138210078",
+        "steps/01-prepare-script.md": "sha256:66b831947c269b29111a5953ee7479c6ffb1dc6822ad7b5cd32c36c27b99877a",
+        "steps/02-avatar-render.md": "sha256:de5fe79176d166d3e01f3de6defec90e9b1d9858dee997f1f429e86a9d905a68",
+        "steps/03-transcribe.md": "sha256:775513352e35f8180be03f52c71fbf8f7aa2ca225fdaba6d303f543272545906",
+        "steps/04-build-visuals.md": "sha256:d9ef2e52a5c1f0a148d9d6ce37e5c9d69d4de14d278c2e9ba7d51b1c645f89f2",
+        "steps/05-plan-broll.md": "sha256:ed2b67ac4752b24e578139679d0e83a4eaffd423804d7dec73b33419fec0819c",
+        "steps/06-composite.md": "sha256:be09977dfe216bcc83504a6876a75831e49d4030b3c85f511448d49f286f3160",
+        "steps/07-post-process.md": "sha256:ab19e43ac2304d5e406b889bff3d0525f04359cd151e7cf4778a74247f792360",
+        "steps/08-final-checks.md": "sha256:4db17257cfe9e5d25d67fb14c16365730c686fce2160e6c6746ea953e85bb28f",
+        "steps/_shared.md": "sha256:973e4d0b588548af43c482bccf2c8646e8d9a050483cd160c85f0961a897eac9"
       },
       "providers": [],
       "systemRequires": [],
