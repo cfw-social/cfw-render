@@ -85,6 +85,7 @@ MOCK_ASKS = os.environ.get("CFW_MOCK_ASKS") == "1"
 # thing a full worker gets. Env modes:
 #   CFW_MOCK_IGNORE_CAPACITY=1   old server: `capacity` ignored, one order per call
 #   CFW_MOCK_ORDERS_ARRAY=1      reply carries orders[] (up to max - running)
+#   CFW_MOCK_MAX_PER_CLAIM=<n>   at most n orders per claim call
 #   CFW_MOCK_STOP_AFTER_STEP=1   first accepted non-heartbeat report → stop_after_step
 #   CFW_MOCK_SUPERSEDE=1         first report after step_started → attempt_superseded
 #   CFW_MOCK_RESUME_FROM=<stepId> claim reply resumes there; savedOutputs are
@@ -168,6 +169,11 @@ def claim_orders(args):
         urgent_only, budget = False, 1
     if not MOCK_ORDERS_ARRAY:
         budget = min(budget, 1)
+    # CFW_MOCK_MAX_PER_CLAIM=<n>: hand out at most n per call even when the
+    # budget is larger (a slow queue the worker must come back for).
+    per_claim = os.environ.get("CFW_MOCK_MAX_PER_CLAIM")
+    if per_claim:
+        budget = min(budget, int(per_claim))
     picked = []
     for o in QUEUE:
         if len(picked) >= budget:

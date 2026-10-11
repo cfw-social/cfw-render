@@ -1024,6 +1024,11 @@ cr_capacity_max() {
 # a probe is unavailable (treated as "no constraint" by cr_capacity_ok).
 cr_capacity_probe() {
   local free_mb="${CFW_RENDER_CAPACITY_FREE_MB:-}" load="${CFW_RENDER_CAPACITY_LOAD:-}" ncpu="${CFW_RENDER_CAPACITY_NCPU:-}"
+  # Test seam: a file whose content (MB) replaces the free-memory probe, so a
+  # test can change the value while the loop runs. Empty file = no override.
+  if [[ -z "$free_mb" && -n "${CFW_RENDER_CAPACITY_FREE_MB_FILE:-}" && -s "$CFW_RENDER_CAPACITY_FREE_MB_FILE" ]]; then
+    free_mb="$(tr -d '[:space:]' < "$CFW_RENDER_CAPACITY_FREE_MB_FILE")"
+  fi
   local os; os="$(uname -s 2>/dev/null)"
   if [[ -z "$free_mb" ]]; then
     if [[ "$os" == "Darwin" ]] && command -v vm_stat >/dev/null 2>&1; then

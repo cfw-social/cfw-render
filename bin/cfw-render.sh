@@ -553,6 +553,13 @@ if sys.argv[4]:
     a["capabilities"] = json.loads(sys.argv[4])
 a["capacity"] = json.loads(sys.argv[5])
 print(json.dumps(a))' "$CFW_WORKER_ID" "$CFW_RENDER_RENDERER_KIND" "$claim_label" "$claim_caps" "$capacity")")" || return 1
+  # SERVER_KNOWS_CAPACITY flips once a reply carries `orders[]`: only an M2
+  # server does, and only such a server honours the "full" ask (see
+  # claim_round). An older server ignores capacity and would hand a NORMAL
+  # order to a full computer.
+  if python3 -c 'import json,sys; sys.exit(0 if isinstance(json.loads(sys.stdin.read()).get("orders"), list) else 1)' <<< "$resp" 2>/dev/null; then
+    SERVER_KNOWS_CAPACITY=1
+  fi
   python3 -c '
 import json, sys
 d = json.loads(sys.stdin.read())
@@ -563,6 +570,7 @@ for o in orders:
     if isinstance(o, dict) and o.get("id"): print(json.dumps(o))
 ' <<< "$resp" 2>/dev/null
 }
+SERVER_KNOWS_CAPACITY=0
 
 # spawn_orders <file> — start one order process per JSON line; sets SPAWNED.
 SPAWNED=0
@@ -599,7 +607,9 @@ claim_round() {
   done
   # Full (or floor breached): one more ask, reporting running >= max, so an
   # urgent request can start alongside (D51). Not when the queue just ran dry.
-  if (( rc == 0 && ! drained )) && { (( ! normal_ok )) || (( running >= CLAIM_MAX )); }; then
+  # Only against a server that honours capacity (it answered with `orders[]`
+  # before): an older server would hand a normal order to a full computer.
+  if (( rc == 0 && ! drained && SERVER_KNOWS_CAPACITY )) && { (( ! normal_ok )) || (( running >= CLAIM_MAX )); }; then
     local ask_running=$running
     (( ask_running < CLAIM_MAX )) && ask_running=$CLAIM_MAX
     if claim_once "$ask_running" "$CLAIM_MAX" "$free_mb" "$load" > "$tmp"; then

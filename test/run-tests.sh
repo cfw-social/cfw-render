@@ -2305,7 +2305,14 @@ for sp in specs:
       "taskOrder": {"version": 1, "orderId": sp["id"], "brand": {"id": "brand-1", "slug": "test-brand", "brief": "b"},
                     "kind": "video", "recipe": mname, "workspaceId": "ws-1", "intent": "t", "ingredients": [], "targets": ["instagram"]}})
 print(json.dumps(out))' "$dir/skills/$mname/manifest.json" "$mname" "$orders" > "$dir/queue.json"
-  c21_pid="$(env CFW_MOCK_CONTROL_DIR="$c21_ctl" "$@" bash -c 'start_mock "$@"' _ "$dir/queue.json" "$c21_state" "$port")"
+  # Extra KEY=VALUE args become env for the mock. A subshell keeps them off
+  # this shell; the function call stays in-process (functions are not
+  # exported, so `bash -c` would not see start_mock).
+  c21_pid="$(
+    export CFW_MOCK_CONTROL_DIR="$c21_ctl"
+    for kv in "$@"; do export "${kv?}"; done
+    start_mock "$dir/queue.json" "$c21_state" "$port"
+  )"
 }
 export -f start_mock
 # c21_worker <dir> <port> <mode: --once|--loop> [env assignments...]
@@ -2392,19 +2399,45 @@ else
 fi
 rm -rf "$c22b"
 
-echo "=== Case 23: free memory under the floor → no normal claim, urgent-only ask (M2-04) ==="
+echo "=== Case 23: free memory under the floor → no normal claim; urgent-only ask only once the server has shown it honours capacity (M2-04) ==="
+# 23a: fresh process, floor breached, server never answered yet → no ask at all
+# (an old server would hand a normal order to a starved computer).
 c23="$(mktemp -d)"
 c21_setup "$c23" $((MOCK_PORT_BASE + 922)) harness-3step '[{"id":"o1"}]' CFW_MOCK_ORDERS_ARRAY=1
 c21_worker "$c23" $((MOCK_PORT_BASE + 922)) --once CFW_RENDER_CONCURRENCY=2 CFW_RENDER_CAPACITY_FREE_MB=1000
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 c23_claims="$(c21_claims "$c23")"
 c23_done="$(grep -c '"tool": "complete_render_order"' "$c23/mockstate/calls.jsonl" 2>/dev/null || true)"
-if [[ "$c23_claims" == "2/2" && "$c23_done" == "0" ]] && grep -q "normal claims skipped, urgent only" "$c23/cr-state/cfw-render.log"; then
-  pass "capacity: free 1000 MB < 3072 floor → only the urgent ask (2/2), normal o1 left queued, logged"
+if [[ "$c23_claims" == "" && "$c23_done" == "0" ]] && grep -q "normal claims skipped, urgent only" "$c23/cr-state/cfw-render.log"; then
+  pass "capacity: free 1000 MB < 3072 floor on a fresh process → no claim at all (server not yet known to honour capacity), o1 left queued, logged"
 else
-  fail "capacity: floor" "claims='$c23_claims' (want '2/2') done=$c23_done; log: $(grep capacity "$c23/cr-state/cfw-render.log" | tail -2)"
+  fail "capacity: floor (fresh)" "claims='$c23_claims' (want '') done=$c23_done; log: $(grep capacity "$c23/cr-state/cfw-render.log" | tail -2)"
 fi
 rm -rf "$c23"
+# 23b: --loop with the floor breached from the 2nd round on: round 1 claims
+# normally (teaches the worker the server honours capacity), later rounds
+# make only the full ask (2/2) and o2 stays queued.
+c23b="$(mktemp -d)"
+c21_setup "$c23b" $((MOCK_PORT_BASE + 923)) harness-3step '[{"id":"o1"},{"id":"o2"}]' CFW_MOCK_ORDERS_ARRAY=1 CFW_MOCK_MAX_PER_CLAIM=1
+c23b_floor="$c23b/floor"; : > "$c23b_floor"
+c21_worker "$c23b" $((MOCK_PORT_BASE + 923)) --loop CFW_RENDER_CONCURRENCY=2 CFW_RENDER_CAPACITY_UNIT_SECS=0.05 CFW_RENDER_CAPACITY_FREE_MB_FILE="$c23b_floor" &
+c23b_w=$!
+for _ in $(seq 1 100); do grep -q '"tool": "claim_render_order"' "$c23b/mockstate/calls.jsonl" 2>/dev/null && break; sleep 0.1; done
+printf '1000' > "$c23b_floor"
+sleep 3
+pkill -P "$c23b_w" 2>/dev/null; kill "$c23b_w" 2>/dev/null; wait "$c23b_w" 2>/dev/null
+pkill -f "cfw-render.sh --loop" 2>/dev/null || true
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+c23b_claims="$(c21_claims "$c23b")"
+# Round 1 fills the computer one order per reply (0/2, 1/2, then the full
+# ask 2/2); once the floor is breached every later ask is the full one.
+c23b_tail="$(sed -E 's/^0\/2 1\/2 2\/2 ?//' <<< "$c23b_claims")"
+if [[ "$c23b_claims" == 0/2\ 1/2\ 2/2* && "$(tr ' ' '\n' <<< "$c23b_tail" | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//')" == "2/2" ]] && grep -q "normal claims skipped, urgent only" "$c23b/cr-state/cfw-render.log"; then
+  pass "capacity: floor breached after round 1 → only full asks (2/2) afterwards; logged"
+else
+  fail "capacity: floor (loop)" "claims='$c23b_claims' (want '0/2 1/2 2/2' then only '2/2'); log: $(grep capacity "$c23b/cr-state/cfw-render.log" | tail -3)"
+fi
+rm -rf "$c23b"
 
 echo "=== Case 24: stop_after_step → step finishes, uploads, attempt_released revoked, folder gone (M2-04, D76) ==="
 c24="$(mktemp -d)"
@@ -2471,10 +2504,12 @@ c27_done="$(grep -c '"tool": "complete_render_order".*"ok": true' "$c27/mockstat
 c27_orders="$(python3 -c '
 import json, sys
 print(" ".join(sorted({json.loads(l)["orderId"] for l in open(sys.argv[1]) if l.strip()})))' "$c21_ctl/reports.ndjson" 2>/dev/null)"
-if [[ "$c27_claims" == "0/2 1/2 2/2" && "$c27_done" == "2" && "$c27_orders" == "o1 o2" ]]; then
-  pass "old server: capacity sent on every claim (0/2 1/2 2/2) but ignored → single order per reply; 2 ran, o3 stayed queued"
+# No full ask (2/2) against a server that never answered with orders[]: it
+# ignores capacity and would hand a normal o3 to a full computer.
+if [[ "$c27_claims" == "0/2 1/2" && "$c27_done" == "2" && "$c27_orders" == "o1 o2" ]]; then
+  pass "old server: capacity sent on every claim (0/2 1/2) but ignored → single order per reply; no full ask; 2 ran, o3 stayed queued"
 else
-  fail "old server" "claims='$c27_claims' (want '0/2 1/2 2/2') done=$c27_done orders='$c27_orders'"
+  fail "old server" "claims='$c27_claims' (want '0/2 1/2') done=$c27_done orders='$c27_orders'"
 fi
 rm -rf "$c27"
 
@@ -2483,7 +2518,10 @@ c28="$(mktemp -d)"
 c21_setup "$c28" $((MOCK_PORT_BASE + 927)) harness-3step '[{"id":"o1"}]' CFW_MOCK_CLAIM_ERROR=1
 c21_worker "$c28" $((MOCK_PORT_BASE + 927)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=0.05 &
 c28_w=$!
-sleep 5
+# every failed claim costs cr_mcp_call's own curl retries before the back-off
+# sleep, so reaching the 10u cap line takes a while: wait for it, bounded.
+for _ in $(seq 1 60); do grep -q 'retrying every 0.5s' "$c28/cr-state/cfw-render.log" 2>/dev/null && break; sleep 0.5; done
+sleep 1
 # the loop runs cfw-render.sh under a subshell; stop the whole tree
 pkill -P "$c28_w" 2>/dev/null; kill "$c28_w" 2>/dev/null; wait "$c28_w" 2>/dev/null
 pkill -f "cfw-render.sh --loop" 2>/dev/null || true
