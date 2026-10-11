@@ -1,7 +1,7 @@
 {
   "manifestFormat": 1,
   "recipe": "p-reels-spotlight",
-  "recipeVersion": "2026.10.1",
+  "recipeVersion": "2026.10.2",
   "label": "Spotlight reel",
   "deliverable": {
     "kind": "video",

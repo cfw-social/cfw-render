@@ -44,4 +44,13 @@ else
   FAILED=1
 fi
 
+echo ""
+echo "== recipe step files (scripts/check-step-files.py) =="
+if python3 "$REPO_DIR/scripts/check-step-files.py" --skills-dir "$REPO_DIR/skills"; then
+  echo "  ok    skills/*/steps/*.md"
+else
+  echo "  FAIL  skills/*/steps/*.md"
+  FAILED=1
+fi
+
 exit $FAILED

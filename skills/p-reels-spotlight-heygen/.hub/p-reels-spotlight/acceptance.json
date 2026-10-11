@@ -34,6 +34,49 @@
         { "id": "bed_not_black", "kind": "geometry", "type": "luma_floor",
           "crop": "1080:1920:0:0", "floor": 16, "samples": [0.1, 0.3, 0.5, 0.7, 0.9] }
       ]
+    },
+    "research": {
+      "artifact": "saves/sources.json",
+      "checks": [
+        { "id": "sources_present", "kind": "mechanical", "type": "json_array_nonempty", "min_items": 1,
+          "desc": "sources.json is a non-empty array of {title,url} the script can cite." }
+      ]
+    },
+    "script": {
+      "artifact": "saves/approved_script.md",
+      "checks": [
+        { "id": "script_timed_20_60s", "kind": "mechanical", "type": "spoken_duration_window", "min_s": 20, "max_s": 60, "wpm": 150,
+          "desc": "Script word count at ~150 wpm lands between 20 and 60 s." }
+      ]
+    },
+    "transcribe": {
+      "artifact": "saves/transcripts.json",
+      "checks": [
+        { "id": "words_found", "kind": "mechanical", "type": "json_words_nonempty", "path": "words", "min_items": 1, "tail_tolerance_s": 3,
+          "desc": "words[] is a non-empty array of {text,start,end}, starts non-decreasing, last end within 3 s of the bed duration." }
+      ]
+    },
+    "plan_edit": {
+      "artifact": "saves/edit_plan.json",
+      "checks": [
+        { "id": "plan_valid", "kind": "mechanical", "type": "spotlight_plan_guard", "caption_tail_tolerance_s": 3, "takeover_min_s": 2.5, "takeover_max_s": 7, "cover_at_min_s": 2,
+          "desc": "Plan parses; caption_groups cover the bed to within 3 s; Latin script only; 6-digit brand hexes; every takeover 2.5–7 s; cover_at >= 2 s." }
+      ]
+    },
+    "plan_broll": {
+      "artifact": "saves/beat_list.json",
+      "checks": [
+        { "id": "beats_covered", "kind": "mechanical", "type": "spotlight_beats_guard", "min_broll_beats": 1, "edge_margin_s": 2,
+          "desc": "beats[] has >= 1 broll beat; each broll.clip exists with 0 <= in < out <= clip duration; windows within [2, bed-2]; none overlaps a graphics takeover from edit_plan.json." }
+      ]
+    },
+    "render_scenes": {
+      "artifact": "saves/rendered_scenes.mp4",
+      "checks": [
+        { "id": "scenes_not_blank", "kind": "geometry", "type": "luma_floor_windows", "crop": "1080:1920:0:0", "floor": 16,
+          "samples": [0.1, 0.5, 0.9], "windows_from": ["edit_plan.takeovers", "beat_list.broll"], "duration_tolerance_s": 0.5,
+          "desc": "1080x1920, duration matches the bed within 0.5 s, and frames sampled at 10/50/90 % and inside every takeover window are not black." }
+      ]
     }
   }
 }
