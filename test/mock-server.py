@@ -77,6 +77,32 @@ CONTROL_DIR = os.environ.get("CFW_MOCK_CONTROL_DIR") or os.path.join(STATE_DIR, 
 os.makedirs(CONTROL_DIR, exist_ok=True)
 REPORTS_LOG = open(os.path.join(CONTROL_DIR, "reports.ndjson"), "a", buffering=1)
 MOCK_ASKS = os.environ.get("CFW_MOCK_ASKS") == "1"
+# ── M2-04 capacity / stop_after_step / superseded / resume / error modes ──────
+# CONTRACTS.md (M2) §3: claim.capacity {running, max, ...} → the server hands
+# out at most max - running per call, or ONE urgent order when running >= max.
+# Orders are served in seed order (the real server's brand-turn ordering is
+# M2-03's, not under test here); an order with "urgent": true is the only
+# thing a full worker gets. Env modes:
+#   CFW_MOCK_IGNORE_CAPACITY=1   old server: `capacity` ignored, one order per call
+#   CFW_MOCK_ORDERS_ARRAY=1      reply carries orders[] (up to max - running)
+#   CFW_MOCK_MAX_PER_CLAIM=<n>   at most n orders per claim call
+#   CFW_MOCK_STOP_AFTER_STEP=1   first accepted non-heartbeat report → stop_after_step
+#   CFW_MOCK_SUPERSEDE=1         first report after step_started → attempt_superseded
+#   CFW_MOCK_RESUME_FROM=<stepId> claim reply resumes there; savedOutputs are
+#       served from GET /mock-saved/<stepId>/<saveId> for every completed
+#       computer step before it (content "saved <stepId>/<saveId>")
+#   CFW_MOCK_RESUME_404=<stepId/saveId>  that one saved output answers 404
+#   CFW_MOCK_CLAIM_ERROR=1       every claim_render_order answers HTTP 500
+# Control file $CFW_MOCK_CONTROL_DIR/enqueue.json (a JSON list of orders):
+# read and consumed on the next claim — "a request is confirmed" mid-loop.
+MOCK_IGNORE_CAPACITY = os.environ.get("CFW_MOCK_IGNORE_CAPACITY") == "1"
+MOCK_ORDERS_ARRAY = os.environ.get("CFW_MOCK_ORDERS_ARRAY") == "1"
+MOCK_STOP_AFTER_STEP = os.environ.get("CFW_MOCK_STOP_AFTER_STEP") == "1"
+MOCK_SUPERSEDE = os.environ.get("CFW_MOCK_SUPERSEDE") == "1"
+MOCK_RESUME_FROM = os.environ.get("CFW_MOCK_RESUME_FROM") or None
+MOCK_RESUME_404 = os.environ.get("CFW_MOCK_RESUME_404") or None
+MOCK_CLAIM_ERROR = os.environ.get("CFW_MOCK_CLAIM_ERROR") == "1"
+MOCK_FLAGS = {"stop_sent": False, "supersede_sent": False}
 ATTEMPTS = {}   # orderId -> {"id", "number", "lastSeq", "seen": set()}
 OUTPUT_HOSTS = ("media.cfw.social", "media.mock.cfw.social", "cfw-media.test", "localhost")
 STEP_EVENTS = ("step_started", "step_completed", "step_skipped", "step_failed", "needs_input",
@@ -93,7 +119,73 @@ def scripted_directive(default):
             val = fh.read().strip()
     except OSError:
         return default
-    return val if val in ("continue", "pause", "cancel") else default
+    return val if val in ("continue", "pause", "cancel", "stop_after_step") else default
+
+
+def drain_enqueue():
+    path = os.path.join(CONTROL_DIR, "enqueue.json")
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path) as fh:
+            extra = json.load(fh)
+        os.remove(path)
+    except (OSError, ValueError):
+        return
+    for o in extra:
+        QUEUE.append(o)
+        ORDERS_BY_ID[o["id"]] = o
+
+
+def saved_outputs_for(order, manifest, resume):
+    out = []
+    for s in manifest.get("steps") or []:
+        if s.get("id") == resume:
+            break
+        if s.get("runsOn", "computer") != "computer":
+            continue
+        for v in s.get("saves") or []:
+            out.append({"stepId": s["id"], "saveId": v["id"],
+                        "url": f"http://127.0.0.1:{PORT}/mock-saved/{s['id']}/{v['id']}"})
+    return out
+
+
+def claim_one(o, args):
+    STATUS[o["id"]] = "claimed"
+    CLAIMED[o["id"]] = args["workerId"]
+    if o.get("recipeVersion") is not None:
+        return manifest_order_payload(o)
+    return o
+
+
+def claim_orders(args):
+    """Pick claimable orders honoring capacity; returns the list handed out."""
+    cap = args.get("capacity") if not MOCK_IGNORE_CAPACITY else None
+    if isinstance(cap, dict):
+        running, mx = int(cap.get("running", 0)), int(cap.get("max", 1))
+        urgent_only = running >= mx
+        budget = 1 if urgent_only else (mx - running)
+    else:
+        urgent_only, budget = False, 1
+    if not MOCK_ORDERS_ARRAY:
+        budget = min(budget, 1)
+    # CFW_MOCK_MAX_PER_CLAIM=<n>: hand out at most n per call even when the
+    # budget is larger (a slow queue the worker must come back for).
+    per_claim = os.environ.get("CFW_MOCK_MAX_PER_CLAIM")
+    if per_claim:
+        budget = min(budget, int(per_claim))
+    picked = []
+    for o in QUEUE:
+        if len(picked) >= budget:
+            break
+        if STATUS.get(o["id"], "queued") != "queued":
+            continue
+        if urgent_only and not o.get("urgent"):
+            continue
+        if o.get("recipeVersion") is not None and not capability_matches(o, args.get("capabilities")):
+            continue
+        picked.append(claim_one(o, args))
+    return picked
 
 
 def load_manifest(order):
@@ -124,8 +216,12 @@ def manifest_order_payload(order):
     ATTEMPTS[order["id"]] = {"id": attempt["id"], "number": 1, "lastSeq": 0, "seen": set(),
                             "stepIds": {s["id"] for s in steps}}
     out = dict(order)
+    saved = []
+    if MOCK_RESUME_FROM and any(s.get("id") == MOCK_RESUME_FROM for s in steps):
+        resume = MOCK_RESUME_FROM
+        saved = saved_outputs_for(order, manifest, resume)
     out.update({"attempt": attempt, "manifest": manifest, "resumeFromStepId": resume,
-                "savedOutputs": [],
+                "savedOutputs": saved,
                 # the fixture may seed inputs/answers (M1-03 fills them for real)
                 "inputs": order.get("inputs") or {}, "answers": order.get("answers") or {}})
     return out
@@ -154,6 +250,10 @@ def handle_report_step(args):
     att = ATTEMPTS.get(order_id)
     if att is None or args.get("attemptId") != att["id"]:
         return step_reply(False, "attempt_superseded", "attempt is not current", "cancel")
+    if MOCK_SUPERSEDE and args.get("event") != "step_started" and not MOCK_FLAGS["supersede_sent"] \
+            and any(json.loads(l).get("event") == "step_started" for l in open(REPORTS_LOG.name) if l.strip()):
+        MOCK_FLAGS["supersede_sent"] = True
+        return step_reply(False, "attempt_superseded", "another computer holds this request", "cancel")
     event = args.get("event")
     if event not in STEP_EVENTS:
         return step_reply(False, "bad_event", f"unknown event {event!r}", scripted_directive("continue"))
@@ -180,6 +280,9 @@ def handle_report_step(args):
         att["seen"].add(seq)
         att["lastSeq"] = seq
     default = "pause" if event == "needs_input" else "continue"
+    if MOCK_STOP_AFTER_STEP and event != "heartbeat" and not MOCK_FLAGS["stop_sent"]:
+        MOCK_FLAGS["stop_sent"] = True
+        return step_reply(True, directive="stop_after_step")
     return step_reply(True, directive=scripted_directive(default))
 
 
@@ -199,23 +302,16 @@ def handle_tool_call(name, args):
         if r is not None and (not isinstance(r, dict) or r.get("kind") not in ("mac", "box", "byo", "fleet")):
             log_call(name, args, False)
             return rpc_result({"order": None, "error": "bad renderer identity"}), None
+        if MOCK_CLAIM_ERROR:
+            log_call(name, args, False)
+            return None, {"code": -32000, "message": "mock claim error", "http": 500}
         with LOCK:
-            for o in QUEUE:
-                if STATUS.get(o["id"], "queued") == "queued":
-                    # M1-08: manifest-driven orders need a matching capability.
-                    if o.get("recipeVersion") is not None:
-                        if not capability_matches(o, args.get("capabilities")):
-                            continue
-                        STATUS[o["id"]] = "claimed"
-                        CLAIMED[o["id"]] = args["workerId"]
-                        log_call(name, args, True)
-                        return rpc_result({"order": manifest_order_payload(o)}), None
-                    STATUS[o["id"]] = "claimed"
-                    CLAIMED[o["id"]] = args["workerId"]
-                    log_call(name, args, True)
-                    return rpc_result({"order": o}), None
+            drain_enqueue()
+            picked = claim_orders(args)
             log_call(name, args, True)
-            return rpc_result({"order": None}), None
+            if MOCK_ORDERS_ARRAY:
+                return rpc_result({"orders": picked, "order": picked[0] if picked else None}), None
+            return rpc_result({"order": picked[0] if picked else None}), None
 
     if name == "report_render_step":
         reply = handle_report_step(args)
@@ -399,6 +495,18 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"error": "mock down"}, 503)
 
     def do_GET(self):
+        if self.path.startswith("/mock-saved/"):
+            token = self.path[len("/mock-saved/"):]
+            if MOCK_RESUME_404 and token == MOCK_RESUME_404:
+                self._send_json({"error": "gone"}, 404)
+                return
+            body = f"saved {token}\n".encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         brand_id = self._admin_brand_id()
         if brand_id is not None:
             if self._admin_denied():
@@ -460,7 +568,10 @@ class Handler(BaseHTTPRequestHandler):
                 name = params.get("name")
                 args = params.get("arguments", {})
                 result, error = handle_tool_call(name, args)
-                if error:
+                if error and error.get("http"):
+                    status = error.pop("http")
+                    self._send_json({"jsonrpc": "2.0", "id": rid, "error": error}, status)
+                elif error:
                     self._send_json({"jsonrpc": "2.0", "id": rid, "error": error})
                 else:
                     self._send_json({"jsonrpc": "2.0", "id": rid, "result": result})
