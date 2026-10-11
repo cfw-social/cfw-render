@@ -22,8 +22,9 @@
 #   b. Any JSON-ish literal `"handle": "@…"` — EXCEPT inside
 #      `brand-overrides/<slug>/brand.json` (any depth, `.hub/` included), which
 #      is legitimate per-brand data.
-#   c. The literal string `@mr.growthguide` (case-insensitive) anywhere outside
-#      `brand-overrides/**`.
+#   c. The literal `@mr.growthguide` (case-insensitive) or the rendered kicker
+#      `MR GROWTH GUIDE` (upper-case only; prose "Mr Growth Guide" is fine)
+#      anywhere outside `brand-overrides/**`.
 # Prose mentions such as "`@handle` if known" (no `${…:-@…}` shape) are NOT
 # flagged — p-reels-faceless/SKILL.md has one and must stay clean.
 #
@@ -99,8 +100,11 @@ scan_roots = [Path(p) for p in sys.argv[2:]]
 SHELL_DEFAULT_RE = re.compile(r'\$\{[A-Za-z_][A-Za-z0-9_]*:?-@[^}]*\}')
 # Rule b: JSON-ish literal handle default.
 JSON_HANDLE_RE = re.compile(r'"handle"\s*:\s*"@')
-# Rule c: the specific handle that leaked in CFW-354.
+# Rule c: the specific handle AND kicker text that leaked in CFW-354 (the
+# end card printed both `@mr.growthguide` and `MR GROWTH GUIDE`).
 LEAKED_HANDLE_RE = re.compile(r'@mr\.growthguide', re.IGNORECASE)
+# The rendered kicker is upper-case; prose mentions ("Mr Growth Guide") are fine.
+LEAKED_KICKER_RE = re.compile(r'MR GROWTH GUIDE')
 
 # brand-overrides/<slug>/brand.json at any depth — legitimate per-brand data.
 BRAND_JSON_RE = re.compile(r'(^|/)brand-overrides/[^/]+/brand\.json$')
@@ -122,11 +126,11 @@ def logical_lines(text: str):
             buf.append(raw[:-1])
             continue
         buf.append(raw)
-        yield start, " ".join(buf)
+        yield start, "".join(buf)
         start = None
         buf = []
     if buf:
-        yield start, " ".join(buf)
+        yield start, "".join(buf)
 
 
 offenses = []
@@ -153,7 +157,7 @@ for root in scan_roots:
             if not hit and not is_brand_json:
                 hit = bool(JSON_HANDLE_RE.search(logical))
             if not hit and not in_brand_overrides:
-                hit = bool(LEAKED_HANDLE_RE.search(logical))
+                hit = bool(LEAKED_HANDLE_RE.search(logical)) or bool(LEAKED_KICKER_RE.search(logical))
             if hit:
                 offenses.append(f"{rel}:{lineno}: {logical.strip()}")
 

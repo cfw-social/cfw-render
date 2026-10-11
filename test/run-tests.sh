@@ -1754,6 +1754,38 @@ else
 fi
 rm -rf "$c354_leak_base"
 
+echo "=== Case 15a1: check-no-handle-defaults.sh red — a backslash-continued default can't dodge the gate (CFW-354 QA F1) ==="
+c354_cont_base="$(mktemp -d)"
+mkdir -p "$c354_cont_base/p-dirty-recipe"
+printf 'x\nCTA_HANDLE="${CTA_HANDLE:-\\\n@split}"\n' > "$c354_cont_base/p-dirty-recipe/SKILL.md"
+c354_cont_out="$("$REPO_DIR/scripts/check-no-handle-defaults.sh" --skills-dir "$c354_cont_base" 2>&1)"
+c354_cont_rc=$?
+if [[ "$c354_cont_rc" == "1" && "$c354_cont_out" == *"p-dirty-recipe/SKILL.md:2"* ]]; then
+  pass "check-no-handle-defaults.sh: FAILs on a \${VAR:-@…} default split across a backslash continuation, naming line 2"
+else
+  fail "check-no-handle-defaults.sh: continuation red case" "expected exit 1 naming p-dirty-recipe/SKILL.md:2, got $c354_cont_rc: $c354_cont_out"
+fi
+rm -rf "$c354_cont_base"
+
+echo "=== Case 15a2: check-no-handle-defaults.sh — rendered kicker MR GROWTH GUIDE is red, prose 'Mr Growth Guide' is green (CFW-354 QA F2) ==="
+c354_kick_base="$(mktemp -d)"
+mkdir -p "$c354_kick_base/p-dirty-recipe"
+printf '{"type":"kicker","text":"MR GROWTH GUIDE"}\n' > "$c354_kick_base/p-dirty-recipe/cta-card.json"
+if "$REPO_DIR/scripts/check-no-handle-defaults.sh" --skills-dir "$c354_kick_base" >/dev/null 2>&1; then
+  fail "check-no-handle-defaults.sh: kicker red case" "expected exit 1 on a literal MR GROWTH GUIDE kicker"
+else
+  pass "check-no-handle-defaults.sh: FAILs on the rendered kicker literal MR GROWTH GUIDE outside brand-overrides/ (CFW-354)"
+fi
+printf 'This avatar serves both CFW and Mr Growth Guide.\n' > "$c354_kick_base/p-dirty-recipe/cta-card.json"
+c354_kick_out="$("$REPO_DIR/scripts/check-no-handle-defaults.sh" --skills-dir "$c354_kick_base" 2>&1)"
+c354_kick_rc=$?
+if [[ "$c354_kick_rc" == "0" ]]; then
+  pass "check-no-handle-defaults.sh: prose 'Mr Growth Guide' (not the rendered kicker) stays clean"
+else
+  fail "check-no-handle-defaults.sh: kicker prose green case" "expected exit 0, got $c354_kick_rc: $c354_kick_out"
+fi
+rm -rf "$c354_kick_base"
+
 echo "=== Case 15b: check-no-handle-defaults.sh green — empty default, prose @handle, brand.json handle all clean (CFW-354) ==="
 c354_clean_base="$(mktemp -d)"
 mkdir -p "$c354_clean_base/p-clean-recipe/brand-overrides/x"
