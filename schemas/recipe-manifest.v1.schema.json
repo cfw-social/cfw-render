@@ -1,0 +1,222 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cfw.social/schemas/recipe-manifest.v1.schema.json",
+  "title": "CFW recipe manifest (v1)",
+  "description": "One file per recipe: skills/<recipe>/manifest.json. Declares the recipe's ordered steps and the inputs it needs from the user (plans/m1/CONTRACTS.md section 2). Cross-reference rules the schema cannot express (unique ids, canAsk -> inputs[].id, alternatives[].runsSteps -> steps[].id, when/neededAt references, instructions file exists, recipe == folder name) are enforced by scripts/validate-manifests.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["manifestFormat", "recipe", "recipeVersion", "label", "deliverable", "needs", "inputs", "steps"],
+  "properties": {
+    "manifestFormat": { "type": "integer", "const": 1 },
+    "recipe": { "$ref": "#/$defs/recipeId" },
+    "recipeVersion": { "type": "string", "minLength": 1 },
+    "label": { "type": "string", "minLength": 1 },
+    "deliverable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["video", "image", "audio", "text"] },
+        "aspect": { "type": "string", "pattern": "^[0-9]+:[0-9]+$" },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "durationSec": { "$ref": "#/$defs/range" }
+      }
+    },
+    "needs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "engines", "tools", "providers"],
+      "properties": {
+        "os": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": ["macos", "linux"] }
+        },
+        "engines": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": ["codex", "claude-code", "api-key"] }
+        },
+        "tools": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*(>=[0-9][0-9.]*)?$" }
+        },
+        "providers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }
+        }
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/input" }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/step" }
+    }
+  },
+  "$defs": {
+    "recipeId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+    "snakeId": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "range": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min": { "type": "number", "minimum": 0 },
+        "max": { "type": "number", "minimum": 0 }
+      }
+    },
+    "inputKind": { "type": "string", "enum": ["video", "audio", "image", "link", "text", "choice"] },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "kinds", "required", "count", "neededAt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/snakeId" },
+        "label": { "type": "string", "minLength": 1 },
+        "kinds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/inputKind" }
+        },
+        "required": { "type": "boolean" },
+        "count": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["min", "max"],
+          "properties": {
+            "min": { "type": "integer", "minimum": 0 },
+            "max": { "type": ["integer", "null"], "minimum": 0 }
+          }
+        },
+        "constraints": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "durationSec": { "$ref": "#/$defs/range" },
+            "orientation": { "type": "string", "enum": ["portrait", "landscape", "square", "any"] },
+            "maxBytes": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "neededAt": {
+          "oneOf": [
+            { "const": "start" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["step"],
+              "properties": { "step": { "$ref": "#/$defs/snakeId" } }
+            }
+          ]
+        },
+        "alternatives": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "label", "runsSteps"],
+            "properties": {
+              "id": { "$ref": "#/$defs/snakeId" },
+              "label": { "type": "string", "minLength": 1 },
+              "runsSteps": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": { "$ref": "#/$defs/snakeId" }
+              }
+            }
+          }
+        },
+        "default": { "type": "string", "minLength": 1 },
+        "prompt": { "type": "string", "minLength": 1 },
+        "choices": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "oneOf": [
+              { "type": "string", "minLength": 1 },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "label"],
+                "properties": {
+                  "id": { "$ref": "#/$defs/snakeId" },
+                  "label": { "type": "string", "minLength": 1 }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "weight", "runsOn", "when"],
+      "properties": {
+        "id": { "$ref": "#/$defs/snakeId" },
+        "label": { "type": "string", "minLength": 1 },
+        "weight": { "type": "integer", "minimum": 0 },
+        "runsOn": { "type": "string", "enum": ["computer", "server"] },
+        "when": {
+          "oneOf": [
+            { "const": "always" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["inputPresent"],
+              "properties": { "inputPresent": { "$ref": "#/$defs/snakeId" } }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["alternative"],
+              "properties": { "alternative": { "$ref": "#/$defs/snakeId" } }
+            }
+          ]
+        },
+        "instructions": { "type": "string", "pattern": "^[^/][^\\n]*\\.md$" },
+        "saves": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "kind"],
+            "properties": {
+              "id": { "$ref": "#/$defs/snakeId" },
+              "kind": { "type": "string", "enum": ["video", "audio", "image", "text", "json"] },
+              "preview": { "type": "boolean", "default": false }
+            }
+          }
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "label"],
+            "properties": {
+              "id": { "$ref": "#/$defs/snakeId" },
+              "label": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "maxCheckRetries": { "type": "integer", "minimum": 0 },
+        "canAsk": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/snakeId" }
+        }
+      },
+      "if": { "properties": { "runsOn": { "const": "computer" } } },
+      "then": { "required": ["instructions"] }
+    }
+  }
+}
