@@ -275,12 +275,24 @@ print("\x1f".join([mode, token, expires, pool, expired]))
     ) </dev/null || h_rc=$?
     h_out="$(cat "$order_dir/harness-result.json" 2>/dev/null || true)"
     if (( h_rc == 0 )); then
-      local -a h_files=()
-      while IFS= read -r f; do [[ -n "$f" ]] && h_files+=("$f"); done < <(python3 -c '
-import json, sys
+      # [M2-06] Only media saves are deliverables. A `json`/`md` save is a
+      # side file: the report script would otherwise type `captions.json` as
+      # an image after the video and the server rejects it ("image after a
+      # video must be role poster"). A save with id `captions` is the
+      # recipe's captions file and goes to the report as CFW_CAPTIONS_FILE.
+      local -a h_files=() h_captions=""
+      while IFS=$'\t' read -r f role; do
+        [[ -n "$f" ]] || continue
+        if [[ "$role" == "captions" ]]; then h_captions="$f"; else h_files+=("$f"); fi
+      done < <(python3 -c '
+import json, sys, os
+MEDIA = {"mp4", "mov", "webm", "m4v", "png", "jpg", "jpeg", "gif", "webp", "pdf", "mp3", "wav", "m4a"}
 a = json.loads(sys.argv[1] or "[]")
-for x in a: print(x["path"])' "$h_out" 2>/dev/null)
-      if (( ${#h_files[@]} > 0 )) && ( cd "$order_dir" && CFW_ORDER_ID="$order_id" CFW_RENDER_KEEP_DIR="$(cr_keep_output_dir "$brand_slug" "$order_id")" PATH="$SELF_DIR:$PATH" cfw-render-report.sh complete "${h_files[@]}" ); then
+for x in a:
+    p = x["path"]; ext = os.path.splitext(p)[1].lstrip(".").lower()
+    if x.get("id") == "captions" and ext == "json": print(p + "\tcaptions")
+    elif ext in MEDIA: print(p + "\tmedia")' "$h_out" 2>/dev/null)
+      if (( ${#h_files[@]} > 0 )) && ( cd "$order_dir" && CFW_ORDER_ID="$order_id" CFW_CAPTIONS_FILE="${h_captions:-final/captions.json}" CFW_RENDER_KEEP_DIR="$(cr_keep_output_dir "$brand_slug" "$order_id")" PATH="$SELF_DIR:$PATH" cfw-render-report.sh complete "${h_files[@]}" ); then
         h_outcome="completed"
       else
         cr_log "order $order_id — harness finished but complete_render_order failed"

@@ -2286,7 +2286,7 @@ print(json.dumps([{"id": "order-19i", "brandId": "brand-1", "workspaceId": "ws-1
   c19_pid="$(CFW_MOCK_CONTROL_DIR="$c19_ctl" start_mock "$dir/queue.json" "$c19_state" "$port")"
 }
 c19i_port=$((MOCK_PORT_BASE + 918))
-for c19i_r in p-reels-pip p-reels-split p-reels-spotlight-heygen p-reels-pip-heygen p-reels-split-heygen; do
+for c19i_r in ${CFW_TEST_19I_RECIPES:-p-reels-pip p-reels-split p-reels-spotlight-heygen p-reels-pip-heygen p-reels-split-heygen}; do
   c19i="$(mktemp -d)"; c19i_setup "$c19i" "$c19i_port" "$c19i_r"
   c19_worker "$c19i" "$c19i_port"
   kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
@@ -2294,12 +2294,18 @@ for c19i_r in p-reels-pip p-reels-split p-reels-spotlight-heygen p-reels-pip-hey
   c19i_want="$(python3 -c '
 import json, sys
 m = json.load(open(sys.argv[1]))
-print(" ".join("step_started:%s step_completed:%s" % (s["id"], s["id"]) for s in m["steps"] if s["runsOn"] == "computer" and s.get("when") == "always") + " attempt_completed:-")
+# With inputs {} and no alternative chosen: always-steps run; a step gated on an
+# optional input or an alternative is reported skipped; server steps never show.
+def one(s):
+    if s["runsOn"] != "computer": return ""
+    if s.get("when", "always") == "always": return "step_started:%s step_completed:%s" % (s["id"], s["id"])
+    return "step_skipped:%s" % s["id"]
+print(" ".join(x for x in (one(s) for s in m["steps"]) if x) + " attempt_completed:-")
 ' "$REPO_DIR/skills/$c19i_r/manifest.json")"
   if [[ "$c19i_ev" == "$c19i_want" && "$(c19_seqs_ok "$c19_ctl/reports.ndjson")" == "ok" && "$(c19_completed "$c19i")" == "1" ]]; then
     pass "harness: $c19i_r — every computer step started+completed in manifest order, attempt_completed, complete_render_order ok"
   else
-    fail "harness: $c19i_r" "events='$c19i_ev' want='$c19i_want' seqs=$(c19_seqs_ok "$c19_ctl/reports.ndjson") completed=$(c19_completed "$c19i"); worker.out: $(tail -5 "$c19i/worker.out")"
+    fail "harness: $c19i_r" "events='$c19i_ev' want='$c19i_want' seqs=$(c19_seqs_ok "$c19_ctl/reports.ndjson") completed=$(c19_completed "$c19i"); worker.out: $(tail -n "${CFW_TEST_19I_TAIL:-5}" "$c19i/worker.out")"
   fi
   rm -rf "$c19i"; c19i_port=$((c19i_port + 1))
 done
