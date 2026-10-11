@@ -2275,6 +2275,117 @@ else
   fail "check-no-host-paths.sh after split" "expected exit 0 on the real skills/ tree"
 fi
 
+echo "=== Case 21a: cr_probe_engine_headless — codex-only PATH ==="
+c21_tmp="$(mktemp -d)"
+trap 'rm -rf "$c21_tmp"' EXIT
+mkdir -p "$c21_tmp/codex-only" "$c21_tmp/claude-only" "$c21_tmp/silent" "$c21_tmp/empty"
+printf '#!/bin/sh\necho "codex-cli 9.9.9"\n' > "$c21_tmp/codex-only/codex"
+printf '#!/bin/sh\necho "1.2.3 (Claude Code)"\n' > "$c21_tmp/claude-only/claude"
+printf '#!/bin/sh\nexit 0\n' > "$c21_tmp/silent/codex"
+printf '#!/bin/sh\nexit 0\n' > "$c21_tmp/silent/claude"
+chmod +x "$c21_tmp"/*/codex "$c21_tmp"/*/claude 2>/dev/null || true
+c21_base="/usr/bin:/bin"
+(
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_probe_engine_headless codex "$c21_tmp/codex-only:$c21_base"
+) >/dev/null 2>&1
+c21a_codex=$?
+(
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_probe_engine_headless claude "$c21_tmp/codex-only:$c21_base"
+) >/dev/null 2>&1
+c21a_claude=$?
+if [[ "$c21a_codex" == "0" && "$c21a_claude" != "0" ]]; then
+  pass "cr_probe_engine_headless: codex-only PATH → codex 0, claude non-zero"
+else
+  fail "cr_probe_engine_headless codex-only" "codex rc=$c21a_codex claude rc=$c21a_claude"
+fi
+
+echo "=== Case 21b: cr_probe_engine_headless — both missing / both silent ==="
+c21b_fail=0
+for e in codex claude; do
+  for d in empty silent; do
+    (
+      # shellcheck source=/dev/null
+      source "$REPO_DIR/bin/cfw-render-lib.sh"
+      cr_probe_engine_headless "$e" "$c21_tmp/$d:$c21_base"
+    ) >/dev/null 2>&1 && c21b_fail=1
+  done
+done
+if [[ "$c21b_fail" == "0" ]]; then
+  pass "cr_probe_engine_headless: both missing → both non-zero; exit-0-but-silent → non-zero"
+else
+  fail "cr_probe_engine_headless both missing" "a probe unexpectedly returned 0"
+fi
+
+echo "=== Case 21c: cr_install_select_engine — picks codex | claude-code | aborts naming both ==="
+c21c_sel() { # c21c_sel <path>
+  (
+    # shellcheck source=/dev/null
+    source "$REPO_DIR/bin/cfw-render-lib.sh"
+    cr_install_select_engine "$1"
+  ) 2>/dev/null
+}
+c21c_codex="$(c21c_sel "$c21_tmp/codex-only:$c21_base")" || true
+c21c_claude="$(c21c_sel "$c21_tmp/claude-only:$c21_base")" || true
+c21c_none_err="$(
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_install_select_engine "$c21_tmp/empty:$c21_base" 2>&1 >/dev/null
+)"
+c21c_none_rc=$?
+if [[ "$c21c_codex" == "codex" ]]; then
+  pass "cr_install_select_engine: codex-only → codex"
+else
+  fail "cr_install_select_engine codex-only" "got '$c21c_codex'"
+fi
+if [[ "$c21c_claude" == "claude-code" ]]; then
+  pass "cr_install_select_engine: claude-only → claude-code (the value cr_engine_detect accepts)"
+else
+  fail "cr_install_select_engine claude-only" "got '$c21c_claude'"
+fi
+if [[ "$c21c_none_rc" == "1" ]] && grep -q 'Codex' <<< "$c21c_none_err" && grep -q 'Claude Code' <<< "$c21c_none_err" && grep -q 'login' <<< "$c21c_none_err"; then
+  pass "cr_install_select_engine: neither → rc 1, message names Codex, Claude Code, and login"
+else
+  fail "cr_install_select_engine neither" "rc=$c21c_none_rc msg: $c21c_none_err"
+fi
+c21c_pre="$(
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  CFW_RENDER_ENGINE=claude-code cr_install_select_engine "$c21_tmp/codex-only:$c21_tmp/claude-only:$c21_base" 2>/dev/null
+)" || true
+if [[ "$c21c_pre" == "claude-code" ]]; then
+  pass "cr_install_select_engine: preset CFW_RENDER_ENGINE=claude-code honoured when it passes"
+else
+  fail "cr_install_select_engine preset" "got '$c21c_pre'"
+fi
+
+echo "=== Case 21d: credentials are never read — marker never surfaces; lib never names the files ==="
+c21d_home="$(mktemp -d)"
+mkdir -p "$c21d_home/.codex" "$c21d_home/.claude"
+c21d_marker="CFW_SECRET_MARKER_$$_DO_NOT_LEAK"
+printf '{"token":"%s"}\n' "$c21d_marker" > "$c21d_home/.codex/auth.json"
+printf '{"token":"%s"}\n' "$c21d_marker" > "$c21d_home/.claude/.credentials.json"
+c21d_out="$(
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  HOME="$c21d_home" cr_install_select_engine "$c21_tmp/codex-only:$c21_tmp/claude-only:$c21_base" 2>&1
+  HOME="$c21d_home" cr_install_select_engine "$c21_tmp/empty:$c21_base" 2>&1 || true
+)"
+if ! grep -q "$c21d_marker" <<< "$c21d_out"; then
+  pass "credentials: marker planted in ~/.codex/auth.json + ~/.claude/.credentials.json never appears in output"
+else
+  fail "credentials leak" "marker surfaced in: $c21d_out"
+fi
+if ! grep -qiE 'auth\.json|credentials\.json|\.credentials' "$REPO_DIR/bin/cfw-render-lib.sh"; then
+  pass "credentials: bin/cfw-render-lib.sh contains no reference to auth.json / credentials files"
+else
+  fail "credentials grep" "lib references a credential file: $(grep -niE 'auth\.json|credentials\.json|\.credentials' "$REPO_DIR/bin/cfw-render-lib.sh")"
+fi
+rm -rf "$c21d_home"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
