@@ -113,8 +113,29 @@ d = json.loads(sys.argv[1]); print("\x1f".join([str(d["seq"]), d["event"], json.
   return 0
 }
 
+# cr_h_report_lock / cr_h_report_unlock — one report at a time per order.
+# The heartbeat subshell and the step loop both call cr_h_report; without this,
+# one can be replaying (and rewriting) pending-reports.ndjson while the other
+# appends to it, and a seq lands out of order after an outage (19f).
+cr_h_report_lock() {
+  local lock="$CR_H_ORDER_DIR/report.lock" tries=0
+  until mkdir "$lock" 2>/dev/null; do
+    tries=$((tries + 1)); (( tries > 1200 )) && { rm -rf "$lock"; break; }   # 60 s: a dead holder
+    sleep 0.05
+  done
+}
+cr_h_report_unlock() { rmdir "$CR_H_ORDER_DIR/report.lock" 2>/dev/null || true; }
+
 # cr_h_report <event> [extra-json] — the report() wrapper. Never fails.
 cr_h_report() {
+  cr_h_report_lock
+  cr_h_report_locked "$@"
+  local rc=$?
+  cr_h_report_unlock
+  return "$rc"
+}
+
+cr_h_report_locked() {
   local event="$1" extra="${2:-{\}}" seq reply rc=0
   # Replay the backlog FIRST so the server sees seqs in order.
   cr_h_replay_pending

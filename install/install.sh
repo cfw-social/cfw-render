@@ -126,12 +126,16 @@ echo ""
 # runs headless — this is the gap CFW-279 left open.
 WORKER_PATH="$(cr_resolve_worker_path)"
 echo "install.sh: resolved worker PATH: $WORKER_PATH"
-if ! cr_probe_claude_headless "$WORKER_PATH"; then
-  echo "install.sh: ABORTING — claude resolves but does not run under the exact" >&2
-  echo "  PATH a scheduled tick will get (see probe output above). Nothing was" >&2
-  echo "  installed. Fix claude's install (or its wrapper/shim) and re-run." >&2
+# M1-10a: either engine is acceptable — probe codex then claude (honouring a
+# preset CFW_RENDER_ENGINE when it passes) and record the one that runs.
+if [[ "$OS" != "Darwin" ]]; then
+  echo "install.sh: Linux installs are unchanged but not advertised in M1"
+fi
+if ! ENGINE="$(cr_install_select_engine "$WORKER_PATH")"; then
+  echo "install.sh: ABORTING — no engine runs under the worker PATH (see above). Nothing was installed." >&2
   exit 1
 fi
+echo "install.sh: engine=$ENGINE"
 echo ""
 
 mkdir -p "$PREFIX/bin" "$PREFIX/lib" "$PREFIX/config" "$PREFIX/scripts"
@@ -191,8 +195,12 @@ if [[ -f "$ENV_FILE" ]]; then
   if upsert_env CFW_RENDER_MODE "$MODE" "$ENV_FILE"; then
     echo "install.sh: set CFW_RENDER_MODE=$MODE in $ENV_FILE"
   fi
+  if upsert_env CFW_RENDER_ENGINE "$ENGINE" "$ENV_FILE"; then
+    echo "install.sh: set CFW_RENDER_ENGINE=$ENGINE in $ENV_FILE"
+  fi
 else
   echo "install.sh: NOTE — add 'CFW_RENDER_MODE=$MODE' to $ENV_FILE when you create it (default 'server' applies if omitted)." >&2
+  echo "install.sh: NOTE — also add 'CFW_RENDER_ENGINE=$ENGINE' to $ENV_FILE." >&2
 fi
 if [[ "$MODE" == "byoa" ]]; then
   echo "install.sh: mode=byoa — skills come from this repo's in-repo bundle (skills/), same as" >&2

@@ -940,7 +940,8 @@ cr_tick_lock_release() {
 _CR_REQUIRED_BINS=(curl python3 node npx ffmpeg ffprobe magick)
 
 # ---------------------------------------------------------------------------
-# cr_resolve_worker_path — CFW-291. Walks _CR_REQUIRED_BINS plus `claude`,
+# cr_resolve_worker_path — CFW-291. Walks _CR_REQUIRED_BINS plus `claude` and
+# `codex` (M1-10a: either engine is optional here; only one must exist),
 # resolving each with `command -v` in the CALLER's current environment (at
 # install time that's the installer's real, rich shell — the only place we
 # can observe where things are actually installed). Takes the `dirname` of
@@ -956,7 +957,7 @@ _CR_REQUIRED_BINS=(curl python3 node npx ffmpeg ffprobe magick)
 # ---------------------------------------------------------------------------
 cr_resolve_worker_path() {
   local result="" b path dir fb
-  for b in "${_CR_REQUIRED_BINS[@]}" claude; do
+  for b in "${_CR_REQUIRED_BINS[@]}" claude codex; do
     path="$(command -v "$b" 2>/dev/null)" || continue
     dir="$(dirname "$path")"
     case ":$result:" in
@@ -974,7 +975,7 @@ cr_resolve_worker_path() {
 }
 
 # ---------------------------------------------------------------------------
-# cr_probe_claude_headless [worker_path] — CFW-291. The actual new safety
+# cr_probe_engine_headless <codex|claude> [worker_path] — CFW-291/M1-10a. The actual new safety
 # net: doesn't just ask "does claude resolve" (cr_preflight already does
 # that) — asks "does claude actually RUN in the narrowest environment a
 # scheduled tick will ever get." Defaults worker_path to a fresh
@@ -998,12 +999,16 @@ cr_resolve_worker_path() {
 # tried are always included in the failure message so a human (or
 # install.sh) gets an actionable message instead of a bare non-zero.
 # ---------------------------------------------------------------------------
-cr_probe_claude_headless() {
-  local worker_path="${1:-}"
+cr_probe_engine_headless() {
+  local engine="${1:-}" worker_path="${2:-}"
+  case "$engine" in
+    claude|codex) ;;
+    *) printf 'cr_probe_engine_headless: engine must be codex|claude (got %s)\n' "${engine:-<empty>}" >&2; return 1 ;;
+  esac
   [[ -n "$worker_path" ]] || worker_path="$(cr_resolve_worker_path)"
 
   if [[ -n "${CFW_RENDER_DIRECTOR_CMD:-}" ]]; then
-    printf 'SKIP — CFW_RENDER_DIRECTOR_CMD is set (stub Director); not probing a real claude\n'
+    printf 'SKIP — CFW_RENDER_DIRECTOR_CMD is set (stub Director); not probing a real %s\n' "$engine"
     return 0
   fi
 
@@ -1014,16 +1019,56 @@ cr_probe_claude_headless() {
   done
 
   local out rc
-  out="$(env -i "${env_args[@]}" claude --version 2>&1)"
+  out="$(env -i "${env_args[@]}" "$engine" --version 2>&1 < /dev/null)"
   rc=$?
   if (( rc == 0 )) && [[ -n "$out" ]]; then
     printf '%s' "$out"
     return 0
   fi
   {
-    printf 'claude --version failed under a headless probe (env -i, rc=%s)\n' "$rc"
+    printf '%s --version failed under a headless probe (env -i, rc=%s)\n' "$engine" "$rc"
     printf 'worker_path tried: %s\n' "$worker_path"
     printf 'captured output: %s\n' "${out:-<empty>}"
+  } >&2
+  return 1
+}
+
+# cr_probe_claude_headless [worker_path] — thin wrapper kept for callers/tests.
+cr_probe_claude_headless() {
+  cr_probe_engine_headless claude "${1:-}"
+}
+
+# ---------------------------------------------------------------------------
+# cr_install_select_engine [worker_path] — M1-10a. Probes codex then claude
+# headless under the worker PATH and prints the engine name cr_engine_detect
+# understands (`codex` | `claude-code`). Honours a preset CFW_RENDER_ENGINE
+# when that engine passes its probe. Returns 1 with the abort message when
+# neither runs. Never reads, copies, or inspects any vendor sign-in state —
+# the probe is `<cli> --version` only; sign-in is the vendor tool's business.
+# ---------------------------------------------------------------------------
+cr_install_select_engine() {
+  local worker_path="${1:-}"
+  [[ -n "$worker_path" ]] || worker_path="$(cr_resolve_worker_path)"
+  local -a order=(codex claude)
+  case "${CFW_RENDER_ENGINE:-}" in
+    codex) order=(codex claude) ;;
+    claude|claude-code) order=(claude codex) ;;
+  esac
+  local e
+  for e in "${order[@]}"; do
+    if cr_probe_engine_headless "$e" "$worker_path" >/dev/null 2>&1; then
+      case "$e" in
+        claude) printf 'claude-code' ;;
+        *) printf '%s' "$e" ;;
+      esac
+      return 0
+    fi
+  done
+  {
+    printf 'Neither Codex nor Claude Code runs under the worker PATH. '
+    printf 'Sign in through the vendor\xe2\x80\x99s own tool (`codex login` or `claude login`) and re-run. '
+    printf 'CFW never asks for or stores those credentials.\n'
+    printf 'worker_path tried: %s\n' "$worker_path"
   } >&2
   return 1
 }
