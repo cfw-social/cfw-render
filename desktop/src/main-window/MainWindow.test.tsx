@@ -43,7 +43,8 @@ describe("main window sidebar", () => {
     expect(current()).toBe("renders");
     await act(async () => h.listeners.navigate({ payload: "providers" }));
     expect(current()).toBe("providers");
-    expect(screen.getByText(/later update/)).toBeTruthy();
+    // The real AI Providers screen is mounted (its heading + the cards).
+    expect(screen.getByRole("heading", { name: "AI Providers" })).toBeTruthy();
     await act(async () => h.listeners.navigate({ payload: "bogus" }));
     expect(current()).toBe("providers");
     fireEvent.click(screen.getByText("Chat"));
