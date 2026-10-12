@@ -113,7 +113,7 @@ MOCK_FLAGS = {"stop_sent": False, "supersede_sent": False}
 ATTEMPTS = {}   # orderId -> {"id", "number", "lastSeq", "seen": set()}
 OUTPUT_HOSTS = ("media.cfw.social", "media.mock.cfw.social", "cfw-media.test", "localhost")
 STEP_EVENTS = ("step_started", "step_completed", "step_skipped", "step_failed", "needs_input",
-               "heartbeat", "attempt_completed", "attempt_failed", "attempt_cancelled")
+               "heartbeat", "attempt_completed", "attempt_failed", "attempt_cancelled", "attempt_released")
 
 
 def mock_down():

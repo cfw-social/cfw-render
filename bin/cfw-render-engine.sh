@@ -142,6 +142,15 @@ os.replace(tmp, f)
 cr_engine_limit_set() { cr_engine_limit_write "$1" "$2"; }
 cr_engine_limit_clear() { cr_engine_limit_write "$1" ""; }
 
+# cr_engine_limit_raw_count — number of entries in engine-limits.json as
+# written (expired ones included); lets the claim loop notice an expiry.
+cr_engine_limit_raw_count() {
+  python3 -c '
+import json, sys
+try: print(len(json.load(open(sys.argv[1]))))
+except Exception: print(0)' "$(cr_engine_state_dir)/engine-limits.json" 2>/dev/null || echo 0
+}
+
 # cr_engine_limit_earliest — earliest unexpired reset ISO across engines, or empty.
 cr_engine_limit_earliest() {
   local e u best=""

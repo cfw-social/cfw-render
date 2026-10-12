@@ -630,10 +630,16 @@ claim_round() {
   # [M3-01b] Engines and their limits move between rounds: recompute the
   # capabilities each round. When every signed-in engine is limited, skip the
   # claim until the earliest limit passes (the limit file clears itself).
-  local active_engine limit_earliest
+  local active_engine limit_earliest limit_raw
+  limit_raw="$(cr_engine_limit_raw_count)"
   active_engine="$(cr_engine_active)"
+  limit_earliest="$(cr_engine_limit_earliest)"
+  if (( limit_raw > 0 )) && [[ -z "$limit_earliest" ]]; then
+    # Every recorded limit has passed (the read above dropped them): tell the server.
+    cr_log "engine: usage limit(s) passed — resuming"
+    cr_mcp_call_soft set_computer_limit '{"until":null}' >/dev/null 2>&1 || cr_log "set_computer_limit clear failed (ignored)"
+  fi
   if [[ "$active_engine" == "none" ]]; then
-    limit_earliest="$(cr_engine_limit_earliest)"
     if [[ -n "$limit_earliest" ]] && [[ "$(cr_engines_json)" == *'"signedIn": true'* ]]; then
       CR_STATUS_LAST_ERROR="AI limit reached; resumes $limit_earliest"
       cr_log "engine: every signed-in engine is at its usage limit — not claiming until $limit_earliest"
