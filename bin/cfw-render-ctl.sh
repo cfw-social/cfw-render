@@ -6,6 +6,7 @@
 # Usage:
 #   cfw-render-ctl.sh status
 #   cfw-render-ctl.sh run-now
+#   cfw-render-ctl.sh pause | resume
 #   cfw-render-ctl.sh logs [n]
 #   cfw-render-ctl.sh unblock <orderId>
 #   cfw-render-ctl.sh fleet {status|enable|disable} <brandId>...
@@ -30,6 +31,20 @@ case "$VERB" in
       echo "tick lock: HELD (pid=$pid, age=${age}s)"
     else
       echo "tick lock: free"
+    fi
+
+    # [M3-01a] status.json (written by the worker after every claim round)
+    if [[ -f "$CFW_RENDER_STATE_DIR/status.json" ]]; then
+      python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1])); c = d.get("computer", {}); cap = d.get("capacity", {})
+p = "yes (%s)" % c.get("pauseReason") if c.get("paused") else "no"
+print("paused: " + p)
+print("on battery: " + ("yes" if c.get("onBattery") else "no"))
+print("version: " + str(c.get("version")))
+print("last check: " + str(d.get("lastCheckAt")))
+print("running: %s/%s" % (cap.get("running", 0), cap.get("max", "?")))
+' "$CFW_RENDER_STATE_DIR/status.json" 2>/dev/null || echo "status.json: unreadable"
     fi
 
     journal="$CFW_RENDER_STATE_DIR/journal.tsv"
@@ -60,7 +75,26 @@ case "$VERB" in
     ;;
 
   run-now)
-    "$SELF_DIR/cfw-render.sh" --once
+    cr_load_config || exit 1
+    if [[ -d "$CFW_RENDER_STATE_DIR/tick.lock" ]]; then
+      # the loop is running: it picks the flag up on its next 2 s tick
+      touch "$CFW_RENDER_STATE_DIR/run-now"
+      echo "run-now: asked the running worker to check for requests now"
+    else
+      "$SELF_DIR/cfw-render.sh" --once
+    fi
+    ;;
+
+  pause)
+    cr_load_config || exit 1
+    mkdir -p "$CFW_RENDER_STATE_DIR" && touch "$CFW_RENDER_STATE_DIR/paused"
+    echo "paused: this computer will not take new requests (running ones finish). 'resume' to undo."
+    ;;
+
+  resume)
+    cr_load_config || exit 1
+    rm -f "$CFW_RENDER_STATE_DIR/paused"
+    echo "resumed: this computer takes requests again"
     ;;
 
   logs)
@@ -115,7 +149,7 @@ EOF
     ;;
 
   *)
-    echo "cfw-render-ctl: usage: {status|run-now|logs [n]|unblock <orderId>|fleet {status|enable|disable} <brandId>...}" >&2
+    echo "cfw-render-ctl: usage: {status|run-now|pause|resume|logs [n]|unblock <orderId>|fleet {status|enable|disable} <brandId>...}" >&2
     exit 2
     ;;
 esac

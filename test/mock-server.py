@@ -62,6 +62,13 @@ MASTER_KEY = os.environ.get("MOCK_MASTER_KEY")
 BRANDS_FLEET = {o.get("brandId"): False for o in QUEUE if o.get("brandId")}
 
 TOOLS = ["claim_render_order", "append_render_event", "complete_render_order", "block_render_order", "report_render_step"]
+# M3-01: computer-level tools. CFW_MOCK_NO_M3_TOOLS=1 = an older server that
+# does not have them (the worker must carry on). CFW_MOCK_UPDATE_REQUIRED=1 =
+# every claim answers updateRequired instead of an order.
+MOCK_NO_M3_TOOLS = os.environ.get("CFW_MOCK_NO_M3_TOOLS") == "1"
+MOCK_UPDATE_REQUIRED = os.environ.get("CFW_MOCK_UPDATE_REQUIRED") == "1"
+if not MOCK_NO_M3_TOOLS:
+    TOOLS += ["set_computer_paused", "set_computer_limit"]
 
 # ── M1-08 step harness surface ────────────────────────────────────────────────
 # Orders carrying `recipeVersion` are manifest-driven: the fixture may name a
@@ -305,6 +312,9 @@ def handle_tool_call(name, args):
         if MOCK_CLAIM_ERROR:
             log_call(name, args, False)
             return None, {"code": -32000, "message": "mock claim error", "http": 500}
+        if MOCK_UPDATE_REQUIRED:
+            log_call(name, args, True)
+            return rpc_result({"order": None, "updateRequired": True, "minWorkerVersion": "9.0.0"}), None
         with LOCK:
             drain_enqueue()
             picked = claim_orders(args)
@@ -312,6 +322,10 @@ def handle_tool_call(name, args):
             if MOCK_ORDERS_ARRAY:
                 return rpc_result({"orders": picked, "order": picked[0] if picked else None}), None
             return rpc_result({"order": picked[0] if picked else None}), None
+
+    if name in ("set_computer_paused", "set_computer_limit") and not MOCK_NO_M3_TOOLS:
+        log_call(name, args, True)
+        return rpc_result({"ok": True}), None
 
     if name == "report_render_step":
         reply = handle_report_step(args)

@@ -2754,6 +2754,136 @@ else
 fi
 rm -rf "$c28"
 
+
+# ---------------------------------------------------------------------------
+# M3-01a: pause / battery / run-now / version / updateRequired
+# ---------------------------------------------------------------------------
+FAKE_PMSET_BATTERY="$(mktemp -u)"; export FAKE_PMSET_BATTERY
+FAKE_CAFFEINATE_LOG="$(mktemp)"; export FAKE_CAFFEINATE_LOG
+cat > "$FAKE_BIN/pmset" <<'EOF2'
+#!/usr/bin/env bash
+if [[ -e "${FAKE_PMSET_BATTERY:-/nonexistent}" ]]; then echo "Now drawing from 'Battery Power'"; else echo "Now drawing from 'AC Power'"; fi
+EOF2
+cat > "$FAKE_BIN/caffeinate" <<'EOF2'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_CAFFEINATE_LOG:-/dev/null}"
+exec sleep 30
+EOF2
+chmod +x "$FAKE_BIN/pmset" "$FAKE_BIN/caffeinate"
+# m3_tool_count <dir> <tool>
+m3_tool_count() { grep -c "\"tool\": \"$2\"" "$1/mockstate/calls.jsonl" 2>/dev/null || true; }
+# m3_status <dir> <python expr over d>
+m3_status() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1/cr-state/status.json" "$2" 2>/dev/null; }
+
+echo "=== Case M3-01a-1: paused file → no claim, set_computer_paused(owner) once, status.json paused ==="
+m1="$(mktemp -d)"
+c21_setup "$m1" $((MOCK_PORT_BASE + 940)) harness-3step '[{"id":"o1"}]'
+touch "$m1/cr-state/paused"
+c21_worker "$m1" $((MOCK_PORT_BASE + 940)) --once
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+m1_claims="$(m3_tool_count "$m1" claim_render_order)"
+m1_paused="$(grep -c '"tool": "set_computer_paused", "args": {"paused": true, "reason": "owner"}' "$m1/mockstate/calls.jsonl" 2>/dev/null || true)"
+if [[ "$m1_claims" == "0" && "$m1_paused" == "1" && "$(m3_status "$m1" 'd["computer"]["paused"]')" == "True" && "$(m3_status "$m1" 'd["computer"]["pauseReason"]')" == "owner" ]]; then
+  pass "paused: 0 claims, set_computer_paused(owner) once, status.json computer.paused=true"
+else
+  fail "paused" "claims=$m1_claims paused_calls=$m1_paused status=$(cat "$m1/cr-state/status.json" 2>/dev/null | head -c 300)"
+fi
+rm -rf "$m1"
+
+echo "=== Case M3-01a-2: on battery → no claim (reason battery); allow-battery → claim ==="
+m2="$(mktemp -d)"
+c21_setup "$m2" $((MOCK_PORT_BASE + 941)) harness-3step '[]'
+touch "$FAKE_PMSET_BATTERY"
+c21_worker "$m2" $((MOCK_PORT_BASE + 941)) --once
+m2_claims_a="$(m3_tool_count "$m2" claim_render_order)"
+m2_batt="$(grep -c '"tool": "set_computer_paused", "args": {"paused": true, "reason": "battery"}' "$m2/mockstate/calls.jsonl" 2>/dev/null || true)"
+touch "$m2/cr-state/allow-battery"
+c21_worker "$m2" $((MOCK_PORT_BASE + 941)) --once
+m2_claims_b="$(m3_tool_count "$m2" claim_render_order)"
+rm -f "$FAKE_PMSET_BATTERY"
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+if [[ "$m2_claims_a" == "0" && "$m2_batt" == "1" && "$m2_claims_b" -ge 1 && "$(m3_status "$m2" 'd["computer"]["allowBattery"]')" == "True" ]]; then
+  pass "battery: no claim + set_computer_paused(battery); allow-battery → claim ($m2_claims_b)"
+else
+  fail "battery" "claims_a=$m2_claims_a batt_calls=$m2_batt claims_b=$m2_claims_b; $(tail -3 "$m2/cr-state/cfw-render.log")"
+fi
+rm -rf "$m2"
+
+echo "=== Case M3-01a-3: --loop run-now flag wakes the loop; lastCheckAt set ==="
+m3="$(mktemp -d)"
+c21_setup "$m3" $((MOCK_PORT_BASE + 942)) harness-3step '[]'
+c21_worker "$m3" $((MOCK_PORT_BASE + 942)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=2 &
+m3_w=$!
+# wait for the first round (status.json appears), then ask for another now
+for _ in $(seq 1 100); do [[ -f "$m3/cr-state/status.json" ]] && break; sleep 0.1; done
+sleep 0.5
+m3_before="$(m3_tool_count "$m3" claim_render_order)"
+touch "$m3/cr-state/run-now"
+m3_after="$m3_before"
+for _ in $(seq 1 15); do m3_after="$(m3_tool_count "$m3" claim_render_order)"; [[ "$m3_after" -gt "$m3_before" ]] && break; sleep 0.1; done
+m3_flag=0; [[ -e "$m3/cr-state/run-now" ]] && m3_flag=1
+m3_last="$(m3_status "$m3" 'd["lastCheckAt"]')"
+pkill -P "$m3_w" 2>/dev/null; kill "$m3_w" 2>/dev/null; wait "$m3_w" 2>/dev/null
+pkill -f "cfw-render.sh --loop" 2>/dev/null || true
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+if [[ "$m3_after" -gt "$m3_before" && "$m3_flag" == "0" && -n "$m3_last" && "$m3_last" != "None" ]]; then
+  pass "run-now: claims ${m3_before}→${m3_after} within 1.5s, flag consumed, lastCheckAt=$m3_last"
+else
+  fail "run-now" "before=$m3_before after=$m3_after flag=$m3_flag last='$m3_last'; $(tail -3 "$m3/cr-state/cfw-render.log")"
+fi
+rm -rf "$m3"
+
+echo "=== Case M3-01a-4: capabilities.workerVersion rides on the claim; caffeinate wraps the order ==="
+m4="$(mktemp -d)"
+c21_setup "$m4" $((MOCK_PORT_BASE + 943)) harness-3step '[{"id":"o1"}]'
+: > "$FAKE_CAFFEINATE_LOG"
+c21_worker "$m4" $((MOCK_PORT_BASE + 943)) --once
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+m4_ver="$(python3 -c '
+import json,sys
+for l in open(sys.argv[1]):
+    d=json.loads(l)
+    if d["tool"]=="claim_render_order": print(d["args"].get("capabilities",{}).get("workerVersion")); break' "$m4/mockstate/calls.jsonl" 2>/dev/null)"
+if [[ "$m4_ver" == "1.0.0" && "$(m3_status "$m4" 'd["computer"]["version"]')" == "1.0.0" ]]; then
+  pass "version: claim capabilities.workerVersion=1.0.0, status.json version=1.0.0"
+else
+  fail "version" "workerVersion='$m4_ver' status=$(m3_status "$m4" 'd["computer"]["version"]')"
+fi
+if grep -q -- '-i -w ' "$FAKE_CAFFEINATE_LOG"; then
+  pass "sleep (D90): caffeinate -i -w <pid> started for the order"
+else
+  fail "caffeinate" "log: $(cat "$FAKE_CAFFEINATE_LOG")"
+fi
+pkill -f 'sleep 30' 2>/dev/null || true
+rm -rf "$m4"
+
+echo "=== Case M3-01a-5: updateRequired reply → no orders, status.json updateRequired + lastError ==="
+m5="$(mktemp -d)"
+c21_setup "$m5" $((MOCK_PORT_BASE + 944)) harness-3step '[{"id":"o1"}]' CFW_MOCK_UPDATE_REQUIRED=1
+c21_worker "$m5" $((MOCK_PORT_BASE + 944)) --once
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+m5_steps="$(m3_tool_count "$m5" report_render_step)"
+if [[ "$m5_steps" == "0" && "$(m3_status "$m5" 'd["computer"]["updateRequired"]')" == "True" && "$(m3_status "$m5" 'd["computer"]["lastError"]')" == "Update this computer" ]] && grep -q 'update required' "$m5/cr-state/cfw-render.log"; then
+  pass "updateRequired: no orders started, status.json updateRequired=true lastError='Update this computer'"
+else
+  fail "updateRequired" "steps=$m5_steps status=$(head -c 400 "$m5/cr-state/status.json" 2>/dev/null); log: $(tail -4 "$m5/cr-state/cfw-render.log"); calls: $(cat "$m5/mockstate/calls.jsonl" | head -c 600)"
+fi
+rm -rf "$m5"
+
+echo "=== Case M3-01a-6: older server without set_computer_paused → logged once, exit 0, no claims ==="
+m6="$(mktemp -d)"
+c21_setup "$m6" $((MOCK_PORT_BASE + 945)) harness-3step '[{"id":"o1"}]' CFW_MOCK_NO_M3_TOOLS=1
+touch "$m6/cr-state/paused"
+c21_worker "$m6" $((MOCK_PORT_BASE + 945)) --once; m6_rc=$?
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+m6_lines="$(grep -c 'set_computer_paused' "$m6/cr-state/cfw-render.log" 2>/dev/null || true)"
+if [[ "$m6_rc" == "0" && "$m6_lines" == "1" && "$(m3_tool_count "$m6" claim_render_order)" == "0" ]]; then
+  pass "old server: set_computer_paused failure logged once, exit 0, 0 claims"
+else
+  fail "old server M3" "rc=$m6_rc lines=$m6_lines claims=$(m3_tool_count "$m6" claim_render_order); $(tail -3 "$m6/cr-state/cfw-render.log")"
+fi
+rm -rf "$m6"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then

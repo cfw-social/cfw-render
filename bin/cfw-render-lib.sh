@@ -1409,3 +1409,68 @@ cr_preflight() {
   } >&2
   return 1
 }
+
+# ---------------------------------------------------------------------------
+# [M3-01a] Worker version, status file, pause / battery state.
+# ---------------------------------------------------------------------------
+CR_LIB_REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# cr_worker_version — contents of $REPO/VERSION (0.0.0 when missing).
+cr_worker_version() {
+  local v
+  v="$(head -n1 "$CR_LIB_REPO_DIR/VERSION" 2>/dev/null | tr -d '[:space:]')"
+  printf '%s\n' "${v:-0.0.0}"
+}
+
+# cr_on_battery — rc 0 iff the Mac is on battery power (pmset). No pmset →
+# not on battery. CFW_RENDER_PMSET_CMD overrides the command (tests).
+cr_on_battery() {
+  local cmd="${CFW_RENDER_PMSET_CMD:-pmset}"
+  command -v "$cmd" >/dev/null 2>&1 || return 1
+  "$cmd" -g batt 2>/dev/null | grep -q 'Battery Power'
+}
+
+# cr_pause_state — echoes owner | battery | none.
+cr_pause_state() {
+  if [[ -e "$CFW_RENDER_STATE_DIR/paused" ]]; then
+    echo owner
+  elif [[ ! -e "$CFW_RENDER_STATE_DIR/allow-battery" ]] && cr_on_battery; then
+    echo battery
+  else
+    echo none
+  fi
+}
+
+# cr_status_write — atomically writes $CFW_RENDER_STATE_DIR/status.json
+# (contract §1) from the CR_STATUS_* globals. engines/activeEngine/requests
+# are owned by M3-01b and written empty here.
+cr_status_write() {
+  local dir="$CFW_RENDER_STATE_DIR" tmp
+  mkdir -p "$dir" 2>/dev/null || return 1
+  tmp="$dir/status.json.tmp.$$"
+  ( umask 077
+    python3 -c '
+import json, sys, datetime
+a = sys.argv
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def b(s): return s == "1"
+def n(s, d=0):
+    try: return int(s)
+    except ValueError: return d
+doc = {
+  "schemaVersion": 1, "writtenAt": now, "lastCheckAt": a[9] or None,
+  "computer": {"workerId": a[1], "version": a[2], "paused": b(a[3]),
+               "pauseReason": a[4] or None, "onBattery": b(a[5]),
+               "allowBattery": b(a[6]), "updateRequired": b(a[7]),
+               "lastError": a[8] or None},
+  "capacity": {"running": n(a[10]), "max": n(a[11], 1)},
+  "engines": [], "activeEngine": None, "requests": [],
+}
+json.dump(doc, open(a[12], "w"), indent=2)
+' "${CFW_WORKER_ID:-}" "$(cr_worker_version)" "${CR_STATUS_PAUSED:-0}" \
+      "${CR_STATUS_PAUSE_REASON:-}" "${CR_STATUS_ON_BATTERY:-0}" "${CR_STATUS_ALLOW_BATTERY:-0}" \
+      "${CR_STATUS_UPDATE_REQUIRED:-0}" "${CR_STATUS_LAST_ERROR:-}" "${CR_STATUS_LAST_CHECK_AT:-}" \
+      "${CR_STATUS_RUNNING:-0}" "${CR_STATUS_MAX:-1}" "$tmp"
+  ) 2>/dev/null || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$dir/status.json"
+}
