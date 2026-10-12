@@ -1,0 +1,37 @@
+// All owner-facing panel copy. Plain English only.
+export const copy = {
+  noProvider: "No AI provider signed in",
+  workingFor: (names: string) => `Working for: ${names}`,
+  banner: {
+    notRunning: "Worker not running",
+    paused: "Paused",
+    battery: "On battery",
+    update: "Update this computer",
+    limit: (hhmm: string | null) => (hhmm ? `AI limit reached; resumes about ${hhmm}` : "AI limit reached"),
+  },
+  action: {
+    start: "Start",
+    resume: "Resume",
+    pause: "Pause",
+    renderOnBattery: "Render on battery",
+    runNow: "Run now",
+    open: "Open",
+    viewLogs: "View logs",
+  },
+  section: { now: "Now", next: "Next", done: "Done" },
+  step: (step: number | null, steps: number | null, label: string | null) => {
+    const base = step != null && steps != null ? `step ${step} of ${steps}` : step != null ? `step ${step}` : "";
+    return [base, label].filter(Boolean).join(" · ");
+  },
+  sep: " · ",
+  marks: { done: "✓", failed: "✗", stopped: "–" },
+  lastCheck: (ago: string) => `Last check: ${ago}`,
+  lastCheckNever: "Last check: never",
+  ago: (secs: number) => (secs < 60 ? `${secs} s ago` : secs < 3600 ? `${Math.floor(secs / 60)} min ago` : `${Math.floor(secs / 3600)} h ago`),
+  elapsed: (secs: number) => {
+    const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+  },
+  engineFallback: { codex: "ChatGPT", "claude-code": "Claude" } as Record<string, string>,
+} as const;

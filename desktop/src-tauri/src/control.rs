@@ -15,6 +15,8 @@ pub enum ControlError {
     NoHome,
     #[error("invalid engine name: {0:?}")]
     BadEngineName(String),
+    #[error("{0}")]
+    Command(String),
 }
 
 pub fn state_dir() -> Result<PathBuf, ControlError> {
@@ -65,6 +67,56 @@ pub fn set_allow_battery(allow: bool) -> Result<(), ControlError> {
     set_flag("allow-battery", allow)
 }
 
+pub const LAUNCHD_LABEL: &str = "com.cfw.render";
+// System tools by absolute path: a GUI app's PATH is launchd's default and
+// must not decide which binary runs.
+const LAUNCHCTL: &str = "/bin/launchctl";
+const OPEN: &str = "/usr/bin/open";
+
+fn run(cmd: &str, args: &[&str]) -> Result<(), ControlError> {
+    let out = std::process::Command::new(cmd).args(args).output()?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(ControlError::Command(if msg.is_empty() { format!("{cmd} failed ({})", out.status) } else { msg }))
+    }
+}
+
+/// Restart the launchd job; if it is not loaded, bootstrap it from the user's LaunchAgents plist.
+pub fn start_worker() -> Result<(), ControlError> {
+    let uid = run_uid()?;
+    let domain = format!("gui/{uid}");
+    if run(LAUNCHCTL, &["kickstart", "-k", &format!("{domain}/{LAUNCHD_LABEL}")]).is_ok() {
+        return Ok(());
+    }
+    let home = dirs::home_dir().ok_or(ControlError::NoHome)?;
+    let plist = home.join("Library/LaunchAgents").join(format!("{LAUNCHD_LABEL}.plist"));
+    run(LAUNCHCTL, &["bootstrap", &domain, &plist.to_string_lossy()])
+}
+
+fn run_uid() -> Result<String, ControlError> {
+    let out = std::process::Command::new("/usr/bin/id").arg("-u").output()?;
+    parse_uid(out.status.success(), &out.stdout)
+}
+
+/// A uid is digits only; anything else (failed `id`, empty output) is an error,
+/// never a bare `gui/` domain.
+fn parse_uid(ok: bool, stdout: &[u8]) -> Result<String, ControlError> {
+    let uid = String::from_utf8_lossy(stdout).trim().to_string();
+    if ok && !uid.is_empty() && uid.bytes().all(|b| b.is_ascii_digit()) {
+        Ok(uid)
+    } else {
+        Err(ControlError::Command("could not read this user's id".into()))
+    }
+}
+
+/// Opens `~/CFW Render/logs` in Finder. Creates nothing.
+pub fn open_logs() -> Result<(), ControlError> {
+    let dir = dirs::home_dir().ok_or(ControlError::NoHome)?.join("CFW Render").join("logs");
+    run(OPEN, &[&dir.to_string_lossy()])
+}
+
 pub fn run_now() -> Result<(), ControlError> {
     set_flag("run-now", true)
 }
@@ -88,6 +140,14 @@ pub(crate) mod tests {
     use std::sync::{Mutex, MutexGuard};
 
     pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn uid_must_be_digits() {
+        assert_eq!(parse_uid(true, b"501\n").unwrap(), "501");
+        assert!(parse_uid(true, b"").is_err());
+        assert!(parse_uid(false, b"501").is_err());
+        assert!(parse_uid(true, b"501; rm").is_err());
+    }
 
     fn with_dir() -> (MutexGuard<'static, ()>, tempfile::TempDir) {
         let g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

@@ -7,11 +7,11 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::{TrayIcon, TrayIconBuilder};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, WindowEvent, Wry};
 
 use state::{IconState, Liveness, StatusFile};
@@ -33,17 +33,19 @@ struct AppState {
     _watcher: Mutex<Option<RecommendedWatcher>>,
 }
 
-fn read_status(dir: &Path) -> Option<StatusFile> {
-    let raw = std::fs::read_to_string(dir.join("status.json")).ok()?;
-    state::parse_status(&raw).ok()
+fn read_status(dir: &Path) -> (Option<StatusFile>, Option<DateTime<Utc>>) {
+    let path = dir.join("status.json");
+    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok().map(DateTime::<Utc>::from);
+    let status = std::fs::read_to_string(&path).ok().and_then(|raw| state::parse_status(&raw).ok());
+    (status, mtime)
 }
 
 fn current_payload() -> StatusPayload {
-    let status = control::state_dir().ok().and_then(|d| read_status(&d));
+    let (status, mtime) = control::state_dir().ok().map(|d| read_status(&d)).unwrap_or((None, None));
     let now = Utc::now();
-    let (icon_state, tooltip) = state::icon_state(status.as_ref(), now);
+    let (icon_state, tooltip) = state::icon_state(status.as_ref(), mtime, now);
     StatusPayload {
-        liveness: state::liveness(status.as_ref(), now),
+        liveness: state::liveness(status.as_ref(), mtime, now),
         provider_line: state::provider_line(status.as_ref()),
         status,
         icon_state,
@@ -88,6 +90,42 @@ fn err(e: control::ControlError) -> String {
     e.to_string()
 }
 
+fn toggle_panel(app: &AppHandle, rect: tauri::Rect) {
+    let Some(w) = app.get_webview_window("panel") else { return };
+    if w.is_visible().unwrap_or(false) {
+        let _ = w.hide();
+        return;
+    }
+    let scale = w.scale_factor().unwrap_or(1.0);
+    let pos = rect.position.to_physical::<f64>(scale);
+    let size = rect.size.to_physical::<f64>(scale);
+    let width = w.outer_size().map(|s| s.width as f64).unwrap_or(360.0 * scale);
+    let x = pos.x + size.width / 2.0 - width / 2.0;
+    let y = pos.y + size.height;
+    let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
+    let _ = w.show();
+    let _ = w.set_focus();
+}
+
+#[tauri::command]
+fn open_main(app: AppHandle, section: String) {
+    if let Some(p) = app.get_webview_window("panel") {
+        let _ = p.hide();
+    }
+    show_main(&app);
+    let _ = app.emit_to("main", "navigate", section);
+}
+
+#[tauri::command]
+fn start_worker() -> Result<(), String> {
+    control::start_worker().map_err(err)
+}
+
+#[tauri::command]
+fn open_logs() -> Result<(), String> {
+    control::open_logs().map_err(err)
+}
+
 #[tauri::command]
 fn get_status() -> StatusPayload {
     current_payload()
@@ -126,6 +164,12 @@ fn build_tray(app: &AppHandle) -> tauri::Result<(TrayIcon, MenuItem<Wry>)> {
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
         .tooltip("CFW Render")
+        .show_menu_on_left_click(false)
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, rect, .. } = event {
+                toggle_panel(tray.app_handle(), rect);
+            }
+        })
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => show_main(app),
             "pause" => {
@@ -165,7 +209,10 @@ pub fn run() {
             set_paused,
             set_allow_battery,
             run_now,
-            set_engine_order
+            set_engine_order,
+            open_main,
+            start_worker,
+            open_logs
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -186,11 +233,15 @@ pub fn run() {
             refresh(&handle);
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();
             }
+            WindowEvent::Focused(false) if window.label() == "panel" => {
+                let _ = window.hide();
+            }
+            _ => {}
         })
         .run(tauri::generate_context!())
         .expect("error while running CFW Render");
