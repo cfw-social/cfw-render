@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { copy } from "../copy";
 import type { StatusPayload } from "../status";
-import { panelModel, type BannerKind } from "./model";
+import { panelModel, type BannerKind, type PanelModel } from "./model";
 
 export interface PanelActions {
   openMain(section: string): void;
@@ -12,16 +12,37 @@ export interface PanelActions {
   openLogs(): void;
 }
 
-const btn = "rounded-md px-2 py-1 text-xs font-medium bg-neutral-200 hover:bg-neutral-300 dark:bg-neutral-700 dark:hover:bg-neutral-600";
+export const btn = "rounded-md px-2 py-1 text-xs font-medium bg-neutral-200 hover:bg-neutral-300 dark:bg-neutral-700 dark:hover:bg-neutral-600";
 const heading = "mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-500";
 
-export function Panel({ payload, actions, clock }: { payload: StatusPayload | null; actions: PanelActions; clock?: () => number }) {
+/** Ticks once a second so elapsed times stay live. */
+export function useNow(clock?: () => number) {
   const [now, setNow] = useState(() => (clock ?? Date.now)());
   useEffect(() => {
     const id = setInterval(() => setNow((clock ?? Date.now)()), 1000);
     return () => clearInterval(id);
   }, [clock]);
-  const m = panelModel(payload, now);
+  return now;
+}
+
+export function Panel({ payload, actions, clock }: { payload: StatusPayload | null; actions: PanelActions; clock?: () => number }) {
+  const m = panelModel(payload, useNow(clock));
+  return (
+    <div className="flex h-screen flex-col bg-white p-3 font-sans text-sm text-neutral-900 dark:bg-neutral-900 dark:text-neutral-100">
+      <StatusBody m={m} actions={actions} />
+      <div className="mt-2 text-xs text-neutral-500">{m.lastCheck}</div>
+      <div className="mt-2 flex gap-2">
+        <button className={btn} onClick={() => actions.setPaused(!m.paused)}>{m.paused ? copy.action.resume : copy.action.pause}</button>
+        <button className={btn} onClick={actions.runNow}>{copy.action.runNow}</button>
+        <button className={btn} onClick={() => actions.openMain("renders")}>{copy.action.open}</button>
+        <button className={btn} onClick={actions.openLogs}>{copy.action.viewLogs}</button>
+      </div>
+    </div>
+  );
+}
+
+/** Provider line, banner, brands and NOW/NEXT/DONE — shared by the panel and the main window. */
+export function StatusBody({ m, actions }: { m: PanelModel; actions: Pick<PanelActions, "openMain" | "startWorker" | "setPaused" | "allowBattery"> }) {
 
   const bannerAction: Record<BannerKind, [string, () => void] | null> = {
     notRunning: [copy.action.start, actions.startWorker],
@@ -33,7 +54,7 @@ export function Panel({ payload, actions, clock }: { payload: StatusPayload | nu
   const ba = m.banner ? bannerAction[m.banner.kind] : null;
 
   return (
-    <div className="flex h-screen flex-col bg-white p-3 font-sans text-sm text-neutral-900 dark:bg-neutral-900 dark:text-neutral-100">
+    <>
       <div className="text-xs text-neutral-600 dark:text-neutral-300">
         {m.noProvider ? (
           <button className="underline" onClick={() => actions.openMain("providers")}>{m.providerLine}</button>
@@ -86,13 +107,6 @@ export function Panel({ payload, actions, clock }: { payload: StatusPayload | nu
           </section>
         )}
       </div>
-      <div className="mt-2 text-xs text-neutral-500">{m.lastCheck}</div>
-      <div className="mt-2 flex gap-2">
-        <button className={btn} onClick={() => actions.setPaused(!m.paused)}>{m.paused ? copy.action.resume : copy.action.pause}</button>
-        <button className={btn} onClick={actions.runNow}>{copy.action.runNow}</button>
-        <button className={btn} onClick={() => actions.openMain("renders")}>{copy.action.open}</button>
-        <button className={btn} onClick={actions.openLogs}>{copy.action.viewLogs}</button>
-      </div>
-    </div>
+    </>
   );
 }

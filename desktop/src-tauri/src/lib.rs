@@ -81,6 +81,7 @@ fn is_pause_file_present() -> bool {
 
 fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
+        set_dock(app, true);
         let _ = w.show();
         let _ = w.set_focus();
     }
@@ -143,6 +144,54 @@ fn set_allow_battery(allow: bool) -> Result<(), String> {
     control::set_allow_battery(allow).map_err(err)
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Settings {
+    pub allow_battery: bool,
+    pub start_at_login: bool,
+}
+
+/// Settings snapshot; `start_at_login` comes from the autostart plugin.
+pub fn settings(start_at_login: bool) -> Result<Settings, control::ControlError> {
+    Ok(Settings { allow_battery: control::allow_battery()?, start_at_login })
+}
+
+#[tauri::command]
+fn get_settings(app: AppHandle) -> Result<Settings, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let on = app.autolaunch().is_enabled().unwrap_or(false);
+    settings(on).map_err(err)
+}
+
+#[tauri::command]
+fn set_start_at_login(app: AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let al = app.autolaunch();
+    if enabled { al.enable() } else { al.disable() }.map_err(|e| e.to_string())
+}
+
+/// First run only: turn Start at login on, then leave the owner's choice alone.
+fn autostart_first_run(app: &AppHandle) {
+    use tauri_plugin_autostart::ManagerExt;
+    let Ok(dir) = app.path().app_config_dir() else { return };
+    let marker = dir.join("autostart-initialised");
+    if marker.exists() {
+        return;
+    }
+    if app.autolaunch().enable().is_ok() {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(marker, b"");
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn set_dock(app: &AppHandle, visible: bool) {
+    let policy = if visible { tauri::ActivationPolicy::Regular } else { tauri::ActivationPolicy::Accessory };
+    let _ = app.set_activation_policy(policy);
+}
+#[cfg(not(target_os = "macos"))]
+fn set_dock(_app: &AppHandle, _visible: bool) {}
+
 #[tauri::command]
 fn run_now() -> Result<(), String> {
     control::run_now().map_err(err)
@@ -204,6 +253,7 @@ fn start_watcher(app: &AppHandle) -> Option<RecommendedWatcher> {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .invoke_handler(tauri::generate_handler![
             get_status,
             set_paused,
@@ -212,7 +262,9 @@ pub fn run() {
             set_engine_order,
             open_main,
             start_worker,
-            open_logs
+            open_logs,
+            get_settings,
+            set_start_at_login
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -230,6 +282,7 @@ pub fn run() {
                 refresh(&ticker);
             });
 
+            autostart_first_run(&handle);
             refresh(&handle);
             Ok(())
         })
@@ -237,6 +290,9 @@ pub fn run() {
             WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();
+                if window.label() == "main" {
+                    set_dock(window.app_handle(), false);
+                }
             }
             WindowEvent::Focused(false) if window.label() == "panel" => {
                 let _ = window.hide();
@@ -245,4 +301,21 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running CFW Render");
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    #[test]
+    fn get_settings_reflects_allow_battery_file() {
+        let _g = control::tests::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let d = tempfile::tempdir().unwrap();
+        std::env::set_var("CFW_RENDER_STATE_DIR", d.path());
+        assert_eq!(settings(true).unwrap(), Settings { allow_battery: false, start_at_login: true });
+        std::fs::write(d.path().join("allow-battery"), b"").unwrap();
+        assert_eq!(settings(false).unwrap(), Settings { allow_battery: true, start_at_login: false });
+        let json = serde_json::to_string(&settings(true).unwrap()).unwrap();
+        assert_eq!(json, r#"{"allowBattery":true,"startAtLogin":true}"#);
+    }
 }

@@ -67,6 +67,11 @@ pub fn set_allow_battery(allow: bool) -> Result<(), ControlError> {
     set_flag("allow-battery", allow)
 }
 
+/// Whether the owner has allowed rendering on battery (the `allow-battery` file exists).
+pub fn allow_battery() -> Result<bool, ControlError> {
+    Ok(state_dir()?.join("allow-battery").exists())
+}
+
 pub const LAUNCHD_LABEL: &str = "com.cfw.render";
 // System tools by absolute path: a GUI app's PATH is launchd's default and
 // must not decide which binary runs.
@@ -181,6 +186,16 @@ pub(crate) mod tests {
         }
         run_now().unwrap();
         assert_eq!(mode(&d.path().join("run-now")), 0o600);
+    }
+
+    #[test]
+    fn allow_battery_reads_file_presence() {
+        let (_g, d) = with_dir();
+        assert!(!allow_battery().unwrap());
+        fs::write(d.path().join("allow-battery"), b"").unwrap();
+        assert!(allow_battery().unwrap());
+        set_allow_battery(false).unwrap();
+        assert!(!allow_battery().unwrap());
     }
 
     #[test]
