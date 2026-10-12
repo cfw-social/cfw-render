@@ -1,3 +1,4 @@
+const copy_sep = " · ";
 // All owner-facing panel copy. Plain English only.
 export const copy = {
   noProvider: "No AI provider signed in",
@@ -32,6 +33,24 @@ export const copy = {
     const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
     const pad = (n: number) => String(n).padStart(2, "0");
     return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+  },
+  main: {
+    chatPlaceholder: "Chat with your AI assistant arrives in a later update.",
+    providersPlaceholder: "Sign in to ChatGPT or Claude here in a later update.",
+    rendersTitle: "Renders on this Mac",
+    noRecent: "Nothing finished in the last 24 hours.",
+  },
+  settings: {
+    title: "Settings",
+    battery: "Render on battery",
+    startAtLogin: "Start at login",
+    autoUpdate: "Automatic updates",
+    autoUpdateNote: "Automatic updates arrive with signed releases.",
+    sendLogs: "Send logs to CFW…",
+    uninstall: "Uninstall CFW Render…",
+    comingNote: "Coming in a later update.",
+    version: (app: string | null, worker: string | null) =>
+      `App ${app ?? "unknown"}${copy_sep}Worker ${worker ?? "not installed"}`,
   },
   engineFallback: { codex: "ChatGPT", "claude-code": "Claude" } as Record<string, string>,
 } as const;

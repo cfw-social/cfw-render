@@ -33,7 +33,20 @@ export const hhmm = (t: number) => {
 };
 const title = (a?: string | null, b?: string | null) => [a, b].filter(Boolean).join(copy.sep);
 
-export function panelModel(payload: StatusPayload | null, now: number): PanelModel {
+export interface ModelOptions {
+  /** Max DONE rows (panel: 3). */
+  recentLimit?: number;
+  /** Only DONE rows finished within this many ms of `now` (undated rows are dropped when set). */
+  recentWindowMs?: number;
+}
+
+export const DAY_MS = 24 * 60 * 60 * 1000;
+/** Main-window "Renders on this Mac": every recent entry from the last 24 h. */
+export const rendersModel = (payload: StatusPayload | null, now: number) =>
+  panelModel(payload, now, { recentLimit: Infinity, recentWindowMs: DAY_MS });
+
+export function panelModel(payload: StatusPayload | null, now: number, opts: ModelOptions = {}): PanelModel {
+  const { recentLimit = 3, recentWindowMs } = opts;
   const s = payload?.status ?? null;
   const engines = (s?.engines ?? []).filter((e) => e.signedIn);
   const noProvider = engines.length === 0;
@@ -76,8 +89,9 @@ export function panelModel(payload: StatusPayload | null, now: number): PanelMod
     // (entries without a time sort last, keeping their file order).
     done: [...(s?.recent ?? [])]
       .map((r, i) => ({ r, i, t: ms(r.finishedAt) }))
+      .filter(({ t }) => recentWindowMs == null || (t != null && now - t <= recentWindowMs))
       .sort((a, b) => (b.t ?? -Infinity) - (a.t ?? -Infinity) || a.i - b.i)
-      .slice(0, 3)
+      .slice(0, recentLimit)
       .map(({ r }) => {
       const result = (results as readonly string[]).includes(r.result ?? "") ? (r.result as DoneRow["result"]) : "failed";
       const t = ms(r.finishedAt);
