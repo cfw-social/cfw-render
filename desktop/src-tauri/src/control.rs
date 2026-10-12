@@ -15,6 +15,8 @@ pub enum ControlError {
     NoHome,
     #[error("invalid engine name: {0:?}")]
     BadEngineName(String),
+    #[error("{0}")]
+    Command(String),
 }
 
 pub fn state_dir() -> Result<PathBuf, ControlError> {
@@ -63,6 +65,41 @@ pub fn set_paused(paused: bool) -> Result<(), ControlError> {
 
 pub fn set_allow_battery(allow: bool) -> Result<(), ControlError> {
     set_flag("allow-battery", allow)
+}
+
+pub const LAUNCHD_LABEL: &str = "com.cfw.render";
+
+fn run(cmd: &str, args: &[&str]) -> Result<(), ControlError> {
+    let out = std::process::Command::new(cmd).args(args).output()?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(ControlError::Command(if msg.is_empty() { format!("{cmd} failed ({})", out.status) } else { msg }))
+    }
+}
+
+/// Restart the launchd job; if it is not loaded, bootstrap it from the user's LaunchAgents plist.
+pub fn start_worker() -> Result<(), ControlError> {
+    let uid = run_uid()?;
+    let domain = format!("gui/{uid}");
+    if run("launchctl", &["kickstart", "-k", &format!("{domain}/{LAUNCHD_LABEL}")]).is_ok() {
+        return Ok(());
+    }
+    let home = dirs::home_dir().ok_or(ControlError::NoHome)?;
+    let plist = home.join("Library/LaunchAgents").join(format!("{LAUNCHD_LABEL}.plist"));
+    run("launchctl", &["bootstrap", &domain, &plist.to_string_lossy()])
+}
+
+fn run_uid() -> Result<String, ControlError> {
+    let out = std::process::Command::new("id").arg("-u").output()?;
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Opens `~/CFW Render/logs` in Finder. Creates nothing.
+pub fn open_logs() -> Result<(), ControlError> {
+    let dir = dirs::home_dir().ok_or(ControlError::NoHome)?.join("CFW Render").join("logs");
+    run("open", &[&dir.to_string_lossy()])
 }
 
 pub fn run_now() -> Result<(), ControlError> {
