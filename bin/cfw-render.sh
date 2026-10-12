@@ -307,15 +307,16 @@ for x in a:
         cr_log "order $order_id — harness finished but complete_render_order failed"
       fi
     else
-      case "$h_rc" in 20) h_outcome="cancelled" ;; 21) h_outcome="released" ;; 22) h_outcome="revoked" ;; 23) h_outcome="superseded" ;; 30) h_outcome="failed" ;; esac
+      case "$h_rc" in 20) h_outcome="cancelled" ;; 21) h_outcome="released" ;; 22) h_outcome="revoked" ;; 23) h_outcome="superseded" ;; 24) h_outcome="engine_limit" ;; 30) h_outcome="failed" ;; esac
       cr_log "order $order_id — harness exited $h_rc ($h_outcome)"
       # [M2-04, D76] stop_after_step (22) and attempt_superseded (23): this
       # brand is no longer ours to serve from this computer — delete the
       # order folder (order.json carries the brand's credentials/providerKeys,
       # steps/ carries its files) and any key material held for it. No further
       # reports: the attempt is already released (22) or belongs to another
-      # computer (23).
-      if (( h_rc == 22 || h_rc == 23 )); then
+      # computer (23). [M3-01b] 24 = released for an engine usage limit:
+      # the attempt is released; the server re-queues it.
+      if (( h_rc == 22 || h_rc == 23 || h_rc == 24 )); then
         rm -rf "$order_dir"
         rm -rf "$(cr_keep_output_dir "$brand_slug" "$order_id")" 2>/dev/null
         cr_log "order $order_id — brand files and keys deleted after $h_outcome"
@@ -529,7 +530,7 @@ print(tpl)
 # [M2-04] Claims with capacity (CONTRACTS.md §3, D52/D51/D78).
 # ---------------------------------------------------------------------------
 spawn_pids=()
-claim_caps="$(cr_engine_capabilities_json "$(cr_engine_detect)" "$CFW_RENDER_SKILLS_DIR")"
+claim_caps=""   # recomputed per claim round (engines/limits change) — see claim_round
 claim_label="$(hostname -s 2>/dev/null || hostname)"
 CLAIM_MAX="$(cr_capacity_max)"
 cr_log "capacity: max=$CLAIM_MAX request(s) at once${CFW_RENDER_CONCURRENCY:+ (CFW_RENDER_CONCURRENCY=$CFW_RENDER_CONCURRENCY)}"
@@ -626,6 +627,28 @@ spawn_orders() {
 STARTED=0
 claim_round() {
   local running free_mb load ncpu started=0 n=0 normal_ok=1 rc=0 drained=0 tmp
+  # [M3-01b] Engines and their limits move between rounds: recompute the
+  # capabilities each round. When every signed-in engine is limited, skip the
+  # claim until the earliest limit passes (the limit file clears itself).
+  local active_engine limit_earliest limit_raw
+  limit_raw="$(cr_engine_limit_raw_count)"
+  active_engine="$(cr_engine_active)"
+  limit_earliest="$(cr_engine_limit_earliest)"
+  if (( limit_raw > 0 )) && [[ -z "$limit_earliest" ]]; then
+    # Every recorded limit has passed (the read above dropped them): tell the server.
+    cr_log "engine: usage limit(s) passed — resuming"
+    cr_mcp_call_soft set_computer_limit '{"until":null}' >/dev/null 2>&1 || cr_log "set_computer_limit clear failed (ignored)"
+  fi
+  if [[ "$active_engine" == "none" ]]; then
+    if [[ -n "$limit_earliest" ]] && [[ "$(cr_engines_json)" == *'"signedIn": true'* ]]; then
+      CR_STATUS_LAST_ERROR="AI limit reached; resumes $limit_earliest"
+      cr_log "engine: every signed-in engine is at its usage limit — not claiming until $limit_earliest"
+      prune_running; STARTED=0
+      return 0
+    fi
+  fi
+  [[ "$CR_STATUS_LAST_ERROR" == "AI limit reached;"* ]] && CR_STATUS_LAST_ERROR=""
+  claim_caps="$(cr_engine_capabilities_json "$active_engine" "$CFW_RENDER_SKILLS_DIR")"
   tmp="$(mktemp)"
   prune_running; running=$RUNNING
   IFS=$'\x1f' read -r free_mb load ncpu <<< "$(cr_capacity_probe)"

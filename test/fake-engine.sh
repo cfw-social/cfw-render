@@ -9,6 +9,10 @@
 #       leave the first save EMPTY for the first n runs of that step
 #   FAKE_ENGINE_ASK_STEP=<stepId>
 #       write needs_input.json for inputId `broll` the first time that step runs
+#   FAKE_ENGINE_LIMIT_ENGINE=<codex|claude-code|all> + FAKE_ENGINE_LIMIT_STEP=<stepId>
+#       [M3-01b] when CFW_ENGINE_NAME matches on that step, print the vendor
+#       usage-limit fixture and exit 1 without writing saves
+#   FAKE_ENGINE_SLEEP=<secs>   sleep before writing saves (status.json requests test)
 set -euo pipefail
 cat > /dev/null   # consume the prompt
 step="${CFW_STEP_ID:-}"
@@ -20,6 +24,13 @@ if [[ -n "${FAKE_ENGINE_ASK_STEP:-}" && "$FAKE_ENGINE_ASK_STEP" == "$step" && "$
   printf '{"inputId":"broll","reason":"need b-roll to continue"}' > needs_input.json
   exit 0
 fi
+if [[ -n "${FAKE_ENGINE_LIMIT_ENGINE:-}" && "${FAKE_ENGINE_LIMIT_STEP:-}" == "$step" ]] \
+   && [[ "$FAKE_ENGINE_LIMIT_ENGINE" == "all" || "$FAKE_ENGINE_LIMIT_ENGINE" == "${CFW_ENGINE_NAME:-}" ]]; then
+  fx="codex-limit.txt"; [[ "${CFW_ENGINE_NAME:-}" == "claude-code" ]] && fx="claude-limit.txt"
+  cat "$(dirname "${BASH_SOURCE[0]}")/fixtures/engine-limits/$fx"
+  exit 1
+fi
+[[ -n "${FAKE_ENGINE_SLEEP:-}" ]] && sleep "$FAKE_ENGINE_SLEEP"
 mkdir -p saves
 first=1
 for sv in ${CFW_STEP_SAVES:-}; do

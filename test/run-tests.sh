@@ -19,6 +19,18 @@ FAKE_BIN="$(mktemp -d)"
 cp "$TEST_DIR/fake-claude.sh" "$FAKE_BIN/claude"
 chmod +x "$FAKE_BIN/claude"
 
+# [M3-01] The worker pauses on battery (cr_on_battery → pmset). Every case must
+# be independent of the host's power state, so a stub pmset reporting AC power
+# is the default for the whole suite; the M3-01a cases flip it via the
+# FAKE_PMSET_BATTERY marker file.
+FAKE_PMSET_BATTERY="$(mktemp -u)"; export FAKE_PMSET_BATTERY
+cat > "$FAKE_BIN/pmset" <<'EOF2'
+#!/usr/bin/env bash
+if [[ -e "${FAKE_PMSET_BATTERY:-/nonexistent}" ]]; then echo "Now drawing from 'Battery Power'"; else echo "Now drawing from 'AC Power'"; fi
+EOF2
+chmod +x "$FAKE_BIN/pmset"
+export CFW_RENDER_PMSET_CMD="$FAKE_BIN/pmset"
+
 OLLAMA_KEYS_FIXTURE="$(mktemp)"
 cat > "$OLLAMA_KEYS_FIXTURE" <<'EOF'
 OLLAMA_KEY_GOOFY_HUGLE_463_B=test-dummy-key-goofy
@@ -2758,18 +2770,13 @@ rm -rf "$c28"
 # ---------------------------------------------------------------------------
 # M3-01a: pause / battery / run-now / version / updateRequired
 # ---------------------------------------------------------------------------
-FAKE_PMSET_BATTERY="$(mktemp -u)"; export FAKE_PMSET_BATTERY
 FAKE_CAFFEINATE_LOG="$(mktemp)"; export FAKE_CAFFEINATE_LOG
-cat > "$FAKE_BIN/pmset" <<'EOF2'
-#!/usr/bin/env bash
-if [[ -e "${FAKE_PMSET_BATTERY:-/nonexistent}" ]]; then echo "Now drawing from 'Battery Power'"; else echo "Now drawing from 'AC Power'"; fi
-EOF2
 cat > "$FAKE_BIN/caffeinate" <<'EOF2'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${FAKE_CAFFEINATE_LOG:-/dev/null}"
 exec sleep 30
 EOF2
-chmod +x "$FAKE_BIN/pmset" "$FAKE_BIN/caffeinate"
+chmod +x "$FAKE_BIN/caffeinate"
 # m3_tool_count <dir> <tool>
 m3_tool_count() { grep -c "\"tool\": \"$2\"" "$1/mockstate/calls.jsonl" 2>/dev/null || true; }
 # m3_status <dir> <python expr over d>
@@ -2981,6 +2988,132 @@ else
   pass "M3-07a-4: strings fallback skipped (file does not report Mach-O)"
 fi
 rm -rf "$m7_f"
+
+# ===========================================================================
+# [M3-01b] engines, usage limits, failover (contract §1/§3, D107/D109)
+# ===========================================================================
+m3b_fx="$REPO_DIR/test/fixtures/engine-limits"
+m3b_detect() { CFW_RENDER_STATE_DIR="$1" bash -c 'cr_log(){ :; }; source "$1/bin/cfw-render-engine.sh"; cr_engine_limit_detect "$2" "$3" "$4"' _ "$REPO_DIR" "$2" "$3" "$4"; }
+# m3b_started <dir> <orderId> — engines of step_started reports, in order
+m3b_started() { python3 -c '
+import json, sys
+print(" ".join("%s:%s" % (d.get("stepId"), d.get("engine")) for d in (json.loads(l) for l in open(sys.argv[1]) if l.strip()) if d["event"] == "step_started" and d["orderId"] == sys.argv[2]))' "$1/control/reports.ndjson" "$2" 2>/dev/null; }
+m3b_calls_of() { python3 -c '
+import json, sys
+print("\n".join(json.dumps(json.loads(l)["args"]) for l in open(sys.argv[1]) if json.loads(l)["tool"] == sys.argv[2]))' "$1/mockstate/calls.jsonl" "$2" 2>/dev/null; }
+
+echo "=== Case M3-01b-1: cr_engine_limit_detect on vendor fixtures ==="
+mb1="$(mktemp -d)"
+mb1_a="$(m3b_detect "$mb1" codex "$m3b_fx/codex-limit.txt" 1)" && mb1_a_rc=0 || mb1_a_rc=$?
+mb1_b="$(m3b_detect "$mb1" claude-code "$m3b_fx/claude-limit.txt" 0)" && mb1_b_rc=0 || mb1_b_rc=$?
+mb1_c="$(m3b_detect "$mb1" codex "$m3b_fx/codex-ok.txt" 1)" && mb1_c_rc=0 || mb1_c_rc=$?
+if [[ "$mb1_a_rc" == "0" && "$mb1_a" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:40:00Z$ && "$mb1_b_rc" == "0" && "$mb1_b" =~ ^[0-9]{4}- && "$mb1_c_rc" == "1" && -z "$mb1_c" ]]; then
+  pass "limit detect: codex-limit → $mb1_a; claude-limit → $mb1_b; codex-ok → rc 1"
+else
+  fail "limit detect" "codex rc=$mb1_a_rc out=$mb1_a; claude rc=$mb1_b_rc out=$mb1_b; ok rc=$mb1_c_rc out=$mb1_c"
+fi
+rm -rf "$mb1"
+
+echo "=== Case M3-01b-2: codex hits its limit on step a → step reruns on claude-code, attempt completes ==="
+mb2="$(mktemp -d)"
+c21_setup "$mb2" $((MOCK_PORT_BASE + 950)) harness-3step '[{"id":"o1"}]'
+c21_worker "$mb2" $((MOCK_PORT_BASE + 950)) --once FAKE_ENGINE_LIMIT_ENGINE=codex FAKE_ENGINE_LIMIT_STEP=a
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+mb2_started="$(m3b_started "$mb2" o1)"
+mb2_ev="$(c21_events_for "$mb2/control/reports.ndjson" o1)"
+mb2_lim="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("codex" if "codex" in d else "no")' "$mb2/cr-state/engine-limits.json" 2>/dev/null)"
+if [[ "$mb2_started" == "a:codex a:claude-code c:claude-code" && "$mb2_ev" == *"step_completed:a"* && "$mb2_ev" == *"attempt_completed:-"* && "$mb2_lim" == "codex" ]]; then
+  pass "failover: step_started a:codex → a:claude-code, completed; engine-limits.json has codex"
+else
+  fail "failover" "started='$mb2_started' events='$mb2_ev' limits=$mb2_lim; $(tail -5 "$mb2/cr-state/cfw-render.log" 2>/dev/null)"
+fi
+rm -rf "$mb2"
+
+echo "=== Case M3-01b-3: every engine limited → attempt_released(engine_limit), set_computer_limit(until); next pass claims nothing ==="
+mb3="$(mktemp -d)"
+c21_setup "$mb3" $((MOCK_PORT_BASE + 951)) harness-3step '[{"id":"o1"}]'
+c21_worker "$mb3" $((MOCK_PORT_BASE + 951)) --once FAKE_ENGINE_LIMIT_ENGINE=all FAKE_ENGINE_LIMIT_STEP=a
+mb3_ev="$(c21_events_for "$mb3/control/reports.ndjson" o1)"
+mb3_rel="$(grep -c '"event": "attempt_released"' "$mb3/control/reports.ndjson" 2>/dev/null || true)"
+mb3_reason="$(python3 -c '
+import json,sys
+print(" ".join(d.get("reason") or "-" for d in (json.loads(l) for l in open(sys.argv[1]) if l.strip()) if d["event"]=="attempt_released"))' "$mb3/control/reports.ndjson" 2>/dev/null)"
+mb3_lim="$(m3b_calls_of "$mb3" set_computer_limit)"
+mb3_failed="$(grep -c '"event": "attempt_failed"' "$mb3/control/reports.ndjson" 2>/dev/null || true)"
+mb3_claims_a="$(m3_tool_count "$mb3" claim_render_order)"
+c21_worker "$mb3" $((MOCK_PORT_BASE + 951)) --once FAKE_ENGINE_LIMIT_ENGINE=all FAKE_ENGINE_LIMIT_STEP=a
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+mb3_claims_b="$(m3_tool_count "$mb3" claim_render_order)"
+mb3_status="$(m3_status "$mb3" '" ".join(e["limit"] for e in d["engines"])')"
+mb3_err="$(m3_status "$mb3" 'd["computer"]["lastError"]')"
+if [[ "$mb3_rel" == "1" && "$mb3_reason" == "engine_limit" && "$(wc -l <<< "$mb3_lim" | tr -d ' ')" == "1" && "$mb3_lim" == *'"until": "20'* && "$mb3_failed" == "0" && "$mb3_claims_b" == "$mb3_claims_a" && "$mb3_status" == "limited limited" && "$mb3_err" == "AI limit reached; resumes "* ]]; then
+  pass "both limited: attempt_released(engine_limit) once, set_computer_limit once with until, no attempt_failed; 2nd pass 0 claims, status engines=limited limited"
+else
+  fail "both limited" "released=$mb3_rel reason=$mb3_reason limit_calls='$mb3_lim' failed=$mb3_failed claims=$mb3_claims_a/$mb3_claims_b status='$mb3_status' err='$mb3_err' ev='$mb3_ev'"
+fi
+rm -rf "$mb3"
+
+echo "=== Case M3-01b-4: engines.json order → capabilities.engine and engines[0] are claude-code ==="
+mb4="$(mktemp -d)"
+c21_setup "$mb4" $((MOCK_PORT_BASE + 952)) harness-3step '[]'
+printf '{"order":["claude-code","codex"]}' > "$mb4/cr-state/engines.json"
+c21_worker "$mb4" $((MOCK_PORT_BASE + 952)) --once
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+mb4_caps="$(python3 -c '
+import json,sys
+for l in open(sys.argv[1]):
+    d=json.loads(l)
+    if d["tool"]=="claim_render_order":
+        c=d["args"]["capabilities"]; print(c["engine"], c["engines"][0]["name"], c["engines"][1]["name"]); break' "$mb4/mockstate/calls.jsonl" 2>/dev/null)"
+if [[ "$mb4_caps" == "claude-code claude-code codex" ]]; then
+  pass "engine order: capabilities.engine=claude-code, engines=[claude-code, codex]"
+else
+  fail "engine order" "caps='$mb4_caps'"
+fi
+rm -rf "$mb4"
+
+echo "=== Case M3-01b-5: expired codex limit → claim with codex, entry cleared, set_computer_limit(until=null) ==="
+mb5="$(mktemp -d)"
+c21_setup "$mb5" $((MOCK_PORT_BASE + 953)) harness-3step '[{"id":"o1"}]'
+python3 -c '
+import json,sys,datetime
+t=(datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+json.dump({"codex":{"until":t}}, open(sys.argv[1],"w"))' "$mb5/cr-state/engine-limits.json"
+c21_worker "$mb5" $((MOCK_PORT_BASE + 953)) --once
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+mb5_engine="$(python3 -c '
+import json,sys
+for l in open(sys.argv[1]):
+    d=json.loads(l)
+    if d["tool"]=="claim_render_order": print(d["args"]["capabilities"]["engine"]); break' "$mb5/mockstate/calls.jsonl" 2>/dev/null)"
+mb5_file="$(python3 -c 'import json,sys; print("codex" if "codex" in json.load(open(sys.argv[1])) else "clear")' "$mb5/cr-state/engine-limits.json" 2>/dev/null)"
+mb5_ev="$(c21_events_for "$mb5/control/reports.ndjson" o1)"
+mb5_null="$(m3b_calls_of "$mb5" set_computer_limit | grep -c '"until": null' || true)"
+if [[ "$mb5_engine" == "codex" && "$mb5_file" == "clear" && "$mb5_ev" == *"attempt_completed:-"* && "$mb5_null" -ge 1 ]]; then
+  pass "expired limit: claimed with codex, engine-limits.json cleared, set_computer_limit(until=null), attempt completed"
+else
+  fail "expired limit" "engine=$mb5_engine file=$mb5_file ev='$mb5_ev' limit_calls='$(m3b_calls_of "$mb5" set_computer_limit)'"
+fi
+rm -rf "$mb5"
+
+echo "=== Case M3-01b-6: status.json requests shows the running step, empty afterwards ==="
+mb6="$(mktemp -d)"
+c21_setup "$mb6" $((MOCK_PORT_BASE + 954)) harness-3step '[{"id":"o1"}]'
+c21_worker "$mb6" $((MOCK_PORT_BASE + 954)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=1 FAKE_ENGINE_SLEEP=3 &
+mb6_w=$!
+mb6_req=""
+for _ in $(seq 1 120); do mb6_req="$(m3_status "$mb6" '" ".join("%s/%s/%s" % (r["orderId"], r["stepId"], r["engine"]) for r in d["requests"])')"; [[ -n "$mb6_req" ]] && break; sleep 0.1; done
+mb6_after="x"
+for _ in $(seq 1 200); do mb6_after="$(m3_status "$mb6" 'len(d["requests"])')"; [[ "$mb6_after" == "0" ]] && grep -q '"event": "attempt_completed"' "$mb6/control/reports.ndjson" 2>/dev/null && break; sleep 0.1; done
+pkill -P "$mb6_w" 2>/dev/null; kill "$mb6_w" 2>/dev/null; wait "$mb6_w" 2>/dev/null
+pkill -f "cfw-render.sh --loop" 2>/dev/null || true
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+if [[ "$mb6_req" == o1/a/codex* && "$mb6_after" == "0" && "$(m3_status "$mb6" 'd["activeEngine"]')" == "codex" ]]; then
+  pass "status requests: '$mb6_req' while running, empty after; activeEngine=codex"
+else
+  fail "status requests" "during='$mb6_req' after=$mb6_after status=$(head -c 400 "$mb6/cr-state/status.json" 2>/dev/null)"
+fi
+rm -rf "$mb6"
 
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"

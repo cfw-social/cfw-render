@@ -42,33 +42,202 @@
 # Depends on cfw-render-lib.sh being sourced first (cr_log).
 
 # ---------------------------------------------------------------------------
-# cr_engine_detect — echo `codex`, `claude-code` or `none`. Never fails.
+# [M3-01b] Engine list, order, usage limits and failover (contract §1/§3,
+# D107/D109). Known engines, default order. State files live under
+# CFW_RENDER_STATE_DIR: engines.json {"order":[...]} (owner-set order) and
+# engine-limits.json {"<engine>": {"until": "<ISO>"}} (limits we observed).
 # ---------------------------------------------------------------------------
-cr_engine_detect() {
+CR_ENGINES_KNOWN=(codex claude-code)
+
+# Limit detection table — ONE place. Row = engine|regex (python `re`, IGNORECASE).
+CR_ENGINE_LIMIT_TABLE=(
+  "codex|usage limit|rate limit reached|You've hit your usage limit|Try again (at|in)|limit resets"
+  "claude-code|usage limit|rate limit|You've reached your (usage|message) limit|limit will reset|resets at"
+)
+
+cr_engine_state_dir() { printf '%s' "${CFW_RENDER_STATE_DIR:-${HOME}/.cfw-render}"; }
+
+# cr_engine_signed_in <engine> → rc 0 iff the CLI is present and signed in.
+# Status output is discarded on purpose — it names the account.
+cr_engine_signed_in() {
+  local engine="$1"
+  case "$engine" in codex|claude-code) ;; *) return 1 ;; esac
+  [[ -n "${CFW_RENDER_ENGINE_CMD:-}" ]] && return 0
+  case "$engine" in
+    codex) command -v codex >/dev/null 2>&1 && codex login status >/dev/null 2>&1 < /dev/null ;;
+    claude-code) command -v claude >/dev/null 2>&1 && claude auth status >/dev/null 2>&1 < /dev/null ;;
+  esac
+}
+
+# cr_engine_order — known engines one per line, in the owner's order.
+cr_engine_order() {
   local forced="${CFW_RENDER_ENGINE:-}"
   if [[ -n "$forced" ]]; then
     case "$forced" in
-      codex|claude-code|none) echo "$forced"; return 0 ;;
-      *) cr_log "cr_engine_detect: CFW_RENDER_ENGINE='$forced' is not codex|claude-code|none — treating as none"; echo none; return 0 ;;
+      codex|claude-code) echo "$forced" ;;
+      none) ;;
+      *) cr_log "cr_engine_order: CFW_RENDER_ENGINE='$forced' is not codex|claude-code|none — treating as none" ;;
     esac
-  fi
-  # A test/override command stands in for a real CLI: default to codex so the
-  # claim advertises an engine every fixture manifest accepts.
-  if [[ -n "${CFW_RENDER_ENGINE_CMD:-}" ]]; then
-    echo codex
     return 0
   fi
-  # Status output is discarded on purpose — it names the account.
-  if command -v codex >/dev/null 2>&1 && codex login status >/dev/null 2>&1 < /dev/null; then
-    echo codex
-    return 0
-  fi
-  if command -v claude >/dev/null 2>&1 && claude auth status >/dev/null 2>&1 < /dev/null; then
-    echo claude-code
-    return 0
-  fi
+  python3 -c '
+import json, sys
+known = sys.argv[2:]
+order = []
+try:
+    o = json.load(open(sys.argv[1])).get("order")
+    if isinstance(o, list):
+        order = [x for x in o if isinstance(x, str) and x in known]
+except Exception:
+    pass
+for k in known:
+    if k not in order: order.append(k)
+print("\n".join(order))
+' "$(cr_engine_state_dir)/engines.json" "${CR_ENGINES_KNOWN[@]}"
+}
+
+# cr_engine_limit_until <engine> — ISO reset time or empty; expired entries
+# are dropped from the file.
+cr_engine_limit_until() {
+  local engine="$1" f until
+  f="$(cr_engine_state_dir)/engine-limits.json"
+  [[ -f "$f" ]] || return 0
+  until="$(python3 -c '
+import json, sys, datetime
+try:
+    u = (json.load(open(sys.argv[1])).get(sys.argv[2]) or {}).get("until")
+except Exception:
+    u = None
+if not isinstance(u, str) or not u: sys.exit(0)
+try:
+    t = datetime.datetime.fromisoformat(u.replace("Z", "+00:00"))
+    if t.tzinfo is None: t = t.replace(tzinfo=datetime.timezone.utc)
+except Exception:
+    print("expired"); sys.exit(0)
+print("expired" if t <= datetime.datetime.now(datetime.timezone.utc) else u)
+' "$f" "$engine" 2>/dev/null || true)"
+  if [[ "$until" == "expired" ]]; then cr_engine_limit_clear "$engine"; return 0; fi
+  printf '%s' "$until"
+}
+
+# cr_engine_limit_set <engine> <ISO> / cr_engine_limit_clear <engine>
+cr_engine_limit_write() {
+  local engine="$1" until="$2" dir f
+  dir="$(cr_engine_state_dir)"; f="$dir/engine-limits.json"
+  ( umask 077; mkdir -p "$dir"; python3 -c '
+import json, os, sys
+f, eng, until = sys.argv[1:4]
+try:
+    d = json.load(open(f))
+    if not isinstance(d, dict): d = {}
+except Exception:
+    d = {}
+if until: d[eng] = {"until": until}
+else: d.pop(eng, None)
+tmp = f + ".tmp"
+with open(tmp, "w") as fh: json.dump(d, fh)
+os.replace(tmp, f)
+' "$f" "$engine" "$until" )
+}
+cr_engine_limit_set() { cr_engine_limit_write "$1" "$2"; }
+cr_engine_limit_clear() { cr_engine_limit_write "$1" ""; }
+
+# cr_engine_limit_raw_count — number of entries in engine-limits.json as
+# written (expired ones included); lets the claim loop notice an expiry.
+cr_engine_limit_raw_count() {
+  python3 -c '
+import json, sys
+try: print(len(json.load(open(sys.argv[1]))))
+except Exception: print(0)' "$(cr_engine_state_dir)/engine-limits.json" 2>/dev/null || echo 0
+}
+
+# cr_engine_limit_earliest — earliest unexpired reset ISO across engines, or empty.
+cr_engine_limit_earliest() {
+  local e u best=""
+  for e in "${CR_ENGINES_KNOWN[@]}"; do
+    u="$(cr_engine_limit_until "$e")"
+    [[ -n "$u" ]] || continue
+    if [[ -z "$best" || "$u" < "$best" ]]; then best="$u"; fi
+  done
+  printf '%s' "$best"
+}
+
+# cr_engines_json — [{"name","signedIn","limit":"ok"|"limited","resetsAt"?}] in order.
+cr_engines_json() {
+  local e signed until rows=""
+  while IFS= read -r e; do
+    [[ -n "$e" ]] || continue
+    signed=false; cr_engine_signed_in "$e" && signed=true
+    until="$(cr_engine_limit_until "$e")"
+    rows+="${e}"$'\x1f'"${signed}"$'\x1f'"${until}"$'\n'
+  done < <(cr_engine_order)
+  python3 -c '
+import json, sys
+out = []
+for line in sys.argv[1].splitlines():
+    if not line: continue
+    name, signed, until = line.split("\x1f")
+    row = {"name": name, "signedIn": signed == "true", "limit": "limited" if until else "ok"}
+    if until: row["resetsAt"] = until
+    out.append(row)
+print(json.dumps(out))
+' "$rows"
+}
+
+# cr_engine_active — first engine in order that is signed in and not limited, else none.
+cr_engine_active() {
+  local e
+  while IFS= read -r e; do
+    [[ -n "$e" ]] || continue
+    cr_engine_signed_in "$e" || continue
+    [[ -z "$(cr_engine_limit_until "$e")" ]] || continue
+    echo "$e"; return 0
+  done < <(cr_engine_order)
   echo none
-  return 0
+}
+
+# cr_engine_detect — kept for callers; same as cr_engine_active.
+cr_engine_detect() { cr_engine_active; }
+
+# cr_engine_limit_detect <engine> <log-file> <rc> [<from-byte>] — rc 0 + reset ISO (UTC) on
+# stdout when the last ~200 log lines show a usage limit; else rc 1. The regex
+# match alone is sufficient (some CLIs exit 0 on a limit message).
+cr_engine_limit_detect() {
+  local engine="$1" log="$2" rc="${3:-0}" from="${4:-0}" row regex=""
+  [[ -f "$log" ]] || return 1
+  for row in "${CR_ENGINE_LIMIT_TABLE[@]}"; do
+    [[ "${row%%|*}" == "$engine" ]] && { regex="${row#*|}"; break; }
+  done
+  [[ -n "$regex" ]] || return 1
+  # Only THIS run's output: the step log is appended across runs, so a limit
+  # message from the previous engine must not be read as the next one's.
+  # <from> is the log's byte size before the run (0 = whole file).
+  tail -c "+$((from + 1))" "$log" | tail -n 200 | python3 -c '
+import re, sys, datetime
+regex = sys.argv[1]
+lines = [l for l in sys.stdin.read().splitlines() if re.search(regex, l, re.I)]
+if not lines: sys.exit(1)
+now = datetime.datetime.now(datetime.timezone.utc)
+reset = None
+for l in lines:
+    m = re.search(r"in (\d+) ?(h|hours?|m|min|minutes?)\b", l, re.I)
+    if m:
+        n = int(m.group(1)); unit = m.group(2).lower()
+        reset = now + (datetime.timedelta(hours=n) if unit.startswith("h") else datetime.timedelta(minutes=n))
+        break
+    m = re.search(r"(\d{1,2}):(\d{2})\s*(am|pm)?", l, re.I)
+    if m:
+        h, mi, ap = int(m.group(1)), int(m.group(2)), (m.group(3) or "").lower()
+        if ap == "pm" and h < 12: h += 12
+        if ap == "am" and h == 12: h = 0
+        if h > 23 or mi > 59: continue
+        t = now.replace(hour=h, minute=mi, second=0, microsecond=0)
+        if t <= now: t += datetime.timedelta(days=1)
+        reset = t
+        break
+if reset is None: reset = now + datetime.timedelta(hours=5)
+print(reset.strftime("%Y-%m-%dT%H:%M:%SZ"))
+' "$regex"
 }
 
 # ---------------------------------------------------------------------------
@@ -119,8 +288,8 @@ cr_engine_capabilities_json() {
   manifests="$(cr_engine_manifests_json "$skills_dir")"
   python3 -c '
 import json, sys
-print(json.dumps({"engine": sys.argv[1], "os": sys.argv[2], "manifests": json.loads(sys.argv[3])}))
-' "$engine" "$(cr_engine_os)" "$manifests"
+print(json.dumps({"engine": sys.argv[1], "os": sys.argv[2], "manifests": json.loads(sys.argv[3]), "engines": json.loads(sys.argv[4])}))
+' "$engine" "$(cr_engine_os)" "$manifests" "$(cr_engines_json)"
 }
 
 # ---------------------------------------------------------------------------
@@ -136,7 +305,7 @@ cr_engine_run() {
   if [[ -n "${CFW_RENDER_ENGINE_CMD:-}" ]]; then
     (
       cd "$workdir" || exit 1
-      export CFW_RENDER_ENGINE_PROMPT_FILE="$prompt_file"
+      export CFW_RENDER_ENGINE_PROMPT_FILE="$prompt_file" CFW_ENGINE_NAME="$engine"
       # shellcheck disable=SC2086
       $CFW_RENDER_ENGINE_CMD < "$prompt_file" >> "$log" 2>&1
     ) || rc=$?
