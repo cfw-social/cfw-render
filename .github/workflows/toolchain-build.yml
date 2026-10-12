@@ -1,0 +1,80 @@
+# M3-07b — builds the private worker toolchain per arch and (on a
+# toolchain-v* tag, after owner approval of the `toolchain-release`
+# environment) publishes it to R2. See toolchain/README.md.
+name: toolchain-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: "arm64 | x86_64 | both"
+        default: both
+        type: choice
+        options: [arm64, x86_64, both]
+  push:
+    tags: ["toolchain-v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-14
+          - arch: x86_64
+            runner: macos-13
+    runs-on: ${{ matrix.runner }}
+    # Skip the arch the dispatcher did not ask for (tags build both).
+    if: ${{ github.event_name == 'push' || inputs.arch == 'both' || inputs.arch == matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      # Build-time only. The bundle must not link brew libs — verify.sh
+      # (run inside build.sh) fails the job if any Mach-O does.
+      - name: Install build tools
+        run: brew install zstd pkg-config autoconf automake libtool nasm
+      - name: Build bundle
+        env:
+          CFW_TOOLCHAIN_ALLOW_UNPINNED: ${{ vars.CFW_TOOLCHAIN_ALLOW_UNPINNED || '0' }}
+        run: toolchain/scripts/build.sh "${{ matrix.arch }}" dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cfw-toolchain-${{ matrix.arch }}
+          if-no-files-found: error
+          path: |
+            dist/*.tar.zst
+            dist/*.tar.zst.sha256
+            dist/*.SHA256SUMS
+
+  release:
+    if: ${{ startsWith(github.ref, 'refs/tags/toolchain-v') }}
+    needs: build
+    runs-on: ubuntu-latest
+    environment: toolchain-release   # owner approval gate
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cfw-toolchain-*
+          path: dist/
+          merge-multiple: true
+      # TODO(G0): Developer ID signing + notarisation of the archives happens
+      # here, between download and release.sh, once the signing identity
+      # exists as an environment secret.
+      - name: Publish to R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_TOOLCHAIN_BUCKET: ${{ secrets.R2_TOOLCHAIN_BUCKET }}
+          R2_TOOLCHAIN_PUBLIC_BASE: ${{ vars.R2_TOOLCHAIN_PUBLIC_BASE }}
+        run: toolchain/scripts/release.sh dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: toolchain-manifest
+          path: dist/toolchain-manifest.json

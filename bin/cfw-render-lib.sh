@@ -1130,8 +1130,23 @@ _CR_REQUIRED_BINS=(curl python3 node npx ffmpeg ffprobe magick)
 # function's only job is turning "found, and here's where" into a PATH
 # string. Prints the colon-joined result on stdout. Never fails.
 # ---------------------------------------------------------------------------
+# M3-07a: the private toolchain. When the desktop app has installed a bundle
+# at ~/CFW Render/app/tools/<version>/ with tools/current -> <version>, its
+# bin/ dir goes FIRST so a bundled ffmpeg/node/magick beats whatever Homebrew
+# or the system has. When the dir is absent the output is byte-identical to
+# the pre-M3-07 behaviour. CFW_RENDER_TOOLS_DIR overrides the tools root
+# (tests); CFW_RENDER_HOME overrides the app home.
+# ---------------------------------------------------------------------------
+_cr_tools_bin() {
+  printf '%s' "${CFW_RENDER_TOOLS_DIR:-${CFW_RENDER_HOME:-$HOME/CFW Render}/app/tools}/current/bin"
+}
+
 cr_resolve_worker_path() {
-  local result="" b path dir fb
+  local result="" b path dir fb tools_bin
+  tools_bin="$(_cr_tools_bin)"
+  if [[ -d "$tools_bin" ]]; then
+    result="$tools_bin"
+  fi
   for b in "${_CR_REQUIRED_BINS[@]}" claude codex; do
     path="$(command -v "$b" 2>/dev/null)" || continue
     dir="$(dirname "$path")"
@@ -1339,12 +1354,17 @@ cr_preflight() {
 
   (( quiet )) || { echo "cfw-render preflight — toolchain"; echo "-------------------------------------"; }
 
-  local b path
+  local b path tools_bin
+  tools_bin="$(_cr_tools_bin)"
   for b in "${_CR_REQUIRED_BINS[@]}"; do
     if path="$(command -v "$b" 2>/dev/null)"; then
       _cr_pf_row 0 "binary:$b" "$path"
     else
-      _cr_pf_row 1 "binary:$b" "not on PATH"
+      if [[ -d "$tools_bin" ]]; then
+        _cr_pf_row 1 "binary:$b" "not on PATH (not in $tools_bin either)"
+      else
+        _cr_pf_row 1 "binary:$b" "not on PATH"
+      fi
       missing+=("$b")
     fi
   done
@@ -1408,4 +1428,85 @@ cr_preflight() {
     echo "Re-run 'bin/cfw-render-preflight.sh' until it prints PASS, then start the timer."
   } >&2
   return 1
+}
+
+# ---------------------------------------------------------------------------
+# [M3-01a] Worker version, status file, pause / battery state.
+# ---------------------------------------------------------------------------
+CR_LIB_REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# cr_worker_version — contents of $REPO/VERSION (0.0.0 when missing).
+cr_worker_version() {
+  local v
+  v="$(head -n1 "$CR_LIB_REPO_DIR/VERSION" 2>/dev/null | tr -d '[:space:]')"
+  printf '%s\n' "${v:-0.0.0}"
+}
+
+# cr_on_battery — rc 0 iff the Mac is on battery power (pmset). No pmset →
+# not on battery. CFW_RENDER_PMSET_CMD overrides the command (tests).
+cr_on_battery() {
+  local cmd="${CFW_RENDER_PMSET_CMD:-pmset}"
+  command -v "$cmd" >/dev/null 2>&1 || return 1
+  "$cmd" -g batt 2>/dev/null | grep -q 'Battery Power'
+}
+
+# cr_pause_state — echoes owner | battery | none.
+cr_pause_state() {
+  if [[ -e "$CFW_RENDER_STATE_DIR/paused" ]]; then
+    echo owner
+  elif [[ ! -e "$CFW_RENDER_STATE_DIR/allow-battery" ]] && cr_on_battery; then
+    echo battery
+  else
+    echo none
+  fi
+}
+
+# cr_status_write — atomically writes $CFW_RENDER_STATE_DIR/status.json
+# (contract §1) from the CR_STATUS_* globals. [M3-01b] engines/activeEngine
+# come from cfw-render-engine.sh; requests from the harness-maintained
+# <orderDir>/current-step.json files under CFW_RENDER_SCRATCH.
+cr_status_write() {
+  local dir="$CFW_RENDER_STATE_DIR" tmp engines="[]" active="none" requests="[]"
+  mkdir -p "$dir" 2>/dev/null || return 1
+  tmp="$dir/status.json.tmp.$$"
+  if declare -F cr_engines_json >/dev/null; then
+    engines="$(cr_engines_json)"; active="$(cr_engine_active)"
+  fi
+  requests="$(python3 -c '
+import glob, json, os, sys
+out = []
+for p in sorted(glob.glob(os.path.join(sys.argv[1], "*", "*", "current-step.json"))):
+    try:
+        d = json.load(open(p))
+        out.append({"orderId": d.get("orderId"), "stepId": d.get("stepId"), "stepIndex": d.get("stepIndex"),
+                    "stepCount": d.get("stepCount"), "engine": d.get("engine"), "startedAt": d.get("startedAt")})
+    except Exception:
+        continue
+print(json.dumps(out))' "${CFW_RENDER_SCRATCH:-/nonexistent}" 2>/dev/null || echo "[]")"
+  ( umask 077
+    python3 -c '
+import json, sys, datetime
+a = sys.argv
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def b(s): return s == "1"
+def n(s, d=0):
+    try: return int(s)
+    except ValueError: return d
+doc = {
+  "schemaVersion": 1, "writtenAt": now, "lastCheckAt": a[9] or None,
+  "computer": {"workerId": a[1], "version": a[2], "paused": b(a[3]),
+               "pauseReason": a[4] or None, "onBattery": b(a[5]),
+               "allowBattery": b(a[6]), "updateRequired": b(a[7]),
+               "lastError": a[8] or None},
+  "capacity": {"running": n(a[10]), "max": n(a[11], 1)},
+  "engines": json.loads(a[13] or "[]"), "activeEngine": (a[14] if a[14] not in ("", "none") else None),
+  "requests": json.loads(a[15] or "[]"),
+}
+json.dump(doc, open(a[12], "w"), indent=2)
+' "${CFW_WORKER_ID:-}" "$(cr_worker_version)" "${CR_STATUS_PAUSED:-0}" \
+      "${CR_STATUS_PAUSE_REASON:-}" "${CR_STATUS_ON_BATTERY:-0}" "${CR_STATUS_ALLOW_BATTERY:-0}" \
+      "${CR_STATUS_UPDATE_REQUIRED:-0}" "${CR_STATUS_LAST_ERROR:-}" "${CR_STATUS_LAST_CHECK_AT:-}" \
+      "${CR_STATUS_RUNNING:-0}" "${CR_STATUS_MAX:-1}" "$tmp" "$engines" "$active" "$requests"
+  ) 2>/dev/null || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$dir/status.json"
 }

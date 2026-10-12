@@ -307,15 +307,16 @@ for x in a:
         cr_log "order $order_id — harness finished but complete_render_order failed"
       fi
     else
-      case "$h_rc" in 20) h_outcome="cancelled" ;; 21) h_outcome="released" ;; 22) h_outcome="revoked" ;; 23) h_outcome="superseded" ;; 30) h_outcome="failed" ;; esac
+      case "$h_rc" in 20) h_outcome="cancelled" ;; 21) h_outcome="released" ;; 22) h_outcome="revoked" ;; 23) h_outcome="superseded" ;; 24) h_outcome="engine_limit" ;; 30) h_outcome="failed" ;; esac
       cr_log "order $order_id — harness exited $h_rc ($h_outcome)"
       # [M2-04, D76] stop_after_step (22) and attempt_superseded (23): this
       # brand is no longer ours to serve from this computer — delete the
       # order folder (order.json carries the brand's credentials/providerKeys,
       # steps/ carries its files) and any key material held for it. No further
       # reports: the attempt is already released (22) or belongs to another
-      # computer (23).
-      if (( h_rc == 22 || h_rc == 23 )); then
+      # computer (23). [M3-01b] 24 = released for an engine usage limit:
+      # the attempt is released; the server re-queues it.
+      if (( h_rc == 22 || h_rc == 23 || h_rc == 24 )); then
         rm -rf "$order_dir"
         rm -rf "$(cr_keep_output_dir "$brand_slug" "$order_id")" 2>/dev/null
         cr_log "order $order_id — brand files and keys deleted after $h_outcome"
@@ -529,7 +530,7 @@ print(tpl)
 # [M2-04] Claims with capacity (CONTRACTS.md §3, D52/D51/D78).
 # ---------------------------------------------------------------------------
 spawn_pids=()
-claim_caps="$(cr_engine_capabilities_json "$(cr_engine_detect)" "$CFW_RENDER_SKILLS_DIR")"
+claim_caps=""   # recomputed per claim round (engines/limits change) — see claim_round
 claim_label="$(hostname -s 2>/dev/null || hostname)"
 CLAIM_MAX="$(cr_capacity_max)"
 cr_log "capacity: max=$CLAIM_MAX request(s) at once${CFW_RENDER_CONCURRENCY:+ (CFW_RENDER_CONCURRENCY=$CFW_RENDER_CONCURRENCY)}"
@@ -563,8 +564,19 @@ import json, sys
 a = {"workerId": sys.argv[1], "renderer": {"kind": sys.argv[2], "label": sys.argv[3]}}
 if sys.argv[4]:
     a["capabilities"] = json.loads(sys.argv[4])
+    a["capabilities"]["workerVersion"] = sys.argv[6]
 a["capacity"] = json.loads(sys.argv[5])
-print(json.dumps(a))' "$CFW_WORKER_ID" "$CFW_RENDER_RENDERER_KIND" "$claim_label" "$claim_caps" "$capacity")")" || return 1
+print(json.dumps(a))' "$CFW_WORKER_ID" "$CFW_RENDER_RENDERER_KIND" "$claim_label" "$claim_caps" "$capacity" "$CLAIM_WORKER_VERSION")")" || return 1
+  # [M3-01a] updateRequired: the server wants a newer worker — no orders
+  # until the owner updates. Cleared by the next reply without the flag.
+  if python3 -c 'import json,sys; sys.exit(0 if json.loads(sys.stdin.read()).get("updateRequired") is True else 1)' <<< "$resp" 2>/dev/null; then
+    if (( ! CR_STATUS_UPDATE_REQUIRED )); then
+      cr_log "update required: the server needs a newer cfw-render (this is $CLAIM_WORKER_VERSION) — not taking requests until this computer is updated"
+    fi
+    CR_STATUS_UPDATE_REQUIRED=1; CR_STATUS_LAST_ERROR="Update this computer"
+    return 0
+  fi
+  CR_STATUS_UPDATE_REQUIRED=0; CR_STATUS_LAST_ERROR=""
   # SERVER_KNOWS_CAPACITY flips once a reply carries `orders[]`: only an M2
   # server does, and only such a server honours the "full" ask (see
   # claim_round). An older server ignores capacity and would hand a NORMAL
@@ -583,6 +595,12 @@ for o in orders:
 ' <<< "$resp" 2>/dev/null
 }
 SERVER_KNOWS_CAPACITY=0
+CLAIM_WORKER_VERSION="$(cr_worker_version)"
+# CR_STATUS_* are read by cr_status_write (lib); exported so shellcheck and
+# any helper subshell see them as used.
+export CR_STATUS_UPDATE_REQUIRED=0 CR_STATUS_LAST_ERROR="" CR_STATUS_LAST_CHECK_AT=""
+export CR_STATUS_PAUSED=0 CR_STATUS_PAUSE_REASON="" CR_STATUS_ON_BATTERY=0 CR_STATUS_ALLOW_BATTERY=0
+export CR_STATUS_RUNNING=0 CR_STATUS_MAX=1
 
 # spawn_orders <file> — start one order process per JSON line; sets SPAWNED.
 SPAWNED=0
@@ -593,6 +611,11 @@ spawn_orders() {
     [[ -n "$line" ]] || continue
     spawn_director "$line" </dev/null &
     spawn_pids+=($!); SPAWNED=$(( SPAWNED + 1 ))
+    # [M3-01a, D90] keep the Mac awake while this request runs; caffeinate
+    # exits with the order's process.
+    if command -v "${CFW_RENDER_CAFFEINATE_CMD:-caffeinate}" >/dev/null 2>&1; then
+      "${CFW_RENDER_CAFFEINATE_CMD:-caffeinate}" -i -w "${spawn_pids[${#spawn_pids[@]}-1]}" >/dev/null 2>&1 &
+    fi
   done < "$1"
 }
 
@@ -604,6 +627,28 @@ spawn_orders() {
 STARTED=0
 claim_round() {
   local running free_mb load ncpu started=0 n=0 normal_ok=1 rc=0 drained=0 tmp
+  # [M3-01b] Engines and their limits move between rounds: recompute the
+  # capabilities each round. When every signed-in engine is limited, skip the
+  # claim until the earliest limit passes (the limit file clears itself).
+  local active_engine limit_earliest limit_raw
+  limit_raw="$(cr_engine_limit_raw_count)"
+  active_engine="$(cr_engine_active)"
+  limit_earliest="$(cr_engine_limit_earliest)"
+  if (( limit_raw > 0 )) && [[ -z "$limit_earliest" ]]; then
+    # Every recorded limit has passed (the read above dropped them): tell the server.
+    cr_log "engine: usage limit(s) passed — resuming"
+    cr_mcp_call_soft set_computer_limit '{"until":null}' >/dev/null 2>&1 || cr_log "set_computer_limit clear failed (ignored)"
+  fi
+  if [[ "$active_engine" == "none" ]]; then
+    if [[ -n "$limit_earliest" ]] && [[ "$(cr_engines_json)" == *'"signedIn": true'* ]]; then
+      CR_STATUS_LAST_ERROR="AI limit reached; resumes $limit_earliest"
+      cr_log "engine: every signed-in engine is at its usage limit — not claiming until $limit_earliest"
+      prune_running; STARTED=0
+      return 0
+    fi
+  fi
+  [[ "$CR_STATUS_LAST_ERROR" == "AI limit reached;"* ]] && CR_STATUS_LAST_ERROR=""
+  claim_caps="$(cr_engine_capabilities_json "$active_engine" "$CFW_RENDER_SKILLS_DIR")"
   tmp="$(mktemp)"
   prune_running; running=$RUNNING
   IFS=$'\x1f' read -r free_mb load ncpu <<< "$(cr_capacity_probe)"
@@ -637,9 +682,45 @@ claim_round() {
   return $rc
 }
 
+# [M3-01a] pause gate. gated_claim_round — runs claim_round unless the owner
+# paused this computer or it is on battery (without allow-battery); tells the
+# server once per state change; writes status.json after every round/skip.
+LAST_PAUSE_STATE="__unset__"
+gated_claim_round() {
+  local state rc=0 args
+  state="$(cr_pause_state)"
+  if [[ "$state" != "$LAST_PAUSE_STATE" ]]; then
+    if [[ "$state" != "none" ]]; then
+      cr_log "paused ($state): not taking new requests; running requests continue"
+      args="$(python3 -c 'import json,sys; print(json.dumps({"paused": True, "reason": sys.argv[1]}))' "$state")"
+    else
+      args='{"paused":false}'
+    fi
+    if [[ "$state" != "none" || "$LAST_PAUSE_STATE" != "__unset__" ]]; then
+      [[ "$state" == "none" ]] && cr_log "resumed: taking requests again"
+      cr_mcp_call_soft set_computer_paused "$args" >/dev/null 2>&1 \
+        || cr_log "set_computer_paused call failed (server may not have the tool yet) — carrying on"
+    fi
+    LAST_PAUSE_STATE="$state"
+  fi
+  if [[ "$state" == "none" ]]; then
+    CR_STATUS_LAST_CHECK_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    claim_round && rc=0 || rc=$?
+  else
+    prune_running; STARTED=0
+  fi
+  [[ "$state" == "none" ]] && CR_STATUS_PAUSED=0 || CR_STATUS_PAUSED=1
+  CR_STATUS_PAUSE_REASON=""; [[ "$state" != "none" ]] && CR_STATUS_PAUSE_REASON="$state"
+  cr_on_battery && CR_STATUS_ON_BATTERY=1 || CR_STATUS_ON_BATTERY=0
+  [[ -e "$CFW_RENDER_STATE_DIR/allow-battery" ]] && CR_STATUS_ALLOW_BATTERY=1 || CR_STATUS_ALLOW_BATTERY=0
+  prune_running; CR_STATUS_RUNNING=$RUNNING; CR_STATUS_MAX=$CLAIM_MAX
+  cr_status_write || cr_log "could not write status.json"
+  return $rc
+}
+
 if (( ! LOOP )); then
   # One tick (--once): one claim round, then wait for every order it started.
-  claim_round || cr_log "claim_render_order call failed — stopping this tick's claim loop"
+  gated_claim_round || cr_log "claim_render_order call failed — stopping this tick's claim loop"
   cr_log "claim round done — $STARTED order(s) started"
   for pid in "${spawn_pids[@]:-}"; do
     [[ -n "$pid" ]] && wait "$pid"
@@ -654,12 +735,19 @@ fi
 # for tests). A finished request wakes the loop early so the freed slot is
 # re-filled at once.
 # ---------------------------------------------------------------------------
-loop_sleep() { # loop_sleep <secs> — returns early when a running order ends
-  local secs="$1" step before after i
+loop_sleep() { # loop_sleep <secs> — returns early when a running order ends,
+  # on run-now (ctl), or when the pause state changes (M3-01a).
+  local secs="$1" step tick ticks before after i
   step="$(awk -v s="$secs" 'BEGIN { s = s / 10; if (s < 0.05) s = 0.05; printf "%.3f", s }')"
+  tick="$(awk -v s="$step" 'BEGIN { printf "%.3f", (s < 2) ? s : 2 }')"
+  ticks="$(awk -v s="$secs" -v t="$tick" 'BEGIN { n = int(s / t + 0.999); if (n < 1) n = 1; print n }')"
   prune_running; before=$RUNNING
-  for (( i = 0; i < 10; i++ )); do
-    sleep "$step"
+  for (( i = 0; i < ticks; i++ )); do
+    sleep "$tick"
+    if [[ -e "$CFW_RENDER_STATE_DIR/run-now" ]]; then
+      rm -f "$CFW_RENDER_STATE_DIR/run-now"; cr_log "run-now: claiming now"; return 0
+    fi
+    [[ "$(cr_pause_state)" != "$LAST_PAUSE_STATE" ]] && return 0
     prune_running; after=$RUNNING
     (( after < before )) && return 0
   done
@@ -670,7 +758,7 @@ backoff=0
 cr_log "loop: started (pid $$) — idle claim every ${CR_CAPACITY_IDLE_CLAIM_SECS}s, back-off ${CR_CLAIM_BACKOFF_BASE_SECS}s..${CR_CLAIM_BACKOFF_MAX_SECS}s"
 while true; do
   cr_tick_lock_touch
-  claim_round && round_rc=0 || round_rc=$?
+  gated_claim_round && round_rc=0 || round_rc=$?
   started=$STARTED
   if (( round_rc == 2 )); then
     # One line per back-off STEP: the value only changes 60→120→240→480→600,

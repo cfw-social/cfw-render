@@ -8,7 +8,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAILED=0
 
 shopt -s nullglob
-SCRIPTS=("$REPO_DIR"/bin/*.sh "$REPO_DIR"/install/*.sh "$REPO_DIR"/test/*.sh "$REPO_DIR"/scripts/*.sh)
+SCRIPTS=("$REPO_DIR"/bin/*.sh "$REPO_DIR"/install/*.sh "$REPO_DIR"/test/*.sh "$REPO_DIR"/scripts/*.sh "$REPO_DIR"/toolchain/scripts/*.sh)
 
 echo "== bash -n =="
 for f in "${SCRIPTS[@]}"; do

@@ -1,0 +1,2 @@
+You've reached your usage limit for Claude Code.
+Your limit will reset at 3:40pm (UTC).
