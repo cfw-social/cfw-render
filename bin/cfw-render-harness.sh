@@ -28,7 +28,8 @@
 # passes iff every declared save for the step exists and is non-empty.
 #
 # Return codes of cr_harness_run: 0 completed, 20 cancelled, 21 released
-# (pause timeout), 30 step failed (attempt_failed reported), 1 bad input.
+# (pause timeout), 22 revoked, 23 superseded, 24 released for an engine usage
+# limit [M3-01b], 30 step failed (attempt_failed reported), 1 bad input.
 # On rc 0 the final outputs JSON ([{id,url,path}]) is printed to stdout.
 #
 # Depends on cfw-render-lib.sh (cr_log, cr_report_step) and
@@ -408,6 +409,19 @@ cr_h_checksum_ok() {
   [[ "$got" == "$hex" ]]
 }
 
+# [M3-01b] cr_h_write_current_step <orderDir> <stepId> <idx> <count> <engine>
+# — the status file's `requests` entry; removed when the step ends.
+cr_h_write_current_step() {
+  python3 -c '
+import json, sys, datetime
+d, sid, idx, cnt, eng = sys.argv[1:6]
+o = json.load(open(d + "/order.json"))
+json.dump({"orderId": o.get("id"), "stepId": sid, "stepIndex": int(idx), "stepCount": int(cnt), "engine": eng,
+           "startedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")},
+          open(d + "/current-step.json", "w"))
+' "$@" 2>/dev/null || true
+}
+
 # ---------------------------------------------------------------------------
 cr_harness_run() {
   local order_file="$1" order_dir="$2" recipe_dir="$3"
@@ -458,10 +472,12 @@ for s in (o.get("manifest") or {}).get("steps", []):
   fi
 
   cr_harness_heartbeat_start
-  trap 'cr_harness_heartbeat_stop' RETURN
+  # shellcheck disable=SC2064
+  trap "cr_harness_heartbeat_stop; rm -f '$order_dir/current-step.json'" RETURN
 
   local step_id runs_on max_retries when_kind when_arg saves checks rc cond p
-  local final_outputs="[]"
+  local final_outputs="[]" step_count step_index=0
+  step_count="$(grep -c . <<< "$steps" || true)"
   while IFS=$'\x1f' read -r step_id runs_on max_retries when_kind when_arg saves checks; do
     [[ -n "$step_id" ]] || continue
     [[ "$runs_on" == "computer" ]] || continue
@@ -505,14 +521,38 @@ o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alt
     for p in "${completed_saves[@]}"; do cp "$p" "$workdir/prior/" 2>/dev/null || true; done
 
     local run=0 checks_json="[]" passed=0 ask d waited
+    # [M3-01b] Engine failover (D107/D109): each engine is tried at most once
+    # per step; a usage-limit message moves the step to the next engine.
+    local tried=" " limit_until next_engine step_index
+    step_index=$((step_index + 1))
     while :; do
       run=$((run + 1))
-      cr_h_report step_started "{\"stepId\":\"$step_id\"}"
+      tried+="$engine "
+      cr_h_report step_started "{\"stepId\":\"$step_id\",\"engine\":\"$engine\"}"
+      cr_h_write_current_step "$order_dir" "$step_id" "$step_index" "$step_count" "$engine"
       rm -f "$workdir/needs_input.json"
       cr_h_build_prompt "$step_id" "$workdir" "$order_file"
+      rc=0
       CFW_STEP_SAVES="$saves" CFW_STEP_ID="$step_id" \
         cr_h_run_with_timeout "$CFW_RENDER_STEP_TIMEOUT_SEC" cr_engine_run "$engine" "$workdir/prompt.md" "$workdir" "$log" \
-        || cr_log "harness: step $step_id engine exited nonzero (run $run)"
+        || { rc=$?; cr_log "harness: step $step_id engine exited nonzero (run $run)"; }
+
+      if limit_until="$(cr_engine_limit_detect "$engine" "$log" "$rc")"; then
+        cr_engine_limit_set "$engine" "$limit_until"
+        cr_log "harness: $engine hit its limit (resets $limit_until) — trying next engine"
+        next_engine="$(cr_engine_active)"
+        if [[ "$next_engine" == "none" || "$tried" == *" $next_engine "* ]]; then
+          rm -f "$order_dir/current-step.json"
+          cr_h_report attempt_released "{\"stepId\":\"$step_id\",\"reason\":\"engine_limit\"}"
+          local earliest; earliest="$(cr_engine_limit_earliest)"
+          cr_mcp_call_soft set_computer_limit "{\"engine\":\"$engine\",\"until\":\"${earliest:-$limit_until}\"}" >/dev/null 2>&1 \
+            || cr_log "harness: set_computer_limit failed (ignored)"
+          return 24
+        fi
+        engine="$next_engine"
+        run=$((run - 1))   # an engine switch is not a check retry
+        continue
+      fi
 
       if [[ -f "$workdir/needs_input.json" ]]; then
         ask="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))))' "$workdir/needs_input.json" 2>/dev/null || echo '{}')"
@@ -539,7 +579,15 @@ o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alt
       fi
 
       # shellcheck disable=SC2086
-      if checks_json="$(cr_h_run_checks "$step_id" "$workdir" $checks)"; then passed=1; break; fi
+      if checks_json="$(cr_h_run_checks "$step_id" "$workdir" $checks)"; then
+        passed=1
+        # [M3-01b] A step that passed on this engine proves its limit is over.
+        if [[ -n "$(cr_engine_limit_until "$engine")" ]]; then
+          cr_engine_limit_clear "$engine"
+          [[ -z "$(cr_engine_limit_earliest)" ]] && { cr_mcp_call_soft set_computer_limit '{"until":null}' >/dev/null 2>&1 || cr_log "harness: set_computer_limit clear failed (ignored)"; }
+        fi
+        break
+      fi
       (( run > max_retries )) && break
       cr_log "harness: step $step_id checks failed (run $run/$((max_retries + 1))) — retrying"
     done
@@ -569,6 +617,7 @@ o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alt
       final_outputs="$(python3 -c 'import json,sys; a=[x for x in json.loads(sys.argv[1]) if x["id"]!=sys.argv[2]]; a.append({"id":sys.argv[2],"url":sys.argv[3],"path":sys.argv[4]}); print(json.dumps(a))' "$final_outputs" "$sid" "$url" "$f")"
     done
     outputs="${outputs%,}]"
+    rm -f "$order_dir/current-step.json"
     cr_h_report step_completed "{\"stepId\":\"$step_id\",\"outputs\":$outputs,\"checks\":$checks_json}"
     case "$(cr_h_directive)" in
       cancel) cr_h_report attempt_cancelled "{\"stepId\":\"$step_id\"}"; return 20 ;;

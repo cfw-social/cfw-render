@@ -1462,12 +1462,27 @@ cr_pause_state() {
 }
 
 # cr_status_write — atomically writes $CFW_RENDER_STATE_DIR/status.json
-# (contract §1) from the CR_STATUS_* globals. engines/activeEngine/requests
-# are owned by M3-01b and written empty here.
+# (contract §1) from the CR_STATUS_* globals. [M3-01b] engines/activeEngine
+# come from cfw-render-engine.sh; requests from the harness-maintained
+# <orderDir>/current-step.json files under CFW_RENDER_SCRATCH.
 cr_status_write() {
-  local dir="$CFW_RENDER_STATE_DIR" tmp
+  local dir="$CFW_RENDER_STATE_DIR" tmp engines="[]" active="none" requests="[]"
   mkdir -p "$dir" 2>/dev/null || return 1
   tmp="$dir/status.json.tmp.$$"
+  if declare -F cr_engines_json >/dev/null; then
+    engines="$(cr_engines_json)"; active="$(cr_engine_active)"
+  fi
+  requests="$(python3 -c '
+import glob, json, os, sys
+out = []
+for p in sorted(glob.glob(os.path.join(sys.argv[1], "*", "*", "current-step.json"))):
+    try:
+        d = json.load(open(p))
+        out.append({"orderId": d.get("orderId"), "stepId": d.get("stepId"), "stepIndex": d.get("stepIndex"),
+                    "stepCount": d.get("stepCount"), "engine": d.get("engine"), "startedAt": d.get("startedAt")})
+    except Exception:
+        continue
+print(json.dumps(out))' "${CFW_RENDER_SCRATCH:-/nonexistent}" 2>/dev/null || echo "[]")"
   ( umask 077
     python3 -c '
 import json, sys, datetime
@@ -1484,13 +1499,14 @@ doc = {
                "allowBattery": b(a[6]), "updateRequired": b(a[7]),
                "lastError": a[8] or None},
   "capacity": {"running": n(a[10]), "max": n(a[11], 1)},
-  "engines": [], "activeEngine": None, "requests": [],
+  "engines": json.loads(a[13] or "[]"), "activeEngine": (a[14] if a[14] not in ("", "none") else None),
+  "requests": json.loads(a[15] or "[]"),
 }
 json.dump(doc, open(a[12], "w"), indent=2)
 ' "${CFW_WORKER_ID:-}" "$(cr_worker_version)" "${CR_STATUS_PAUSED:-0}" \
       "${CR_STATUS_PAUSE_REASON:-}" "${CR_STATUS_ON_BATTERY:-0}" "${CR_STATUS_ALLOW_BATTERY:-0}" \
       "${CR_STATUS_UPDATE_REQUIRED:-0}" "${CR_STATUS_LAST_ERROR:-}" "${CR_STATUS_LAST_CHECK_AT:-}" \
-      "${CR_STATUS_RUNNING:-0}" "${CR_STATUS_MAX:-1}" "$tmp"
+      "${CR_STATUS_RUNNING:-0}" "${CR_STATUS_MAX:-1}" "$tmp" "$engines" "$active" "$requests"
   ) 2>/dev/null || { rm -f "$tmp"; return 1; }
   mv -f "$tmp" "$dir/status.json"
 }
