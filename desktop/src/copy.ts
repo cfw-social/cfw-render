@@ -36,7 +36,6 @@ export const copy = {
   },
   main: {
     chatPlaceholder: "Chat with your AI assistant arrives in a later update.",
-    providersPlaceholder: "Sign in to ChatGPT or Claude here in a later update.",
     rendersTitle: "Renders on this Mac",
     noRecent: "Nothing finished in the last 24 hours.",
   },
@@ -53,4 +52,22 @@ export const copy = {
       `App ${app ?? "unknown"}${copy_sep}Worker ${worker ?? "not installed"}`,
   },
   engineFallback: { codex: "ChatGPT", "claude-code": "Claude" } as Record<string, string>,
+  providers: {
+    title: "AI Providers",
+    connectedCount: (n: number) => `${n} connected`,
+    badge: { signin: "Sign in", api_key: "API key" },
+    state: {
+      connected: "Connected",
+      limited: (hhmm: string | null) => (hhmm ? `Limit reached, resets ${hhmm}` : "Limit reached"),
+      notConnected: "Not connected",
+      signingIn: "Signing in…",
+    },
+    action: { signIn: "Sign in", signOut: "Sign out", cancel: "Cancel", up: "Move up", down: "Move down" },
+    event: {
+      timeout: "Sign-in timed out. Try again.",
+      cancelled: "Sign-in cancelled.",
+      failed: "Sign-in failed.",
+    },
+    orderHint: "Used in this order. If one reaches its limit, the next one takes over.",
+  },
 } as const;

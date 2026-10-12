@@ -1,6 +1,7 @@
 //! Tauri shell: tray, state-dir watcher, and commands. Logic lives in `state` / `control`.
 
 pub mod control;
+pub mod signin;
 pub mod state;
 
 use std::path::Path;
@@ -202,6 +203,29 @@ fn set_engine_order(order: Vec<String>) -> Result<(), String> {
     control::write_engine_order(&order).map_err(err)
 }
 
+#[tauri::command]
+fn provider_sign_in(app: AppHandle, engine: String) -> Result<(), String> {
+    signin::start_sign_in(engine, move |ev| {
+        let _ = app.emit("provider-signin", ev);
+    })
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn provider_sign_in_cancel(engine: String) -> Result<(), String> {
+    signin::cancel_sign_in(&engine).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn provider_sign_out(engine: String) -> Result<bool, String> {
+    signin::sign_out(&engine).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn provider_status(engine: String) -> Result<bool, String> {
+    signin::provider_status(&engine).map_err(|e| e.to_string())
+}
+
 fn build_tray(app: &AppHandle) -> tauri::Result<(TrayIcon, MenuItem<Wry>)> {
     let open = MenuItem::with_id(app, "open", "Open CFW Render", true, None::<&str>)?;
     let pause = MenuItem::with_id(app, "pause", "Pause", true, None::<&str>)?;
@@ -264,7 +288,11 @@ pub fn run() {
             start_worker,
             open_logs,
             get_settings,
-            set_start_at_login
+            set_start_at_login,
+            provider_sign_in,
+            provider_sign_in_cancel,
+            provider_sign_out,
+            provider_status
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
