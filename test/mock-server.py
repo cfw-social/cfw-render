@@ -67,6 +67,10 @@ TOOLS = ["claim_render_order", "append_render_event", "complete_render_order", "
 # every claim answers updateRequired instead of an order.
 MOCK_NO_M3_TOOLS = os.environ.get("CFW_MOCK_NO_M3_TOOLS") == "1"
 MOCK_UPDATE_REQUIRED = os.environ.get("CFW_MOCK_UPDATE_REQUIRED") == "1"
+# [M3-01c] CFW_MOCK_COMPUTER_BRANDS=<json list> → top-level computerBrands on
+# every claim reply; CFW_MOCK_ORDER_EXTRA=<json object> merged into each order.
+MOCK_COMPUTER_BRANDS = json.loads(os.environ["CFW_MOCK_COMPUTER_BRANDS"]) if os.environ.get("CFW_MOCK_COMPUTER_BRANDS") else None
+MOCK_ORDER_EXTRA = json.loads(os.environ.get("CFW_MOCK_ORDER_EXTRA") or "{}")
 if not MOCK_NO_M3_TOOLS:
     TOOLS += ["set_computer_paused", "set_computer_limit"]
 
@@ -160,9 +164,10 @@ def saved_outputs_for(order, manifest, resume):
 def claim_one(o, args):
     STATUS[o["id"]] = "claimed"
     CLAIMED[o["id"]] = args["workerId"]
-    if o.get("recipeVersion") is not None:
-        return manifest_order_payload(o)
-    return o
+    out = manifest_order_payload(o) if o.get("recipeVersion") is not None else o
+    if MOCK_ORDER_EXTRA:
+        out = dict(out, **MOCK_ORDER_EXTRA)
+    return out
 
 
 def claim_orders(args):
@@ -319,9 +324,12 @@ def handle_tool_call(name, args):
             drain_enqueue()
             picked = claim_orders(args)
             log_call(name, args, True)
+            reply = {"order": picked[0] if picked else None}
             if MOCK_ORDERS_ARRAY:
-                return rpc_result({"orders": picked, "order": picked[0] if picked else None}), None
-            return rpc_result({"order": picked[0] if picked else None}), None
+                reply["orders"] = picked
+            if MOCK_COMPUTER_BRANDS is not None:
+                reply["computerBrands"] = MOCK_COMPUTER_BRANDS
+            return rpc_result(reply), None
 
     if name in ("set_computer_paused", "set_computer_limit") and not MOCK_NO_M3_TOOLS:
         log_call(name, args, True)

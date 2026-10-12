@@ -2809,7 +2809,7 @@ c21_worker "$m2" $((MOCK_PORT_BASE + 941)) --once
 m2_claims_b="$(m3_tool_count "$m2" claim_render_order)"
 rm -f "$FAKE_PMSET_BATTERY"
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
-if [[ "$m2_claims_a" == "0" && "$m2_batt" == "1" && "$m2_claims_b" -ge 1 && "$(m3_status "$m2" 'd["computer"]["allowBattery"]')" == "True" ]]; then
+if [[ "$m2_claims_a" == "0" && "$m2_batt" == "1" && "$m2_claims_b" -ge 1 && -e "$m2/cr-state/allow-battery" ]]; then
   pass "battery: no claim + set_computer_paused(battery); allow-battery → claim ($m2_claims_b)"
 else
   fail "battery" "claims_a=$m2_claims_a batt_calls=$m2_batt claims_b=$m2_claims_b; $(tail -3 "$m2/cr-state/cfw-render.log")"
@@ -2851,10 +2851,10 @@ import json,sys
 for l in open(sys.argv[1]):
     d=json.loads(l)
     if d["tool"]=="claim_render_order": print(d["args"].get("capabilities",{}).get("workerVersion")); break' "$m4/mockstate/calls.jsonl" 2>/dev/null)"
-if [[ "$m4_ver" == "1.0.0" && "$(m3_status "$m4" 'd["computer"]["version"]')" == "1.0.0" ]]; then
+if [[ "$m4_ver" == "1.0.0" && "$(m3_status "$m4" 'd["workerVersion"]')" == "1.0.0" ]]; then
   pass "version: claim capabilities.workerVersion=1.0.0, status.json version=1.0.0"
 else
-  fail "version" "workerVersion='$m4_ver' status=$(m3_status "$m4" 'd["computer"]["version"]')"
+  fail "version" "workerVersion='$m4_ver' status=$(m3_status "$m4" 'd["workerVersion"]')"
 fi
 if grep -q -- '-i -w ' "$FAKE_CAFFEINATE_LOG"; then
   pass "sleep (D90): caffeinate -i -w <pid> started for the order"
@@ -2870,7 +2870,7 @@ c21_setup "$m5" $((MOCK_PORT_BASE + 944)) harness-3step '[{"id":"o1"}]' CFW_MOCK
 c21_worker "$m5" $((MOCK_PORT_BASE + 944)) --once
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 m5_steps="$(m3_tool_count "$m5" report_render_step)"
-if [[ "$m5_steps" == "0" && "$(m3_status "$m5" 'd["computer"]["updateRequired"]')" == "True" && "$(m3_status "$m5" 'd["computer"]["lastError"]')" == "Update this computer" ]] && grep -q 'update required' "$m5/cr-state/cfw-render.log"; then
+if [[ "$m5_steps" == "0" && "$(m3_status "$m5" 'd["computer"]["updateRequired"]')" == "True" && "$(m3_status "$m5" 'd["lastError"]')" == "Update this computer" ]] && grep -q 'update required' "$m5/cr-state/cfw-render.log"; then
   pass "updateRequired: no orders started, status.json updateRequired=true lastError='Update this computer'"
 else
   fail "updateRequired" "steps=$m5_steps status=$(head -c 400 "$m5/cr-state/status.json" 2>/dev/null); log: $(tail -4 "$m5/cr-state/cfw-render.log"); calls: $(cat "$m5/mockstate/calls.jsonl" | head -c 600)"
@@ -3045,7 +3045,7 @@ c21_worker "$mb3" $((MOCK_PORT_BASE + 951)) --once FAKE_ENGINE_LIMIT_ENGINE=all 
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 mb3_claims_b="$(m3_tool_count "$mb3" claim_render_order)"
 mb3_status="$(m3_status "$mb3" '" ".join(e["limit"] for e in d["engines"])')"
-mb3_err="$(m3_status "$mb3" 'd["computer"]["lastError"]')"
+mb3_err="$(m3_status "$mb3" 'd["lastError"]')"
 if [[ "$mb3_rel" == "1" && "$mb3_reason" == "engine_limit" && "$(wc -l <<< "$mb3_lim" | tr -d ' ')" == "1" && "$mb3_lim" == *'"until": "20'* && "$mb3_failed" == "0" && "$mb3_claims_b" == "$mb3_claims_a" && "$mb3_status" == "limited limited" && "$mb3_err" == "AI limit reached; resumes "* ]]; then
   pass "both limited: attempt_released(engine_limit) once, set_computer_limit once with until, no attempt_failed; 2nd pass 0 claims, status engines=limited limited"
 else
@@ -3096,22 +3096,23 @@ else
 fi
 rm -rf "$mb5"
 
-echo "=== Case M3-01b-6: status.json requests shows the running step, empty afterwards ==="
+echo "=== Case M3-01b-6: status.json now shows the running step, empty afterwards ==="
 mb6="$(mktemp -d)"
 c21_setup "$mb6" $((MOCK_PORT_BASE + 954)) harness-3step '[{"id":"o1"}]'
 c21_worker "$mb6" $((MOCK_PORT_BASE + 954)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=1 FAKE_ENGINE_SLEEP=3 &
 mb6_w=$!
 mb6_req=""
-for _ in $(seq 1 120); do mb6_req="$(m3_status "$mb6" '" ".join("%s/%s/%s" % (r["orderId"], r["stepId"], r["engine"]) for r in d["requests"])')"; [[ -n "$mb6_req" ]] && break; sleep 0.1; done
+for _ in $(seq 1 120); do mb6_req="$(m3_status "$mb6" '" ".join("%s/%s/%s" % (r["step"], r["steps"], r["stepLabel"]) for r in d["now"])')"; [[ -n "$mb6_req" ]] && break; sleep 0.1; done
 mb6_after="x"
-for _ in $(seq 1 200); do mb6_after="$(m3_status "$mb6" 'len(d["requests"])')"; [[ "$mb6_after" == "0" ]] && grep -q '"event": "attempt_completed"' "$mb6/control/reports.ndjson" 2>/dev/null && break; sleep 0.1; done
+for _ in $(seq 1 200); do mb6_after="$(m3_status "$mb6" 'len(d["now"])')"; [[ "$mb6_after" == "0" ]] && grep -q '"event": "attempt_completed"' "$mb6/control/reports.ndjson" 2>/dev/null && break; sleep 0.1; done
 pkill -P "$mb6_w" 2>/dev/null; kill "$mb6_w" 2>/dev/null; wait "$mb6_w" 2>/dev/null
 pkill -f "cfw-render.sh --loop" 2>/dev/null || true
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
-if [[ "$mb6_req" == o1/a/codex* && "$mb6_after" == "0" && "$(m3_status "$mb6" 'd["activeEngine"]')" == "codex" ]]; then
-  pass "status requests: '$mb6_req' while running, empty after; activeEngine=codex"
+mb6_want="$(python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); s=[x for x in m["steps"] if x.get("runsOn","computer")=="computer"]; print("1/%d/%s" % (len(s), s[0].get("label")))' "$REPO_DIR/test/fixtures/manifests/harness-3step/manifest.json")"
+if [[ "$mb6_req" == "$mb6_want"* && "$mb6_after" == "0" && "$(m3_status "$mb6" 'd["activeEngine"]')" == "codex" ]]; then
+  pass "status now: '$mb6_req' while running, empty after; activeEngine=codex"
 else
-  fail "status requests" "during='$mb6_req' after=$mb6_after status=$(head -c 400 "$mb6/cr-state/status.json" 2>/dev/null)"
+  fail "status now" "during='$mb6_req' after=$mb6_after status=$(head -c 400 "$mb6/cr-state/status.json" 2>/dev/null)"
 fi
 rm -rf "$mb6"
 echo "=== Case M3-07b-1: release.sh dry run writes toolchain-manifest.json with matching sha256 + versioned urls ==="
@@ -3165,6 +3166,62 @@ if python3 -c 'import json,sys;json.load(open(sys.argv[1]))' "$REPO_DIR/toolchai
 else
   fail "M3-07b-3" "triples=$m7b_tr"
 fi
+
+echo "=== Case M3-01c-1: status.json has exactly the contract keys; engines labelled; activeEngine null for none ==="
+mc1="$(mktemp -d)"
+c21_setup "$mc1" $((MOCK_PORT_BASE + 960)) harness-3step '[]'
+c21_worker "$mc1" $((MOCK_PORT_BASE + 960)) --once CFW_RENDER_ENGINE=none CFW_RENDER_COMPUTER_NAME="Test Mac"
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+mc1_keys="$(m3_status "$mc1" '",".join(sorted(d))')"
+mc1_want="$(python3 -c 'print(",".join(sorted("schema workerVersion engines activeEngine computer brands now next recent lastCheckAt lastError".split())))')"
+mc1_eng="$(m3_status "$mc1" 'all("label" in e and e["auth"] == "signin" for e in d["engines"])')"
+mc1_rest="$(m3_status "$mc1" '(d["schema"], d["activeEngine"], d["computer"]["name"], d["next"])')"
+if [[ "$mc1_keys" == "$mc1_want" && "$mc1_eng" == "True" && "$mc1_rest" == "(1, None, 'Test Mac', [])" ]]; then
+  pass "status contract: keys exact, schema 1, engines labelled, activeEngine null"
+else
+  fail "status contract" "keys=$mc1_keys eng=$mc1_eng rest=$mc1_rest"
+fi
+rm -rf "$mc1"
+
+echo "=== Case M3-01c-2: claim reply computerBrands → status brands ==="
+mc2="$(mktemp -d)"
+c21_setup "$mc2" $((MOCK_PORT_BASE + 961)) harness-3step '[]' 'CFW_MOCK_COMPUTER_BRANDS=[{"id":"b1","name":"Brand A"}]'
+c21_worker "$mc2" $((MOCK_PORT_BASE + 961)) --once
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+mc2_b="$(m3_status "$mc2" 'd["brands"] == [{"id": "b1", "name": "Brand A", "serving": True}]')"
+if [[ "$mc2_b" == "True" ]]; then
+  pass "status brands from computerBrands"
+else
+  fail "status brands" "status=$(head -c 400 "$mc2/cr-state/status.json" 2>/dev/null)"
+fi
+rm -rf "$mc2"
+
+echo "=== Case M3-01c-3: a completed order lands in status recent ==="
+mc3="$(mktemp -d)"
+c21_setup "$mc3" $((MOCK_PORT_BASE + 962)) harness-3step '[{"id":"o1"}]' 'CFW_MOCK_ORDER_EXTRA={"shortCode":"R-TEST","brandName":"Brand A"}'
+c21_worker "$mc3" $((MOCK_PORT_BASE + 962)) --once
+c21_worker "$mc3" $((MOCK_PORT_BASE + 962)) --once
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+mc3_r="$(m3_status "$mc3" 'sorted(d["recent"][0]) == ["brand","finishedAt","result","shortCode"] and (d["recent"][0]["shortCode"], d["recent"][0]["brand"], d["recent"][0]["result"]) == ("R-TEST","Brand A","done") and d["recent"][0]["finishedAt"].endswith("Z")')"
+if [[ "$mc3_r" == "True" ]]; then
+  pass "status recent: R-TEST / Brand A / done"
+else
+  fail "status recent" "status=$(head -c 600 "$mc3/cr-state/status.json" 2>/dev/null) ndjson=$(cat "$mc3/cr-state/recent.ndjson" 2>/dev/null)"
+fi
+rm -rf "$mc3"
+
+echo "=== Case M3-01c-4: status.json never holds the worker key or the word token ==="
+mc4="$(mktemp -d)"
+mc4_key="cfw_secretkey_m301c4"
+c21_setup "$mc4" $((MOCK_PORT_BASE + 963)) harness-3step '[{"id":"o1"}]'
+c21_worker "$mc4" $((MOCK_PORT_BASE + 963)) --once CFW_RENDER_WORKER_KEY="$mc4_key"
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+if [[ -f "$mc4/cr-state/status.json" ]] && ! grep -q "$mc4_key" "$mc4/cr-state/status.json" && ! grep -qi 'token' "$mc4/cr-state/status.json"; then
+  pass "status.json holds no key or token"
+else
+  fail "status secrets" "status=$(head -c 400 "$mc4/cr-state/status.json" 2>/dev/null)"
+fi
+rm -rf "$mc4"
 
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
