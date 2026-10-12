@@ -46,12 +46,13 @@ describe("panelModel", () => {
     expect(m.brandsLine).toBe("Working for: Brand A, Brand C");
     expect(m.now).toEqual([{ title: "R-7KQ4 · Brand A", recipe: "Spotlight reel", stepText: "step 5 of 7 · Render scenes", pct: 62, elapsed: "1:30" }]);
     expect(m.next).toEqual([{ title: "R-C1 · Brand C", recipe: "Carousel" }]);
+    // Newest three by finishedAt; the oldest (R-OLD) drops off.
     expect(m.done.map((d) => [d.mark, d.result, d.title])).toEqual([
-      ["✓", "done", "R-6TT1 · Brand A"],
-      ["✗", "failed", "R-6TT2 · Brand C"],
       ["–", "stopped", "R-6TT3 · Brand A"],
+      ["✗", "failed", "R-6TT2 · Brand C"],
+      ["✓", "done", "R-6TT1 · Brand A"],
     ]);
-    expect(m.done[0].time).toBe(hhmm(Date.parse("2026-10-11T11:00:00Z")));
+    expect(m.done[0].time).toBe(hhmm(Date.parse("2026-10-11T11:20:00Z")));
     expect(m.lastCheck).toBe("Last check: 8 s ago");
   });
 

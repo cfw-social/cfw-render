@@ -19,6 +19,7 @@ export const workingStatus: StatusFile = {
   now: [{ shortCode: "R-7KQ4", brand: "Brand A", recipe: "Spotlight reel", step: 5, steps: 7, stepLabel: "Render scenes", pct: 62, startedAt: "2026-10-11T11:58:30Z" }],
   next: [{ shortCode: "R-C1", brand: "Brand C", recipe: "Carousel" }],
   recent: [
+    { shortCode: "R-OLD", brand: "Brand A", result: "done", finishedAt: "2026-10-11T10:00:00Z" },
     { shortCode: "R-6TT1", brand: "Brand A", result: "done", finishedAt: "2026-10-11T11:00:00Z" },
     { shortCode: "R-6TT2", brand: "Brand C", result: "failed", finishedAt: "2026-10-11T11:10:00Z" },
     { shortCode: "R-6TT3", brand: "Brand A", result: "stopped", finishedAt: "2026-10-11T11:20:00Z" },

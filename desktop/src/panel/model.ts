@@ -72,7 +72,13 @@ export function panelModel(payload: StatusPayload | null, now: number): PanelMod
       };
     }),
     next: (s?.next ?? []).map((n) => ({ title: title(n.shortCode, n.brand), recipe: n.recipe ?? "" })),
-    done: (s?.recent ?? []).slice(-3).map((r) => {
+    // Newest first by finishedAt, whatever order the file lists them in
+    // (entries without a time sort last, keeping their file order).
+    done: [...(s?.recent ?? [])]
+      .map((r, i) => ({ r, i, t: ms(r.finishedAt) }))
+      .sort((a, b) => (b.t ?? -Infinity) - (a.t ?? -Infinity) || a.i - b.i)
+      .slice(0, 3)
+      .map(({ r }) => {
       const result = (results as readonly string[]).includes(r.result ?? "") ? (r.result as DoneRow["result"]) : "failed";
       const t = ms(r.finishedAt);
       return { mark: copy.marks[result], result, title: title(r.shortCode, r.brand), time: t == null ? "" : hhmm(t) };
