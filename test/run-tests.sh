@@ -2814,6 +2814,8 @@ m3="$(mktemp -d)"
 c21_setup "$m3" $((MOCK_PORT_BASE + 942)) harness-3step '[]'
 c21_worker "$m3" $((MOCK_PORT_BASE + 942)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=2 &
 m3_w=$!
+# wait for the first round (status.json appears), then ask for another now
+for _ in $(seq 1 100); do [[ -f "$m3/cr-state/status.json" ]] && break; sleep 0.1; done
 sleep 0.5
 m3_before="$(m3_tool_count "$m3" claim_render_order)"
 touch "$m3/cr-state/run-now"
@@ -2825,7 +2827,7 @@ pkill -P "$m3_w" 2>/dev/null; kill "$m3_w" 2>/dev/null; wait "$m3_w" 2>/dev/null
 pkill -f "cfw-render.sh --loop" 2>/dev/null || true
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 if [[ "$m3_after" -gt "$m3_before" && "$m3_flag" == "0" && -n "$m3_last" && "$m3_last" != "None" ]]; then
-  pass "run-now: claims $m3_before→$m3_after within 1.5s, flag consumed, lastCheckAt=$m3_last"
+  pass "run-now: claims ${m3_before}→${m3_after} within 1.5s, flag consumed, lastCheckAt=$m3_last"
 else
   fail "run-now" "before=$m3_before after=$m3_after flag=$m3_flag last='$m3_last'; $(tail -3 "$m3/cr-state/cfw-render.log")"
 fi
@@ -2864,7 +2866,7 @@ m5_steps="$(m3_tool_count "$m5" report_render_step)"
 if [[ "$m5_steps" == "0" && "$(m3_status "$m5" 'd["computer"]["updateRequired"]')" == "True" && "$(m3_status "$m5" 'd["computer"]["lastError"]')" == "Update this computer" ]] && grep -q 'update required' "$m5/cr-state/cfw-render.log"; then
   pass "updateRequired: no orders started, status.json updateRequired=true lastError='Update this computer'"
 else
-  fail "updateRequired" "steps=$m5_steps status=$(head -c 400 "$m5/cr-state/status.json" 2>/dev/null)"
+  fail "updateRequired" "steps=$m5_steps status=$(head -c 400 "$m5/cr-state/status.json" 2>/dev/null); log: $(tail -4 "$m5/cr-state/cfw-render.log"); calls: $(cat "$m5/mockstate/calls.jsonl" | head -c 600)"
 fi
 rm -rf "$m5"
 
