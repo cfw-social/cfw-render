@@ -34,4 +34,22 @@ export const copy = {
     return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
   },
   engineFallback: { codex: "ChatGPT", "claude-code": "Claude" } as Record<string, string>,
+  providers: {
+    title: "AI Providers",
+    connectedCount: (n: number) => `${n} connected`,
+    badge: { signin: "Sign in", api_key: "API key" },
+    state: {
+      connected: "Connected",
+      limited: (hhmm: string | null) => (hhmm ? `Limit reached, resets ${hhmm}` : "Limit reached"),
+      notConnected: "Not connected",
+      signingIn: "Signing in…",
+    },
+    action: { signIn: "Sign in", signOut: "Sign out", cancel: "Cancel", up: "Move up", down: "Move down" },
+    event: {
+      timeout: "Sign-in timed out. Try again.",
+      cancelled: "Sign-in cancelled.",
+      failed: "Sign-in failed.",
+    },
+    orderHint: "Used in this order. If one reaches its limit, the next one takes over.",
+  },
 } as const;
