@@ -1130,8 +1130,23 @@ _CR_REQUIRED_BINS=(curl python3 node npx ffmpeg ffprobe magick)
 # function's only job is turning "found, and here's where" into a PATH
 # string. Prints the colon-joined result on stdout. Never fails.
 # ---------------------------------------------------------------------------
+# M3-07a: the private toolchain. When the desktop app has installed a bundle
+# at ~/CFW Render/app/tools/<version>/ with tools/current -> <version>, its
+# bin/ dir goes FIRST so a bundled ffmpeg/node/magick beats whatever Homebrew
+# or the system has. When the dir is absent the output is byte-identical to
+# the pre-M3-07 behaviour. CFW_RENDER_TOOLS_DIR overrides the tools root
+# (tests); CFW_RENDER_HOME overrides the app home.
+# ---------------------------------------------------------------------------
+_cr_tools_bin() {
+  printf '%s' "${CFW_RENDER_TOOLS_DIR:-${CFW_RENDER_HOME:-$HOME/CFW Render}/app/tools}/current/bin"
+}
+
 cr_resolve_worker_path() {
-  local result="" b path dir fb
+  local result="" b path dir fb tools_bin
+  tools_bin="$(_cr_tools_bin)"
+  if [[ -d "$tools_bin" ]]; then
+    result="$tools_bin"
+  fi
   for b in "${_CR_REQUIRED_BINS[@]}" claude codex; do
     path="$(command -v "$b" 2>/dev/null)" || continue
     dir="$(dirname "$path")"
@@ -1339,12 +1354,17 @@ cr_preflight() {
 
   (( quiet )) || { echo "cfw-render preflight — toolchain"; echo "-------------------------------------"; }
 
-  local b path
+  local b path tools_bin
+  tools_bin="$(_cr_tools_bin)"
   for b in "${_CR_REQUIRED_BINS[@]}"; do
     if path="$(command -v "$b" 2>/dev/null)"; then
       _cr_pf_row 0 "binary:$b" "$path"
     else
-      _cr_pf_row 1 "binary:$b" "not on PATH"
+      if [[ -d "$tools_bin" ]]; then
+        _cr_pf_row 1 "binary:$b" "not on PATH (not in $tools_bin either)"
+      else
+        _cr_pf_row 1 "binary:$b" "not on PATH"
+      fi
       missing+=("$b")
     fi
   done

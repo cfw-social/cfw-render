@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "version": "2026.10.1",
+  "minAppVersion": "1.0.0",
+  "_note": "archives.*.sha256 and archives.*.sizeBytes are null until the CI build (later M3-07 slice) produces the tarballs and fills them in; verify.sh checks the unpacked bundle's SHA256SUMS, not these. Versions marked pinNote must be confirmed by that build.",
+  "tools": [
+    {
+      "name": "node",
+      "version": "22.20.0",
+      "license": "MIT",
+      "source": "https://nodejs.org/dist/v22.20.0/",
+      "relocatable": true,
+      "provides": ["node", "npx", "npm"],
+      "pinNote": "verify in CI build"
+    },
+    {
+      "name": "python",
+      "version": "3.12.11",
+      "license": "PSF-2.0",
+      "source": "https://github.com/astral-sh/python-build-standalone",
+      "relocatable": true,
+      "provides": ["python3"],
+      "pinNote": "verify in CI build (install_only_stripped flavour)"
+    },
+    {
+      "name": "ffmpeg",
+      "version": "7.1.1",
+      "license": "LGPL-2.1-or-later",
+      "source": "https://ffmpeg.org/releases/",
+      "relocatable": true,
+      "provides": ["ffmpeg", "ffprobe"],
+      "buildFlags": ["--disable-gpl", "--disable-libx264", "--disable-libx265"],
+      "pinNote": "verify in CI build; LGPL build — no x264/x265"
+    },
+    {
+      "name": "imagemagick",
+      "version": "7.1.1-47",
+      "license": "ImageMagick",
+      "source": "https://github.com/ImageMagick/ImageMagick",
+      "relocatable": true,
+      "provides": ["magick"],
+      "pinNote": "verify in CI build"
+    },
+    {
+      "name": "fontconfig",
+      "version": "2.16.0",
+      "license": "MIT",
+      "source": "https://gitlab.freedesktop.org/fontconfig/fontconfig",
+      "relocatable": true,
+      "provides": [],
+      "pinNote": "verify in CI build; library dependency of imagemagick"
+    },
+    {
+      "name": "freetype",
+      "version": "2.13.3",
+      "license": "FTL",
+      "source": "https://freetype.org/download.html",
+      "relocatable": true,
+      "provides": [],
+      "pinNote": "verify in CI build; library dependency of imagemagick/fontconfig"
+    },
+    {
+      "name": "codex",
+      "version": "0.45.0",
+      "license": "Apache-2.0",
+      "source": "https://github.com/openai/codex",
+      "relocatable": true,
+      "provides": ["codex"],
+      "pinNote": "verify in CI build"
+    }
+  ],
+  "archives": {
+    "arm64": { "file": "cfw-toolchain-2026.10.1-arm64.tar.zst", "sha256": null, "sizeBytes": null },
+    "x86_64": { "file": "cfw-toolchain-2026.10.1-x86_64.tar.zst", "sha256": null, "sizeBytes": null }
+  }
+}
