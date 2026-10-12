@@ -1,0 +1,63 @@
+name: desktop
+
+on:
+  push:
+    paths: ["desktop/**", ".github/workflows/desktop.yml"]
+  pull_request:
+    paths: ["desktop/**", ".github/workflows/desktop.yml"]
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: desktop/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: desktop/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: cargo test
+        working-directory: desktop/src-tauri
+        run: cargo test
+
+      - name: Build universal .app (unsigned, ad-hoc)
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        run: pnpm tauri build --target universal-apple-darwin --bundles app
+
+      - name: Zip .app
+        run: |
+          cd src-tauri/target/universal-apple-darwin/release/bundle/macos
+          ditto -c -k --keepParent "CFW Render.app" "$GITHUB_WORKSPACE/CFW-Render-macos-universal.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cfw-render-macos-universal
+          path: CFW-Render-macos-universal.zip
+          if-no-files-found: error
