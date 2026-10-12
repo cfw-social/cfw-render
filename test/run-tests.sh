@@ -3212,14 +3212,17 @@ rm -rf "$mc3"
 
 echo "=== Case M3-01c-4: status.json never holds the worker key or the word token ==="
 mc4="$(mktemp -d)"
-mc4_key="cfw_secretkey_m301c4"
+# A well-formed key (the worker refuses any other shape) with a random tail,
+# built at runtime so this file holds nothing key-like.
+mc4_key="cfw_render_m3probe$(python3 -c 'import secrets;print(secrets.token_hex(8))')"
 c21_setup "$mc4" $((MOCK_PORT_BASE + 963)) harness-3step '[{"id":"o1"}]'
 c21_worker "$mc4" $((MOCK_PORT_BASE + 963)) --once CFW_RENDER_WORKER_KEY="$mc4_key"
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
-if [[ -f "$mc4/cr-state/status.json" ]] && ! grep -q "$mc4_key" "$mc4/cr-state/status.json" && ! grep -qi 'token' "$mc4/cr-state/status.json"; then
-  pass "status.json holds no key or token"
+mc4_claims="$(grep -c '"tool": "claim_render_order"' "$mc4/mockstate/calls.jsonl" 2>/dev/null || true)"
+if [[ "$mc4_claims" -ge 1 && -f "$mc4/cr-state/status.json" ]] && ! grep -q "$mc4_key" "$mc4/cr-state/status.json" && ! grep -qi 'token' "$mc4/cr-state/status.json"; then
+  pass "status.json holds no key or token (worker ran: $mc4_claims claim(s))"
 else
-  fail "status secrets" "status=$(head -c 400 "$mc4/cr-state/status.json" 2>/dev/null)"
+  fail "status secrets" "claims=$mc4_claims status=$(head -c 400 "$mc4/cr-state/status.json" 2>/dev/null)"
 fi
 rm -rf "$mc4"
 
