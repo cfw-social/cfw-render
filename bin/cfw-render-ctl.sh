@@ -37,13 +37,13 @@ case "$VERB" in
     if [[ -f "$CFW_RENDER_STATE_DIR/status.json" ]]; then
       python3 -c '
 import json, sys
-d = json.load(open(sys.argv[1])); c = d.get("computer", {}); cap = d.get("capacity", {})
+d = json.load(open(sys.argv[1])); c = d.get("computer", {})
 p = "yes (%s)" % c.get("pauseReason") if c.get("paused") else "no"
 print("paused: " + p)
 print("on battery: " + ("yes" if c.get("onBattery") else "no"))
-print("version: " + str(c.get("version")))
+print("version: " + str(d.get("workerVersion")))
 print("last check: " + str(d.get("lastCheckAt")))
-print("running: %s/%s" % (cap.get("running", 0), cap.get("max", "?")))
+print("running: %s/%s" % (c.get("running", 0), c.get("max", "?")))
 ' "$CFW_RENDER_STATE_DIR/status.json" 2>/dev/null || echo "status.json: unreadable"
     fi
 

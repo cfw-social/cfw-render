@@ -409,17 +409,26 @@ cr_h_checksum_ok() {
   [[ "$got" == "$hex" ]]
 }
 
-# [M3-01b] cr_h_write_current_step <orderDir> <stepId> <idx> <count> <engine>
-# — the status file's `requests` entry; removed when the step ends.
+# [M3-01c] cr_h_write_current_step <orderDir> <stepId> <engine> — the status
+# file's `now` entry; removed when the step ends. startedAt = CR_H_STARTED_AT.
 cr_h_write_current_step() {
   python3 -c '
-import json, sys, datetime
-d, sid, idx, cnt, eng = sys.argv[1:6]
-o = json.load(open(d + "/order.json"))
-json.dump({"orderId": o.get("id"), "stepId": sid, "stepIndex": int(idx), "stepCount": int(cnt), "engine": eng,
-           "startedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")},
+import json, sys
+d, sid, eng, started = sys.argv[1:5]
+o = json.load(open(d + "/order.json")); m = o.get("manifest") or {}
+cs = [s for s in m.get("steps", []) if s.get("runsOn", "computer") == "computer"]
+idx = next((i for i, s in enumerate(cs) if s.get("id") == sid), 0)
+def w(s):
+    try: return float(s.get("weight") or 0)
+    except Exception: return 0.0
+tot = sum(w(s) for s in cs)
+pct = int(sum(w(s) for s in cs[:idx]) / tot * 100) if tot > 0 else 0
+json.dump({"orderId": o.get("id"), "shortCode": o.get("shortCode"), "brand": o.get("brandName"),
+           "recipe": m.get("label"), "step": idx + 1, "steps": len(cs),
+           "stepLabel": (cs[idx].get("label") if cs else None), "pct": pct,
+           "startedAt": started or None, "engine": eng},
           open(d + "/current-step.json", "w"))
-' "$@" 2>/dev/null || true
+' "$@" "${CR_H_STARTED_AT:-}" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
@@ -427,6 +436,7 @@ cr_harness_run() {
   local order_file="$1" order_dir="$2" recipe_dir="$3"
   [[ -f "$order_file" ]] || { cr_log "harness: order file missing: $order_file"; return 1; }
   CR_H_ORDER_DIR="$order_dir"; CR_H_RECIPE_DIR="$recipe_dir"
+  CR_H_STARTED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   mkdir -p "$order_dir/steps" "$order_dir/logs"
   [[ "$order_file" -ef "$order_dir/order.json" ]] || cp "$order_file" "$order_dir/order.json"
   local meta engine resume_from
@@ -476,8 +486,7 @@ for s in (o.get("manifest") or {}).get("steps", []):
   trap "cr_harness_heartbeat_stop; rm -f '$order_dir/current-step.json'" RETURN
 
   local step_id runs_on max_retries when_kind when_arg saves checks rc cond p
-  local final_outputs="[]" step_count step_index=0
-  step_count="$(grep -c . <<< "$steps" || true)"
+  local final_outputs="[]"
   while IFS=$'\x1f' read -r step_id runs_on max_retries when_kind when_arg saves checks; do
     [[ -n "$step_id" ]] || continue
     [[ "$runs_on" == "computer" ]] || continue
@@ -523,13 +532,12 @@ o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alt
     local run=0 checks_json="[]" passed=0 ask d waited
     # [M3-01b] Engine failover (D107/D109): each engine is tried at most once
     # per step; a usage-limit message moves the step to the next engine.
-    local tried=" " limit_until next_engine step_index log_from
-    step_index=$((step_index + 1))
+    local tried=" " limit_until next_engine log_from
     while :; do
       run=$((run + 1))
       tried+="$engine "
       cr_h_report step_started "{\"stepId\":\"$step_id\",\"engine\":\"$engine\"}"
-      cr_h_write_current_step "$order_dir" "$step_id" "$step_index" "$step_count" "$engine"
+      cr_h_write_current_step "$order_dir" "$step_id" "$engine"
       rm -f "$workdir/needs_input.json"
       cr_h_build_prompt "$step_id" "$workdir" "$order_file"
       rc=0; log_from=0

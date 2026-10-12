@@ -1461,52 +1461,122 @@ cr_pause_state() {
   fi
 }
 
-# cr_status_write — atomically writes $CFW_RENDER_STATE_DIR/status.json
-# (contract §1) from the CR_STATUS_* globals. [M3-01b] engines/activeEngine
-# come from cfw-render-engine.sh; requests from the harness-maintained
-# <orderDir>/current-step.json files under CFW_RENDER_SCRATCH.
+# [M3-01c] cr_computer_name — the owner-facing computer name, cached per process.
+CR_COMPUTER_NAME_CACHE=""
+cr_computer_name() {
+  if [[ -z "$CR_COMPUTER_NAME_CACHE" ]]; then
+    CR_COMPUTER_NAME_CACHE="${CFW_RENDER_COMPUTER_NAME:-}"
+    [[ -n "$CR_COMPUTER_NAME_CACHE" ]] || CR_COMPUTER_NAME_CACHE="$(scutil --get ComputerName 2>/dev/null || true)"
+    [[ -n "$CR_COMPUTER_NAME_CACHE" ]] || CR_COMPUTER_NAME_CACHE="$(hostname -s 2>/dev/null || true)"
+  fi
+  printf '%s' "$CR_COMPUTER_NAME_CACHE"
+}
+
+# [M3-01c] cr_recent_append <order_json_file_or_empty> <outcome> [orderId] —
+# one finished request into recent.ndjson (24 h, max 50 lines, atomic).
+cr_recent_append() {
+  local dir="$CFW_RENDER_STATE_DIR"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  ( umask 077
+    python3 -c '
+import json, sys, os, datetime
+f, outcome, oid, path = sys.argv[1:5]
+o = {}
+if f and os.path.isfile(f):
+    try: o = json.load(open(f))
+    except Exception: o = {}
+m = {"complete": "done", "completed": "done"}
+for k in ("released", "revoked", "engine_limit", "cancelled"): m[k] = "stopped"
+nowdt = datetime.datetime.now(datetime.timezone.utc)
+row = {"shortCode": o.get("shortCode"), "brand": o.get("brandName"), "result": m.get(outcome, "failed"),
+       "finishedAt": nowdt.strftime("%Y-%m-%dT%H:%M:%SZ"), "orderId": o.get("id") or oid or None}
+rows = []
+try:
+    for line in open(path):
+        try: rows.append(json.loads(line))
+        except Exception: pass
+except OSError: pass
+rows.append(row)
+cut = nowdt - datetime.timedelta(hours=24)
+def fresh(r):
+    try: return datetime.datetime.fromisoformat(r["finishedAt"].replace("Z", "+00:00")) >= cut
+    except Exception: return False
+rows = [r for r in rows if fresh(r)][-50:]
+tmp = path + ".tmp.%d" % os.getpid()
+with open(tmp, "w") as fh:
+    for r in rows: fh.write(json.dumps(r) + "\n")
+os.replace(tmp, path)
+' "${1:-}" "${2:-}" "${3:-}" "$dir/recent.ndjson"
+  ) 2>/dev/null || true
+}
+
+# cr_status_write — atomically writes $CFW_RENDER_STATE_DIR/status.json in the
+# frozen contract shape (CONTRACTS.md §1). [M3-01c] engines/activeEngine from
+# cfw-render-engine.sh; `now` from <orderDir>/current-step.json; `brands` from
+# brands.json; `recent` from recent.ndjson. Never holds keys or tokens.
 cr_status_write() {
-  local dir="$CFW_RENDER_STATE_DIR" tmp engines="[]" active="none" requests="[]"
+  local dir="$CFW_RENDER_STATE_DIR" tmp engines="[]" active="none"
   mkdir -p "$dir" 2>/dev/null || return 1
   tmp="$dir/status.json.tmp.$$"
   if declare -F cr_engines_json >/dev/null; then
     engines="$(cr_engines_json)"; active="$(cr_engine_active)"
   fi
-  requests="$(python3 -c '
-import glob, json, os, sys
-out = []
-for p in sorted(glob.glob(os.path.join(sys.argv[1], "*", "*", "current-step.json"))):
-    try:
-        d = json.load(open(p))
-        out.append({"orderId": d.get("orderId"), "stepId": d.get("stepId"), "stepIndex": d.get("stepIndex"),
-                    "stepCount": d.get("stepCount"), "engine": d.get("engine"), "startedAt": d.get("startedAt")})
-    except Exception:
-        continue
-print(json.dumps(out))' "${CFW_RENDER_SCRATCH:-/nonexistent}" 2>/dev/null || echo "[]")"
   ( umask 077
     python3 -c '
-import json, sys, datetime
+import json, sys, glob, os, datetime
 a = sys.argv
-now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 def b(s): return s == "1"
 def n(s, d=0):
     try: return int(s)
     except ValueError: return d
+def load(p, d):
+    try: return json.load(open(p))
+    except Exception: return d
+labels = {"codex": "ChatGPT", "claude-code": "Claude"}
+engines = []
+try: raw = json.loads(a[13] or "[]")
+except Exception: raw = []
+for e in raw:
+    if not isinstance(e, dict): continue
+    engines.append({"name": e.get("name"), "label": labels.get(e.get("name"), e.get("name")), "auth": "signin",
+                    "signedIn": bool(e.get("signedIn")), "limit": e.get("limit") or "unknown",
+                    "resetsAt": e.get("resetsAt") or None})
+sd = a[15]
+brands = []
+for x in load(os.path.join(sd, "brands.json"), []) or []:
+    if isinstance(x, dict) and x.get("id"):
+        brands.append({"id": x.get("id"), "name": x.get("name"), "serving": True})
+now = []
+for p in sorted(glob.glob(os.path.join(a[16], "*", "*", "current-step.json"))):
+    d = load(p, None)
+    if not isinstance(d, dict): continue
+    now.append({k: d.get(k) for k in ("shortCode", "brand", "recipe", "step", "steps", "stepLabel", "pct", "startedAt")})
+recent = []
+cut = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
+try: lines = open(os.path.join(sd, "recent.ndjson")).read().splitlines()
+except OSError: lines = []
+for line in reversed(lines):
+    try:
+        r = json.loads(line)
+        if datetime.datetime.fromisoformat(r["finishedAt"].replace("Z", "+00:00")) < cut: continue
+    except Exception: continue
+    recent.append({k: r.get(k) for k in ("shortCode", "brand", "result", "finishedAt")})
+    if len(recent) >= 20: break
 doc = {
-  "schemaVersion": 1, "writtenAt": now, "lastCheckAt": a[9] or None,
-  "computer": {"workerId": a[1], "version": a[2], "paused": b(a[3]),
-               "pauseReason": a[4] or None, "onBattery": b(a[5]),
-               "allowBattery": b(a[6]), "updateRequired": b(a[7]),
-               "lastError": a[8] or None},
-  "capacity": {"running": n(a[10]), "max": n(a[11], 1)},
-  "engines": json.loads(a[13] or "[]"), "activeEngine": (a[14] if a[14] not in ("", "none") else None),
-  "requests": json.loads(a[15] or "[]"),
+  "schema": 1, "workerVersion": a[2], "engines": engines,
+  "activeEngine": (a[14] if a[14] not in ("", "none") else None),
+  "computer": {"name": a[1] or None, "max": n(a[11], 1), "running": n(a[10]), "onBattery": b(a[5]),
+               "paused": b(a[3]), "pauseReason": a[4] or None, "updateRequired": b(a[7])},
+  "brands": brands, "now": now, "next": [], "recent": recent,
+  "lastCheckAt": a[9] or None, "lastError": a[8] or None,
 }
 json.dump(doc, open(a[12], "w"), indent=2)
-' "${CFW_WORKER_ID:-}" "$(cr_worker_version)" "${CR_STATUS_PAUSED:-0}" \
-      "${CR_STATUS_PAUSE_REASON:-}" "${CR_STATUS_ON_BATTERY:-0}" "${CR_STATUS_ALLOW_BATTERY:-0}" \
+' "$(cr_computer_name)" "$(cr_worker_version)" "${CR_STATUS_PAUSED:-0}" \
+      "${CR_STATUS_PAUSE_REASON:-}" "${CR_STATUS_ON_BATTERY:-0}" "" \
       "${CR_STATUS_UPDATE_REQUIRED:-0}" "${CR_STATUS_LAST_ERROR:-}" "${CR_STATUS_LAST_CHECK_AT:-}" \
-      "${CR_STATUS_RUNNING:-0}" "${CR_STATUS_MAX:-1}" "$tmp" "$engines" "$active" "$requests"
+      "${CR_STATUS_RUNNING:-0}" "${CR_STATUS_MAX:-1}" "$tmp" "$engines" "$active" "$dir" \
+      "${CFW_RENDER_SCRATCH:-/nonexistent}"
   ) 2>/dev/null || { rm -f "$tmp"; return 1; }
+  chmod 600 "$tmp" 2>/dev/null
   mv -f "$tmp" "$dir/status.json"
 }

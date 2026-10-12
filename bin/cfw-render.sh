@@ -208,6 +208,7 @@ print(brand.get("slug") or "")
     cr_log "spawn_director: order $order_id has malformed/missing taskOrder.brand — blocking"
     cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"order was underspecified — missing brand context"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "" "$kind" "blocked" "" "" >> "$JOURNAL"
+    cr_recent_append "" blocked "$order_id"
     return 1
   fi
 
@@ -248,6 +249,7 @@ print("\x1f".join([mode, token, expires, pool, expired]))
       cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"this brand'"'"'s HeyGen account isn'"'"'t connected — connect it in brand settings","needs":"decision"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
         || cr_log "order $order_id — block_render_order (no-heygen-credential) call failed; lease expiry is the backstop"
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "blocked" "" "" >> "$JOURNAL"
+    cr_recent_append "$order_dir/order.json" blocked "$order_id"
       return 1
     fi
   fi
@@ -263,6 +265,7 @@ print("\x1f".join([mode, token, expires, pool, expired]))
     cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"this render'"'"'s recipe files are out of sync — a redeploy is needed"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
       || cr_log "order $order_id — block_render_order (skills-mismatch) call failed; lease expiry is the backstop"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "blocked" "" "" >> "$JOURNAL"
+    cr_recent_append "$order_dir/order.json" blocked "$order_id"
     return 1
   fi
 
@@ -317,6 +320,7 @@ for x in a:
       # computer (23). [M3-01b] 24 = released for an engine usage limit:
       # the attempt is released; the server re-queues it.
       if (( h_rc == 22 || h_rc == 23 || h_rc == 24 )); then
+        cr_recent_append "$order_dir/order.json" "$h_outcome" "$order_id"
         rm -rf "$order_dir"
         rm -rf "$(cr_keep_output_dir "$brand_slug" "$order_id")" 2>/dev/null
         cr_log "order $order_id — brand files and keys deleted after $h_outcome"
@@ -325,6 +329,7 @@ for x in a:
       fi
     fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "$h_outcome" "$h_rc" "harness" >> "$JOURNAL"
+    cr_recent_append "$order_dir/order.json" "$h_outcome" "$order_id"
     return 0
   fi
 
@@ -524,6 +529,7 @@ print(tpl)
 
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "$outcome" "$director_exit" "$model_served" >> "$JOURNAL"
+  cr_recent_append "$order_dir/order.json" "$outcome" "$order_id"
 }
 
 # ---------------------------------------------------------------------------
@@ -577,6 +583,15 @@ print(json.dumps(a))' "$CFW_WORKER_ID" "$CFW_RENDER_RENDERER_KIND" "$claim_label
     return 0
   fi
   CR_STATUS_UPDATE_REQUIRED=0; CR_STATUS_LAST_ERROR=""
+  # [M3-01c] computerBrands → brands.json (status `brands`); older servers omit it.
+  ( umask 077
+    python3 -c '
+import json, sys, os
+b = json.loads(sys.stdin.read()).get("computerBrands")
+if not isinstance(b, list): sys.exit(0)
+out = [{"id": x.get("id"), "name": x.get("name")} for x in b if isinstance(x, dict) and x.get("id")]
+p = sys.argv[1]; tmp = p + ".tmp.%d" % os.getpid()
+json.dump(out, open(tmp, "w")); os.replace(tmp, p)' "$CFW_RENDER_STATE_DIR/brands.json" <<< "$resp" ) 2>/dev/null || true
   # SERVER_KNOWS_CAPACITY flips once a reply carries `orders[]`: only an M2
   # server does, and only such a server honours the "full" ask (see
   # claim_round). An older server ignores capacity and would hand a NORMAL
