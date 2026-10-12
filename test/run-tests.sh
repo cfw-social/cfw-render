@@ -2754,6 +2754,105 @@ else
 fi
 rm -rf "$c28"
 
+# ===========================================================================
+# M3-07a — private toolchain: tools/current/bin PATH precedence + verify.sh
+# ===========================================================================
+
+echo "=== Case M3-07a-1: cr_resolve_worker_path prepends tools/current/bin when present ==="
+m7_tmp="$(mktemp -d)"
+mkdir -p "$m7_tmp/current/bin"
+printf '#!/bin/sh\nexit 0\n' >"$m7_tmp/current/bin/ffmpeg"
+chmod +x "$m7_tmp/current/bin/ffmpeg"
+m7_out="$(
+  export CFW_RENDER_TOOLS_DIR="$m7_tmp"
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_resolve_worker_path
+)"
+if [[ "$m7_out" == "$m7_tmp/current/bin:"* ]]; then
+  pass "M3-07a-1: tools/current/bin is first on the worker PATH"
+else
+  fail "M3-07a-1" "expected prefix $m7_tmp/current/bin: in: $m7_out"
+fi
+rm -rf "$m7_tmp"
+
+echo "=== Case M3-07a-2: absent tools dir leaves the worker PATH byte-identical ==="
+m7_base="$(
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_resolve_worker_path
+)"
+m7_none="$(
+  export CFW_RENDER_TOOLS_DIR="/nonexistent/cfw-tools-$$"
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_resolve_worker_path
+)"
+if [[ "$m7_base" == "$m7_none" && "$m7_none" != *"/nonexistent/"* ]]; then
+  pass "M3-07a-2: no tools dir → PATH unchanged"
+else
+  fail "M3-07a-2" "base=$m7_base none=$m7_none"
+fi
+
+echo "=== Case M3-07a-3: make-sums.sh + verify.sh round-trip, then a flipped byte ==="
+m7_b="$(mktemp -d)"
+mkdir -p "$m7_b/bin"
+printf 'hello\n' >"$m7_b/bin/a.txt"
+printf 'world\n' >"$m7_b/notes.txt"
+if "$REPO_DIR/toolchain/scripts/make-sums.sh" "$m7_b" >/dev/null \
+   && [[ -s "$m7_b/SHA256SUMS" ]] \
+   && "$REPO_DIR/toolchain/scripts/verify.sh" "$m7_b" >/dev/null; then
+  pass "M3-07a-3: make-sums + verify → exit 0 on a clean dir"
+else
+  fail "M3-07a-3 clean" "verify did not pass on a freshly summed dir"
+fi
+printf 'hellp\n' >"$m7_b/bin/a.txt"
+m7_v_out="$("$REPO_DIR/toolchain/scripts/verify.sh" "$m7_b" 2>&1)" && m7_v_rc=0 || m7_v_rc=$?
+if [[ "$m7_v_rc" == "1" && "$m7_v_out" == *"bin/a.txt"* ]]; then
+  pass "M3-07a-3: flipped byte → exit 1 naming bin/a.txt"
+else
+  fail "M3-07a-3 tamper" "rc=$m7_v_rc out=$m7_v_out"
+fi
+rm -rf "$m7_b"
+
+echo "=== Case M3-07a-4: verify.sh Mach-O scan — system binary clean, Homebrew string flagged ==="
+m7_m="$(mktemp -d)"
+mkdir -p "$m7_m/bin"
+cp /bin/ls "$m7_m/bin/ls"
+if file -b "$m7_m/bin/ls" | grep -q 'Mach-O'; then
+  "$REPO_DIR/toolchain/scripts/make-sums.sh" "$m7_m" >/dev/null
+  m7_m_out="$("$REPO_DIR/toolchain/scripts/verify.sh" "$m7_m" 2>&1)" && m7_m_rc=0 || m7_m_rc=$?
+  if [[ "$m7_m_rc" == "0" && "$m7_m_out" == *"1 Mach-O"* ]]; then
+    pass "M3-07a-4: copy of /bin/ls → exit 0 (links /usr/lib only)"
+  else
+    fail "M3-07a-4 ls" "rc=$m7_m_rc out=$m7_m_out"
+  fi
+else
+  pass "M3-07a-4: skipped (no Mach-O)"
+fi
+rm -rf "$m7_m"
+m7_f="$(mktemp -d)"
+mkdir -p "$m7_f/bin"
+# Fake Mach-O: magic header (so `file` says Mach-O) + a Homebrew path string.
+if file -b /bin/ls | grep -q 'Mach-O'; then
+  head -c 4096 /bin/ls >"$m7_f/bin/fake"
+else
+  printf '\xcf\xfa\xed\xfe' >"$m7_f/bin/fake"
+fi
+printf '\n/opt/homebrew/lib/libfoo.dylib\n' >>"$m7_f/bin/fake"
+"$REPO_DIR/toolchain/scripts/make-sums.sh" "$m7_f" >/dev/null
+if file -b "$m7_f/bin/fake" | grep -q 'Mach-O'; then
+  m7_f_out="$(CFW_VERIFY_FORCE_STRINGS=1 "$REPO_DIR/toolchain/scripts/verify.sh" "$m7_f" 2>&1)" && m7_f_rc=0 || m7_f_rc=$?
+  if [[ "$m7_f_rc" == "1" && "$m7_f_out" == *"/opt/homebrew/lib/libfoo.dylib"* && "$m7_f_out" == *"strings"* ]]; then
+    pass "M3-07a-4: strings fallback flags /opt/homebrew reference → exit 1"
+  else
+    fail "M3-07a-4 strings" "rc=$m7_f_rc out=$m7_f_out"
+  fi
+else
+  pass "M3-07a-4: strings fallback skipped (file does not report Mach-O)"
+fi
+rm -rf "$m7_f"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
