@@ -523,7 +523,7 @@ o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alt
     local run=0 checks_json="[]" passed=0 ask d waited
     # [M3-01b] Engine failover (D107/D109): each engine is tried at most once
     # per step; a usage-limit message moves the step to the next engine.
-    local tried=" " limit_until next_engine step_index
+    local tried=" " limit_until next_engine step_index log_from
     step_index=$((step_index + 1))
     while :; do
       run=$((run + 1))
@@ -532,12 +532,13 @@ o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alt
       cr_h_write_current_step "$order_dir" "$step_id" "$step_index" "$step_count" "$engine"
       rm -f "$workdir/needs_input.json"
       cr_h_build_prompt "$step_id" "$workdir" "$order_file"
-      rc=0
+      rc=0; log_from=0
+      [[ -f "$log" ]] && log_from="$(wc -c < "$log" | tr -d ' ')"
       CFW_STEP_SAVES="$saves" CFW_STEP_ID="$step_id" \
         cr_h_run_with_timeout "$CFW_RENDER_STEP_TIMEOUT_SEC" cr_engine_run "$engine" "$workdir/prompt.md" "$workdir" "$log" \
         || { rc=$?; cr_log "harness: step $step_id engine exited nonzero (run $run)"; }
 
-      if limit_until="$(cr_engine_limit_detect "$engine" "$log" "$rc")"; then
+      if limit_until="$(cr_engine_limit_detect "$engine" "$log" "$rc" "$log_from")"; then
         cr_engine_limit_set "$engine" "$limit_until"
         cr_log "harness: $engine hit its limit (resets $limit_until) — trying next engine"
         next_engine="$(cr_engine_active)"

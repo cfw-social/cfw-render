@@ -199,17 +199,20 @@ cr_engine_active() {
 # cr_engine_detect — kept for callers; same as cr_engine_active.
 cr_engine_detect() { cr_engine_active; }
 
-# cr_engine_limit_detect <engine> <log-file> <rc> — rc 0 + reset ISO (UTC) on
+# cr_engine_limit_detect <engine> <log-file> <rc> [<from-byte>] — rc 0 + reset ISO (UTC) on
 # stdout when the last ~200 log lines show a usage limit; else rc 1. The regex
 # match alone is sufficient (some CLIs exit 0 on a limit message).
 cr_engine_limit_detect() {
-  local engine="$1" log="$2" rc="${3:-0}" row regex=""
+  local engine="$1" log="$2" rc="${3:-0}" from="${4:-0}" row regex=""
   [[ -f "$log" ]] || return 1
   for row in "${CR_ENGINE_LIMIT_TABLE[@]}"; do
     [[ "${row%%|*}" == "$engine" ]] && { regex="${row#*|}"; break; }
   done
   [[ -n "$regex" ]] || return 1
-  tail -n 200 "$log" | python3 -c '
+  # Only THIS run's output: the step log is appended across runs, so a limit
+  # message from the previous engine must not be read as the next one's.
+  # <from> is the log's byte size before the run (0 = whole file).
+  tail -c "+$((from + 1))" "$log" | tail -n 200 | python3 -c '
 import re, sys, datetime
 regex = sys.argv[1]
 lines = [l for l in sys.stdin.read().splitlines() if re.search(regex, l, re.I)]

@@ -19,6 +19,18 @@ FAKE_BIN="$(mktemp -d)"
 cp "$TEST_DIR/fake-claude.sh" "$FAKE_BIN/claude"
 chmod +x "$FAKE_BIN/claude"
 
+# [M3-01] The worker pauses on battery (cr_on_battery → pmset). Every case must
+# be independent of the host's power state, so a stub pmset reporting AC power
+# is the default for the whole suite; the M3-01a cases flip it via the
+# FAKE_PMSET_BATTERY marker file.
+FAKE_PMSET_BATTERY="$(mktemp -u)"; export FAKE_PMSET_BATTERY
+cat > "$FAKE_BIN/pmset" <<'EOF2'
+#!/usr/bin/env bash
+if [[ -e "${FAKE_PMSET_BATTERY:-/nonexistent}" ]]; then echo "Now drawing from 'Battery Power'"; else echo "Now drawing from 'AC Power'"; fi
+EOF2
+chmod +x "$FAKE_BIN/pmset"
+export CFW_RENDER_PMSET_CMD="$FAKE_BIN/pmset"
+
 OLLAMA_KEYS_FIXTURE="$(mktemp)"
 cat > "$OLLAMA_KEYS_FIXTURE" <<'EOF'
 OLLAMA_KEY_GOOFY_HUGLE_463_B=test-dummy-key-goofy
@@ -2758,18 +2770,13 @@ rm -rf "$c28"
 # ---------------------------------------------------------------------------
 # M3-01a: pause / battery / run-now / version / updateRequired
 # ---------------------------------------------------------------------------
-FAKE_PMSET_BATTERY="$(mktemp -u)"; export FAKE_PMSET_BATTERY
 FAKE_CAFFEINATE_LOG="$(mktemp)"; export FAKE_CAFFEINATE_LOG
-cat > "$FAKE_BIN/pmset" <<'EOF2'
-#!/usr/bin/env bash
-if [[ -e "${FAKE_PMSET_BATTERY:-/nonexistent}" ]]; then echo "Now drawing from 'Battery Power'"; else echo "Now drawing from 'AC Power'"; fi
-EOF2
 cat > "$FAKE_BIN/caffeinate" <<'EOF2'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${FAKE_CAFFEINATE_LOG:-/dev/null}"
 exec sleep 30
 EOF2
-chmod +x "$FAKE_BIN/pmset" "$FAKE_BIN/caffeinate"
+chmod +x "$FAKE_BIN/caffeinate"
 # m3_tool_count <dir> <tool>
 m3_tool_count() { grep -c "\"tool\": \"$2\"" "$1/mockstate/calls.jsonl" 2>/dev/null || true; }
 # m3_status <dir> <python expr over d>
