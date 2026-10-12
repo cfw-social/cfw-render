@@ -3114,6 +3114,57 @@ else
   fail "status requests" "during='$mb6_req' after=$mb6_after status=$(head -c 400 "$mb6/cr-state/status.json" 2>/dev/null)"
 fi
 rm -rf "$mb6"
+echo "=== Case M3-07b-1: release.sh dry run writes toolchain-manifest.json with matching sha256 + versioned urls ==="
+m7b_d="$(mktemp -d)"
+m7b_ver="$(python3 -c 'import json;print(json.load(open("'"$REPO_DIR"'/toolchain/manifest.json"))["version"])')"
+printf 'fake-arm\n' >"$m7b_d/cfw-toolchain-$m7b_ver-arm64.tar.zst"
+printf 'fake-x86 longer\n' >"$m7b_d/cfw-toolchain-$m7b_ver-x86_64.tar.zst"
+m7b_out="$(CFW_RELEASE_DRY_RUN=1 "$REPO_DIR/toolchain/scripts/release.sh" "$m7b_d" 2>&1)" && m7b_rc=0 || m7b_rc=$?
+m7b_want_a="$(shasum -a 256 "$m7b_d/cfw-toolchain-$m7b_ver-arm64.tar.zst" | awk '{print $1}')"
+m7b_want_x="$(shasum -a 256 "$m7b_d/cfw-toolchain-$m7b_ver-x86_64.tar.zst" | awk '{print $1}')"
+m7b_chk="$(python3 -c 'import json,sys
+d=json.load(open(sys.argv[1])); a=d["archives"]
+ok = a["arm64"]["sha256"]==sys.argv[2] and a["x86_64"]["sha256"]==sys.argv[3] \
+  and ("/toolchain/%s/" % d["version"]) in a["arm64"]["url"] and ("/toolchain/%s/" % d["version"]) in a["x86_64"]["url"] \
+  and a["x86_64"]["sizeBytes"]==16 and d.get("publishedAt") and d.get("minAppVersion")
+print("ok" if ok else "bad")' "$m7b_d/toolchain-manifest.json" "$m7b_want_a" "$m7b_want_x" 2>&1)"
+if [[ "$m7b_rc" == "0" && "$m7b_chk" == "ok" && "$m7b_out" == *"DRY: aws s3 cp"*"toolchain/manifest.json"* ]]; then
+  pass "M3-07b-1: release.sh dry run → manifest sha256/url/size correct, aws commands printed"
+else
+  fail "M3-07b-1" "rc=$m7b_rc chk=$m7b_chk out=$m7b_out"
+fi
+rm -rf "$m7b_d"
+
+echo "=== Case M3-07b-2: build.sh refuses TODO-* sha256 pins unless CFW_TOOLCHAIN_ALLOW_UNPINNED=1 ==="
+m7b_t="$(mktemp -d)"
+cat >"$m7b_t/manifest.json" <<'JSON'
+{"version":"0.0.0-test","minAppVersion":"1.0.0","tools":[
+ {"name":"node","version":"1","sha256":"0000000000000000000000000000000000000000000000000000000000000000"},
+ {"name":"zzz-unpinned-tool","version":"1","sha256":"TODO-fill-from-first-build"}]}
+JSON
+m7b_out="$(
+  unset CFW_TOOLCHAIN_ALLOW_UNPINNED
+  CFW_TOOLCHAIN_MANIFEST="$m7b_t/manifest.json" "$REPO_DIR/toolchain/scripts/build.sh" arm64 "$m7b_t/dist" 2>&1
+)" && m7b_rc=0 || m7b_rc=$?
+if [[ "$m7b_rc" != "0" && "$m7b_out" == *"unpinned"* && "$m7b_out" == *"zzz-unpinned-tool"* && "$m7b_out" != *"fetch:"* ]]; then
+  pass "M3-07b-2: unpinned tool → exit $m7b_rc, message names zzz-unpinned-tool, nothing fetched"
+else
+  fail "M3-07b-2" "rc=$m7b_rc out=$m7b_out"
+fi
+rm -rf "$m7b_t"
+
+echo "=== Case M3-07b-3: manifest.json parses; tc_arch_triple maps arm64/x86_64 ==="
+m7b_tr="$(
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/toolchain/scripts/lib.sh"
+  printf '%s %s' "$(tc_arch_triple arm64)" "$(tc_arch_triple x86_64)"
+)"
+if python3 -c 'import json,sys;json.load(open(sys.argv[1]))' "$REPO_DIR/toolchain/manifest.json" \
+   && [[ "$m7b_tr" == "aarch64-apple-darwin x86_64-apple-darwin" ]]; then
+  pass "M3-07b-3: manifest valid JSON; triples = $m7b_tr"
+else
+  fail "M3-07b-3" "triples=$m7b_tr"
+fi
 
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"

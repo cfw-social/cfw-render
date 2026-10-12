@@ -10,8 +10,13 @@
       "license": "MIT",
       "source": "https://nodejs.org/dist/v22.20.0/",
       "relocatable": true,
-      "provides": ["node", "npx", "npm"],
-      "pinNote": "verify in CI build"
+      "provides": [
+        "node",
+        "npx",
+        "npm"
+      ],
+      "pinNote": "verify in CI build",
+      "sha256": "TODO-fill-from-first-build"
     },
     {
       "name": "python",
@@ -19,8 +24,12 @@
       "license": "PSF-2.0",
       "source": "https://github.com/astral-sh/python-build-standalone",
       "relocatable": true,
-      "provides": ["python3"],
-      "pinNote": "verify in CI build (install_only_stripped flavour)"
+      "provides": [
+        "python3"
+      ],
+      "pinNote": "verify in CI build (install_only_stripped flavour)",
+      "sha256": "TODO-fill-from-first-build",
+      "pbsTag": "20250818"
     },
     {
       "name": "ffmpeg",
@@ -28,9 +37,20 @@
       "license": "LGPL-2.1-or-later",
       "source": "https://ffmpeg.org/releases/",
       "relocatable": true,
-      "provides": ["ffmpeg", "ffprobe"],
-      "buildFlags": ["--disable-gpl", "--disable-libx264", "--disable-libx265"],
-      "pinNote": "verify in CI build; LGPL build — no x264/x265"
+      "provides": [
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "buildFlags": [
+        "--disable-gpl",
+        "--disable-nonfree",
+        "--disable-libx264",
+        "--disable-libx265",
+        "--enable-shared",
+        "--disable-static"
+      ],
+      "pinNote": "verify in CI build; LGPL build \u2014 no x264/x265",
+      "sha256": "TODO-fill-from-first-build"
     },
     {
       "name": "imagemagick",
@@ -38,8 +58,11 @@
       "license": "ImageMagick",
       "source": "https://github.com/ImageMagick/ImageMagick",
       "relocatable": true,
-      "provides": ["magick"],
-      "pinNote": "verify in CI build"
+      "provides": [
+        "magick"
+      ],
+      "pinNote": "verify in CI build",
+      "sha256": "TODO-fill-from-first-build"
     },
     {
       "name": "fontconfig",
@@ -48,7 +71,8 @@
       "source": "https://gitlab.freedesktop.org/fontconfig/fontconfig",
       "relocatable": true,
       "provides": [],
-      "pinNote": "verify in CI build; library dependency of imagemagick"
+      "pinNote": "verify in CI build; library dependency of imagemagick",
+      "sha256": "TODO-fill-from-first-build"
     },
     {
       "name": "freetype",
@@ -57,7 +81,8 @@
       "source": "https://freetype.org/download.html",
       "relocatable": true,
       "provides": [],
-      "pinNote": "verify in CI build; library dependency of imagemagick/fontconfig"
+      "pinNote": "verify in CI build; library dependency of imagemagick/fontconfig",
+      "sha256": "TODO-fill-from-first-build"
     },
     {
       "name": "codex",
@@ -65,12 +90,23 @@
       "license": "Apache-2.0",
       "source": "https://github.com/openai/codex",
       "relocatable": true,
-      "provides": ["codex"],
-      "pinNote": "verify in CI build"
+      "provides": [
+        "codex"
+      ],
+      "pinNote": "verify in CI build",
+      "sha256": "TODO-fill-from-first-build"
     }
   ],
   "archives": {
-    "arm64": { "file": "cfw-toolchain-2026.10.1-arm64.tar.zst", "sha256": null, "sizeBytes": null },
-    "x86_64": { "file": "cfw-toolchain-2026.10.1-x86_64.tar.zst", "sha256": null, "sizeBytes": null }
+    "arm64": {
+      "file": "cfw-toolchain-2026.10.1-arm64.tar.zst",
+      "sha256": null,
+      "sizeBytes": null
+    },
+    "x86_64": {
+      "file": "cfw-toolchain-2026.10.1-x86_64.tar.zst",
+      "sha256": null,
+      "sizeBytes": null
+    }
   }
 }
