@@ -51,7 +51,6 @@ CR_ENGINES_KNOWN=(codex claude-code gemini zai moonshot minimax xai openrouter)
 # [M3-08b] API-key engines: run through `codex exec` against an
 # OpenAI-compatible endpoint from config/api-providers.json, key from the
 # Keychain (service com.cfw.render, account = engine name).
-CR_API_ENGINES=(zai moonshot minimax xai openrouter)
 cr_engine_is_api() { case "$1" in zai|moonshot|minimax|xai|openrouter) return 0 ;; esac; return 1; }
 cr_engine_label() {
   case "$1" in
@@ -79,16 +78,19 @@ cr_engine_provider_field() {
 CR_ENGINE_LIMIT_TABLE=(
   "codex|usage limit|rate limit reached|You've hit your usage limit|Try again (at|in)|limit resets"
   "claude-code|usage limit|rate limit|You've reached your (usage|message) limit|limit will reset|resets at"
-  "gemini|RESOURCE_EXHAUSTED|quota exceeded|rate limit|429"
-  "apikey|429|rate limit|Rate limit|Too Many Requests"
+  "gemini|RESOURCE_EXHAUSTED|[Qq]uota exceeded|[Rr]ate limit (reached|exceeded)|status 429|HTTP 429|\b429 Too Many"
+  "apikey|[Rr]ate limit (reached|exceeded)|status 429|HTTP 429|\b429 Too Many|Too Many Requests"
 )
 # [M3-08b] Rows whose limit lasts a fixed window instead of a parsed reset time.
 CR_ENGINE_LIMIT_WINDOW_MIN=15
 # Out-of-credit table: these never expire by time (reason "credit"); cleared by
 # the app deleting the entry or `cfw-render-ctl.sh clear-limit <engine>`.
+# Only phrasing a vendor's error reply uses: the bare words "credit", "402" or
+# "billing" also appear in ordinary render output ("add a credit line"), and a
+# match here marks the provider out of credit until the owner clears it.
 CR_ENGINE_CREDIT_TABLE=(
-  "gemini|insufficient balance|insufficient_quota|credit|payment required|402|billing"
-  "apikey|insufficient balance|insufficient_quota|credit|payment required|402|billing"
+  "gemini|[Ii]nsufficient (balance|credits?|funds)|insufficient_quota|[Oo]ut of credits?|credit balance is too low|[Pp]ayment [Rr]equired|status 402|HTTP 402|\b402 Payment|billing (hard )?limit|exceeded your current quota"
+  "apikey|[Ii]nsufficient (balance|credits?|funds)|insufficient_quota|[Oo]ut of credits?|credit balance is too low|[Pp]ayment [Rr]equired|status 402|HTTP 402|\b402 Payment|billing (hard )?limit|exceeded your current quota"
 )
 
 cr_engine_state_dir() { printf '%s' "${CFW_RENDER_STATE_DIR:-${HOME}/.cfw-render}"; }
