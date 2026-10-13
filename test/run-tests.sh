@@ -120,6 +120,13 @@ start_mock() {
   echo "$pid"
 }
 
+# owner_layout <home> — undo run_case's test pins (logs in the state dir, no
+# kept copies) so a case sees the real owner defaults under <home>.
+owner_layout() {
+  unset CFW_RENDER_LOG_DIR CFW_RENDER_KEEP_OUTPUTS
+  export "CFW_RENDER_HOME=$1"
+}
+
 run_case() {
   # run_case <name> <mode> <order-json-producer> <extra_env...>
   local name="$1" mode="$2" order_producer="$3"; shift 3
@@ -144,6 +151,7 @@ run_case() {
     export CFW_RENDER_WORKER_KEY="cfw_render_test0000000000000000"
     export CFW_RENDER_ENV="/nonexistent-cfw-render-env-for-tests"
     export CFW_RENDER_STATE_DIR="$cr_state"
+    export CFW_RENDER_LOG_DIR="$cr_state" CFW_RENDER_KEEP_OUTPUTS=0
     export CFW_RENDER_SCRATCH="$cr_scratch"
     export CFW_RENDER_SKILLS_DIR="$case_dir/skills"
     export CFW_RENDER_OLLAMA_KEYS_FILE="$OLLAMA_KEYS_FIXTURE"
@@ -186,6 +194,7 @@ dry_pid="$(start_mock "$case_dir_dry/queue.json" "$case_dir_dry/mockstate" "$dry
   export CFW_RENDER_WORKER_KEY="cfw_render_test0000000000000000"
   export CFW_RENDER_ENV="/nonexistent-cfw-render-env-for-tests"
   export CFW_RENDER_STATE_DIR="$case_dir_dry/cr-state"
+  export CFW_RENDER_LOG_DIR="$case_dir_dry/cr-state" CFW_RENDER_KEEP_OUTPUTS=0
   export CFW_RENDER_SCRATCH="$case_dir_dry/cr-scratch"
   export CFW_RENDER_SKILLS_DIR="$case_dir_dry/skills"
   export CFW_RENDER_OLLAMA_KEYS_FILE="$OLLAMA_KEYS_FIXTURE"
@@ -268,16 +277,16 @@ else
   fail "happy: journal row" "no complete journal row found"
 fi
 if ! grep -q "kept .* finished file" "$CASE_STATE/cfw-render.log" 2>/dev/null; then
-  pass "happy (fleet/server mode): no local copy kept"
+  pass "happy (CFW_RENDER_KEEP_OUTPUTS=0): no local copy kept"
 else
-  fail "happy (server mode): local copy" "server mode kept a local copy"
+  fail "happy (KEEP_OUTPUTS=0): local copy" "a local copy was kept with KEEP_OUTPUTS=0"
 fi
 
 echo "=== Case 2g: owner computer (byoa) layout — finished files kept in 'CFW Render/outputs' after CFW accepted them; logs in 'CFW Render/logs' ==="
 c2g_root="$(mktemp -d)"
 c2g_home="$c2g_root/CFW Render"   # the space is deliberate: the real folder name has one
 run_case "byoa-keep" "happy" "order_fixture order-keep-1 brand-1 video" \
-  export CFW_RENDER_MODE=byoa "CFW_RENDER_HOME=$c2g_home"
+  owner_layout "$c2g_home"
 if [[ "$(calls_count complete_render_order)" -ge 1 ]]; then
   pass "byoa-keep: complete_render_order called"
 else
@@ -486,7 +495,7 @@ fi
 echo "=== Case 3b: owner computer (byoa) — a blocked render keeps nothing in outputs ==="
 c3b_home="$(mktemp -d)/CFW Render"
 run_case "byoa-gate-fail" "gate-fail" "order_fixture order-gatefail-2 brand-1 video" \
-  export CFW_RENDER_MODE=byoa "CFW_RENDER_HOME=$c3b_home"
+  owner_layout "$c3b_home"
 if [[ "$(calls_count block_render_order)" -ge 1 && -z "$(find "$c3b_home/outputs" -type f 2>/dev/null)" ]]; then
   pass "byoa-gate-fail: blocked, and outputs/ holds no file"
 else
@@ -677,6 +686,7 @@ lock_skills_dir="$(mktemp -d)"
   export CFW_RENDER_WORKER_KEY="cfw_render_test0000000000000000"
   export CFW_RENDER_ENV="/nonexistent-cfw-render-env-for-tests"
   export CFW_RENDER_STATE_DIR="$lock_state"
+  export CFW_RENDER_LOG_DIR="$lock_state" CFW_RENDER_KEEP_OUTPUTS=0
   export CFW_RENDER_SCRATCH="$lock_scratch_dir"
   export CFW_RENDER_SKILLS_DIR="$lock_skills_dir"
   export CFW_RENDER_OLLAMA_KEYS_FILE="$OLLAMA_KEYS_FIXTURE"
@@ -688,79 +698,6 @@ if [[ "$lock_exit" == "0" ]]; then pass "tick-lock: second invocation exits 0"; 
 lock_calls="$(wc -l < "$lock_mock_state/calls.jsonl" 2>/dev/null | tr -d ' ')"
 [[ -z "$lock_calls" ]] && lock_calls=0
 if [[ "$lock_calls" == "0" ]]; then pass "tick-lock: no claim while lock held"; else fail "tick-lock: claim count" "expected 0 tool calls, got $lock_calls"; fi
-
-echo "=== Case 7: fleet-enable operator surface (set + read) ==="
-# Exercises bin/cfw-render-fleet.sh against the mock's master-key admin brands
-# route. Master key differs from the worker key on purpose — flipping
-# renderFleetEnabled is a privileged operator action.
-fleet_master_key="master-test-key-cfw16"
-fleet_seed="$(mktemp)"; order_fixture order-fleet-1 brand-fleet-1 video > "$fleet_seed"
-fleet_state="$(mktemp -d)"
-fleet_port=$((MOCK_PORT_BASE + 70))
-MOCK_MASTER_KEY="$fleet_master_key" \
-  python3 "$TEST_DIR/mock-server.py" "$fleet_port" "$fleet_state" "$fleet_seed" \
-  > "$fleet_state/mock-server.log" 2>&1 &
-fleet_pid=$!
-for _ in $(seq 1 50); do
-  curl -sS --max-time 1 "http://127.0.0.1:$fleet_port/api/v1/mcp" >/dev/null 2>&1 && break
-  sleep 0.1
-done
-
-fleet_run() {  # fleet_run <extra-env-assignments...> -- <fleet args...>
-  local envs=()
-  while [[ "${1:-}" != "--" && $# -gt 0 ]]; do envs+=("$1"); shift; done
-  shift || true
-  env "${envs[@]}" \
-    CFW_API_BASE="http://127.0.0.1:$fleet_port" \
-    CFW_RENDER_ADMIN_ENV="/nonexistent-admin-env-for-tests" \
-    "$REPO_DIR/bin/cfw-render-fleet.sh" "$@"
-}
-
-# 1. initial read: false
-out="$(fleet_run "CFW_MASTER_API_KEY=$fleet_master_key" -- status brand-fleet-1 2>/dev/null)"
-if echo "$out" | grep -q "brand-fleet-1.*renderFleetEnabled=false"; then
-  pass "fleet: initial status reads false"
-else
-  fail "fleet: initial status" "expected renderFleetEnabled=false, got: $out"
-fi
-
-# 2. enable, then read back true
-out="$(fleet_run "CFW_MASTER_API_KEY=$fleet_master_key" -- enable brand-fleet-1 2>/dev/null)"; rc=$?
-if [[ "$rc" == 0 ]] && echo "$out" | grep -q "brand-fleet-1.*renderFleetEnabled=true"; then
-  pass "fleet: enable flips to true and reads back"
-else
-  fail "fleet: enable" "expected rc=0 + renderFleetEnabled=true, got rc=$rc: $out"
-fi
-out="$(fleet_run "CFW_MASTER_API_KEY=$fleet_master_key" -- status brand-fleet-1 2>/dev/null)"
-if echo "$out" | grep -q "brand-fleet-1.*renderFleetEnabled=true"; then
-  pass "fleet: status reflects enabled state (persisted)"
-else
-  fail "fleet: status after enable" "expected renderFleetEnabled=true, got: $out"
-fi
-
-# 3. disable, read back false (reversible)
-out="$(fleet_run "CFW_MASTER_API_KEY=$fleet_master_key" -- disable brand-fleet-1 2>/dev/null)"; rc=$?
-if [[ "$rc" == 0 ]] && echo "$out" | grep -q "brand-fleet-1.*renderFleetEnabled=false"; then
-  pass "fleet: disable flips back to false (reversible)"
-else
-  fail "fleet: disable" "expected rc=0 + renderFleetEnabled=false, got rc=$rc: $out"
-fi
-
-# 4. missing master key: refuse (fail fast, no call)
-if fleet_run "CFW_RENDER_ADMIN_ENV=/nonexistent" -- status brand-fleet-1 >/dev/null 2>&1; then
-  fail "fleet: missing master key" "expected non-zero exit when CFW_MASTER_API_KEY unset"
-else
-  pass "fleet: refuses without a master key"
-fi
-
-# 5. wrong master key: 401, non-zero exit
-if fleet_run "CFW_MASTER_API_KEY=wrong-key" -- enable brand-fleet-1 >/dev/null 2>&1; then
-  fail "fleet: wrong master key" "expected non-zero exit on 401"
-else
-  pass "fleet: rejects a wrong master key"
-fi
-
-kill "$fleet_pid" 2>/dev/null; wait "$fleet_pid" 2>/dev/null
 
 echo "=== Case 8: default settings file is ~/.cfw-render/cfw-render.env (legacy ~/ecosystem/vault only as fallback); no ~/.gsai/secrets (CFW-289) ==="
 # Regression for CFW-289: bin/cfw-render-lib.sh's three credential-path
@@ -822,20 +759,6 @@ else
 fi
 rm -rf "$c8_legacy_home"
 
-# 2. cr_load_admin_config: default CFW_RENDER_ADMIN_ENV path.
-c289_admin_out="$(
-  env -i HOME="$c289_home" PATH="$PATH" bash -c '
-    set -u
-    source "'"$REPO_DIR"'/bin/cfw-render-lib.sh"
-    cr_load_admin_config
-  ' 2>&1
-)"
-if echo "$c289_admin_out" | grep -q "ecosystem/vault/cfw-render-admin.env" && ! echo "$c289_admin_out" | grep -q '\.gsai'; then
-  pass "cr_load_admin_config: default admin-env path is ~/ecosystem/vault, not ~/.gsai/secrets"
-else
-  fail "cr_load_admin_config: default admin-env path" "expected ecosystem/vault/cfw-render-admin.env with no .gsai mention, got: $c289_admin_out"
-fi
-
 # 3. cr_load_config's ollama-keys default, surfaced via `cfw-render.sh --dry`'s
 #    health table (against a mock server, not a live CFW_API_BASE).
 c289_seed="$(mktemp)"; empty_queue > "$c289_seed"
@@ -847,6 +770,7 @@ c289_dry_out="$(
     CFW_API_BASE="http://127.0.0.1:$c289_port" \
     CFW_RENDER_WORKER_KEY="cfw_render_test0000000000000000" \
     CFW_RENDER_STATE_DIR="$c289_home/cr-state" \
+    CFW_RENDER_LOG_DIR="$c289_home/cr-state" \
     CFW_RENDER_SCRATCH="$c289_home/cr-scratch" \
     CFW_RENDER_SKILLS_DIR="$c289_home/skills" \
     "$REPO_DIR/bin/cfw-render.sh" --dry 2>&1
@@ -1204,6 +1128,7 @@ pf_run() { # pf_run <PATH> — sets $pf_out and $pf_exit (NOT via command
     export CFW_RENDER_WORKER_KEY="cfw_render_test0000000000000000"
     export CFW_RENDER_ENV="/nonexistent-cfw-render-env-for-tests"
     export CFW_RENDER_STATE_DIR="$pf_dir/cr-state"
+    export CFW_RENDER_LOG_DIR="$pf_dir/cr-state" CFW_RENDER_KEEP_OUTPUTS=0
     export CFW_RENDER_SCRATCH="$pf_dir/cr-scratch"
     export CFW_RENDER_SKILLS_DIR="$pf_dir/skills"
     export CFW_RENDER_OLLAMA_KEYS_FILE="$OLLAMA_KEYS_FIXTURE"
@@ -1598,102 +1523,6 @@ rm -rf "$q6b_home" "$q6c_home"
 rm -rf "$q6_home" "$q6_prefix" "$q6_custom"
 rm -f "$q6_env"
 
-echo "=== Case Q7: install.sh renders WORKER_PATH into the Linux systemd unit, from this macOS dev box (CFW_RENDER_TEST_OS seam) ==="
-q7_real_home="$HOME"
-q7_home="$(mktemp -d)"
-q7_prefix="$(mktemp -d)"
-q7_custom="$(mktemp -d)"
-q7_env="$(mktemp)"
-cat > "$q7_env" <<EOF
-CFW_API_BASE=http://127.0.0.1:1
-CFW_RENDER_WORKER_KEY=cfw_render_test0000000000000000
-CFW_RENDER_STATE_DIR=$q7_home/cfw-render-state
-CFW_RENDER_SCRATCH=$q7_home/cfw-render-scratch
-EOF
-
-_q291_relocate_bin "$REPO_DIR/bin:$FAKE_BIN:$PATH" "$q7_custom" ffmpeg
-q7_test_path="$q7_custom:$REPO_DIR/bin:$FAKE_BIN:$PATH"
-
-q7_expected_worker_path="$(
-  export PATH="$q7_test_path"
-  # shellcheck source=/dev/null
-  source "$REPO_DIR/bin/cfw-render-lib.sh"
-  cr_resolve_worker_path
-)"
-
-(
-  export HOME="$q7_home"
-  export PATH="$q7_test_path"
-  export PLAYWRIGHT_BROWSERS_PATH="$q7_real_home/Library/Caches/ms-playwright"
-  export CFW_RENDER_TEST_OS="Linux"
-  "$REPO_DIR/install/install.sh" --mode byoa --prefix "$q7_prefix" --env-file "$q7_env" >"$q7_home/install.log" 2>&1 &
-  echo $! > "$q7_home/install.pid"
-  wait $!
-)
-q7_pid="$(cat "$q7_home/install.pid" 2>/dev/null)"
-q7_service="/tmp/cfw-render.service.$q7_pid"
-q7_timer="/tmp/cfw-render.timer.$q7_pid"
-
-if [[ -n "$q7_pid" && -f "$q7_service" ]]; then
-  pass "install.sh: renders cfw-render.service under CFW_RENDER_TEST_OS=Linux (first automated coverage the Linux unit has ever had)"
-else
-  fail "install.sh: linux unit written" "not found at $q7_service — install.log tail: $(tail -20 "$q7_home/install.log" 2>/dev/null)"
-fi
-
-if [[ -f "$q7_service" ]] && grep -qF '{{WORKER_PATH}}' "$q7_service"; then
-  fail "install.sh: leftover WORKER_PATH token (linux)" "unit still contains the literal {{WORKER_PATH}} placeholder"
-else
-  pass "install.sh: no leftover {{WORKER_PATH}} token in the linux unit"
-fi
-
-if [[ -f "$q7_service" ]]; then
-  q7_order_check="$(python3 -c '
-import sys
-lines = open(sys.argv[1]).read().splitlines()
-env_file_idx = next((i for i, l in enumerate(lines) if l.startswith("EnvironmentFile=")), None)
-path_idx = next((i for i, l in enumerate(lines) if l.startswith("Environment=\"PATH=")), None)
-if env_file_idx is None or path_idx is None:
-    print("BAD missing EnvironmentFile= or Environment=\"PATH=...\" line")
-else:
-    import shlex
-    val = shlex.split(lines[path_idx][len("Environment="):])[0][len("PATH="):]
-    if path_idx > env_file_idx and val == sys.argv[2]:
-        print("OK")
-    else:
-        print("BAD env_file_idx=%d path_idx=%d val=%r" % (env_file_idx, path_idx, val))
-' "$q7_service" "$q7_expected_worker_path")"
-  if [[ "$q7_order_check" == "OK" ]]; then
-    pass "install.sh: linux unit's Environment=PATH matches the resolved WORKER_PATH, positioned after EnvironmentFile= (env file can't clobber it)"
-  else
-    fail "install.sh: linux unit PATH/ordering" "$q7_order_check"
-  fi
-  q7_paths_check="$(python3 -c '
-import shlex, sys
-unit, prefix, home, state, scratch = sys.argv[1:6]
-lines = open(unit).read().splitlines()
-ex = [l for l in lines if l.startswith("ExecStart=")]
-rw = [l for l in lines if l.startswith("ReadWritePaths=")]
-bad = []
-if ex != ["ExecStart=\"%s/bin/cfw-render.sh\" --once" % prefix]: bad.append("ExecStart=%r" % ex)
-if len(rw) != 1: bad.append("ReadWritePaths lines=%d" % len(rw))
-else:
-    raw = rw[0][len("ReadWritePaths="):]
-    words = shlex.split(raw)
-    want = [prefix, "-" + state, "-" + scratch, "-" + home + "/CFW Render/logs", "-" + home + "/CFW Render/outputs"]
-    if "%h" in raw: bad.append("still uses %h")
-    if words != want: bad.append("words=%r want=%r" % (words, want))
-    if raw.count(chr(34)) != 2 * len(want): bad.append("not every path quoted: %r" % raw)
-print("OK" if not bad else "BAD " + "; ".join(bad))
-' "$q7_service" "$q7_prefix" "$q7_home" "$q7_home/cfw-render-state" "$q7_home/cfw-render-scratch" 2>&1)"
-  if [[ "$q7_paths_check" == "OK" ]]; then
-    pass "install.sh: linux unit quotes ExecStart and lists absolute, quoted ReadWritePaths (prefix, state, scratch, CFW Render logs + outputs; no %h)"
-  else
-    fail "install.sh: linux unit paths" "$q7_paths_check"
-  fi
-fi
-
-rm -rf "$q7_home" "$q7_prefix" "$q7_custom"
-rm -f "$q7_env" "$q7_service" "$q7_timer"
 
 echo ""
 echo "=== Lint ==="
@@ -2149,6 +1978,7 @@ c19_worker() {
     export CFW_RENDER_WORKER_KEY="cfw_render_test0000000000000000"
     export CFW_RENDER_ENV="/nonexistent-cfw-render-env-for-tests"
     export CFW_RENDER_STATE_DIR="$dir/cr-state"
+    export CFW_RENDER_LOG_DIR="$dir/cr-state" CFW_RENDER_KEEP_OUTPUTS=0
     export CFW_RENDER_SCRATCH="$dir/cr-scratch"
     export CFW_RENDER_SKILLS_DIR="$dir/skills"
     export CFW_RENDER_OLLAMA_KEYS_FILE="$OLLAMA_KEYS_FIXTURE"
@@ -2553,6 +2383,7 @@ c21_worker() {
     export CFW_RENDER_WORKER_KEY="cfw_render_test0000000000000000"
     export CFW_RENDER_ENV="/nonexistent-cfw-render-env-for-tests"
     export CFW_RENDER_STATE_DIR="$dir/cr-state"
+    export CFW_RENDER_LOG_DIR="$dir/cr-state" CFW_RENDER_KEEP_OUTPUTS=0
     export CFW_RENDER_SCRATCH="$dir/cr-scratch"
     export CFW_RENDER_SKILLS_DIR="$dir/skills"
     export CFW_RENDER_OLLAMA_KEYS_FILE="$OLLAMA_KEYS_FIXTURE"

@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # cfw-render-lib.sh — shared core for the cfw-render drainer + Director-facing
 # helpers. Sourced, never executed directly. bash (not zsh) — must run
-# unmodified on hst (Linux) and a macOS dev box. No jq (not guaranteed on the
-# box); all JSON via python3 -c, same choice as ab-hustler.
+# unmodified on the owner's Mac (stock bash 3.2+). No jq (not guaranteed on the
+# computer); all JSON via python3 -c, same choice as ab-hustler.
 #
 # Design source: backlog/attachments/AB-RNDR-WORKER/implementation-plan.md §3.
-# Skills bundling (CFW-HST-BUNDLE, VPS-simplification epic Phase 2):
-# backlog/queue/CFW-HST-BUNDLE.md.
+# Skills bundling: backlog/done/2026-08/CFW-HST-BUNDLE.md.
 set -u
 
 # ---------------------------------------------------------------------------
@@ -22,8 +21,8 @@ _CR_REPO_ROOT="$(cd "$_CR_LIB_DIR/.." && pwd)"
 # cr_default_skills_dir — the in-repo bundled skills/ (pinned via
 # config/skills-version.json, source-synced by scripts/sync-skills.sh). This is
 # cfw-render's ONLY skills source: the old /data/shared/cfw-skills/cfw shared-box
-# path (a Hermes-assistant bundle, never cfw-render's) was dropped 2026-09-01 —
-# cfw-render no longer shares skills with Hermes. This is ONLY the default;
+# path (another assistant's bundle, never cfw-render's) was dropped 2026-09-01 —
+# cfw-render shares skills with nothing else. This is ONLY the default;
 # CFW_RENDER_SKILLS_DIR set via env/config file always wins (local-dev override).
 # ---------------------------------------------------------------------------
 cr_default_skills_dir() {
@@ -184,14 +183,13 @@ cr_default_env_file() {
 #                                      macOS schedule out/err logs
 #   hidden   ~/.cfw-render/            worker-id, cfw-render.env (600),
 #                                      scratch/, journal, tick lock
-# The fleet (mode=server) keeps logs in the state dir and keeps no local
-# copies — a VPS has no owner looking for files. Every path is overridable.
+# Every path is overridable.
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# cr_load_config — env cascade: /etc/cfw-render.env (Linux box) → $CFW_RENDER_ENV
-# (default ~/.cfw-render/cfw-render.env, see cr_default_env_file) → process env
-# wins over both files (a file only fills vars that are still unset). Fails
+# cr_load_config — env cascade: $CFW_RENDER_ENV (default
+# ~/.cfw-render/cfw-render.env, see cr_default_env_file) → process env wins
+# over the file (the file only fills vars that are still unset). Fails
 # fast on missing required vars; never prints values.
 # ---------------------------------------------------------------------------
 cr_load_config() {
@@ -213,18 +211,13 @@ cr_load_config() {
     _cr_preset+=("${!_v:-}")
   done
 
-  if [[ -r /etc/cfw-render.env ]]; then
-    # shellcheck disable=SC1091
-    source /etc/cfw-render.env
-  fi
-
   local env_file="${CFW_RENDER_ENV:-$(cr_default_env_file)}"
   if [[ -r "$env_file" ]]; then
     # shellcheck disable=SC1090
     source "$env_file"
   fi
 
-  # Process env wins over both files: restore any var that was already set
+  # Process env wins over the file: restore any var that was already set
   # before sourcing.
   local _i=0
   for _v in "${_cr_vars[@]}"; do
@@ -246,24 +239,17 @@ cr_load_config() {
   : "${CFW_RENDER_GATE_FAIL_CAP:=2}"
   : "${CFW_RENDER_OLLAMA_KEYS_FILE:=$HOME/ecosystem/vault/ollama-keys.env}"
   : "${CFW_RENDER_DIRECTOR_CMD:=}"
-  # Deploy mode (doc §4) — operational only, NEVER the security boundary (the
-  # server enforces that via which credential family resolves). Set once at
-  # install time; default matches our fleet. Skills always come from the in-repo
-  # bundle (there is no longer a bundle-vs-fetch switch — cfw-render carries its
-  # own skills/, git-pull to update; BYOA and server use the same source).
-  : "${CFW_RENDER_MODE:=server}"
+  # Deploy mode — operational only, NEVER the security boundary (the server
+  # enforces that via which credential family resolves). The only mode left is
+  # byoa (the owner's own computer); CFW-run server rendering was removed
+  # (D118). An older settings file that still says `server` is treated as byoa.
+  CFW_RENDER_MODE=byoa
   : "${CFW_RENDER_WORKER_ID_FILE:=$CFW_RENDER_STATE_DIR/worker-id}"
   # Visible folder layout (see the block above cr_load_config). byoa = the
   # owner's own computer: logs and kept renders go in "$HOME/CFW Render".
-  # server = the fleet: logs stay in the state dir, no local copies.
   : "${CFW_RENDER_HOME:=$HOME/CFW Render}"
-  if [[ "$CFW_RENDER_MODE" == "byoa" ]]; then
-    : "${CFW_RENDER_LOG_DIR:=$CFW_RENDER_HOME/logs}"
-    : "${CFW_RENDER_KEEP_OUTPUTS:=1}"
-  else
-    : "${CFW_RENDER_LOG_DIR:=$CFW_RENDER_STATE_DIR}"
-    : "${CFW_RENDER_KEEP_OUTPUTS:=0}"
-  fi
+  : "${CFW_RENDER_LOG_DIR:=$CFW_RENDER_HOME/logs}"
+  : "${CFW_RENDER_KEEP_OUTPUTS:=1}"
   : "${CFW_RENDER_OUTPUTS:=$CFW_RENDER_HOME/outputs}"
   # [CFW-146] Heartbeat cadence (seconds) while a Director holds an order. The
   # order card in cfw-social treats silence > 3 min as "Still working — last
@@ -276,15 +262,12 @@ cr_load_config() {
   # after the Director's own turn ended, without masking a real failure.
   : "${CFW_RENDER_ORPHAN_GRACE_SECS:=5}"
   # [CFW-146] Renderer identity shown to the owner ("Working on your Mac" /
-  # "on the box"). Derived from the platform + deploy mode unless set:
+  # "on your computer"). Derived from the platform unless set:
   #   Darwin        → mac   (the owner's laptop)
-  #   mode=server   → box   (the fleet VPS)
   #   otherwise     → byo   (a customer's own renderer)
   if [[ -z "${CFW_RENDER_RENDERER_KIND:-}" ]]; then
     if [[ "$(uname -s 2>/dev/null)" == "Darwin" ]]; then
       CFW_RENDER_RENDERER_KIND="mac"
-    elif [[ "$CFW_RENDER_MODE" == "server" ]]; then
-      CFW_RENDER_RENDERER_KIND="box"
     else
       CFW_RENDER_RENDERER_KIND="byo"
     fi
@@ -301,7 +284,7 @@ cr_load_config() {
   [[ -z "${CFW_API_BASE:-}" ]] && missing+=("CFW_API_BASE")
   [[ -z "${CFW_RENDER_WORKER_KEY:-}" ]] && missing+=("CFW_RENDER_WORKER_KEY")
   if (( ${#missing[@]} > 0 )); then
-    printf 'cfw-render: missing required config var(s): %s (checked /etc/cfw-render.env, %s, process env)\n' \
+    printf 'cfw-render: missing required config var(s): %s (checked %s, process env)\n' \
       "${missing[*]}" "$env_file" >&2
     return 1
   fi
@@ -314,8 +297,8 @@ cr_load_config() {
 
   cr_log_skills_version
 
-  # workerId — STABLE per install, NOT per process (doc §6.3). The systemd
-  # oneshot fires a fresh PID every 15-min tick, so the old `hostname:$$`
+  # workerId — STABLE per install, NOT per process (doc §6.3). A scheduled
+  # tick gets a fresh PID every time, so the old `hostname:$$`
   # changed every tick and would defeat CFW-V2-068's per-workerId circuit
   # breaker (consecutiveFailures never accumulates against a moving id).
   # Order of precedence:
@@ -368,8 +351,8 @@ cr_seed_worker_id() {
 
 # ---------------------------------------------------------------------------
 # cr_prepare_visible_dirs — create the log + outputs folders. Never fatal: an
-# install whose service sandbox predates the folder layout (an old Linux unit
-# whose ReadWritePaths lacks "$HOME/CFW Render") must keep rendering, so an
+# install whose sandbox predates the folder layout (an old unit that cannot
+# write "$HOME/CFW Render") must keep rendering, so an
 # unwritable log dir falls back to the state dir and an unwritable outputs dir
 # just turns off local copies, with a log line saying so.
 # ---------------------------------------------------------------------------
@@ -401,7 +384,7 @@ cr_keep_output_dir() {
 
 # ---------------------------------------------------------------------------
 # cr_log <msg> — timestamped append to $CFW_RENDER_LOG_DIR/cfw-render.log
-# (the state dir on the fleet / before config load; mirrors ab-lib.sh:63).
+# (the state dir before config load; mirrors ab-lib.sh:63).
 # ---------------------------------------------------------------------------
 cr_log() {
   local dir="${CFW_RENDER_LOG_DIR:-${CFW_RENDER_STATE_DIR:-$HOME/.cfw-render}}"
@@ -561,84 +544,6 @@ print(json.dumps(a))
 }
 
 # ---------------------------------------------------------------------------
-# cr_load_admin_config — config loader for the OPERATOR fleet-enable surface
-# (cfw-render-fleet.sh, CFW-16). Distinct from cr_load_config on purpose:
-#   * requires CFW_API_BASE + CFW_MASTER_API_KEY (the master key), NOT the
-#     narrow cfw_render_ worker key — flipping renderFleetEnabled is a
-#     privileged operator action the worker credential must NOT be able to do.
-#   * reads ONLY $CFW_RENDER_ADMIN_ENV (default ~/ecosystem/vault/cfw-render-admin
-#     .env) and the process env — DELIBERATELY never /etc/cfw-render.env. The
-#     master key must never live on a render box: the box is stateless and
-#     minimally-scoped by design (the whole point of CFW-16). This helper is an
-#     operator tool, run from an operator machine.
-# Process env wins over the file (same precedence rule as cr_load_config).
-# ---------------------------------------------------------------------------
-cr_load_admin_config() {
-  local _cr_vars=(CFW_API_BASE CFW_MASTER_API_KEY CFW_RENDER_ADMIN_ENV)
-  local _cr_preset=() _v
-  for _v in "${_cr_vars[@]}"; do _cr_preset+=("${!_v:-}"); done
-
-  local admin_env="${CFW_RENDER_ADMIN_ENV:-$HOME/ecosystem/vault/cfw-render-admin.env}"
-  if [[ -r "$admin_env" ]]; then
-    # shellcheck disable=SC1090
-    source "$admin_env"
-  fi
-
-  local _i=0
-  for _v in "${_cr_vars[@]}"; do
-    [[ -n "${_cr_preset[$_i]}" ]] && printf -v "$_v" '%s' "${_cr_preset[$_i]}"
-    _i=$(( _i + 1 ))
-  done
-  export CFW_API_BASE CFW_MASTER_API_KEY
-
-  local missing=()
-  [[ -z "${CFW_API_BASE:-}" ]] && missing+=("CFW_API_BASE")
-  [[ -z "${CFW_MASTER_API_KEY:-}" ]] && missing+=("CFW_MASTER_API_KEY")
-  if (( ${#missing[@]} > 0 )); then
-    printf 'cfw-render-fleet: missing required config var(s): %s (checked %s, process env). The master key is operator-only — never put it on a render box.\n' \
-      "${missing[*]}" "$admin_env" >&2
-    return 1
-  fi
-  return 0
-}
-
-# ---------------------------------------------------------------------------
-# cr_admin_call <method> <path> [json-body]
-# Single curl wrapper against the cfw-social MASTER-key admin surface
-# ($CFW_API_BASE$path, header cfw-api-key: $CFW_MASTER_API_KEY — the same auth
-# assertMasterOrAdmin() checks in cfw-social). Prints the raw response body on
-# stdout (even on an HTTP error, so the caller can inspect it); the HTTP status
-# goes to stderr. Returns 0 only on a 2xx, non-zero on curl failure or any
-# non-2xx. Assumes cr_load_admin_config already ran.
-# ---------------------------------------------------------------------------
-cr_admin_call() {
-  local method="$1" path="$2" body="${3:-}"
-  local url="${CFW_API_BASE%/}$path"
-  local curl_args=(-sS --max-time 30 -X "$method" "$url"
-    -H "cfw-api-key: $CFW_MASTER_API_KEY"
-    -H "content-type: application/json"
-    -w $'\n%{http_code}')
-  [[ -n "$body" ]] && curl_args+=(-d "$body")
-
-  local raw rc
-  raw="$(curl "${curl_args[@]}" 2>/dev/null)"
-  rc=$?
-  if (( rc != 0 )); then
-    printf 'cfw-render-fleet: admin call %s %s — curl failed (rc=%s)\n' "$method" "$path" "$rc" >&2
-    return 1
-  fi
-  # Last line = HTTP status (from -w); everything before = body.
-  local status="${raw##*$'\n'}"
-  local out="${raw%$'\n'*}"
-  printf '%s' "$out"
-  if [[ "$status" == 2* ]]; then
-    return 0
-  fi
-  printf 'cfw-render-fleet: admin call %s %s -> HTTP %s\n' "$method" "$path" "$status" >&2
-  return 1
-}
-
-# ---------------------------------------------------------------------------
 # cr_event <orderId> <kind> <stage> <message> <pct> [model]
 # Thin append_render_event wrapper. Best-effort — NEVER fails the caller;
 # logs on error. stage/model may be empty strings (omitted from the call).
@@ -673,7 +578,7 @@ print(json.dumps(d))
 # render watchdog's own `sleep $timeout_secs` outlives a normal-path completion
 # and wedges any caller that captures cfw-render.sh's output via `$( )` — see
 # CFW-292). Worse: it means a genuinely hung render is never actually killed by
-# the watchdog. Walk the tree with pgrep -P (present on both hst/Linux and
+# the watchdog. Walk the tree with pgrep -P (present on both Linux and
 # macOS — no new dependency) so every descendant gets the signal.
 # ---------------------------------------------------------------------------
 cr_kill_tree() {
@@ -750,7 +655,7 @@ cr_heartbeat_stop_if_pending() {
 # Same account order goofy_hugle -> recursing_pike, same rate-limit regex,
 # same "non-quota failure does not burn the 2nd account" rule. Ported from
 # zsh (`emulate -L zsh` / `typeset -ga`) to portable bash per plan §0.5 —
-# hst has no guaranteed zsh.
+# a Linux computer has no guaranteed zsh.
 # ---------------------------------------------------------------------------
 claude_ollama_failover() {
   local label="$1" model="$2" out="$3"; shift 3
@@ -1088,8 +993,8 @@ print(json.dumps(c))' "$1" "$2" "${3:-}" "${4:-}"
 # ===========================================================================
 #
 # WHY THIS EXISTS
-# CFW-188 found hst with **no ImageMagick at all**. `cfw-render.timer` was one
-# `systemctl enable` away from claiming production orders on a box that could
+# CFW-188 found a render computer with **no ImageMagick at all**, one schedule
+# load away from claiming production orders on a computer that could
 # not finish a single one — every claimed order would have burned its attempt,
 # blocked, and shown the owner a failure. Nothing in the install path or the
 # drainer's startup checked. `--dry` checks config, credentials and a live
@@ -1174,7 +1079,7 @@ cr_resolve_worker_path() {
 # Mirrors cr_preflight's existing stub-Director skip (CFW_RENDER_DIRECTOR_CMD
 # set → SKIP, not FAIL — a test/dev box that intentionally stubs out claude
 # must not suddenly be required to install a real one). Otherwise runs the
-# probe exactly the way launchd/systemd will run the real tick: `env -i` (a
+# probe exactly the way launchd will run the real tick: `env -i` (a
 # fully stripped environment) with only PATH=<worker_path>, HOME, and a
 # short, explicit allow-list of vars a CLI can legitimately need to behave
 # correctly (TMPDIR, LANG, LC_ALL, USER — passed through only if already set
@@ -1418,7 +1323,7 @@ cr_preflight() {
   {
     echo ""
     echo "PREFLIGHT: FAIL — this host cannot finish a render. Refusing to continue."
-    echo "cfw-render claims orders fleet-wide; starting here would claim work and burn it."
+    echo "cfw-render claims real orders; starting here would claim work and burn it."
     echo ""
     echo "Missing:"
     for b in "${missing[@]}"; do
