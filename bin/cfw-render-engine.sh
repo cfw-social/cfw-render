@@ -47,12 +47,48 @@
 # CFW_RENDER_STATE_DIR: engines.json {"order":[...]} (owner-set order) and
 # engine-limits.json {"<engine>": {"until": "<ISO>"}} (limits we observed).
 # ---------------------------------------------------------------------------
-CR_ENGINES_KNOWN=(codex claude-code)
+CR_ENGINES_KNOWN=(codex claude-code gemini zai moonshot minimax xai openrouter)
+# [M3-08b] API-key engines: run through `codex exec` against an
+# OpenAI-compatible endpoint from config/api-providers.json, key from the
+# Keychain (service com.cfw.render, account = engine name).
+CR_API_ENGINES=(zai moonshot minimax xai openrouter)
+cr_engine_is_api() { case "$1" in zai|moonshot|minimax|xai|openrouter) return 0 ;; esac; return 1; }
+cr_engine_label() {
+  case "$1" in
+    codex) echo ChatGPT ;; claude-code) echo Claude ;; gemini) echo Gemini ;; zai) echo Z.AI ;;
+    moonshot) echo Moonshot ;; minimax) echo MiniMax ;; xai) echo xAI ;; openrouter) echo OpenRouter ;;
+    *) echo "$1" ;;
+  esac
+}
+cr_engine_security() { printf '%s' "${CFW_RENDER_SECURITY_CMD:-/usr/bin/security}"; }
+# cr_engine_has_key <engine> — rc 0 iff a Keychain item exists. Exit code
+# only: no -w, so the password is never printed.
+cr_engine_has_key() {
+  "$(cr_engine_security)" find-generic-password -s com.cfw.render -a "$1" >/dev/null 2>&1 < /dev/null
+}
+cr_engine_providers_file() {
+  printf '%s' "${CFW_RENDER_API_PROVIDERS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/config/api-providers.json}"
+}
+# cr_engine_provider_field <engine> <field>
+cr_engine_provider_field() {
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]][sys.argv[3]])' \
+    "$(cr_engine_providers_file)" "$1" "$2"
+}
 
 # Limit detection table — ONE place. Row = engine|regex (python `re`, IGNORECASE).
 CR_ENGINE_LIMIT_TABLE=(
   "codex|usage limit|rate limit reached|You've hit your usage limit|Try again (at|in)|limit resets"
   "claude-code|usage limit|rate limit|You've reached your (usage|message) limit|limit will reset|resets at"
+  "gemini|RESOURCE_EXHAUSTED|quota exceeded|rate limit|429"
+  "apikey|429|rate limit|Rate limit|Too Many Requests"
+)
+# [M3-08b] Rows whose limit lasts a fixed window instead of a parsed reset time.
+CR_ENGINE_LIMIT_WINDOW_MIN=15
+# Out-of-credit table: these never expire by time (reason "credit"); cleared by
+# the app deleting the entry or `cfw-render-ctl.sh clear-limit <engine>`.
+CR_ENGINE_CREDIT_TABLE=(
+  "gemini|insufficient balance|insufficient_quota|credit|payment required|402|billing"
+  "apikey|insufficient balance|insufficient_quota|credit|payment required|402|billing"
 )
 
 cr_engine_state_dir() { printf '%s' "${CFW_RENDER_STATE_DIR:-${HOME}/.cfw-render}"; }
@@ -61,6 +97,13 @@ cr_engine_state_dir() { printf '%s' "${CFW_RENDER_STATE_DIR:-${HOME}/.cfw-render
 # Status output is discarded on purpose — it names the account.
 cr_engine_signed_in() {
   local engine="$1"
+  if cr_engine_is_api "$engine"; then cr_engine_has_key "$engine"; return; fi
+  if [[ "$engine" == gemini ]]; then
+    # The gemini CLI has no non-interactive auth-status command, so "signed in"
+    # means: CLI present AND a Keychain key for it.
+    { [[ -n "${CFW_RENDER_ENGINE_CMD:-}" ]] || command -v gemini >/dev/null 2>&1; } && cr_engine_has_key gemini
+    return
+  fi
   case "$engine" in codex|claude-code) ;; *) return 1 ;; esac
   [[ -n "${CFW_RENDER_ENGINE_CMD:-}" ]] && return 0
   case "$engine" in
@@ -74,9 +117,9 @@ cr_engine_order() {
   local forced="${CFW_RENDER_ENGINE:-}"
   if [[ -n "$forced" ]]; then
     case "$forced" in
-      codex|claude-code) echo "$forced" ;;
+      codex|claude-code|gemini|zai|moonshot|minimax|xai|openrouter) echo "$forced" ;;
       none) ;;
-      *) cr_log "cr_engine_order: CFW_RENDER_ENGINE='$forced' is not codex|claude-code|none — treating as none" ;;
+      *) cr_log "cr_engine_order: CFW_RENDER_ENGINE='$forced' is not a known engine or none — treating as none" ;;
     esac
     return 0
   fi
@@ -105,9 +148,11 @@ cr_engine_limit_until() {
   until="$(python3 -c '
 import json, sys, datetime
 try:
-    u = (json.load(open(sys.argv[1])).get(sys.argv[2]) or {}).get("until")
+    ent = json.load(open(sys.argv[1])).get(sys.argv[2]) or {}
+    u = ent.get("until")
 except Exception:
-    u = None
+    ent, u = {}, None
+if isinstance(ent, dict) and ent.get("reason") == "credit": print("credit"); sys.exit(0)
 if not isinstance(u, str) or not u: sys.exit(0)
 try:
     t = datetime.datetime.fromisoformat(u.replace("Z", "+00:00"))
@@ -120,7 +165,8 @@ print("expired" if t <= datetime.datetime.now(datetime.timezone.utc) else u)
   printf '%s' "$until"
 }
 
-# cr_engine_limit_set <engine> <ISO> / cr_engine_limit_clear <engine>
+# cr_engine_limit_set <engine> <ISO|credit> / cr_engine_limit_clear <engine>
+# cr_engine_limit_until prints `credit` for an out-of-credit entry (no reset).
 cr_engine_limit_write() {
   local engine="$1" until="$2" dir f
   dir="$(cr_engine_state_dir)"; f="$dir/engine-limits.json"
@@ -132,7 +178,8 @@ try:
     if not isinstance(d, dict): d = {}
 except Exception:
     d = {}
-if until: d[eng] = {"until": until}
+if until == "credit": d[eng] = {"until": None, "reason": "credit"}
+elif until: d[eng] = {"until": until}
 else: d.pop(eng, None)
 tmp = f + ".tmp"
 with open(tmp, "w") as fh: json.dump(d, fh)
@@ -147,7 +194,7 @@ cr_engine_limit_clear() { cr_engine_limit_write "$1" ""; }
 cr_engine_limit_raw_count() {
   python3 -c '
 import json, sys
-try: print(len(json.load(open(sys.argv[1]))))
+try: print(sum(1 for v in json.load(open(sys.argv[1])).values() if not (isinstance(v, dict) and v.get("reason") == "credit")))
 except Exception: print(0)' "$(cr_engine_state_dir)/engine-limits.json" 2>/dev/null || echo 0
 }
 
@@ -156,29 +203,33 @@ cr_engine_limit_earliest() {
   local e u best=""
   for e in "${CR_ENGINES_KNOWN[@]}"; do
     u="$(cr_engine_limit_until "$e")"
-    [[ -n "$u" ]] || continue
+    [[ -n "$u" && "$u" != credit ]] || continue
     if [[ -z "$best" || "$u" < "$best" ]]; then best="$u"; fi
   done
   printf '%s' "$best"
 }
 
-# cr_engines_json — [{"name","signedIn","limit":"ok"|"limited","resetsAt"?}] in order.
+# cr_engines_json — [{"name","label","auth","signedIn","limit":"ok"|"limited","resetsAt"?,"reason"?}] in order.
+# gemini reports auth "api_key": its CLI login can't be checked non-interactively.
 cr_engines_json() {
-  local e signed until rows=""
+  local e signed until auth rows=""
   while IFS= read -r e; do
     [[ -n "$e" ]] || continue
     signed=false; cr_engine_signed_in "$e" && signed=true
     until="$(cr_engine_limit_until "$e")"
-    rows+="${e}"$'\x1f'"${signed}"$'\x1f'"${until}"$'\n'
+    auth=signin
+    if cr_engine_is_api "$e" || [[ "$e" == gemini ]]; then auth=api_key; fi
+    rows+="${e}"$'\x1f'"${signed}"$'\x1f'"${until}"$'\x1f'"$(cr_engine_label "$e")"$'\x1f'"${auth}"$'\n'
   done < <(cr_engine_order)
   python3 -c '
 import json, sys
 out = []
 for line in sys.argv[1].splitlines():
     if not line: continue
-    name, signed, until = line.split("\x1f")
-    row = {"name": name, "signedIn": signed == "true", "limit": "limited" if until else "ok"}
-    if until: row["resetsAt"] = until
+    name, signed, until, label, auth = line.split("\x1f")
+    row = {"name": name, "label": label, "auth": auth, "signedIn": signed == "true", "limit": "limited" if until else "ok"}
+    if until == "credit": row["resetsAt"] = None; row["reason"] = "credit"
+    elif until: row["resetsAt"] = until
     out.append(row)
 print(json.dumps(out))
 ' "$rows"
@@ -203,10 +254,15 @@ cr_engine_detect() { cr_engine_active; }
 # stdout when the last ~200 log lines show a usage limit; else rc 1. The regex
 # match alone is sufficient (some CLIs exit 0 on a limit message).
 cr_engine_limit_detect() {
-  local engine="$1" log="$2" rc="${3:-0}" from="${4:-0}" row regex=""
+  local engine="$1" log="$2" rc="${3:-0}" from="${4:-0}" row regex="" credit="" key="$1" window=""
   [[ -f "$log" ]] || return 1
+  cr_engine_is_api "$engine" && key=apikey
+  [[ "$key" == apikey || "$key" == gemini ]] && window="$CR_ENGINE_LIMIT_WINDOW_MIN"
   for row in "${CR_ENGINE_LIMIT_TABLE[@]}"; do
-    [[ "${row%%|*}" == "$engine" ]] && { regex="${row#*|}"; break; }
+    [[ "${row%%|*}" == "$key" ]] && { regex="${row#*|}"; break; }
+  done
+  for row in "${CR_ENGINE_CREDIT_TABLE[@]}"; do
+    [[ "${row%%|*}" == "$key" ]] && { credit="${row#*|}"; break; }
   done
   [[ -n "$regex" ]] || return 1
   # Only THIS run's output: the step log is appended across runs, so a limit
@@ -214,10 +270,14 @@ cr_engine_limit_detect() {
   # <from> is the log's byte size before the run (0 = whole file).
   tail -c "+$((from + 1))" "$log" | tail -n 200 | python3 -c '
 import re, sys, datetime
-regex = sys.argv[1]
-lines = [l for l in sys.stdin.read().splitlines() if re.search(regex, l, re.I)]
+regex, credit, window = sys.argv[1], sys.argv[2], sys.argv[3]
+text = sys.stdin.read().splitlines()
+if credit and any(re.search(credit, l, re.I) for l in text): print("credit"); sys.exit(0)
+lines = [l for l in text if re.search(regex, l, re.I)]
 if not lines: sys.exit(1)
 now = datetime.datetime.now(datetime.timezone.utc)
+if window:
+    print((now + datetime.timedelta(minutes=int(window))).strftime("%Y-%m-%dT%H:%M:%SZ")); sys.exit(0)
 reset = None
 for l in lines:
     m = re.search(r"in (\d+) ?(h|hours?|m|min|minutes?)\b", l, re.I)
@@ -237,7 +297,7 @@ for l in lines:
         break
 if reset is None: reset = now + datetime.timedelta(hours=5)
 print(reset.strftime("%Y-%m-%dT%H:%M:%SZ"))
-' "$regex"
+' "$regex" "$credit" "$window"
 }
 
 # ---------------------------------------------------------------------------
@@ -302,6 +362,10 @@ cr_engine_run() {
   mkdir -p "$workdir" "$(dirname "$log")"
   printf '=== %s engine=%s prompt=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$engine" "$(basename "$prompt_file")" >> "$log"
   local rc=0
+  case "$engine" in
+    gemini) cr_engine_run_gemini "$prompt_file" "$workdir" "$log"; return ;;
+    zai|moonshot|minimax|xai|openrouter) cr_engine_run_api "$engine" "$prompt_file" "$workdir" "$log"; return ;;
+  esac
   if [[ -n "${CFW_RENDER_ENGINE_CMD:-}" ]]; then
     (
       cd "$workdir" || exit 1
@@ -325,5 +389,73 @@ cr_engine_run() {
       return 2
       ;;
   esac
+  return "$rc"
+}
+
+# cr_engine_bin <real> — the CLI to run: CFW_RENDER_ENGINE_CMD (tests) or <real>.
+# Sets CR_ENGINE_BIN (array).
+cr_engine_bin() {
+  if [[ -n "${CFW_RENDER_ENGINE_CMD:-}" ]]; then
+    # shellcheck disable=SC2206
+    CR_ENGINE_BIN=($CFW_RENDER_ENGINE_CMD)
+  else
+    CR_ENGINE_BIN=("$1")
+  fi
+}
+
+# [M3-08b] gemini: `gemini -p` with the prompt on stdin. A Keychain key, if
+# any, goes into THAT process's env only (never argv, never this shell).
+cr_engine_run_gemini() {
+  local prompt_file="$1" workdir="$2" log="$3" rc=0 k=""
+  cr_engine_bin gemini
+  if cr_engine_has_key gemini; then
+    k="$("$(cr_engine_security)" find-generic-password -s com.cfw.render -a gemini -w 2>/dev/null < /dev/null || true)"
+  fi
+  (
+    cd "$workdir" || exit 1
+    export CFW_RENDER_ENGINE_PROMPT_FILE="$prompt_file" CFW_ENGINE_NAME=gemini
+    if [[ -n "$k" ]]; then
+      env GEMINI_API_KEY="$k" "${CR_ENGINE_BIN[@]}" -p < "$prompt_file" >> "$log" 2>&1
+    else
+      "${CR_ENGINE_BIN[@]}" -p < "$prompt_file" >> "$log" 2>&1
+    fi
+  ) || rc=$?
+  k=""; unset k
+  return "$rc"
+}
+
+# [M3-08b] API-key engines: `codex exec` with a throwaway CODEX_HOME under the
+# request folder holding ONE provider table; ~/.codex is never read or written.
+# The key reaches only the codex process, under the provider's envKey.
+cr_engine_run_api() {
+  local engine="$1" prompt_file="$2" workdir="$3" log="$4" rc=0 k="" ch base envkey wire model
+  base="$(cr_engine_provider_field "$engine" baseUrl)" || { cr_log "cr_engine_run: no provider entry for $engine"; return 2; }
+  envkey="$(cr_engine_provider_field "$engine" envKey)" || return 2
+  wire="$(cr_engine_provider_field "$engine" wireApi)" || return 2
+  model="$(cr_engine_provider_field "$engine" defaultModel)" || return 2
+  ch="$workdir/.codex-home-$engine"
+  rm -rf "$ch"
+  ( umask 077; mkdir -p "$ch" ) || return 2
+  chmod 700 "$ch"
+  cat > "$ch/config.toml" <<TOML
+model = "$model"
+model_provider = "$engine"
+
+[model_providers.$engine]
+name = "$(cr_engine_label "$engine")"
+base_url = "$base"
+env_key = "$envkey"
+wire_api = "$wire"
+TOML
+  k="$("$(cr_engine_security)" find-generic-password -s com.cfw.render -a "$engine" -w 2>/dev/null < /dev/null || true)"
+  cr_engine_bin codex
+  (
+    cd "$workdir" || exit 1
+    export CFW_RENDER_ENGINE_PROMPT_FILE="$prompt_file" CFW_ENGINE_NAME="$engine"
+    env CODEX_HOME="$ch" "$envkey=$k" "${CR_ENGINE_BIN[@]}" exec --skip-git-repo-check -C "$workdir" \
+      -c "model_provider=$engine" --dangerously-bypass-approvals-and-sandbox - < "$prompt_file" >> "$log" 2>&1
+  ) || rc=$?
+  k=""; unset k
+  rm -rf "$ch"
   return "$rc"
 }

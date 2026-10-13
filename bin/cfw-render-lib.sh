@@ -1538,9 +1538,11 @@ try: raw = json.loads(a[13] or "[]")
 except Exception: raw = []
 for e in raw:
     if not isinstance(e, dict): continue
-    engines.append({"name": e.get("name"), "label": labels.get(e.get("name"), e.get("name")), "auth": "signin",
+    row = {"name": e.get("name"), "label": e.get("label") or labels.get(e.get("name"), e.get("name")), "auth": e.get("auth") or "signin",
                     "signedIn": bool(e.get("signedIn")), "limit": e.get("limit") or "unknown",
-                    "resetsAt": e.get("resetsAt") or None})
+                    "resetsAt": e.get("resetsAt") or None}
+    if e.get("reason"): row["reason"] = e["reason"]
+    engines.append(row)
 sd = a[15]
 brands = []
 for x in load(os.path.join(sd, "brands.json"), []) or []:

@@ -10,6 +10,7 @@
 #   cfw-render-ctl.sh logs [n]
 #   cfw-render-ctl.sh send-logs [--yes] [--dry]
 #   cfw-render-ctl.sh unblock <orderId>
+#   cfw-render-ctl.sh clear-limit <engine>
 #   cfw-render-ctl.sh fleet {status|enable|disable} <brandId>...
 set -u
 
@@ -212,6 +213,16 @@ except Exception:
     exit 1
     ;;
 
+  clear-limit)
+    # [M3-08b] Drop an engine's usage/credit limit from engine-limits.json.
+    [[ -n "${1:-}" ]] || { echo "cfw-render-ctl: usage: clear-limit <engine>" >&2; exit 2; }
+    # No cr_load_config: works without a worker key (state dir defaults).
+    # shellcheck disable=SC1091
+    source "$SELF_DIR/cfw-render-engine.sh"
+    cr_engine_limit_clear "$1"
+    echo "cleared limit for $1"
+    ;;
+
   fleet)
     # Operator fleet-enable surface (CFW-16). Delegates to cfw-render-fleet.sh,
     # which uses the MASTER key (operator-only) — NOT the worker key this ctl's
@@ -220,7 +231,7 @@ except Exception:
     ;;
 
   *)
-    echo "cfw-render-ctl: usage: {status|run-now|pause|resume|logs [n]|send-logs [--yes] [--dry]|unblock <orderId>|fleet {status|enable|disable} <brandId>...}" >&2
+    echo "cfw-render-ctl: usage: {status|run-now|pause|resume|logs [n]|send-logs [--yes] [--dry]|unblock <orderId>|clear-limit <engine>|fleet {status|enable|disable} <brandId>...}" >&2
     exit 2
     ;;
 esac

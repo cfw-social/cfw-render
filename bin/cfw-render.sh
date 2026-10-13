@@ -661,6 +661,13 @@ claim_round() {
       prune_running; STARTED=0
       return 0
     fi
+    # [M3-08b] Only out-of-credit limits (no reset time) remain.
+    if [[ -z "$limit_earliest" && "$(cr_engines_json)" == *'"signedIn": true'*'"reason": "credit"'* ]]; then
+      CR_STATUS_LAST_ERROR="AI credit ran out; add credit or pick another AI"
+      cr_log "engine: every signed-in engine is limited (out of credit) — not claiming"
+      prune_running; STARTED=0
+      return 0
+    fi
   fi
   [[ "$CR_STATUS_LAST_ERROR" == "AI limit reached;"* ]] && CR_STATUS_LAST_ERROR=""
   claim_caps="$(cr_engine_capabilities_json "$active_engine" "$CFW_RENDER_SKILLS_DIR")"

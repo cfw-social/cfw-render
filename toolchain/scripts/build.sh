@@ -171,6 +171,22 @@ WRAP
   chmod +x "$bundle/bin/codex"
 }
 
+build_gemini() {
+  local ver
+  ver="$(tool_field gemini version)"
+  [[ -x "$bundle/bin/node" ]] || tc_die "gemini: bundled node must be built first"
+  rm -rf "$bundle/gemini"
+  # Same as codex: npm checks the registry tarball's sha512.
+  PATH="$bundle/bin:$PATH" "$bundle/bin/node" "$bundle/lib/node_modules/npm/bin/npm-cli.js" \
+    install -g --prefix "$bundle/gemini" --no-fund --no-audit "@google/gemini-cli@${ver}"
+  cat >"$bundle/bin/gemini" <<'WRAP'
+#!/bin/sh
+here="$(cd "$(dirname "$0")" && pwd)"
+PATH="$here:$PATH" exec "$here/../gemini/bin/gemini" "$@"
+WRAP
+  chmod +x "$bundle/bin/gemini"
+}
+
 # --- run ----------------------------------------------------------------------
 for t in $tools; do
   echo "== $t =="
@@ -182,6 +198,7 @@ for t in $tools; do
     imagemagick) build_imagemagick ;;
     ffmpeg) build_ffmpeg ;;
     codex) build_codex ;;
+    gemini) build_gemini ;;
     *) tc_die "no build recipe for tool '$t'" ;;
   esac
 done
