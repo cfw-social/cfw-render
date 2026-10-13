@@ -1,7 +1,9 @@
 //! Embedded app.cfw.social in a child webview (`web`) of the `main` window, right of the 208px rail.
 //!
-//! Security: the child loads a remote URL; `capabilities/*.json` grant nothing to remote origins
-//! (no `remote` key) nor to the `web` label, so Tauri's IPC ACL rejects every invoke from it.
+//! Security: the child loads a remote URL. Tauri rejects every invoke from a remote origin unless a
+//! capability has a `remote` section (none does). Second wall: capabilities are scoped by *webview*
+//! label, never by window, because a `windows: ["main"]` grant would also cover this child webview
+//! (Tauri matches the child's window label too). The test below enforces both.
 
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -166,6 +168,38 @@ struct BrandsReply {
     brands: Vec<WebBrand>,
 }
 
+/// One stored cookie, reduced to what matching needs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredCookie {
+    pub name: String,
+    pub value: String,
+    pub domain: String,
+    pub path: String,
+    pub secure: bool,
+}
+
+/// RFC 6265 matching (domain, path, secure) → the `Cookie:` header value for `url`, or None.
+/// Done here because wry's `cookies_for_url` needs the cookie domain to equal the URL's exactly,
+/// which misses parent-domain cookies (`.cfw.social`) and every IP-address host.
+pub fn cookie_header(url: &Url, cookies: &[StoredCookie]) -> Option<String> {
+    let host = url.host_str()?.to_ascii_lowercase();
+    let path = if url.path().is_empty() { "/" } else { url.path() };
+    let https = url.scheme() == "https";
+    let parts: Vec<String> = cookies
+        .iter()
+        .filter(|c| {
+            let d = c.domain.trim_start_matches('.').to_ascii_lowercase();
+            let domain_ok = !d.is_empty() && (host == d || (host.ends_with(&format!(".{d}")) && host.parse::<std::net::IpAddr>().is_err()));
+            let cp = if c.path.is_empty() { "/" } else { c.path.as_str() };
+            let path_ok = path == cp || (path.starts_with(cp) && (cp.ends_with('/') || path[cp.len()..].starts_with('/')));
+            domain_ok && path_ok && (https || !c.secure)
+        })
+        .filter(|c| !c.name.is_empty() && !c.name.contains(['=', ';', '\r', '\n']) && !c.value.contains([';', '\r', '\n']))
+        .map(|c| format!("{}={}", c.name, c.value))
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("; "))
+}
+
 /// curl `-K -` config line value: double-quoted with `\` and `"` escaped; newlines refused.
 fn curl_quote(v: &str) -> Option<String> {
     if v.contains(['\n', '\r']) {
@@ -198,11 +232,21 @@ pub async fn web_brands(app: AppHandle) -> Result<WebBrands, String> {
     };
     let base = web_base();
     let url = base.join("/api/v1/brands/mine").map_err(|e| e.to_string())?;
-    let cookies = wv.cookies_for_url(base.clone()).map_err(|e| e.to_string())?;
-    if cookies.is_empty() {
+    let stored: Vec<StoredCookie> = wv
+        .cookies()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .map(|c| StoredCookie {
+            name: c.name().to_string(),
+            value: c.value().to_string(),
+            domain: c.domain().unwrap_or_default().to_string(),
+            path: c.path().unwrap_or("/").to_string(),
+            secure: c.secure().unwrap_or(false),
+        })
+        .collect();
+    let Some(header) = cookie_header(&url, &stored) else {
         return Ok(WebBrands { signed_in: false, brands: vec![] });
-    }
-    let header = cookies.iter().map(|c| format!("{}={}", c.name(), c.value())).collect::<Vec<_>>().join("; ");
+    };
     let (Some(h), Some(u)) = (curl_quote(&format!("Cookie: {header}")), curl_quote(url.as_str())) else {
         return Err("Couldn't read the CFW sign-in".into());
     };
@@ -303,6 +347,26 @@ mod tests {
     }
 
     #[test]
+    fn cookie_matching() {
+        let c = |name: &str, domain: &str, path: &str, secure: bool| StoredCookie { name: name.into(), value: "v".into(), domain: domain.into(), path: path.into(), secure };
+        let api = u("https://app.cfw.social/api/v1/brands/mine");
+        let jar = vec![
+            c("host_only", "app.cfw.social", "/", true),
+            c("parent", ".cfw.social", "/", true),
+            c("other_site", "evil.example", "/", false),
+            c("lookalike", "pp.cfw.social", "/", false),
+            c("api_path", "app.cfw.social", "/api", false),
+            c("apix_path", "app.cfw.social", "/apix", false),
+            c("bad;name", "app.cfw.social", "/", false),
+        ];
+        assert_eq!(cookie_header(&api, &jar).unwrap(), "host_only=v; parent=v; api_path=v");
+        // secure cookies never go over http; IP hosts match exactly (and never by suffix)
+        let ip = u("http://127.0.0.1:3999/api/v1/brands/mine");
+        assert_eq!(cookie_header(&ip, &[c("s", "127.0.0.1", "/", false), c("t", "127.0.0.1", "/", true), c("u", "0.0.1", "/", false)]).unwrap(), "s=v");
+        assert_eq!(cookie_header(&api, &[c("x", "evil.example", "/", false)]), None);
+    }
+
+    #[test]
     fn curl_config_quoting() {
         assert_eq!(curl_quote("a\"b\\c").unwrap(), r#""a\"b\\c""#);
         assert!(curl_quote("x\nurl = http://evil").is_none());
@@ -320,11 +384,10 @@ mod tests {
             n += 1;
             let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
             assert!(v.get("remote").is_none(), "{p:?} has a remote section");
-            for key in ["windows", "webviews"] {
-                if let Some(list) = v.get(key).and_then(|l| l.as_array()) {
-                    assert!(list.iter().all(|w| w != LABEL && w != "*"), "{p:?} grants {key} to web");
-                }
-            }
+            // A window grant reaches every webview inside that window, including `web` in `main`.
+            assert!(v.get("windows").is_none(), "{p:?} must scope by webviews, not windows");
+            let list = v.get("webviews").and_then(|l| l.as_array()).expect("webviews list");
+            assert!(list.iter().all(|w| w != LABEL && w.as_str().is_some_and(|s| !s.contains('*'))), "{p:?} grants to web");
         }
         assert!(n > 0);
     }
