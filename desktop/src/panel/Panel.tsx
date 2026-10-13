@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
 import { copy } from "../copy";
 import type { StatusPayload } from "../status";
-import { panelModel, type BannerKind, type PanelModel } from "./model";
+import { Icon } from "../ui/Icon";
+import { Button, MARK_URL, Pill, ProgressBar, SectionLabel } from "../ui/kit";
+import { health, panelModel, type DoneRow } from "./model";
 
 export interface PanelActions {
   openMain(section: string): void;
@@ -12,101 +13,140 @@ export interface PanelActions {
   openLogs(): void;
 }
 
-export const btn = "rounded-md px-2 py-1 text-xs font-medium bg-neutral-200 hover:bg-neutral-300 dark:bg-neutral-700 dark:hover:bg-neutral-600";
-const heading = "mt-3 mb-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-500";
+const RESULT_ICON = { done: "circle-check", failed: "circle-x", stopped: "circle-pause" } as const;
+const RESULT_TONE = { done: "text-emerald-600", failed: "text-red-600", stopped: "text-zinc-500" } as const;
 
-/** Ticks once a second so elapsed times stay live. */
-export function useNow(clock?: () => number) {
-  const [now, setNow] = useState(() => (clock ?? Date.now)());
-  useEffect(() => {
-    const id = setInterval(() => setNow((clock ?? Date.now)()), 1000);
-    return () => clearInterval(id);
-  }, [clock]);
-  return now;
-}
-
-export function Panel({ payload, actions, clock }: { payload: StatusPayload | null; actions: PanelActions; clock?: () => number }) {
-  const m = panelModel(payload, useNow(clock));
+function DoneLine({ d, onWhy }: { d: DoneRow; onWhy: () => void }) {
   return (
-    <div className="flex h-screen flex-col bg-white p-3 font-sans text-sm text-neutral-900 dark:bg-neutral-900 dark:text-neutral-100">
-      <StatusBody m={m} actions={actions} />
-      <div className="mt-2 text-xs text-neutral-500">{m.lastCheck}</div>
-      <div className="mt-2 flex gap-2">
-        <button className={btn} onClick={() => actions.setPaused(!m.paused)}>{m.paused ? copy.action.resume : copy.action.pause}</button>
-        <button className={btn} onClick={actions.runNow}>{copy.action.runNow}</button>
-        <button className={btn} onClick={() => actions.openMain("renders")}>{copy.action.open}</button>
-        <button className={btn} onClick={actions.openLogs}>{copy.action.viewLogs}</button>
-      </div>
-    </div>
+    <li className="flex items-center gap-2.5 py-1.5 text-[13px]">
+      <Icon name={RESULT_ICON[d.result]} size={15} className={RESULT_TONE[d.result]} />
+      <span className="sr-only">{copy.result[d.result]}</span>
+      <span className="min-w-0 truncate font-medium">{d.code || copy.render}</span>
+      <span className="min-w-0 truncate text-subtle">{d.brand}</span>
+      {d.result === "failed" ? (
+        <button type="button" onClick={onWhy} className="ml-auto shrink-0 rounded text-xs font-medium text-failed hover:underline">
+          {copy.action.seeWhy}
+        </button>
+      ) : (
+        <span className="ml-auto shrink-0 text-xs tabular-nums text-subtle">{d.time}</span>
+      )}
+    </li>
   );
 }
 
-/** Provider line, banner, brands and NOW/NEXT/DONE — shared by the panel and the main window. */
-export function StatusBody({ m, actions }: { m: PanelModel; actions: Pick<PanelActions, "openMain" | "startWorker" | "setPaused" | "allowBattery"> }) {
+/** The menu-bar panel: what this Mac is doing, what needs you, and one obvious next action. */
+export function Panel({ payload, actions, clock = Date.now }: { payload: StatusPayload | null; actions: PanelActions; clock?: () => number }) {
+  const m = panelModel(payload, clock());
+  const h = health(m);
+  // When it isn't running, the last status file is stale: don't claim anything is rendering.
+  const down = h.kind === "notRunning";
+  const now = down ? undefined : m.now[0];
 
-  const bannerAction: Record<BannerKind, [string, () => void] | null> = {
-    notRunning: [copy.action.start, actions.startWorker],
-    paused: [copy.action.resume, () => actions.setPaused(false)],
-    battery: [copy.action.renderOnBattery, actions.allowBattery],
-    update: null,
-    limit: null,
-  };
-  const ba = m.banner ? bannerAction[m.banner.kind] : null;
+  const fix = (() => {
+    switch (h.kind) {
+      case "notRunning":
+        return <Button size="sm" variant="primary" icon="play" onClick={actions.startWorker}>{copy.action.start}</Button>;
+      case "battery":
+        return <Button size="sm" variant="primary" onClick={actions.allowBattery}>{copy.action.renderOnBattery}</Button>;
+      case "limit":
+      case "noProvider":
+        return <Button size="sm" variant="primary" onClick={() => actions.openMain("providers")}>{copy.action.providers}</Button>;
+      case "update":
+        return <Button size="sm" variant="primary" onClick={() => actions.openMain("settings")}>{copy.nav.settings}</Button>;
+      default:
+        return null;
+    }
+  })();
 
   return (
-    <>
-      <div className="text-xs text-neutral-600 dark:text-neutral-300">
-        {m.noProvider ? (
-          <button className="underline" onClick={() => actions.openMain("providers")}>{m.providerLine}</button>
-        ) : (
-          m.providerLine
+    <div className="flex h-screen flex-col overflow-hidden bg-card text-foreground">
+      <header className="flex items-center gap-2.5 border-b border-border px-4 py-3">
+        <img src={MARK_URL} alt="" width={22} height={22} className="h-[22px] w-[22px]" />
+        <h1 className="flex-1 text-sm font-semibold">{copy.appName}</h1>
+        <Pill tone={h.tone} dot>{h.label}</Pill>
+      </header>
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {h.callout && (
+          <div role="alert" className="mx-4 mt-3 rounded-[8px] border border-warn-border bg-warn-bg p-3">
+            <p className="flex items-center gap-2 text-[13px] font-semibold text-warn-strong">
+              <Icon name="circle-alert" size={15} />
+              {h.callout.title}
+            </p>
+            <p className="mt-1 text-xs leading-snug text-warn-strong">{h.callout.body}</p>
+            {fix && <div className="mt-2.5 flex gap-2">{fix}</div>}
+          </div>
         )}
-      </div>
-      {m.banner && (
-        <div role="alert" className="mt-2 flex items-center justify-between rounded-md bg-amber-100 px-2 py-1.5 text-amber-900 dark:bg-amber-900/40 dark:text-amber-100">
-          <span>{m.banner.text}</span>
-          {ba && <button className={btn} onClick={ba[1]}>{ba[0]}</button>}
-        </div>
-      )}
-      {m.brandsLine && <div className="mt-2">{m.brandsLine}</div>}
-      <div className="flex-1 overflow-y-auto">
-        {m.now.length > 0 && (
-          <section>
-            <h2 className={heading}>{copy.section.now}</h2>
-            {m.now.map((r, i) => (
-              <div key={i} className="mb-2">
-                <div className="flex justify-between font-medium"><span>{r.title}</span>{r.elapsed && <span className="tabular-nums text-neutral-500">{r.elapsed}</span>}</div>
-                {r.recipe && <div>{r.recipe}</div>}
-                {r.stepText && <div className="text-xs text-neutral-500">{r.stepText}</div>}
-                {r.pct != null && (
-                  <div className="mt-1 h-1.5 rounded bg-neutral-200 dark:bg-neutral-700" role="progressbar" aria-valuenow={r.pct} aria-valuemin={0} aria-valuemax={100}>
-                    <div className="h-1.5 rounded bg-blue-500" style={{ width: `${r.pct}%` }} />
-                  </div>
-                )}
+
+        {h.kind === "paused" ? (
+          <section className="px-4 pt-6 pb-5 text-center">
+            <div className="mx-auto mb-2.5 flex h-10 w-10 items-center justify-center rounded-full bg-secondary text-muted-foreground">
+              <Icon name="circle-pause" size={20} />
+            </div>
+            <p className="text-sm font-semibold">{copy.pausedTitle}</p>
+            <p className="mt-1 text-xs text-subtle">{copy.waitingCount(h.waiting)}</p>
+            <Button variant="primary" icon="play" className="mt-3.5" onClick={() => actions.setPaused(false)}>
+              {copy.action.resume}
+            </Button>
+          </section>
+        ) : now ? (
+          <section className="px-4 py-3" aria-label={copy.section.now}>
+            <SectionLabel className="mb-2.5">{copy.section.now}</SectionLabel>
+            <div className="flex gap-3">
+              <div className="flex h-[60px] w-[44px] shrink-0 items-center justify-center rounded-md bg-gradient-to-b from-violet-300 to-primary text-white">
+                <Icon name="film" size={16} />
               </div>
-            ))}
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-[13px] font-semibold">{now.recipe || now.code || copy.render}</p>
+                <p className="mt-0.5 truncate text-xs text-subtle">{[now.brand, now.code].filter(Boolean).join(copy.sep)}</p>
+                <div className="mt-2 mb-1.5 flex text-xs text-subtle">
+                  <span className="truncate">{now.stepLabel}</span>
+                  <span className="ml-auto shrink-0 tabular-nums">{now.step || now.elapsed}</span>
+                </div>
+                {now.pct != null && <ProgressBar pct={now.pct} label={copy.section.now} />}
+              </div>
+            </div>
+          </section>
+        ) : h.kind === "rendering" || h.kind === "ready" ? (
+          <section className="px-4 py-5 text-center">
+            <p className="text-sm font-semibold">{copy.idle.title}</p>
+            <p className="mt-1 text-xs text-subtle">{copy.idle.body}</p>
+          </section>
+        ) : null}
+
+        {m.next.length > 0 && h.kind !== "paused" && !down && (
+          <section className="border-t border-border px-4 py-3" aria-label={copy.section.next}>
+            <SectionLabel className="mb-1">{copy.section.next}</SectionLabel>
+            <ul>
+              {m.next.slice(0, 3).map((n, i) => (
+                <li key={`${n.code}-${i}`} className="flex items-center gap-2.5 py-1.5 text-[13px]">
+                  <Icon name={h.kind === "rendering" || h.kind === "ready" ? "image" : "hourglass"} size={15} className="text-zinc-500" />
+                  <span className="min-w-0 truncate font-medium">{n.recipe || n.code || copy.render}</span>
+                  <span className="ml-auto shrink-0 truncate text-xs text-subtle">{n.brand}</span>
+                </li>
+              ))}
+            </ul>
           </section>
         )}
-        {m.next.length > 0 && (
-          <section>
-            <h2 className={heading}>{copy.section.next}</h2>
-            {m.next.map((r, i) => (
-              <div key={i}>{[r.title, r.recipe].filter(Boolean).join(copy.sep)}</div>
-            ))}
-          </section>
-        )}
+
         {m.done.length > 0 && (
-          <section>
-            <h2 className={heading}>{copy.section.done}</h2>
-            {m.done.map((r, i) => (
-              <div key={i} className="flex justify-between">
-                <span>{r.mark} {r.title}</span>
-                <span className="tabular-nums text-neutral-500">{r.time}</span>
-              </div>
-            ))}
+          <section className="border-t border-border px-4 py-3" aria-label={copy.section.done}>
+            <SectionLabel className="mb-1">{copy.section.done}</SectionLabel>
+            <ul>
+              {m.done.map((d, i) => (
+                <DoneLine key={`${d.code}-${i}`} d={d} onWhy={() => actions.openMain("renders")} />
+              ))}
+            </ul>
           </section>
         )}
       </div>
-    </>
+
+      <footer className="flex items-center gap-2 border-t border-border bg-[#fcfcfc] px-4 py-3">
+        {h.kind !== "paused" && h.kind !== "notRunning" && (
+          <Button icon="pause" className="flex-1" onClick={() => actions.setPaused(true)}>{copy.action.pause}</Button>
+        )}
+        <Button variant="primary" className="flex-1" onClick={() => actions.openMain("renders")}>{copy.action.open}</Button>
+      </footer>
+    </div>
   );
 }

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
@@ -26,7 +26,7 @@ describe("ProvidersScreen", () => {
       ),
     );
     render(<ProvidersScreen />);
-    expect(screen.getByText("AI Providers")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "AI providers" })).toBeTruthy();
     expect(await screen.findByText("1 connected")).toBeTruthy();
     expect(screen.getByText("Connected")).toBeTruthy();
     expect(screen.getAllByText("Not connected").length).toBe(7);
@@ -55,6 +55,9 @@ describe("ProvidersScreen", () => {
       ),
     );
     render(<ProvidersScreen />);
+    // The key box opens on demand, so the list stays one line per provider.
+    expect(screen.queryByLabelText("OpenRouter API key")).toBeNull();
+    fireEvent.click(within(screen.getByTestId("provider-openrouter")).getByRole("button", { name: "Add key" }));
     const input = screen.getByLabelText("OpenRouter API key") as HTMLInputElement;
     expect(input.type).toBe("password");
     fireEvent.change(input, { target: { value: KEY } });

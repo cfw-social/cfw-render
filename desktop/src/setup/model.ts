@@ -45,3 +45,18 @@ export function setupModel(events: SetupEvent[]): SetupModel {
   }
   return m;
 }
+
+/** Same shape check as the app's Rust side (`setup::valid_key`); CFW does the real check. */
+export const looksLikeBrandKey = (k: string) => /^cfw_[A-Za-z0-9_]{8,200}$/.test(k.trim());
+
+export interface ToolsModel { state: "idle" | StepState; pct: number | null; message?: string }
+
+/** Pure fold of the tools-only install (`setup_install_tools`): `tools` progress, then one `tools_result`. */
+export function toolsModel(events: SetupEvent[]): ToolsModel {
+  let m: ToolsModel = { state: "idle", pct: null };
+  for (const ev of events) {
+    if (ev.step === "tools") m = { state: ev.state, pct: ev.pct ?? m.pct, message: ev.message };
+    if (ev.step === "tools_result") m = { state: ev.state === "done" ? "done" : "failed", pct: m.pct, message: ev.message };
+  }
+  return m;
+}

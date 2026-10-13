@@ -3,7 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
 import { copy } from "../copy";
-import { btn } from "../panel/Panel";
+import { Button, Card, SectionLabel } from "../ui/kit";
+import { Toggle } from "../ui/Toggle";
 
 export interface SettingsState { allowBattery: boolean; startAtLogin: boolean }
 export interface SupportSettings { shareCrashReports: boolean }
@@ -90,71 +91,87 @@ export function Settings({ workerVersion }: { workerVersion: string | null }) {
     }
   };
 
-  const row = "flex items-center gap-2";
   const busy = logs.k === "preparing" || logs.k === "sending";
+  const S = copy.settings;
   return (
-    <div className="flex max-w-md flex-col gap-3">
-      <h1 className="text-lg font-semibold">{copy.settings.title}</h1>
-      <label className={row}>
-        <input type="checkbox" disabled={!s} checked={s?.allowBattery ?? false} onChange={(e) => toggle("allowBattery", "set_allow_battery", "allow")(e.target.checked)} />
-        {copy.settings.battery}
-      </label>
-      <label className={row}>
-        <input type="checkbox" disabled={!s} checked={s?.startAtLogin ?? false} onChange={(e) => toggle("startAtLogin", "set_start_at_login", "enabled")(e.target.checked)} />
-        {copy.settings.startAtLogin}
-      </label>
-      <div>
-        <label className={row}>
-          <input type="checkbox" disabled={!support} checked={support?.shareCrashReports ?? true} onChange={(e) => toggleShare(e.target.checked)} />
-          {copy.settings.shareCrashReports}
-        </label>
-        <p className="ml-6 text-xs text-neutral-500">{copy.settings.shareCrashReportsNote}</p>
-      </div>
-      <div>
-        <label className={`${row} text-neutral-400`}>
-          <input
-            type="checkbox"
+    <div className="mx-auto flex w-full max-w-[640px] flex-col gap-6 px-8 pt-4 pb-10">
+      <h1 className="text-xl font-bold">{S.title}</h1>
+
+      <section className="flex flex-col gap-2">
+        <SectionLabel>{S.groupMac}</SectionLabel>
+        <Card className="divide-y divide-border">
+          <Toggle label={S.battery} note={S.batteryNote} disabled={!s} checked={s?.allowBattery ?? false} onChange={toggle("allowBattery", "set_allow_battery", "allow")} />
+          <Toggle label={S.startAtLogin} note={S.startAtLoginNote} disabled={!s} checked={s?.startAtLogin ?? false} onChange={toggle("startAtLogin", "set_start_at_login", "enabled")} />
+        </Card>
+      </section>
+
+      <section className="flex flex-col gap-2">
+        <SectionLabel>{S.groupUpdates}</SectionLabel>
+        <Card className="divide-y divide-border">
+          <Toggle
+            label={S.autoUpdate}
+            note={upd?.available ? undefined : S.autoUpdateNote}
             disabled={!upd?.available}
             checked={upd?.available ? upd.autoUpdate : false}
-            onChange={(e) => toggleAutoUpdate(e.target.checked)}
+            onChange={toggleAutoUpdate}
           />
-          {copy.settings.autoUpdate}
-        </label>
-        {!upd?.available && <p className="ml-6 text-xs text-neutral-500">{copy.settings.autoUpdateNote}</p>}
-      </div>
-      <div className="flex gap-2">
-        <button className={`${btn} disabled:opacity-50`} disabled={busy || un.running} onClick={startLogs}>{copy.settings.sendLogs}</button>
-        <button className={`${btn} disabled:opacity-50`} disabled={un.running} onClick={() => setUn((u) => ({ ...u, open: true, message: null }))}>{copy.settings.uninstall}</button>
-      </div>
-      {logs.k === "preparing" && <p className="text-xs">{copy.support.logsPreparing}</p>}
-      {logs.k === "sending" && <p className="text-xs">{copy.support.logsSending}</p>}
-      {logs.k === "confirm" && (
-        <div role="dialog" className="flex flex-col gap-2 rounded border border-neutral-700 p-2 text-xs">
-          <p>{copy.support.logsConfirm(fmtSize(logs.sizeBytes))}</p>
-          <div className="flex gap-2">
-            <button className={btn} onClick={sendLogs}>{copy.support.logsSend}</button>
-            <button className={btn} onClick={() => setLogs({ k: "idle" })}>{copy.support.cancel}</button>
+          <Toggle label={S.shareCrashReports} note={S.shareCrashReportsNote} disabled={!support} checked={support?.shareCrashReports ?? true} onChange={toggleShare} />
+        </Card>
+      </section>
+
+      <section className="flex flex-col gap-2">
+        <SectionLabel>{S.groupHelp}</SectionLabel>
+        <Card className="divide-y divide-border">
+          <div className="flex items-center gap-4 px-4 py-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-[13px] font-medium">{S.sendLogs.replace("…", "")}</p>
+              <p className="mt-0.5 text-xs text-subtle">{S.sendLogsNote}</p>
+            </div>
+            <Button size="sm" disabled={busy || un.running} busy={busy} onClick={startLogs}>{S.sendLogs}</Button>
           </div>
-        </div>
-      )}
-      {logs.k === "sent" && <p className="text-xs">{copy.support.logsSent(logs.reference)}</p>}
-      {logs.k === "failed" && <p className="text-xs text-red-400">{copy.support.logsFailed(logs.why)}</p>}
-      {un.open && (
-        <div role="dialog" aria-label={copy.support.uninstallTitle} className="flex flex-col gap-2 rounded border border-neutral-700 p-2 text-xs">
-          <p className="font-semibold">{copy.support.uninstallTitle}</p>
-          <p>{copy.support.uninstallBody}</p>
-          <label className={row}>
-            <input type="checkbox" disabled={un.running} checked={un.deleteOutputs} onChange={(e) => setUn((u) => ({ ...u, deleteOutputs: e.target.checked }))} />
-            {copy.support.uninstallDeleteOutputs}
-          </label>
-          {un.message && <p>{un.message}</p>}
-          <div className="flex gap-2">
-            <button className={`${btn} disabled:opacity-50`} disabled={un.running} onClick={() => void runUninstall()}>{copy.support.uninstallConfirm}</button>
-            <button className={`${btn} disabled:opacity-50`} disabled={un.running} onClick={() => setUn((u) => ({ ...u, open: false }))}>{copy.support.cancel}</button>
+          {logs.k !== "idle" && (
+            <div className="px-4 py-3 text-xs" aria-live="polite">
+              {logs.k === "preparing" && <p className="text-subtle">{copy.support.logsPreparing}</p>}
+              {logs.k === "sending" && <p className="text-subtle">{copy.support.logsSending}</p>}
+              {logs.k === "confirm" && (
+                <div role="dialog" aria-label={S.sendLogs} className="flex flex-col gap-2.5">
+                  <p className="text-[13px]">{copy.support.logsConfirm(fmtSize(logs.sizeBytes))}</p>
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="primary" onClick={sendLogs}>{copy.support.logsSend}</Button>
+                    <Button size="sm" variant="ghost" onClick={() => setLogs({ k: "idle" })}>{copy.support.cancel}</Button>
+                  </div>
+                </div>
+              )}
+              {logs.k === "sent" && <p className="font-medium text-success">{copy.support.logsSent(logs.reference)}</p>}
+              {logs.k === "failed" && <p role="alert" className="text-failed">{copy.support.logsFailed(logs.why)}</p>}
+            </div>
+          )}
+          <div className="flex items-center gap-4 px-4 py-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-[13px] font-medium">{S.uninstall.replace("…", "")}</p>
+              <p className="mt-0.5 text-xs text-subtle">{S.uninstallNote}</p>
+            </div>
+            <Button size="sm" variant="danger" disabled={un.running} onClick={() => setUn((u) => ({ ...u, open: true, message: null }))}>{S.uninstall}</Button>
           </div>
-        </div>
-      )}
-      <p className="text-xs text-neutral-500">{copy.settings.version(appVersion, workerVersion)}</p>
+          {un.open && (
+            <div role="dialog" aria-label={copy.support.uninstallTitle} className="flex flex-col gap-2.5 bg-failed-bg/40 px-4 py-3 text-[13px]">
+              <p className="font-semibold">{copy.support.uninstallTitle}</p>
+              <p className="text-xs text-muted-foreground">{copy.support.uninstallBody}</p>
+              <label className="flex items-center gap-2 text-xs">
+                <input type="checkbox" className="accent-primary" disabled={un.running} checked={un.deleteOutputs} onChange={(e) => setUn((u) => ({ ...u, deleteOutputs: e.target.checked }))} />
+                {copy.support.uninstallDeleteOutputs}
+              </label>
+              {un.message && <p className="text-xs" aria-live="polite">{un.message}</p>}
+              <div className="flex gap-2">
+                <Button size="sm" variant="danger" busy={un.running} disabled={un.running} onClick={() => void runUninstall()}>{copy.support.uninstallConfirm}</Button>
+                <Button size="sm" variant="ghost" disabled={un.running} onClick={() => setUn((u) => ({ ...u, open: false }))}>{copy.support.cancel}</Button>
+              </div>
+            </div>
+          )}
+        </Card>
+      </section>
+
+      <p className="text-xs text-subtle">{S.version(appVersion, workerVersion)}</p>
     </div>
   );
 }

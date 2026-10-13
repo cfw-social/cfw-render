@@ -36,6 +36,21 @@ else
 fi
 
 echo ""
+if command -v actionlint >/dev/null 2>&1; then
+  echo "== actionlint (.github/workflows) =="
+  for f in "$REPO_DIR"/.github/workflows/*.yml; do
+    if actionlint "$f"; then
+      echo "  ok    $f"
+    else
+      echo "  FAIL  $f"
+      FAILED=1
+    fi
+  done
+else
+  echo "== actionlint not installed — skipping (dev-only nicety, not a hard requirement) =="
+fi
+
+echo ""
 echo "== recipe manifests (scripts/validate-manifests.py) =="
 if python3 "$REPO_DIR/scripts/validate-manifests.py"; then
   echo "  ok    skills/*/manifest.json"

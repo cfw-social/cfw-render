@@ -1,1 +1,78 @@
 @import "tailwindcss";
+
+/* Inter, the face app.cfw.social uses (SIL Open Font License 1.1). Bundled so the app works offline. */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("./assets/fonts/inter-latin-var.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* Colour tokens copied from cfw-social src/app/globals.css (light theme) so the app matches the website. */
+@theme {
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --color-background: #fafafa;
+  --color-foreground: #1f2023;
+  --color-card: #ffffff;
+  --color-primary: #7c3aed;
+  --color-primary-hover: #6d28d9;
+  --color-secondary: #f2f2f3;
+  --color-muted-foreground: #3f3f46;
+  --color-subtle: #45454d;
+  --color-faint: #52525b;
+  --color-accent: #f5f3ff;
+  --color-accent-foreground: #6d28d9;
+  --color-destructive: #b91c1c;
+  --color-border: #e2e2e5;
+  --color-input: #b9b9c2;
+  --color-success: #047857;
+  --color-success-bg: #ecfdf5;
+  --color-warn: #92400e;
+  --color-warn-strong: #78350f;
+  --color-warn-bg: #fffbeb;
+  --color-warn-border: #fde68a;
+  --color-failed: #991b1b;
+  --color-failed-bg: #fef2f2;
+  --color-info: #1e40af;
+  --color-info-bg: #eff6ff;
+  --radius-control: 8px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  color: var(--color-foreground);
+  background: var(--color-background);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+input,
+textarea {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* One shared focus treatment (keyboard only), separate from borders and selection. */
+:focus {
+  outline: none;
+}
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-spin {
+    animation: none;
+  }
+}
