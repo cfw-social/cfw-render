@@ -4,6 +4,8 @@ on:
   push:
     paths: ["desktop/**", ".github/workflows/desktop.yml"]
     tags: ["desktop-v*"]
+  # Run by hand (Actions → desktop → Run workflow) to get a fresh tester .dmg.
+  workflow_dispatch:
   pull_request:
     paths: ["desktop/**", ".github/workflows/desktop.yml"]
 
@@ -48,20 +50,17 @@ jobs:
         working-directory: desktop/src-tauri
         run: cargo test
 
-      - name: Build universal .app (unsigned, ad-hoc)
-        env:
-          APPLE_SIGNING_IDENTITY: "-"
-        run: pnpm tauri build --target universal-apple-darwin --bundles app
-
-      - name: Zip .app
-        run: |
-          cd src-tauri/target/universal-apple-darwin/release/bundle/macos
-          ditto -c -k --keepParent "CFW Render.app" "$GITHUB_WORKSPACE/CFW-Render-macos-universal.zip"
+      # [M3-05c] Unsigned tester .dmg (worker bundled, ad-hoc signed, not
+      # notarized). Testers follow desktop/TESTERS.md. Not a public download.
+      - name: Build the unsigned tester .dmg
+        run: scripts/release.sh --unsigned
 
       - uses: actions/upload-artifact@v4
         with:
-          name: cfw-render-macos-universal
-          path: CFW-Render-macos-universal.zip
+          name: cfw-render-tester-unsigned-universal
+          path: |
+            desktop/dist-release/CFW-Render-*-unsigned-universal.dmg
+            desktop/dist-release/CFW-Render-*-unsigned-universal.dmg.sha256
           if-no-files-found: error
 
   # [M3-05a] Signed + notarized release on a `desktop-v<version>` tag. Needs the

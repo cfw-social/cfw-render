@@ -3525,6 +3525,41 @@ if [[ "$r5b_rc" == "2" && "$r5b_ok" == "1" ]] && ! grep -q "APPLE_API_KEY_ID\|pr
 else
   fail "release.sh missing secrets" "rc=$r5b_rc ok=$r5b_ok $(cat "$r5a/real.log")"
 fi
+
+echo "=== Case M3-05c-1: release.sh --unsigned --dry-run needs no secrets, ad-hoc signs, never notarizes or writes the feed ==="
+env -i PATH="$PATH" HOME="$r5a" bash "$REPO_DIR/desktop/scripts/release.sh" --unsigned --dry-run > "$r5a/u.log" 2> "$r5a/u.err"
+r5c_rc=$?
+r5c_ok=1
+for want in "UNSIGNED tester build (universal)" "+ cp -a" "+ env APPLE_SIGNING_IDENTITY=- pnpm tauri build --target universal-apple-darwin --bundles app" \
+  "+ codesign --force --deep --sign -" "+ codesign --verify --deep --strict" "CFW-Render-" "-unsigned-universal.dmg" "desktop/TESTERS.md"; do
+  grep -qF -- "$want" "$r5a/u.log" || { r5c_ok=0; echo "    missing: $want"; }
+done
+for banned in notarytool stapler "signer sign" "latest.json" "--options runtime" "APPLE_API"; do
+  grep -qF -- "$banned" "$r5a/u.log" && { r5c_ok=0; echo "    unexpected: $banned"; }
+done
+if [[ "$r5c_rc" == "0" && "$r5c_ok" == "1" && ! -s "$r5a/u.err" ]]; then
+  pass "release.sh --unsigned --dry-run: exit 0 with no secrets, ad-hoc sign + verify + dmg, no notarize/updater/feed"
+else
+  fail "release.sh --unsigned --dry-run" "rc=$r5c_rc ok=$r5c_ok $(head -c 600 "$r5a/u.err")"
+fi
+
+echo "=== Case M3-05c-2: --target picks the arch for tester builds; bad or signed-mode --target refuses ==="
+env -i PATH="$PATH" HOME="$r5a" bash "$REPO_DIR/desktop/scripts/release.sh" --unsigned --target aarch64-apple-darwin --dry-run > "$r5a/a.log" 2>&1
+r5d_rc=$?
+env -i PATH="$PATH" HOME="$r5a" bash "$REPO_DIR/desktop/scripts/release.sh" --unsigned --target 'x;touch pwned' --dry-run > "$r5a/bad.log" 2>&1
+r5e_rc=$?
+env -i PATH="$PATH" HOME="$r5a" bash "$REPO_DIR/desktop/scripts/release.sh" --target aarch64-apple-darwin --dry-run > "$r5a/signed.log" 2>&1
+r5f_rc=$?
+if [[ "$r5d_rc" == "0" && "$r5e_rc" == "2" && "$r5f_rc" == "2" ]] \
+  && grep -qF -- "--target aarch64-apple-darwin --bundles app" "$r5a/a.log" \
+  && grep -qF -- "target/aarch64-apple-darwin/release/bundle/macos" "$r5a/a.log" \
+  && grep -qF -- "-unsigned-apple-silicon.dmg" "$r5a/a.log" \
+  && grep -q "unsupported --target" "$r5a/bad.log" && ! grep -q "codesign\|hdiutil" "$r5a/bad.log" \
+  && grep -q "only for --unsigned" "$r5a/signed.log" && ! grep -q "codesign\|hdiutil" "$r5a/signed.log"; then
+  pass "release.sh --target: aarch64 → apple-silicon dmg; unknown target and signed-mode --target exit 2 and run nothing"
+else
+  fail "release.sh --target" "rc=$r5d_rc/$r5e_rc/$r5f_rc $(head -c 400 "$r5a/bad.log") $(head -c 300 "$r5a/signed.log")"
+fi
 rm -rf "$r5a"
 
 echo "=== Case M3-05a-3: install.sh --from-app --update refreshes CFW Render/app, prints Updated, reads no stdin ==="

@@ -5,25 +5,56 @@
 # environment; none is ever printed. See desktop/RELEASE.md.
 #
 #   release.sh [--dry-run]
+#   release.sh --unsigned [--target <rust target>] [--dry-run]
 #
 # --dry-run prints each command (secrets as <NAME> placeholders) and runs
 # nothing; it needs no secrets. Without it, a missing secret → exit 2.
+#
+# --unsigned builds a tester .dmg with no Apple account and no secrets: the
+# worker is bundled, the app is ad-hoc signed (so it runs on Apple Silicon),
+# nothing is notarized and no updater files or latest.json are written.
+# Testers open it once via System Settings → Privacy & Security → Open Anyway
+# (desktop/TESTERS.md). --target picks the build (default
+# universal-apple-darwin; aarch64-apple-darwin builds without the Intel
+# toolchain). Never publish this build as the public download.
 set -euo pipefail
 
 DESKTOP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_DIR="$(cd "$DESKTOP_DIR/.." && pwd)"
 DRY=0
+UNSIGNED=0
+TARGET=""
 while (( $# )); do
   case "$1" in
     --dry-run) DRY=1; shift ;;
+    --unsigned) UNSIGNED=1; shift ;;
+    --target)
+      [[ $# -ge 2 ]] || { echo "release.sh: --target needs a value" >&2; exit 2; }
+      TARGET="$2"; shift 2 ;;
     *) echo "release.sh: unknown flag $1" >&2; exit 2 ;;
   esac
 done
 
+if [[ -n "$TARGET" ]] && (( ! UNSIGNED )); then
+  # The signed feed maps both Mac kinds to one archive, so it must be universal.
+  echo "release.sh: --target is only for --unsigned tester builds" >&2
+  exit 2
+fi
+TARGET="${TARGET:-universal-apple-darwin}"
+case "$TARGET" in
+  universal-apple-darwin) ARCH_LABEL="universal" ;;
+  aarch64-apple-darwin) ARCH_LABEL="apple-silicon" ;;
+  x86_64-apple-darwin) ARCH_LABEL="intel" ;;
+  *) echo "release.sh: unsupported --target $TARGET (universal-apple-darwin, aarch64-apple-darwin, x86_64-apple-darwin)" >&2; exit 2 ;;
+esac
+
 REQUIRED=(APPLE_SIGNING_IDENTITY APPLE_API_KEY_PATH APPLE_API_KEY_ID APPLE_API_ISSUER
   TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD DESKTOP_RELEASE_BASE_URL)
+(( UNSIGNED )) && REQUIRED=() # a tester build needs no secrets at all
 
-if (( DRY )); then
+if (( UNSIGNED )); then
+  : # nothing to check
+elif (( DRY )); then
   # Placeholders only — a dry run never sees (or prints) a real secret.
   for n in "${REQUIRED[@]}"; do
     printf -v "$n" '<%s>' "$n"
@@ -53,17 +84,19 @@ run() {
 
 VERSION="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$DESKTOP_DIR/src-tauri/tauri.conf.json")"
 APP_NAME="CFW Render"
-BUNDLE_DIR="$DESKTOP_DIR/src-tauri/target/universal-apple-darwin/release/bundle"
+BUNDLE_DIR="$DESKTOP_DIR/src-tauri/target/$TARGET/release/bundle"
 APP="$BUNDLE_DIR/macos/$APP_NAME.app"
 DIST="$DESKTOP_DIR/dist-release"
 DMG="$DIST/CFW-Render-$VERSION.dmg"
 ARCHIVE="$DIST/CFW-Render-$VERSION.app.tar.gz"
 APP_ZIP="$DIST/CFW-Render-$VERSION-notarize.zip"
 WORKER_DST="$DESKTOP_DIR/src-tauri/resources/worker"
-NOTARY=(--key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER")
-CODESIGN=(codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY")
 
-echo "== CFW Render $VERSION =="
+if (( UNSIGNED )); then
+  echo "== CFW Render $VERSION — UNSIGNED tester build ($ARCH_LABEL) =="
+else
+  echo "== CFW Render $VERSION =="
+fi
 
 echo "== 1. bundle the worker into the app =="
 run mkdir -p "$WORKER_DST" "$DIST"
@@ -71,6 +104,29 @@ for item in bin install config lib scripts skills AGENTS.md CLAUDE.md VERSION; d
   run rm -rf "${WORKER_DST:?}/$item"
   run cp -a "$REPO_DIR/$item" "$WORKER_DST/$item"
 done
+
+if (( UNSIGNED )); then
+  echo "== 2. build the .app, ad-hoc signed =="
+  # "-" = ad-hoc: no certificate, but Apple Silicon will run it.
+  (cd "$DESKTOP_DIR" && run env APPLE_SIGNING_IDENTITY=- pnpm tauri build --target "$TARGET" --bundles app)
+  run codesign --force --deep --sign - "$APP"
+  run codesign --verify --deep --strict "$APP"
+
+  echo "== 3. package the tester .dmg (not notarized, no updater files) =="
+  TESTER_DMG="$DIST/CFW-Render-$VERSION-unsigned-$ARCH_LABEL.dmg"
+  run hdiutil create -volname "$APP_NAME" -srcfolder "$APP" -ov -format UDZO "$TESTER_DMG"
+  if (( DRY )); then
+    echo "+ write $TESTER_DMG.sha256"
+  else
+    (cd "$DIST" && shasum -a 256 "$(basename "$TESTER_DMG")" > "$(basename "$TESTER_DMG").sha256")
+    cat "$TESTER_DMG.sha256"
+  fi
+  echo "release.sh: done — $TESTER_DMG (unsigned; testers follow desktop/TESTERS.md)"
+  exit 0
+fi
+
+NOTARY=(--key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER")
+CODESIGN=(codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY")
 
 echo "== 2. build the universal .app =="
 (cd "$DESKTOP_DIR" && run pnpm tauri build --target universal-apple-darwin --bundles app)
