@@ -430,6 +430,10 @@ def handle_tool_call(name, args):
         return rpc_result({"ok": True}), None
 
     # M3-04a: the app-driven installer's setup reports + probe order.
+    if name == "revoke_this_computer":
+        # M3-06a: deactivate THIS computer's render key.
+        log_call(name, args, True)
+        return rpc_result({"ok": True}), None
     if name == "create_probe_render_order":
         log_call(name, args, True)
         return rpc_result({"ok": True, "orderId": "probe_1"}), None
@@ -586,6 +590,34 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length) if length else b""
+
+        if self.path in ("/api/v1/computers/logs", "/api/v1/computers/crash"):
+            # M3-06a: support uploads. The render key is checked, NEVER logged.
+            which = self.path.rsplit("/", 1)[1]
+            key = self.headers.get("cfw-render-key", "")
+            if not key.startswith("cfw_render_"):
+                CALLS_LOG.write(json.dumps({"tool": which, "ok": False}) + "\n")
+                self._send_json({"error": "unauthorized"}, 401)
+                return
+            if which == "logs":
+                ok = raw[:2] == b"\x1f\x8b" and len(raw) <= 5 * 1024 * 1024
+                if ok:
+                    with open(os.path.join(STATE_DIR, "logs-upload.gz"), "wb") as f:
+                        f.write(raw)
+                CALLS_LOG.write(json.dumps({"tool": "logs", "args": {"bytes": len(raw)}, "ok": ok}) + "\n")
+                if not ok:
+                    self._send_json({"error": "bad_bundle"}, 400)
+                    return
+                self._send_json({"ok": True, "reference": "LOG-TEST", "expiresInDays": 30})
+                return
+            try:
+                body = json.loads(raw or b"{}")
+            except Exception:
+                body = None
+            ok = isinstance(body, dict) and isinstance(body.get("frames"), list)
+            CALLS_LOG.write(json.dumps({"tool": "crash", "args": body if ok else None, "ok": ok}) + "\n")
+            self._send_json({"ok": True} if ok else {"error": "bad_request"}, 200 if ok else 400)
+            return
 
         if self.path == "/api/v1/render-worker-keys/exchange":
             # M3-04a: brand key → render key. The brand key is NEVER logged.
