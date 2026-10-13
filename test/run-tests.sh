@@ -3662,6 +3662,58 @@ else
   fail "gemini key" "ev='$m8e_ev' $(cat "$m8e/dump/gemini.argv" 2>/dev/null | tr '\n' ' ')"
 fi
 rm -rf "$m8e"
+# ── M3-05a: desktop release script + install.sh --from-app --update ──
+# No mock server needed (ports MOCK_PORT_BASE + 1000..1009 reserved).
+echo "=== Case M3-05a-1: release.sh --dry-run with no secrets prints every step with placeholders ==="
+r5a="$(mktemp -d)"
+env -i PATH="$PATH" HOME="$r5a" bash "$REPO_DIR/desktop/scripts/release.sh" --dry-run > "$r5a/out.log" 2> "$r5a/err.log"
+r5a_rc=$?
+r5a_ok=1
+for want in "+ codesign --force --options runtime --timestamp --sign \\<APPLE_SIGNING_IDENTITY\\> --deep" \
+  "+ xcrun notarytool submit" "--key \\<APPLE_API_KEY_PATH\\> --key-id \\<APPLE_API_KEY_ID\\> --issuer \\<APPLE_API_ISSUER\\>" \
+  "+ xcrun stapler staple" "+ hdiutil create" "+ pnpm tauri build --target universal-apple-darwin --bundles app" \
+  "+ pnpm tauri signer sign" "latest.json"; do
+  grep -qF -- "$want" "$r5a/out.log" || { r5a_ok=0; echo "    missing: $want"; }
+done
+[[ "$(grep -c 'notarytool submit' "$r5a/out.log")" == "2" && "$(grep -c 'stapler staple' "$r5a/out.log")" == "2" ]] || r5a_ok=0
+if [[ "$r5a_rc" == "0" && "$r5a_ok" == "1" ]] && ! grep -qF '"$' "$r5a/out.log" && [[ ! -e "$REPO_DIR/desktop/dist-release/latest.json" || "$(git -C "$REPO_DIR" status --porcelain desktop/src-tauri/resources)" == "" ]]; then
+  pass "release.sh --dry-run: exit 0, codesign/notarytool/stapler/hdiutil with placeholders, no \"\$ leakage"
+else
+  fail "release.sh --dry-run" "rc=$r5a_rc ok=$r5a_ok $(head -c 600 "$r5a/err.log")"
+fi
+
+echo "=== Case M3-05a-2: release.sh without secrets refuses (exit 2) and names them ==="
+env -i PATH="$PATH" HOME="$r5a" APPLE_API_KEY_ID=present-id bash "$REPO_DIR/desktop/scripts/release.sh" > "$r5a/real.log" 2>&1
+r5b_rc=$?
+r5b_ok=1
+for n in APPLE_SIGNING_IDENTITY APPLE_API_KEY_PATH APPLE_API_ISSUER TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD DESKTOP_RELEASE_BASE_URL; do
+  grep -q "$n" "$r5a/real.log" || r5b_ok=0
+done
+if [[ "$r5b_rc" == "2" && "$r5b_ok" == "1" ]] && ! grep -q "APPLE_API_KEY_ID\|present-id\|codesign" "$r5a/real.log"; then
+  pass "release.sh without secrets: exit 2, lists only the missing names, runs nothing"
+else
+  fail "release.sh missing secrets" "rc=$r5b_rc ok=$r5b_ok $(cat "$r5a/real.log")"
+fi
+rm -rf "$r5a"
+
+echo "=== Case M3-05a-3: install.sh --from-app --update refreshes CFW Render/app, prints Updated, reads no stdin ==="
+r5c="$(mktemp -d)"
+mkdir -p "$r5c/home/CFW Render/app/bin" "$r5c/home/CFW Render/app/config"
+printf 'stale\n' > "$r5c/home/CFW Render/app/bin/cfw-render.sh"
+printf 'local\n' > "$r5c/home/CFW Render/app/config/local-only.json"
+printf 'KEEP-THIS-LINE\n' > "$r5c/stdin"
+( export HOME="$r5c/home" CFW_RENDER_SKIP_LAUNCHCTL=1
+  { "$REPO_DIR/install/install.sh" --mode byoa --non-interactive --from-app --update > "$r5c/out.jsonl" 2> "$r5c/err.log"
+    echo "rc=$?" > "$r5c/rc"; cat > "$r5c/rest"; } < "$r5c/stdin" )
+if [[ "$(cat "$r5c/rc")" == "rc=0" && "$(cat "$r5c/out.jsonl")" == '{"step": "ready", "state": "done", "message": "Updated"}' ]] \
+   && cmp -s "$REPO_DIR/bin/cfw-render.sh" "$r5c/home/CFW Render/app/bin/cfw-render.sh" \
+   && cmp -s "$REPO_DIR/VERSION" "$r5c/home/CFW Render/app/VERSION" \
+   && [[ -f "$r5c/home/CFW Render/app/config/local-only.json" && "$(cat "$r5c/rest")" == "KEEP-THIS-LINE" ]]; then
+  pass "install.sh --update: changed file refreshed, local config kept, one Updated line, stdin untouched"
+else
+  fail "install.sh --update" "$(cat "$r5c/rc") out=$(cat "$r5c/out.jsonl") rest=$(cat "$r5c/rest") $(head -c 400 "$r5c/err.log")"
+fi
+rm -rf "$r5c"
 
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"

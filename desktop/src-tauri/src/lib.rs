@@ -7,6 +7,7 @@ pub mod setup;
 pub mod signin;
 pub mod state;
 pub mod toolchain;
+pub mod updates;
 pub mod support;
 
 use std::path::Path;
@@ -352,7 +353,10 @@ pub fn run() {
             apikeys::provider_key_remove,
             apikeys::provider_key_present,
             apikeys::provider_clear_limit,
-            apikeys::open_provider_key_url
+            apikeys::open_provider_key_url,
+            updates::check_for_update,
+            updates::get_update_settings,
+            updates::set_auto_update
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -372,6 +376,7 @@ pub fn run() {
 
             if !setup::setup_status().installed { setup::open_setup(handle.clone()); }
             autostart_first_run(&handle);
+            updates::start(&handle);
             refresh(&handle);
             Ok(())
         })
