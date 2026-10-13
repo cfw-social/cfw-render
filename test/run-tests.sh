@@ -3369,6 +3369,137 @@ else
 fi
 rm -rf "$m4e"
 
+# ── [M3-06a] uninstall + send-logs ─────────────────────────────────────────
+# m6_setup <dir> — a fake installed HOME with a render key, logs, outputs and
+# a Keychain stub (CFW_RENDER_SECURITY_CMD) holding 3 items.
+m6_setup() {
+  local d="$1" key="$2"
+  mkdir -p "$d/home/.cfw-render" "$d/home/CFW Render/app/bin" "$d/home/CFW Render/logs/runs" \
+    "$d/home/CFW Render/outputs/brand" "$d/home/Library/LaunchAgents" "$d/mockstate"
+  printf 'CFW_RENDER_MODE=byoa\nCFW_RENDER_WORKER_KEY=%s\nCFW_API_BASE=http://127.0.0.1:1\n' "$key" > "$d/home/.cfw-render/cfw-render.env"
+  chmod 600 "$d/home/.cfw-render/cfw-render.env"
+  echo '<plist/>' > "$d/home/Library/LaunchAgents/com.cfw.render.plist"
+  echo 'kept' > "$d/home/CFW Render/outputs/brand/out.mp4"
+  printf 'tick ok key=%s mail me@example.com /Users/alice/x\n' "$key" > "$d/home/CFW Render/logs/cfw-render.log"
+  printf 'run %s\n' "$key" > "$d/home/CFW Render/logs/runs/o1.out"
+  printf '{"workerVersion":"1"}\n' > "$d/home/.cfw-render/status.json"
+  printf 'ts\torder\t%s\n' "$key" > "$d/home/.cfw-render/journal.tsv"
+  echo 3 > "$d/keychain"
+  cat > "$d/security" <<SEC
+#!/usr/bin/env bash
+n=\$(cat "$d/keychain"); (( n > 0 )) || exit 44
+echo \$((n - 1)) > "$d/keychain"
+SEC
+  chmod +x "$d/security"
+  echo '[]' > "$d/queue.json"
+}
+# m6_uninstall <dir> <port> [flags...] — sets m6_rc.
+m6_uninstall() {
+  local d="$1" port="$2"; shift 2
+  ( export HOME="$d/home" CFW_RENDER_API_BASE="http://127.0.0.1:$port" CFW_RENDER_SKIP_LAUNCHCTL=1 \
+      CFW_RENDER_SECURITY_CMD="$d/security"
+    "$REPO_DIR/install/install.sh" --uninstall "$@" > "$d/out.log" 2> "$d/err.log" )
+  m6_rc=$?
+}
+
+echo "=== Case M3-06a-1: uninstall happy path (outputs kept, revoke once, Keychain emptied) ==="
+m6a="$(mktemp -d)"; m6_setup "$m6a" cfw_render_m6akey000
+m6a_port=$((MOCK_PORT_BASE + 980))
+m6a_pid="$(start_mock "$m6a/queue.json" "$m6a/mockstate" "$m6a_port")"
+m6_uninstall "$m6a" "$m6a_port" --yes
+kill "$m6a_pid" 2>/dev/null; wait "$m6a_pid" 2>/dev/null || true
+m6a_revokes="$(grep -c '"tool": "revoke_this_computer"' "$m6a/mockstate/calls.jsonl" 2>/dev/null || true)"
+if [[ "$m6_rc" == "0" && "$m6a_revokes" == "1" && "$(cat "$m6a/keychain")" == "0" \
+      && ! -e "$m6a/home/.cfw-render" && ! -e "$m6a/home/CFW Render/app" && ! -e "$m6a/home/CFW Render/logs" \
+      && ! -e "$m6a/home/Library/LaunchAgents/com.cfw.render.plist" && -f "$m6a/home/CFW Render/outputs/brand/out.mp4" ]] \
+   && ! grep -q "offline" "$m6a/out.log"; then
+  pass "uninstall: paths gone, outputs kept, revoke called once, Keychain stub emptied"
+else
+  fail "uninstall happy path" "rc=$m6_rc revokes=$m6a_revokes kc=$(cat "$m6a/keychain") out=$(cat "$m6a/out.log")"
+fi
+rm -rf "$m6a"
+
+echo "=== Case M3-06a-2: uninstall --delete-outputs (+ --from-app JSON lines) ==="
+m6b="$(mktemp -d)"; m6_setup "$m6b" cfw_render_m6bkey000
+m6b_port=$((MOCK_PORT_BASE + 981))
+m6b_pid="$(start_mock "$m6b/queue.json" "$m6b/mockstate" "$m6b_port")"
+m6_uninstall "$m6b" "$m6b_port" --non-interactive --from-app --delete-outputs
+kill "$m6b_pid" 2>/dev/null; wait "$m6b_pid" 2>/dev/null || true
+m6b_json="$(python3 -c '
+import json, sys
+ls = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+print(all(o["step"] == "uninstall" for o in ls), ls[-1]["state"] if ls else "")' "$m6b/out.log" 2>/dev/null || echo NONJSON)"
+if [[ "$m6_rc" == "0" && ! -e "$m6b/home/CFW Render/outputs" && "$m6b_json" == "True done" ]]; then
+  pass "uninstall --delete-outputs: outputs gone; --from-app prints only uninstall JSON lines"
+else
+  fail "uninstall --delete-outputs" "rc=$m6_rc json=$m6b_json"
+fi
+rm -rf "$m6b"
+
+echo "=== Case M3-06a-3: uninstall offline → exit 0 with the offline line ==="
+m6c="$(mktemp -d)"; m6_setup "$m6c" cfw_render_m6ckey000
+m6_uninstall "$m6c" $((MOCK_PORT_BASE + 982)) --yes
+if [[ "$m6_rc" == "0" && ! -e "$m6c/home/.cfw-render" ]] \
+   && grep -q "This computer will show as offline in CFW until you remove it there." "$m6c/out.log"; then
+  pass "uninstall offline: exit 0, offline line printed, files removed"
+else
+  fail "uninstall offline" "rc=$m6_rc out=$(cat "$m6c/out.log")"
+fi
+rm -rf "$m6c"
+
+echo "=== Case M3-06a-4: redactor fixture parity ==="
+if diff <(python3 "$REPO_DIR/bin/cfw-render-redact.py" < "$REPO_DIR/desktop/src-tauri/tests/fixtures/redact-input.txt") \
+     "$REPO_DIR/desktop/src-tauri/tests/fixtures/redact-expected.txt" >/dev/null; then
+  pass "cfw-render-redact.py output == redact-expected.txt"
+else
+  fail "redactor parity" "diff vs redact-expected.txt"
+fi
+
+echo "=== Case M3-06a-5: send-logs uploads, LOG-TEST, render key never leaks ==="
+m6e="$(mktemp -d)"
+m6e_key="cfw_render_m6e$(python3 -c 'import secrets;print(secrets.token_hex(8))')"
+m6_setup "$m6e" "$m6e_key"
+m6e_port=$((MOCK_PORT_BASE + 983))
+m6e_pid="$(start_mock "$m6e/queue.json" "$m6e/mockstate" "$m6e_port")"
+( for _ in $(seq 1 200); do ps -axo args 2>/dev/null; sleep 0.05; done ) > "$m6e/ps.log" 2>/dev/null &
+m6e_ps=$!
+( export HOME="$m6e/home" CFW_RENDER_API_BASE="http://127.0.0.1:$m6e_port"
+  "$REPO_DIR/bin/cfw-render-ctl.sh" send-logs --yes > "$m6e/out.log" 2> "$m6e/err.log" )
+m6e_rc=$?
+kill "$m6e_ps" 2>/dev/null; wait "$m6e_ps" 2>/dev/null || true
+kill "$m6e_pid" 2>/dev/null; wait "$m6e_pid" 2>/dev/null || true
+mkdir -p "$m6e/x"; tar -xzf "$m6e/mockstate/logs-upload.gz" -C "$m6e/x" 2>/dev/null
+if [[ "$m6e_rc" == "0" ]] && grep -q "Reference: LOG-TEST — quote it to CFW support." "$m6e/out.log" \
+   && [[ -f "$m6e/x/bundle/logs/cfw-render.log" && -f "$m6e/x/bundle/logs/runs/o1.out" && -f "$m6e/x/bundle/journal.tsv" ]]; then
+  pass "send-logs: bundle uploaded (logs, runs, journal), Reference LOG-TEST printed"
+else
+  fail "send-logs upload" "rc=$m6e_rc out=$(cat "$m6e/out.log") err=$(cat "$m6e/err.log")"
+fi
+m6e_ps_lines="$(wc -l < "$m6e/ps.log" | tr -d ' ')"
+if ! grep -rqF "$m6e_key" "$m6e/x" "$m6e/out.log" "$m6e/err.log" "$m6e/ps.log" "$m6e/mockstate" \
+   && grep -q "cfw_render_\[redacted\]" "$m6e/x/bundle/logs/cfw-render.log" && grep -q "/Users/\[user\]/" "$m6e/x/bundle/logs/cfw-render.log"; then
+  pass "send-logs: render key nowhere (bundle, stdout, stderr, mock log, argv over $m6e_ps_lines ps lines)"
+else
+  fail "send-logs key leak" "key found or bundle not redacted"
+fi
+rm -rf "$m6e"
+
+echo "=== Case M3-06a-6: send-logs --dry writes the bundle path, no upload; server down → non-zero ==="
+m6f="$(mktemp -d)"; m6_setup "$m6f" cfw_render_m6fkey000
+( export HOME="$m6f/home" CFW_RENDER_API_BASE="http://127.0.0.1:$((MOCK_PORT_BASE + 984))" TMPDIR="$m6f"
+  "$REPO_DIR/bin/cfw-render-ctl.sh" send-logs --dry > "$m6f/dry.log" 2>&1 )
+m6f_dry=$?
+m6f_path="$(sed -n 's/^path: //p' "$m6f/dry.log")"
+( export HOME="$m6f/home" CFW_RENDER_API_BASE="http://127.0.0.1:$((MOCK_PORT_BASE + 984))"
+  "$REPO_DIR/bin/cfw-render-ctl.sh" send-logs --yes > "$m6f/up.log" 2>&1 )
+m6f_up=$?
+if [[ "$m6f_dry" == "0" && -s "$m6f_path" && "$m6f_up" != "0" ]] && grep -q "could not reach CFW" "$m6f/up.log"; then
+  pass "send-logs --dry: path written, nothing sent; offline upload exits non-zero with a plain message"
+else
+  fail "send-logs dry/offline" "dry=$m6f_dry path=$m6f_path up=$m6f_up $(cat "$m6f/up.log")"
+fi
+rm -rf "$m6f"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
