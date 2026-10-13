@@ -11,7 +11,6 @@
 #   cfw-render-ctl.sh send-logs [--yes] [--dry]
 #   cfw-render-ctl.sh unblock <orderId>
 #   cfw-render-ctl.sh clear-limit <engine>
-#   cfw-render-ctl.sh fleet {status|enable|disable} <brandId>...
 set -u
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -66,10 +65,8 @@ print("running: %s/%s" % (c.get("running", 0), c.get("max", "?")))
     echo "timer status:"
     if command -v launchctl >/dev/null 2>&1; then
       launchctl print "gui/$(id -u)/com.cfw.render" 2>&1 | head -5 || echo "  com.cfw.render not loaded"
-    elif command -v systemctl >/dev/null 2>&1; then
-      systemctl status cfw-render.timer 2>&1 | head -5 || echo "  cfw-render.timer not found"
     else
-      echo "  no launchctl/systemctl on this host"
+      echo "  no launchctl on this computer"
     fi
 
     echo ""
@@ -223,15 +220,8 @@ except Exception:
     echo "cleared limit for $1"
     ;;
 
-  fleet)
-    # Operator fleet-enable surface (CFW-16). Delegates to cfw-render-fleet.sh,
-    # which uses the MASTER key (operator-only) — NOT the worker key this ctl's
-    # other verbs use. Runs from an operator machine, never the box.
-    exec "$SELF_DIR/cfw-render-fleet.sh" "$@"
-    ;;
-
   *)
-    echo "cfw-render-ctl: usage: {status|run-now|pause|resume|logs [n]|send-logs [--yes] [--dry]|unblock <orderId>|clear-limit <engine>|fleet {status|enable|disable} <brandId>...}" >&2
+    echo "cfw-render-ctl: usage: {status|run-now|pause|resume|logs [n]|send-logs [--yes] [--dry]|unblock <orderId>|clear-limit <engine>}" >&2
     exit 2
     ;;
 esac
