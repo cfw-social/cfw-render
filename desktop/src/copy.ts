@@ -35,7 +35,6 @@ export const copy = {
     return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
   },
   main: {
-    chatPlaceholder: "Chat with your AI assistant arrives in a later update.",
     rendersTitle: "Renders on this Mac",
     noRecent: "Nothing finished in the last 24 hours.",
   },
@@ -69,5 +68,30 @@ export const copy = {
       failed: "Sign-in failed.",
     },
     orderHint: "Used in this order. If one reaches its limit, the next one takes over.",
+  },
+  chat: {
+    title: "Chat",
+    brandLabel: "Brand",
+    noBrands: "Add a brand to start chatting.",
+    addBrand: "Add a brand",
+    brandName: "Brand name",
+    brandSlug: "Brand id",
+    brandKey: "Brand key",
+    save: "Save",
+    cancel: "Cancel",
+    remove: "Remove brand",
+    placeholder: "Ask about your brand…",
+    send: "Send",
+    stop: "Stop",
+    stopped: "Stopped.",
+    working: "Working…",
+    tools: {
+      list_compositions: "Looking at your drafts…",
+      get_composition: "Opening a draft…",
+      list_runs: "Checking recent runs…",
+      get_run: "Checking a run…",
+      list_posts: "Looking at your posts…",
+      search: "Searching…",
+    } as Record<string, string>,
   },
 } as const;
