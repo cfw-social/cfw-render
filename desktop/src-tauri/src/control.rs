@@ -27,7 +27,7 @@ pub fn state_dir() -> Result<PathBuf, ControlError> {
 }
 
 /// Atomic write: temp file in the same dir (mode 0600) then rename.
-fn write_atomic(dir: &Path, name: &str, contents: &[u8]) -> Result<(), ControlError> {
+pub(crate) fn write_atomic(dir: &Path, name: &str, contents: &[u8]) -> Result<(), ControlError> {
     fs::create_dir_all(dir)?;
     let tmp = dir.join(format!(".{name}.tmp-{}", std::process::id()));
     let result = (|| {

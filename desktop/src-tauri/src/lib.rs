@@ -1,5 +1,6 @@
 //! Tauri shell: tray, state-dir watcher, and commands. Logic lives in `state` / `control`.
 
+pub mod apikeys;
 pub mod chat;
 pub mod control;
 pub mod setup;
@@ -346,7 +347,12 @@ pub fn run() {
             support::send_logs,
             support::crash_scan,
             support::get_support_settings,
-            support::set_share_crash_reports
+            support::set_share_crash_reports,
+            apikeys::provider_key_save,
+            apikeys::provider_key_remove,
+            apikeys::provider_key_present,
+            apikeys::provider_clear_limit,
+            apikeys::open_provider_key_url
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
