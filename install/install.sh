@@ -55,6 +55,7 @@ done
 # ── [M3-06a] --uninstall [--delete-outputs] [--yes]: remove CFW Render from
 # this Mac (logic in install/uninstall.sh). Always exits 0 once confirmed.
 if (( UNINSTALL )); then
+  : "$DELETE_OUTPUTS" "$ASSUME_YES" # read by un_main
   # shellcheck source=install/uninstall.sh
   source "$SELF_DIR/uninstall.sh"
   un_main
