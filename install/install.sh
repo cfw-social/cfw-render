@@ -6,6 +6,7 @@
 #
 # Usage:
 #   install.sh --user <u> --prefix <dir> [--env-file <path>] [--mode server|byoa] [--yes-really]
+#   install.sh --uninstall [--delete-outputs] [--yes|--non-interactive] [--from-app]
 #
 # --prefix     where bin/ + lib/ + skills/ + scripts/ get copied
 #              (default: server /opt/cfw-render; byoa "$HOME/CFW Render/app")
@@ -31,6 +32,9 @@ MODE="server"
 YES_REALLY=0
 NON_INTERACTIVE=0
 FROM_APP=0
+UNINSTALL=0
+DELETE_OUTPUTS=0
+ASSUME_YES=0
 
 while (( $# )); do
   case "$1" in
@@ -41,9 +45,22 @@ while (( $# )); do
     --yes-really) YES_REALLY=1; shift ;;
     --non-interactive) NON_INTERACTIVE=1; shift ;;
     --from-app) FROM_APP=1; shift ;;
+    --uninstall) UNINSTALL=1; shift ;;
+    --delete-outputs) DELETE_OUTPUTS=1; shift ;;
+    --yes) ASSUME_YES=1; shift ;;
     *) echo "install.sh: unknown flag $1" >&2; exit 2 ;;
   esac
 done
+
+# ── [M3-06a] --uninstall [--delete-outputs] [--yes]: remove CFW Render from
+# this Mac (logic in install/uninstall.sh). Always exits 0 once confirmed.
+if (( UNINSTALL )); then
+  : "$DELETE_OUTPUTS" "$ASSUME_YES" # read by un_main
+  # shellcheck source=install/uninstall.sh
+  source "$SELF_DIR/uninstall.sh"
+  un_main
+  exit $?
+fi
 
 case "$MODE" in
   server|byoa) : ;;

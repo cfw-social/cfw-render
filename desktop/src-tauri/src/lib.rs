@@ -6,6 +6,7 @@ pub mod setup;
 pub mod signin;
 pub mod state;
 pub mod toolchain;
+pub mod support;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -339,7 +340,13 @@ pub fn run() {
             setup::setup_adopt,
             setup::setup_cancel,
             setup::setup_tools_size,
-            setup::open_setup
+            setup::open_setup,
+            support::uninstall,
+            support::send_logs_preview,
+            support::send_logs,
+            support::crash_scan,
+            support::get_support_settings,
+            support::set_share_crash_reports
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
