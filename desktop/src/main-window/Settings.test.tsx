@@ -17,7 +17,7 @@ const box = (name: string) => screen.getByRole("checkbox", { name }) as HTMLInpu
 
 describe("Settings", () => {
   it("reads checkbox state from get_settings and shows disabled items", async () => {
-    invoke.mockImplementation((cmd: string) => Promise.resolve(cmd === "get_settings" ? { allowBattery: true, startAtLogin: false } : cmd === "get_support_settings" ? { shareCrashReports: true } : null));
+    invoke.mockImplementation((cmd: string) => Promise.resolve(cmd === "get_settings" ? { allowBattery: true, startAtLogin: false } : cmd === "get_support_settings" ? { shareCrashReports: true } : cmd === "get_update_settings" ? { autoUpdate: true, available: false } : null));
     render(<Settings workerVersion="1.0.0" />);
     await waitFor(() => expect(box("Render on battery").checked).toBe(true));
     expect(box("Start at login").checked).toBe(false);
@@ -34,6 +34,17 @@ describe("Settings", () => {
     expect(invoke).toHaveBeenCalledWith("set_allow_battery", { allow: false });
     fireEvent.click(box("Share crash reports"));
     expect(invoke).toHaveBeenCalledWith("set_share_crash_reports", { enabled: false });
+  });
+
+  it("automatic updates: on and switchable once updates are available; the note goes away", async () => {
+    invoke.mockImplementation((cmd: string) => Promise.resolve(cmd === "get_settings" ? { allowBattery: false, startAtLogin: true } : cmd === "get_support_settings" ? { shareCrashReports: true } : cmd === "get_update_settings" ? { autoUpdate: true, available: true } : null));
+    render(<Settings workerVersion="1.0.0" />);
+    await waitFor(() => expect(box("Automatic updates").disabled).toBe(false));
+    expect(box("Automatic updates").checked).toBe(true);
+    expect(screen.queryByText("Automatic updates arrive with signed releases.")).toBeNull();
+    fireEvent.click(box("Automatic updates"));
+    expect(invoke).toHaveBeenCalledWith("set_auto_update", { enabled: false });
+    expect(box("Automatic updates").checked).toBe(false);
   });
 
   it("send logs previews the size, confirms, then shows the reference", async () => {

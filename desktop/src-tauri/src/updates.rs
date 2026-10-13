@@ -73,9 +73,19 @@ fn state_dir() -> Result<PathBuf, String> {
     crate::control::state_dir().map_err(|e| e.to_string())
 }
 
+/// What Settings needs: the saved choice plus whether updates can run at all
+/// (false until a real updater public key is configured — G0).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSettingsView {
+    pub auto_update: bool,
+    pub available: bool,
+}
+
 #[tauri::command]
-pub fn get_update_settings() -> Result<UpdateSettings, String> {
-    Ok(read_update_settings(&state_dir()?))
+pub fn get_update_settings() -> Result<UpdateSettingsView, String> {
+    let s = read_update_settings(&state_dir()?);
+    Ok(UpdateSettingsView { auto_update: s.auto_update, available: ENABLED.load(Ordering::Relaxed) })
 }
 
 #[tauri::command]
@@ -230,5 +240,9 @@ mod tests {
         write_auto_update(d.path(), true).unwrap();
         assert!(read_update_settings(d.path()).auto_update);
         assert_eq!(serde_json::to_string(&UpdateSettings { auto_update: true }).unwrap(), r#"{"autoUpdate":true}"#);
+        assert_eq!(
+            serde_json::to_string(&UpdateSettingsView { auto_update: false, available: true }).unwrap(),
+            r#"{"autoUpdate":false,"available":true}"#
+        );
     }
 }

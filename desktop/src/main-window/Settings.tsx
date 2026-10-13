@@ -7,6 +7,7 @@ import { btn } from "../panel/Panel";
 
 export interface SettingsState { allowBattery: boolean; startAtLogin: boolean }
 export interface SupportSettings { shareCrashReports: boolean }
+export interface UpdateSettings { autoUpdate: boolean; available: boolean }
 interface UninstallStep { step: string; state: string; message: string }
 
 type LogsUi =
@@ -23,6 +24,7 @@ const why = (e: unknown) => (typeof e === "string" ? e : e instanceof Error ? e.
 export function Settings({ workerVersion }: { workerVersion: string | null }) {
   const [s, setS] = useState<SettingsState | null>(null);
   const [support, setSupport] = useState<SupportSettings | null>(null);
+  const [upd, setUpd] = useState<UpdateSettings | null>(null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogsUi>({ k: "idle" });
   const [un, setUn] = useState<{ open: boolean; deleteOutputs: boolean; running: boolean; message: string | null }>(
@@ -32,6 +34,7 @@ export function Settings({ workerVersion }: { workerVersion: string | null }) {
   useEffect(() => {
     invoke<SettingsState>("get_settings").then(setS).catch((e: unknown) => console.error("get_settings", e));
     invoke<SupportSettings>("get_support_settings").then(setSupport).catch((e: unknown) => console.error("get_support_settings", e));
+    invoke<UpdateSettings>("get_update_settings").then(setUpd).catch((e: unknown) => console.error("get_update_settings", e));
     getVersion().then(setAppVersion).catch(() => {});
   }, []);
 
@@ -41,6 +44,15 @@ export function Settings({ workerVersion }: { workerVersion: string | null }) {
     invoke(cmd, { [arg]: on }).catch((e: unknown) => {
       console.error(cmd, e);
       setS(prev);
+    });
+  };
+
+  const toggleAutoUpdate = (on: boolean) => {
+    const prev = upd;
+    setUpd((cur) => (cur ? { ...cur, autoUpdate: on } : cur));
+    invoke("set_auto_update", { enabled: on }).catch((e: unknown) => {
+      console.error("set_auto_update", e);
+      setUpd(prev);
     });
   };
 
@@ -100,10 +112,15 @@ export function Settings({ workerVersion }: { workerVersion: string | null }) {
       </div>
       <div>
         <label className={`${row} text-neutral-400`}>
-          <input type="checkbox" disabled checked={false} readOnly />
+          <input
+            type="checkbox"
+            disabled={!upd?.available}
+            checked={upd?.available ? upd.autoUpdate : false}
+            onChange={(e) => toggleAutoUpdate(e.target.checked)}
+          />
           {copy.settings.autoUpdate}
         </label>
-        <p className="ml-6 text-xs text-neutral-500">{copy.settings.autoUpdateNote}</p>
+        {!upd?.available && <p className="ml-6 text-xs text-neutral-500">{copy.settings.autoUpdateNote}</p>}
       </div>
       <div className="flex gap-2">
         <button className={`${btn} disabled:opacity-50`} disabled={busy || un.running} onClick={startLogs}>{copy.settings.sendLogs}</button>
