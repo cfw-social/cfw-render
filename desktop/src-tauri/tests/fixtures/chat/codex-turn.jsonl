@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"codex-thread-1"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"i0","type":"mcp_tool_call","server":"cfw","tool":"list_runs","status":"completed","result":{"content":[{"type":"text","text":"https://app.cfw.social/brand-a/runs/r9"}]}}}
+{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Your latest run is ready."}}
+{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}

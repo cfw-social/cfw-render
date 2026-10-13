@@ -1,8 +1,12 @@
 //! Tauri shell: tray, state-dir watcher, and commands. Logic lives in `state` / `control`.
 
+pub mod chat;
 pub mod control;
+pub mod setup;
 pub mod signin;
 pub mod state;
+pub mod toolchain;
+pub mod support;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -226,6 +230,38 @@ async fn provider_status(engine: String) -> Result<bool, String> {
     signin::provider_status(&engine).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn chat_brands() -> Result<Vec<chat::Brand>, String> {
+    chat::brands()
+}
+
+#[tauri::command]
+async fn chat_add_brand(slug: String, name: String, key: String) -> Result<Vec<chat::Brand>, String> {
+    chat::add_brand(&slug, &name, &key)
+}
+
+#[tauri::command]
+async fn chat_remove_brand(slug: String) -> Result<Vec<chat::Brand>, String> {
+    chat::remove_brand(&slug)
+}
+
+#[tauri::command]
+fn chat_send(app: AppHandle, slug: String, text: String) -> Result<(), String> {
+    chat::send(slug, text, move |ev| {
+        let _ = app.emit("chat-event", ev);
+    })
+}
+
+#[tauri::command]
+fn chat_cancel(slug: String) -> Result<bool, String> {
+    chat::cancel(&slug)
+}
+
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    chat::open_url(&url)
+}
+
 fn build_tray(app: &AppHandle) -> tauri::Result<(TrayIcon, MenuItem<Wry>)> {
     let open = MenuItem::with_id(app, "open", "Open CFW Render", true, None::<&str>)?;
     let pause = MenuItem::with_id(app, "pause", "Pause", true, None::<&str>)?;
@@ -292,7 +328,25 @@ pub fn run() {
             provider_sign_in,
             provider_sign_in_cancel,
             provider_sign_out,
-            provider_status
+            provider_status,
+            chat_brands,
+            chat_add_brand,
+            chat_remove_brand,
+            chat_send,
+            chat_cancel,
+            open_url,
+            setup::get_setup_status,
+            setup::setup_run,
+            setup::setup_adopt,
+            setup::setup_cancel,
+            setup::setup_tools_size,
+            setup::open_setup,
+            support::uninstall,
+            support::send_logs_preview,
+            support::send_logs,
+            support::crash_scan,
+            support::get_support_settings,
+            support::set_share_crash_reports
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -310,6 +364,7 @@ pub fn run() {
                 refresh(&ticker);
             });
 
+            if !setup::setup_status().installed { setup::open_setup(handle.clone()); }
             autostart_first_run(&handle);
             refresh(&handle);
             Ok(())

@@ -349,6 +349,7 @@ dependencies = [
  "chrono",
  "dirs 6.0.0",
  "notify",
+ "regex",
  "serde",
  "serde_json",
  "tauri",

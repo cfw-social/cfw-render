@@ -3064,6 +3064,289 @@ else
 fi
 rm -rf "$mc4"
 
+# ── M3-04a: install.sh --from-app (app-driven, no prompts, JSON steps) ──
+m4_real_home="$HOME"
+# m4_setup <dir> <port> [mock KEY=VALUE...] — temp HOME + mock server.
+m4_setup() {
+  local dir="$1" port="$2"; shift 2
+  mkdir -p "$dir/home" "$dir/prefix" "$dir/mockstate"
+  echo '[]' > "$dir/queue.json"
+  m4_pid="$(
+    for kv in "$@"; do export "${kv?}"; done
+    start_mock "$dir/queue.json" "$dir/mockstate" "$port"
+  )"
+}
+# m4_run <dir> <port> <stdin-file> [KEY=VALUE...] — sets m4_rc.
+m4_run() {
+  local dir="$1" port="$2" in="$3"; shift 3
+  (
+    export HOME="$dir/home"
+    export PATH="$REPO_DIR/bin:$FAKE_BIN:$PATH"
+    export PLAYWRIGHT_BROWSERS_PATH="$m4_real_home/Library/Caches/ms-playwright"
+    export CFW_RENDER_DIRECTOR_CMD="$TEST_DIR/fake-director.sh"
+    export CFW_RENDER_API_BASE="http://127.0.0.1:$port"
+    export CFW_RENDER_SKIP_LAUNCHCTL=1 CFW_RENDER_PROBE_POLL_SEC=0.1
+    for kv in "$@"; do export "${kv?}"; done
+    "$REPO_DIR/install/install.sh" --mode byoa --non-interactive --from-app --prefix "$dir/prefix" \
+      < "$in" > "$dir/out.jsonl" 2> "$dir/err.log"
+  )
+  m4_rc=$?
+}
+m4_steps() { python3 -c '
+import json, sys
+print(" ".join(f"{(o:=json.loads(l))["step"]}:{o["state"]}" for l in open(sys.argv[1]) if l.strip()))' "$1/out.jsonl" 2>/dev/null || echo "NONJSON"; }
+
+echo "=== Case M3-04a-1/2: --from-app happy path; brand key never leaks ==="
+m4a="$(mktemp -d)"
+m4a_key="cfw_m4brand$(python3 -c 'import secrets;print(secrets.token_hex(8))')"
+printf '%s\n' "$m4a_key" > "$m4a/stdin"
+m4_setup "$m4a" $((MOCK_PORT_BASE + 970))
+( for _ in $(seq 1 600); do ps -axo args 2>/dev/null; sleep 0.05; done ) > "$m4a/ps.log" 2>/dev/null &
+m4a_ps=$!
+m4_run "$m4a" $((MOCK_PORT_BASE + 970)) "$m4a/stdin"
+kill "$m4a_ps" 2>/dev/null; wait "$m4a_ps" 2>/dev/null || true
+kill "$m4_pid" 2>/dev/null; wait "$m4_pid" 2>/dev/null || true
+rm -f "$m4a/stdin"
+m4a_steps="$(m4_steps "$m4a")"
+m4a_want="checking:started checking:done installing:started installing:done connecting:started connecting:done test_render:started test_render:done ready:done"
+m4a_envf="$m4a/home/.cfw-render/cfw-render.env"
+m4a_mode="$(stat -f '%Lp' "$m4a_envf" 2>/dev/null || stat -c '%a' "$m4a_envf" 2>/dev/null)"
+m4a_origin="$(python3 -c '
+import json, sys
+c = [json.loads(l) for l in open(sys.argv[1])]
+r = [x for x in c if x["tool"] == "report_byoa_setup_step"]
+steps = [x["args"]["step"] for x in r]
+print(all(x["args"].get("origin") == "app" for x in r), steps[:3], steps.count("probe_render"),
+      sum(1 for x in c if x["tool"] == "create_probe_render_order"))' "$m4a/mockstate/calls.jsonl" 2>/dev/null)"
+if [[ "$m4_rc" == "0" && "$m4a_steps" == "$m4a_want" ]]; then
+  pass "from-app: exit 0, stdout only JSON, steps in order with started+done"
+else
+  fail "from-app happy path" "rc=$m4_rc steps=$m4a_steps err=$(tail -15 "$m4a/err.log")"
+fi
+if grep -q '^CFW_RENDER_WORKER_KEY=cfw_render_mockexchanged000$' "$m4a_envf" 2>/dev/null && [[ "$m4a_mode" == "600" ]]; then
+  pass "from-app: env file holds the exchanged render key, mode 600"
+else
+  fail "from-app env file" "mode=$m4a_mode"
+fi
+if [[ "$m4a_origin" == "True ['deps', 'credential', 'recipe_fetch'] 3 1" ]]; then
+  pass "from-app: setup reports carry origin app; probe polled until ready"
+else
+  fail "from-app reports" "$m4a_origin"
+fi
+m4a_ps_lines="$(wc -l < "$m4a/ps.log" | tr -d ' ')"
+if ! grep -rqF "$m4a_key" "$m4a/out.jsonl" "$m4a/err.log" "$m4a/home" "$m4a/prefix" "$m4a/mockstate" "$m4a/mock-server.log" "$m4a/ps.log" 2>/dev/null \
+   && [[ "$m4a_ps_lines" -gt 0 ]]; then
+  pass "from-app: brand key nowhere (stdout, stderr, HOME, mock log, argv over $m4a_ps_lines ps lines)"
+else
+  fail "from-app brand key leak" "$(grep -rlF "$m4a_key" "$m4a" 2>/dev/null)"
+fi
+rm -rf "$m4a"
+
+echo "=== Case M3-04a-3: bad key → connecting failed, exit 5, no key written ==="
+m4b="$(mktemp -d)"
+printf 'cfw_bad\n' > "$m4b/stdin"
+m4_setup "$m4b" $((MOCK_PORT_BASE + 971))
+m4_run "$m4b" $((MOCK_PORT_BASE + 971)) "$m4b/stdin"
+kill "$m4_pid" 2>/dev/null; wait "$m4_pid" 2>/dev/null || true
+m4b_steps="$(m4_steps "$m4b")"
+if [[ "$m4_rc" == "5" && "$m4b_steps" == *"connecting:failed" ]] && ! grep -q 'CFW_RENDER_WORKER_KEY=' "$m4b/home/.cfw-render/cfw-render.env" 2>/dev/null; then
+  pass "from-app: bad key → connecting failed, exit 5, no key written"
+else
+  fail "from-app bad key" "rc=$m4_rc steps=$m4b_steps"
+fi
+rm -rf "$m4b"
+
+echo "=== Case M3-04a-4: no engine → checking failed, exit 3, AI Providers action ==="
+m4c="$(mktemp -d)"
+printf 'cfw_goodkey\n' > "$m4c/stdin"
+m4_setup "$m4c" $((MOCK_PORT_BASE + 972))
+m4_run "$m4c" $((MOCK_PORT_BASE + 972)) "$m4c/stdin" CFW_RENDER_TEST_NO_ENGINE=1
+kill "$m4_pid" 2>/dev/null; wait "$m4_pid" 2>/dev/null || true
+if [[ "$m4_rc" == "3" ]] && grep -q '"step": "checking", "state": "failed".*"action": "Sign in to ChatGPT or Claude in AI Providers"' "$m4c/out.jsonl"; then
+  pass "from-app: no engine → exit 3 with the AI Providers action"
+else
+  fail "from-app no engine" "rc=$m4_rc out=$(cat "$m4c/out.jsonl")"
+fi
+rm -rf "$m4c"
+
+echo "=== Case M3-04a-5: adopt — existing key + plist, empty stdin → Already set up ==="
+m4d="$(mktemp -d)"
+m4_setup "$m4d" $((MOCK_PORT_BASE + 973))
+mkdir -p "$m4d/home/.cfw-render" "$m4d/home/Library/LaunchAgents"
+printf 'CFW_API_BASE=http://127.0.0.1:%s\nCFW_RENDER_WORKER_KEY=cfw_render_existing0\n' $((MOCK_PORT_BASE + 973)) > "$m4d/home/.cfw-render/cfw-render.env"
+: > "$m4d/home/Library/LaunchAgents/com.cfw.render.plist"
+: > "$m4d/stdin"
+m4_run "$m4d" $((MOCK_PORT_BASE + 973)) "$m4d/stdin"
+kill "$m4_pid" 2>/dev/null; wait "$m4_pid" 2>/dev/null || true
+m4d_ready="$(grep -c '"step": "ready", "state": "done", "message": "Already set up"' "$m4d/out.jsonl" 2>/dev/null || true)"
+if [[ "$m4_rc" == "0" && "$m4d_ready" == "1" ]] && ! grep -q '"tool": "exchange"' "$m4d/mockstate/calls.jsonl" 2>/dev/null; then
+  pass "from-app adopt: one ready 'Already set up', no exchange"
+else
+  fail "from-app adopt" "rc=$m4_rc out=$(cat "$m4d/out.jsonl") err=$(tail -5 "$m4d/err.log")"
+fi
+rm -rf "$m4d"
+
+echo "=== Case M3-04a-6: probe never finishes → test_render failed, exit 7 ==="
+m4e="$(mktemp -d)"
+printf 'cfw_goodkey\n' > "$m4e/stdin"
+m4_setup "$m4e" $((MOCK_PORT_BASE + 974)) CFW_MOCK_PROBE_PENDING=999
+m4_run "$m4e" $((MOCK_PORT_BASE + 974)) "$m4e/stdin" CFW_RENDER_PROBE_TIMEOUT_SEC=1
+kill "$m4_pid" 2>/dev/null; wait "$m4_pid" 2>/dev/null || true
+m4e_steps="$(m4_steps "$m4e")"
+if [[ "$m4_rc" == "7" && "$m4e_steps" == *"test_render:started test_render:failed" ]]; then
+  pass "from-app: probe timeout → test_render failed, exit 7"
+else
+  fail "from-app probe timeout" "rc=$m4_rc steps=$m4e_steps"
+fi
+rm -rf "$m4e"
+
+# ── [M3-06a] uninstall + send-logs ─────────────────────────────────────────
+# m6_setup <dir> — a fake installed HOME with a render key, logs, outputs and
+# a Keychain stub (CFW_RENDER_SECURITY_CMD) holding 3 items.
+m6_setup() {
+  local d="$1" key="$2"
+  mkdir -p "$d/home/.cfw-render" "$d/home/CFW Render/app/bin" "$d/home/CFW Render/logs/runs" \
+    "$d/home/CFW Render/outputs/brand" "$d/home/Library/LaunchAgents" "$d/mockstate"
+  printf 'CFW_RENDER_MODE=byoa\nCFW_RENDER_WORKER_KEY=%s\nCFW_API_BASE=http://127.0.0.1:1\n' "$key" > "$d/home/.cfw-render/cfw-render.env"
+  chmod 600 "$d/home/.cfw-render/cfw-render.env"
+  echo '<plist/>' > "$d/home/Library/LaunchAgents/com.cfw.render.plist"
+  echo 'kept' > "$d/home/CFW Render/outputs/brand/out.mp4"
+  printf 'tick ok key=%s mail me@example.com /Users/alice/x\n' "$key" > "$d/home/CFW Render/logs/cfw-render.log"
+  printf 'run %s\n' "$key" > "$d/home/CFW Render/logs/runs/o1.out"
+  printf '{"workerVersion":"1"}\n' > "$d/home/.cfw-render/status.json"
+  printf 'ts\torder\t%s\n' "$key" > "$d/home/.cfw-render/journal.tsv"
+  echo 3 > "$d/keychain"
+  cat > "$d/security" <<SEC
+#!/usr/bin/env bash
+n=\$(cat "$d/keychain"); (( n > 0 )) || exit 44
+echo \$((n - 1)) > "$d/keychain"
+SEC
+  chmod +x "$d/security"
+  echo '[]' > "$d/queue.json"
+}
+# m6_uninstall <dir> <port> [flags...] — sets m6_rc.
+m6_uninstall() {
+  local d="$1" port="$2"; shift 2
+  ( export HOME="$d/home" CFW_RENDER_API_BASE="http://127.0.0.1:$port" CFW_RENDER_SKIP_LAUNCHCTL=1 \
+      CFW_RENDER_SECURITY_CMD="$d/security"
+    "$REPO_DIR/install/install.sh" --uninstall "$@" > "$d/out.log" 2> "$d/err.log" )
+  m6_rc=$?
+}
+
+echo "=== Case M3-06a-1: uninstall happy path (outputs kept, revoke once, Keychain emptied) ==="
+m6a="$(mktemp -d)"; m6_setup "$m6a" cfw_render_m6akey000
+m6a_port=$((MOCK_PORT_BASE + 980))
+m6a_pid="$(start_mock "$m6a/queue.json" "$m6a/mockstate" "$m6a_port")"
+m6_uninstall "$m6a" "$m6a_port" --yes
+kill "$m6a_pid" 2>/dev/null; wait "$m6a_pid" 2>/dev/null || true
+m6a_revokes="$(grep -c '"tool": "revoke_this_computer"' "$m6a/mockstate/calls.jsonl" 2>/dev/null || true)"
+if [[ "$m6_rc" == "0" && "$m6a_revokes" == "1" && "$(cat "$m6a/keychain")" == "0" \
+      && ! -e "$m6a/home/.cfw-render" && ! -e "$m6a/home/CFW Render/app" && ! -e "$m6a/home/CFW Render/logs" \
+      && ! -e "$m6a/home/Library/LaunchAgents/com.cfw.render.plist" && -f "$m6a/home/CFW Render/outputs/brand/out.mp4" ]] \
+   && ! grep -q "offline" "$m6a/out.log"; then
+  pass "uninstall: paths gone, outputs kept, revoke called once, Keychain stub emptied"
+else
+  fail "uninstall happy path" "rc=$m6_rc revokes=$m6a_revokes kc=$(cat "$m6a/keychain") out=$(cat "$m6a/out.log")"
+fi
+rm -rf "$m6a"
+
+echo "=== Case M3-06a-2: uninstall --delete-outputs (+ --from-app JSON lines) ==="
+m6b="$(mktemp -d)"; m6_setup "$m6b" cfw_render_m6bkey000
+m6b_port=$((MOCK_PORT_BASE + 981))
+m6b_pid="$(start_mock "$m6b/queue.json" "$m6b/mockstate" "$m6b_port")"
+m6_uninstall "$m6b" "$m6b_port" --non-interactive --from-app --delete-outputs
+kill "$m6b_pid" 2>/dev/null; wait "$m6b_pid" 2>/dev/null || true
+m6b_json="$(python3 -c '
+import json, sys
+ls = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+print(all(o["step"] == "uninstall" for o in ls), ls[-1]["state"] if ls else "")' "$m6b/out.log" 2>/dev/null || echo NONJSON)"
+if [[ "$m6_rc" == "0" && ! -e "$m6b/home/CFW Render/outputs" && "$m6b_json" == "True done" ]]; then
+  pass "uninstall --delete-outputs: outputs gone; --from-app prints only uninstall JSON lines"
+else
+  fail "uninstall --delete-outputs" "rc=$m6_rc json=$m6b_json"
+fi
+rm -rf "$m6b"
+
+echo "=== Case M3-06a-3: uninstall offline → exit 0 with the offline line ==="
+m6c="$(mktemp -d)"; m6_setup "$m6c" cfw_render_m6ckey000
+m6_uninstall "$m6c" $((MOCK_PORT_BASE + 982)) --yes
+if [[ "$m6_rc" == "0" && ! -e "$m6c/home/.cfw-render" ]] \
+   && grep -q "This computer will show as offline in CFW until you remove it there." "$m6c/out.log"; then
+  pass "uninstall offline: exit 0, offline line printed, files removed"
+else
+  fail "uninstall offline" "rc=$m6_rc out=$(cat "$m6c/out.log")"
+fi
+rm -rf "$m6c"
+
+echo "=== Case M3-06a-3b: uninstall refuses a CFW_RENDER_HOME outside the home folder (rm -rf guard) ==="
+m6g="$(mktemp -d)"; m6_setup "$m6g" cfw_render_m6gkey000
+mkdir -p "$m6g/elsewhere/app" "$m6g/elsewhere/logs"
+: > "$m6g/elsewhere/app/keep.txt"
+( export HOME="$m6g/home" CFW_RENDER_HOME="$m6g/elsewhere" CFW_RENDER_API_BASE="http://127.0.0.1:$((MOCK_PORT_BASE + 985))" \
+    CFW_RENDER_SKIP_LAUNCHCTL=1 CFW_RENDER_SECURITY_CMD="$m6g/security"
+  "$REPO_DIR/install/install.sh" --uninstall --yes > "$m6g/out.log" 2> "$m6g/err.log" )
+m6g_rc=$?
+if [[ "$m6g_rc" != "0" && -f "$m6g/elsewhere/app/keep.txt" && -d "$m6g/home/.cfw-render" ]] \
+   && grep -q "Not removing files" "$m6g/out.log" "$m6g/err.log"; then
+  pass "uninstall guard: a CFW_RENDER_HOME outside HOME is refused, nothing deleted, non-zero exit"
+else
+  fail "uninstall guard" "rc=$m6g_rc keep=$([[ -f "$m6g/elsewhere/app/keep.txt" ]] && echo yes || echo no) out=$(cat "$m6g/out.log" "$m6g/err.log")"
+fi
+rm -rf "$m6g"
+
+echo "=== Case M3-06a-4: redactor fixture parity ==="
+if diff <(python3 "$REPO_DIR/bin/cfw-render-redact.py" < "$REPO_DIR/desktop/src-tauri/tests/fixtures/redact-input.txt") \
+     "$REPO_DIR/desktop/src-tauri/tests/fixtures/redact-expected.txt" >/dev/null; then
+  pass "cfw-render-redact.py output == redact-expected.txt"
+else
+  fail "redactor parity" "diff vs redact-expected.txt"
+fi
+
+echo "=== Case M3-06a-5: send-logs uploads, LOG-TEST, render key never leaks ==="
+m6e="$(mktemp -d)"
+m6e_key="cfw_render_m6e$(python3 -c 'import secrets;print(secrets.token_hex(8))')"
+m6_setup "$m6e" "$m6e_key"
+m6e_port=$((MOCK_PORT_BASE + 983))
+m6e_pid="$(start_mock "$m6e/queue.json" "$m6e/mockstate" "$m6e_port")"
+( for _ in $(seq 1 200); do ps -axo args 2>/dev/null; sleep 0.05; done ) > "$m6e/ps.log" 2>/dev/null &
+m6e_ps=$!
+( export HOME="$m6e/home" CFW_RENDER_API_BASE="http://127.0.0.1:$m6e_port"
+  "$REPO_DIR/bin/cfw-render-ctl.sh" send-logs --yes > "$m6e/out.log" 2> "$m6e/err.log" )
+m6e_rc=$?
+kill "$m6e_ps" 2>/dev/null; wait "$m6e_ps" 2>/dev/null || true
+kill "$m6e_pid" 2>/dev/null; wait "$m6e_pid" 2>/dev/null || true
+mkdir -p "$m6e/x"; tar -xzf "$m6e/mockstate/logs-upload.gz" -C "$m6e/x" 2>/dev/null
+if [[ "$m6e_rc" == "0" ]] && grep -q "Reference: LOG-TEST — quote it to CFW support." "$m6e/out.log" \
+   && [[ -f "$m6e/x/bundle/logs/cfw-render.log" && -f "$m6e/x/bundle/logs/runs/o1.out" && -f "$m6e/x/bundle/journal.tsv" ]]; then
+  pass "send-logs: bundle uploaded (logs, runs, journal), Reference LOG-TEST printed"
+else
+  fail "send-logs upload" "rc=$m6e_rc out=$(cat "$m6e/out.log") err=$(cat "$m6e/err.log")"
+fi
+m6e_ps_lines="$(wc -l < "$m6e/ps.log" | tr -d ' ')"
+if ! grep -rqF "$m6e_key" "$m6e/x" "$m6e/out.log" "$m6e/err.log" "$m6e/ps.log" "$m6e/mockstate" \
+   && grep -q "cfw_render_\[redacted\]" "$m6e/x/bundle/logs/cfw-render.log" && grep -q "/Users/\[user\]/" "$m6e/x/bundle/logs/cfw-render.log"; then
+  pass "send-logs: render key nowhere (bundle, stdout, stderr, mock log, argv over $m6e_ps_lines ps lines)"
+else
+  fail "send-logs key leak" "key found or bundle not redacted"
+fi
+rm -rf "$m6e"
+
+echo "=== Case M3-06a-6: send-logs --dry writes the bundle path, no upload; server down → non-zero ==="
+m6f="$(mktemp -d)"; m6_setup "$m6f" cfw_render_m6fkey000
+( export HOME="$m6f/home" CFW_RENDER_API_BASE="http://127.0.0.1:$((MOCK_PORT_BASE + 984))" TMPDIR="$m6f"
+  "$REPO_DIR/bin/cfw-render-ctl.sh" send-logs --dry > "$m6f/dry.log" 2>&1 )
+m6f_dry=$?
+m6f_path="$(sed -n 's/^path: //p' "$m6f/dry.log")"
+( export HOME="$m6f/home" CFW_RENDER_API_BASE="http://127.0.0.1:$((MOCK_PORT_BASE + 984))"
+  "$REPO_DIR/bin/cfw-render-ctl.sh" send-logs --yes > "$m6f/up.log" 2>&1 )
+m6f_up=$?
+if [[ "$m6f_dry" == "0" && -s "$m6f_path" && "$m6f_up" != "0" ]] && grep -q "could not reach CFW" "$m6f/up.log"; then
+  pass "send-logs --dry: path written, nothing sent; offline upload exits non-zero with a plain message"
+else
+  fail "send-logs dry/offline" "dry=$m6f_dry path=$m6f_path up=$m6f_up $(cat "$m6f/up.log")"
+fi
+rm -rf "$m6f"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
