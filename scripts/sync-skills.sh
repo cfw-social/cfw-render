@@ -16,7 +16,7 @@
 #      each dependency into <out-dir>/<recipe>/.hub/<dep>/ (flattened, not
 #      nested). ONE body rewrite is applied per copied dir (CFW-312): the
 #      source's "find my own/a sub-skill dir under a host skill-install root"
-#      idiom — correct for the source library's other (Hermes/Claude Code)
+#      idiom — correct for the source library's other (agent-tool)
 #      consumers, wrong for this runtime-free bundle — is rewritten to resolve
 #      against $CFW_RENDER_SKILLS_DIR and the bundle's own .hub/<dep>/. See
 #      scripts/sync-skills.py's rewrite_host_path_resolvers().
@@ -33,28 +33,17 @@
 #      brand-overrides strip / generic redaction (CFW-318) — the bundle must
 #      never leak the author's identity/filesystem layout, `.hub/**` and
 #      `brand-overrides/**` included.
-#   7. Unless --skip-manifest or --out-dir points somewhere other than the
+#   7. Runs scripts/check-no-handle-defaults.sh against <out-dir> and aborts if
+#      any skill ships a literal handle default — another brand's handle or a
+#      placeholder (`${CTA_HANDLE:-@…}`, `"handle": "@…"` outside
+#      brand-overrides/<slug>/brand.json, `@mr.growthguide`) — because the end
+#      card must be per-brand (CFW-354).
+#   8. Unless --skip-manifest or --out-dir points somewhere other than the
 #      real <repo>/skills, refreshes config/skills-version.json (rollup via
 #      gen-skills-manifest.sh, then provenance fields patched to point at the
 #      private source instead of the retired git-subtree).
 #
 # Idempotent — safe to re-run; each recipe's target dir is cleared before copy.
-#
-# ── OPEN FUTURE ITEM — vendored progressive-loading markers ────────────────────
-# The pack-build pipeline this replaces ALSO injected Hermes-assistant markers
-# into each recipe's SKILL.md (a `metadata.hermes.vendored` frontmatter block, a
-# dual-home `SKILL_DIR` resolver, and `→ LOAD: skill_view("<recipe>",
-# ".hub/<dep>/SKILL.md")` cross-reference rewrites). This plain-copy sync
-# deliberately does NOT reproduce them: the cfw-render RENDER runtime does not
-# read any of them (verified — zero code hits for `skill_view` /
-# `metadata.hermes.vendored` in bin/ + lib/), and the source SKILL.md already
-# references every dependency via `.hub/<dep>/…`-relative paths, so a plain copy
-# runs correctly. Those markers are Hermes-ASSISTANT-side progressive-loading
-# metadata, and the assistant today reads a SEPARATE bundle at
-# /data/shared/cfw-skills/cfw — not this one.
-# ⚠ IF the Hermes assistant is ever pointed at cfw-render's skills bundle, it MAY
-#   need those markers back — re-evaluate marker injection AT THAT MIGRATION,
-#   NOT now.
 #
 # Usage:
 #   CFW_SKILLS_SRC=/Users/vasanth/ecosystem/harness/skills scripts/sync-skills.sh
@@ -139,6 +128,13 @@ python3 "$SELF_DIR/sync-skills.py" \
 # future field/file shape they don't yet recognize must fail HERE, loudly,
 # not ship a bundle that leaks the author's own filesystem layout.
 "$SELF_DIR/check-no-host-paths.sh" --skills-dir "$OUT_DIR"
+
+# CFW-354 bundle gate — abort the sync if any skill ships a literal handle
+# default — another brand's handle or a placeholder — because the end card
+# must be per-brand. One brand's `@mr.growthguide` once shipped on every
+# brand's Spotlight reels via `CTA_HANDLE="${CTA_HANDLE:-…}"`; a future recipe
+# that re-introduces that shape must fail HERE, loudly, at sync time.
+"$SELF_DIR/check-no-handle-defaults.sh" --skills-dir "$OUT_DIR"
 
 if (( SKIP_MANIFEST == 0 )) && [[ "$OUT_DIR" == "$REPO_DIR/skills" ]]; then
   SOURCE_COMMIT="$(git -C "$CFW_SKILLS_SRC" rev-parse HEAD 2>/dev/null || echo unknown)"

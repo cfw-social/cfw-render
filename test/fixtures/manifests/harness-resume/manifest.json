@@ -1,0 +1,17 @@
+{
+  "recipe": "harness-resume",
+  "recipeVersion": "1.0.0",
+  "inputs": [
+    {"id": "talking_head", "kind": "video", "required": "start"}
+  ],
+  "steps": [
+    {"id": "a", "runsOn": "computer", "weight": 10, "instructions": "steps/a.md",
+     "saves": [{"id": "x", "kind": "json"}]},
+    {"id": "b", "runsOn": "computer", "weight": 10, "instructions": "steps/b.md",
+     "saves": [{"id": "y", "kind": "json"}]},
+    {"id": "plan_broll", "runsOn": "computer", "weight": 20, "instructions": "steps/plan_broll.md",
+     "saves": [{"id": "plan", "kind": "json"}]},
+    {"id": "c", "runsOn": "computer", "weight": 60, "instructions": "steps/c.md",
+     "saves": [{"id": "z", "kind": "video"}]}
+  ]
+}

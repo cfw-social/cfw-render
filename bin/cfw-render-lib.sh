@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # cfw-render-lib.sh — shared core for the cfw-render drainer + Director-facing
 # helpers. Sourced, never executed directly. bash (not zsh) — must run
-# unmodified on hst (Linux) and a macOS dev box. No jq (not guaranteed on the
-# box); all JSON via python3 -c, same choice as ab-hustler.
+# unmodified on the owner's Mac (stock bash 3.2+). No jq (not guaranteed on the
+# computer); all JSON via python3 -c, same choice as ab-hustler.
 #
 # Design source: backlog/attachments/AB-RNDR-WORKER/implementation-plan.md §3.
-# Skills bundling (CFW-HST-BUNDLE, VPS-simplification epic Phase 2):
-# backlog/queue/CFW-HST-BUNDLE.md.
+# Skills bundling: backlog/done/2026-08/CFW-HST-BUNDLE.md.
 set -u
 
 # ---------------------------------------------------------------------------
@@ -22,8 +21,8 @@ _CR_REPO_ROOT="$(cd "$_CR_LIB_DIR/.." && pwd)"
 # cr_default_skills_dir — the in-repo bundled skills/ (pinned via
 # config/skills-version.json, source-synced by scripts/sync-skills.sh). This is
 # cfw-render's ONLY skills source: the old /data/shared/cfw-skills/cfw shared-box
-# path (a Hermes-assistant bundle, never cfw-render's) was dropped 2026-09-01 —
-# cfw-render no longer shares skills with Hermes. This is ONLY the default;
+# path (another assistant's bundle, never cfw-render's) was dropped 2026-09-01 —
+# cfw-render shares skills with nothing else. This is ONLY the default;
 # CFW_RENDER_SKILLS_DIR set via env/config file always wins (local-dev override).
 # ---------------------------------------------------------------------------
 cr_default_skills_dir() {
@@ -184,14 +183,13 @@ cr_default_env_file() {
 #                                      macOS schedule out/err logs
 #   hidden   ~/.cfw-render/            worker-id, cfw-render.env (600),
 #                                      scratch/, journal, tick lock
-# The fleet (mode=server) keeps logs in the state dir and keeps no local
-# copies — a VPS has no owner looking for files. Every path is overridable.
+# Every path is overridable.
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# cr_load_config — env cascade: /etc/cfw-render.env (Linux box) → $CFW_RENDER_ENV
-# (default ~/.cfw-render/cfw-render.env, see cr_default_env_file) → process env
-# wins over both files (a file only fills vars that are still unset). Fails
+# cr_load_config — env cascade: $CFW_RENDER_ENV (default
+# ~/.cfw-render/cfw-render.env, see cr_default_env_file) → process env wins
+# over the file (the file only fills vars that are still unset). Fails
 # fast on missing required vars; never prints values.
 # ---------------------------------------------------------------------------
 cr_load_config() {
@@ -213,18 +211,13 @@ cr_load_config() {
     _cr_preset+=("${!_v:-}")
   done
 
-  if [[ -r /etc/cfw-render.env ]]; then
-    # shellcheck disable=SC1091
-    source /etc/cfw-render.env
-  fi
-
   local env_file="${CFW_RENDER_ENV:-$(cr_default_env_file)}"
   if [[ -r "$env_file" ]]; then
     # shellcheck disable=SC1090
     source "$env_file"
   fi
 
-  # Process env wins over both files: restore any var that was already set
+  # Process env wins over the file: restore any var that was already set
   # before sourcing.
   local _i=0
   for _v in "${_cr_vars[@]}"; do
@@ -232,7 +225,10 @@ cr_load_config() {
     _i=$(( _i + 1 ))
   done
 
-  : "${CFW_RENDER_CONCURRENCY:=1}"
+  # [M2-04] Parallel requests (D52). Empty = measure this computer
+  # (cr_capacity_max: memory + performance cores table). A value set by the
+  # owner overrides the table, still capped at 6.
+  : "${CFW_RENDER_CONCURRENCY:=}"
   : "${CFW_RENDER_SCRATCH:=$HOME/.cfw-render/scratch}"
   : "${CFW_RENDER_STATE_DIR:=$HOME/.cfw-render}"
   : "${CFW_RENDER_SKILLS_DIR:=$(cr_default_skills_dir)}"
@@ -243,24 +239,17 @@ cr_load_config() {
   : "${CFW_RENDER_GATE_FAIL_CAP:=2}"
   : "${CFW_RENDER_OLLAMA_KEYS_FILE:=$HOME/ecosystem/vault/ollama-keys.env}"
   : "${CFW_RENDER_DIRECTOR_CMD:=}"
-  # Deploy mode (doc §4) — operational only, NEVER the security boundary (the
-  # server enforces that via which credential family resolves). Set once at
-  # install time; default matches our fleet. Skills always come from the in-repo
-  # bundle (there is no longer a bundle-vs-fetch switch — cfw-render carries its
-  # own skills/, git-pull to update; BYOA and server use the same source).
-  : "${CFW_RENDER_MODE:=server}"
+  # Deploy mode — operational only, NEVER the security boundary (the server
+  # enforces that via which credential family resolves). The only mode left is
+  # byoa (the owner's own computer); CFW-run server rendering was removed
+  # (D118). An older settings file that still says `server` is treated as byoa.
+  CFW_RENDER_MODE=byoa
   : "${CFW_RENDER_WORKER_ID_FILE:=$CFW_RENDER_STATE_DIR/worker-id}"
   # Visible folder layout (see the block above cr_load_config). byoa = the
   # owner's own computer: logs and kept renders go in "$HOME/CFW Render".
-  # server = the fleet: logs stay in the state dir, no local copies.
   : "${CFW_RENDER_HOME:=$HOME/CFW Render}"
-  if [[ "$CFW_RENDER_MODE" == "byoa" ]]; then
-    : "${CFW_RENDER_LOG_DIR:=$CFW_RENDER_HOME/logs}"
-    : "${CFW_RENDER_KEEP_OUTPUTS:=1}"
-  else
-    : "${CFW_RENDER_LOG_DIR:=$CFW_RENDER_STATE_DIR}"
-    : "${CFW_RENDER_KEEP_OUTPUTS:=0}"
-  fi
+  : "${CFW_RENDER_LOG_DIR:=$CFW_RENDER_HOME/logs}"
+  : "${CFW_RENDER_KEEP_OUTPUTS:=1}"
   : "${CFW_RENDER_OUTPUTS:=$CFW_RENDER_HOME/outputs}"
   # [CFW-146] Heartbeat cadence (seconds) while a Director holds an order. The
   # order card in cfw-social treats silence > 3 min as "Still working — last
@@ -273,15 +262,12 @@ cr_load_config() {
   # after the Director's own turn ended, without masking a real failure.
   : "${CFW_RENDER_ORPHAN_GRACE_SECS:=5}"
   # [CFW-146] Renderer identity shown to the owner ("Working on your Mac" /
-  # "on the box"). Derived from the platform + deploy mode unless set:
+  # "on your computer"). Derived from the platform unless set:
   #   Darwin        → mac   (the owner's laptop)
-  #   mode=server   → box   (the fleet VPS)
   #   otherwise     → byo   (a customer's own renderer)
   if [[ -z "${CFW_RENDER_RENDERER_KIND:-}" ]]; then
     if [[ "$(uname -s 2>/dev/null)" == "Darwin" ]]; then
       CFW_RENDER_RENDERER_KIND="mac"
-    elif [[ "$CFW_RENDER_MODE" == "server" ]]; then
-      CFW_RENDER_RENDERER_KIND="box"
     else
       CFW_RENDER_RENDERER_KIND="byo"
     fi
@@ -298,7 +284,7 @@ cr_load_config() {
   [[ -z "${CFW_API_BASE:-}" ]] && missing+=("CFW_API_BASE")
   [[ -z "${CFW_RENDER_WORKER_KEY:-}" ]] && missing+=("CFW_RENDER_WORKER_KEY")
   if (( ${#missing[@]} > 0 )); then
-    printf 'cfw-render: missing required config var(s): %s (checked /etc/cfw-render.env, %s, process env)\n' \
+    printf 'cfw-render: missing required config var(s): %s (checked %s, process env)\n' \
       "${missing[*]}" "$env_file" >&2
     return 1
   fi
@@ -311,8 +297,8 @@ cr_load_config() {
 
   cr_log_skills_version
 
-  # workerId — STABLE per install, NOT per process (doc §6.3). The systemd
-  # oneshot fires a fresh PID every 15-min tick, so the old `hostname:$$`
+  # workerId — STABLE per install, NOT per process (doc §6.3). A scheduled
+  # tick gets a fresh PID every time, so the old `hostname:$$`
   # changed every tick and would defeat CFW-V2-068's per-workerId circuit
   # breaker (consecutiveFailures never accumulates against a moving id).
   # Order of precedence:
@@ -365,8 +351,8 @@ cr_seed_worker_id() {
 
 # ---------------------------------------------------------------------------
 # cr_prepare_visible_dirs — create the log + outputs folders. Never fatal: an
-# install whose service sandbox predates the folder layout (an old Linux unit
-# whose ReadWritePaths lacks "$HOME/CFW Render") must keep rendering, so an
+# install whose sandbox predates the folder layout (an old unit that cannot
+# write "$HOME/CFW Render") must keep rendering, so an
 # unwritable log dir falls back to the state dir and an unwritable outputs dir
 # just turns off local copies, with a log line saying so.
 # ---------------------------------------------------------------------------
@@ -398,7 +384,7 @@ cr_keep_output_dir() {
 
 # ---------------------------------------------------------------------------
 # cr_log <msg> — timestamped append to $CFW_RENDER_LOG_DIR/cfw-render.log
-# (the state dir on the fleet / before config load; mirrors ab-lib.sh:63).
+# (the state dir before config load; mirrors ab-lib.sh:63).
 # ---------------------------------------------------------------------------
 cr_log() {
   local dir="${CFW_RENDER_LOG_DIR:-${CFW_RENDER_STATE_DIR:-$HOME/.cfw-render}}"
@@ -471,81 +457,90 @@ sys.stdout.write(inner)
 }
 
 # ---------------------------------------------------------------------------
-# cr_load_admin_config — config loader for the OPERATOR fleet-enable surface
-# (cfw-render-fleet.sh, CFW-16). Distinct from cr_load_config on purpose:
-#   * requires CFW_API_BASE + CFW_MASTER_API_KEY (the master key), NOT the
-#     narrow cfw_render_ worker key — flipping renderFleetEnabled is a
-#     privileged operator action the worker credential must NOT be able to do.
-#   * reads ONLY $CFW_RENDER_ADMIN_ENV (default ~/ecosystem/vault/cfw-render-admin
-#     .env) and the process env — DELIBERATELY never /etc/cfw-render.env. The
-#     master key must never live on a render box: the box is stateless and
-#     minimally-scoped by design (the whole point of CFW-16). This helper is an
-#     operator tool, run from an operator machine.
-# Process env wins over the file (same precedence rule as cr_load_config).
+# cr_mcp_call_soft <tool> <json-args> — non-exiting sibling of cr_mcp_call for
+# the M1-08 step loop (which must decide what to do on a dead server rather
+# than die). Same request path (POST /api/v1/mcp, same headers, 3 tries).
+#   0  success              — prints the tool's text body
+#   70 MCP isError/JSON-RPC — prints the error text (EX_SOFTWARE)
+#   75 curl/HTTP failure    — prints nothing (EX_TEMPFAIL)
+# cr_mcp_call is deliberately untouched.
 # ---------------------------------------------------------------------------
-cr_load_admin_config() {
-  local _cr_vars=(CFW_API_BASE CFW_MASTER_API_KEY CFW_RENDER_ADMIN_ENV)
-  local _cr_preset=() _v
-  for _v in "${_cr_vars[@]}"; do _cr_preset+=("${!_v:-}"); done
+cr_mcp_call_soft() {
+  local tool="$1" args_json="$2"
+  local url="${CFW_API_BASE%/}/api/v1/mcp"
+  local body
+  body="$(python3 -c '
+import json, sys
+tool = sys.argv[1]
+args = json.loads(sys.argv[2]) if sys.argv[2] else {}
+print(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}}))
+' "$tool" "$args_json" 2>/dev/null)" || { printf 'cfw-render: cr_mcp_call_soft could not build request JSON for %s\n' "$tool" >&2; return 70; }
 
-  local admin_env="${CFW_RENDER_ADMIN_ENV:-$HOME/ecosystem/vault/cfw-render-admin.env}"
-  if [[ -r "$admin_env" ]]; then
-    # shellcheck disable=SC1090
-    source "$admin_env"
-  fi
-
-  local _i=0
-  for _v in "${_cr_vars[@]}"; do
-    [[ -n "${_cr_preset[$_i]}" ]] && printf -v "$_v" '%s' "${_cr_preset[$_i]}"
-    _i=$(( _i + 1 ))
+  local attempt resp rc http_code
+  for attempt in 1 2 3; do
+    resp="$(curl -sS --max-time 30 -w '\n%{http_code}' -X POST "$url" \
+      -H "cfw-render-key: $CFW_RENDER_WORKER_KEY" \
+      -H "content-type: application/json" \
+      -H "accept: application/json, text/event-stream" \
+      -d "$body" 2>/dev/null)"
+    rc=$?
+    http_code="${resp##*$'\n'}"
+    resp="${resp%$'\n'*}"
+    if (( rc == 0 )) && [[ "$http_code" =~ ^2[0-9][0-9]$ ]] && [[ -n "$resp" ]]; then
+      break
+    fi
+    rc=75
+    (( attempt < 3 )) && sleep 1
   done
-  export CFW_API_BASE CFW_MASTER_API_KEY
-
-  local missing=()
-  [[ -z "${CFW_API_BASE:-}" ]] && missing+=("CFW_API_BASE")
-  [[ -z "${CFW_MASTER_API_KEY:-}" ]] && missing+=("CFW_MASTER_API_KEY")
-  if (( ${#missing[@]} > 0 )); then
-    printf 'cfw-render-fleet: missing required config var(s): %s (checked %s, process env). The master key is operator-only — never put it on a render box.\n' \
-      "${missing[*]}" "$admin_env" >&2
-    return 1
+  if (( rc != 0 )); then
+    printf 'cfw-render: cr_mcp_call_soft %s — unreachable/HTTP %s after retries\n' "$tool" "${http_code:-?}" >&2
+    return 75
   fi
-  return 0
+
+  python3 -c '
+import json, sys
+raw = sys.stdin.read()
+try:
+    env = json.loads(raw)
+except Exception as e:
+    print(f"non-JSON response: {e}")
+    sys.exit(70)
+if "error" in env:
+    print(json.dumps(env["error"]))
+    sys.exit(70)
+result = env.get("result", {})
+content = result.get("content", [])
+text = content[0].get("text", "") if content and isinstance(content[0], dict) else ""
+if result.get("isError"):
+    print(text or json.dumps(result))
+    sys.exit(70)
+if not text:
+    print(f"unexpected result shape: {result}")
+    sys.exit(70)
+json.loads(text)
+sys.stdout.write(text)
+' <<< "$resp"
 }
 
-# ---------------------------------------------------------------------------
-# cr_admin_call <method> <path> [json-body]
-# Single curl wrapper against the cfw-social MASTER-key admin surface
-# ($CFW_API_BASE$path, header cfw-api-key: $CFW_MASTER_API_KEY — the same auth
-# assertMasterOrAdmin() checks in cfw-social). Prints the raw response body on
-# stdout (even on an HTTP error, so the caller can inspect it); the HTTP status
-# goes to stderr. Returns 0 only on a 2xx, non-zero on curl failure or any
-# non-2xx. Assumes cr_load_admin_config already ran.
-# ---------------------------------------------------------------------------
-cr_admin_call() {
-  local method="$1" path="$2" body="${3:-}"
-  local url="${CFW_API_BASE%/}$path"
-  local curl_args=(-sS --max-time 30 -X "$method" "$url"
-    -H "cfw-api-key: $CFW_MASTER_API_KEY"
-    -H "content-type: application/json"
-    -w $'\n%{http_code}')
-  [[ -n "$body" ]] && curl_args+=(-d "$body")
-
-  local raw rc
-  raw="$(curl "${curl_args[@]}" 2>/dev/null)"
-  rc=$?
-  if (( rc != 0 )); then
-    printf 'cfw-render-fleet: admin call %s %s — curl failed (rc=%s)\n' "$method" "$path" "$rc" >&2
-    return 1
-  fi
-  # Last line = HTTP status (from -w); everything before = body.
-  local status="${raw##*$'\n'}"
-  local out="${raw%$'\n'*}"
-  printf '%s' "$out"
-  if [[ "$status" == 2* ]]; then
-    return 0
-  fi
-  printf 'cfw-render-fleet: admin call %s %s -> HTTP %s\n' "$method" "$path" "$status" >&2
-  return 1
+# cr_report_step <orderId> <workerId> <attemptId> <seq> <event> [extra-json-object]
+# Merges the identity fields with <extra-json-object> (stepId/outputs/checks/
+# ask/message/atIso) and calls report_render_step via cr_mcp_call_soft; same
+# return codes. The reply text body ({ok,duplicate,directive,code?,error?}) is
+# printed verbatim for the caller to parse.
+cr_report_step() {
+  local order_id="$1" worker_id="$2" attempt_id="$3" seq="$4" event="$5" extra="${6:-{\}}"
+  local args
+  args="$(python3 -c '
+import json, sys
+oid, wid, aid, seq, event, extra = sys.argv[1:7]
+a = json.loads(extra) if extra.strip() else {}
+if not isinstance(a, dict):
+    raise SystemExit("extra must be a JSON object")
+a.update({"orderId": oid, "workerId": wid, "attemptId": aid, "seq": int(seq), "event": event})
+print(json.dumps(a))
+' "$order_id" "$worker_id" "$attempt_id" "$seq" "$event" "$extra" 2>/dev/null)" \
+    || { printf 'cfw-render: cr_report_step — bad extra JSON for seq %s\n' "$seq" >&2; return 70; }
+  cr_mcp_call_soft report_render_step "$args"
 }
 
 # ---------------------------------------------------------------------------
@@ -583,7 +578,7 @@ print(json.dumps(d))
 # render watchdog's own `sleep $timeout_secs` outlives a normal-path completion
 # and wedges any caller that captures cfw-render.sh's output via `$( )` — see
 # CFW-292). Worse: it means a genuinely hung render is never actually killed by
-# the watchdog. Walk the tree with pgrep -P (present on both hst/Linux and
+# the watchdog. Walk the tree with pgrep -P (present on both Linux and
 # macOS — no new dependency) so every descendant gets the signal.
 # ---------------------------------------------------------------------------
 cr_kill_tree() {
@@ -660,7 +655,7 @@ cr_heartbeat_stop_if_pending() {
 # Same account order goofy_hugle -> recursing_pike, same rate-limit regex,
 # same "non-quota failure does not burn the 2nd account" rule. Ported from
 # zsh (`emulate -L zsh` / `typeset -ga`) to portable bash per plan §0.5 —
-# hst has no guaranteed zsh.
+# a Linux computer has no guaranteed zsh.
 # ---------------------------------------------------------------------------
 claude_ollama_failover() {
   local label="$1" model="$2" out="$3"; shift 3
@@ -821,13 +816,185 @@ cr_tick_lock_release() {
   return 0
 }
 
+# [M2-04] cr_tick_lock_touch — the kept-alive loop (D89) holds the lock for
+# days; refresh ts so the staleness rule above (timeout + 10 min) never lets a
+# second copy retake a lock whose owner is alive and merely idle.
+cr_tick_lock_touch() {
+  local dir="${CFW_RENDER_STATE_DIR:-$HOME/.cfw-render}"
+  [[ -d "$dir/tick.lock" ]] || return 0
+  printf 'pid=%s\nts=%s\n' "$$" "$(date +%s)" > "$dir/tick.lock/info" 2>/dev/null
+  return 0
+}
+
+# ===========================================================================
+# CAPACITY (M2-04, D52 / D78 / D51)
+# ===========================================================================
+# ONE table, in ONE place. `max` = how many requests this computer runs at
+# once, 1..6, from physical memory, capped by performance cores ÷ 2:
+#
+#   memory         max        (then: min(max, perfCores ÷ 2), floor 1)
+#   < 16 GB   →    1          (D78: still serves, one at a time; setup says so)
+#   16 GB     →    2
+#   24 GB     →    3
+#   32 GB     →    4
+#   48 GB     →    5
+#   64 GB +   →    6
+#
+# Before each pickup (cr_capacity_now): free memory must be at least
+# CR_CAPACITY_FREE_MB_FLOOR per request and the 1-min load average at most the
+# logical CPU count — otherwise only an urgent request may be claimed (the
+# worker then reports itself full: capacity.running = capacity.max).
+#
+# Test seams (never set in production): CFW_RENDER_CAPACITY_MEM_BYTES,
+# CFW_RENDER_CAPACITY_PERF_CORES, CFW_RENDER_CAPACITY_FREE_MB,
+# CFW_RENDER_CAPACITY_LOAD, CFW_RENDER_CAPACITY_NCPU replace the sysctl /
+# vm_stat probes one-for-one so the table and the floor can be driven locally.
+CR_CAPACITY_HARD_MAX=6
+CR_CAPACITY_FREE_MB_FLOOR=3072
+# D89: idle claim cadence and the claim-error back-off (base, cap). The unit is
+# a test seam only (1 s in the suite) — production is 60 s → 10 min.
+# Read by bin/cfw-render.sh's --loop (not in this file):
+# shellcheck disable=SC2034
+CR_CAPACITY_IDLE_CLAIM_SECS="${CFW_RENDER_CAPACITY_UNIT_SECS:-60}"
+# shellcheck disable=SC2034
+CR_CLAIM_BACKOFF_BASE_SECS="${CFW_RENDER_CAPACITY_UNIT_SECS:-60}"
+# awk, not $(( )): the test seam may be fractional (0.05 s).
+# shellcheck disable=SC2034
+CR_CLAIM_BACKOFF_MAX_SECS="$(awk -v u="${CFW_RENDER_CAPACITY_UNIT_SECS:-60}" 'BEGIN { print u * 10 }')"
+
+# [M2-04, D78] cr_capacity_setup_note — the setup summary line when max is 1.
+# Wording mirrored in cfw-social labels.ts by M2-12 (docs/capacity.md).
+CR_CAPACITY_ONE_AT_A_TIME_MSG="This computer runs one request at a time. It still serves your brands; bigger jobs just take turns."
+cr_capacity_setup_note() {
+  local mx; mx="$(cr_capacity_max)"
+  if [[ "$mx" == "1" ]]; then
+    printf '%s\n' "$CR_CAPACITY_ONE_AT_A_TIME_MSG"
+  else
+    printf 'This computer runs up to %s requests at a time.\n' "$mx"
+  fi
+}
+
+cr_capacity_sysctl() { # cr_capacity_sysctl <key> — "" when unavailable
+  command -v sysctl >/dev/null 2>&1 || { printf ''; return 0; }
+  sysctl -n "$1" 2>/dev/null | head -n1 | tr -d '[:space:]' || printf ''
+}
+
+# cr_capacity_table <mem_bytes> <perf_cores> — pure function of the table above.
+cr_capacity_table() {
+  local mem_bytes="${1:-0}" cores="${2:-0}" gb by_mem by_cores
+  gb=$(( mem_bytes / 1073741824 ))
+  if   (( gb >= 64 )); then by_mem=6
+  elif (( gb >= 48 )); then by_mem=5
+  elif (( gb >= 32 )); then by_mem=4
+  elif (( gb >= 24 )); then by_mem=3
+  elif (( gb >= 16 )); then by_mem=2
+  else by_mem=1; fi
+  by_cores=$(( cores / 2 ))
+  (( by_cores < 1 )) && by_cores=1
+  (( by_mem > by_cores )) && by_mem=$by_cores
+  (( by_mem > CR_CAPACITY_HARD_MAX )) && by_mem=$CR_CAPACITY_HARD_MAX
+  printf '%s' "$by_mem"
+}
+
+# cr_capacity_max — prints 1..6. CFW_RENDER_CONCURRENCY (owner) wins, capped.
+cr_capacity_max() {
+  local override="${CFW_RENDER_CONCURRENCY:-}" mem cores
+  if [[ "$override" =~ ^[0-9]+$ ]] && (( override >= 1 )); then
+    (( override > CR_CAPACITY_HARD_MAX )) && override=$CR_CAPACITY_HARD_MAX
+    printf '%s' "$override"; return 0
+  fi
+  mem="${CFW_RENDER_CAPACITY_MEM_BYTES:-}"
+  cores="${CFW_RENDER_CAPACITY_PERF_CORES:-}"
+  if [[ -z "$mem" ]]; then
+    if [[ "$(uname -s 2>/dev/null)" == "Darwin" ]]; then
+      mem="$(cr_capacity_sysctl hw.memsize)"
+    elif [[ -r /proc/meminfo ]]; then
+      mem="$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0) * 1024 ))"
+    fi
+  fi
+  if [[ -z "$cores" ]]; then
+    if [[ "$(uname -s 2>/dev/null)" == "Darwin" ]]; then
+      cores="$(cr_capacity_sysctl hw.perflevel0.physicalcpu)"
+      [[ -n "$cores" ]] || cores="$(cr_capacity_sysctl hw.physicalcpu)"
+    else
+      cores="$(nproc 2>/dev/null || echo 1)"
+    fi
+  fi
+  [[ "$mem" =~ ^[0-9]+$ ]] || mem=0
+  [[ "$cores" =~ ^[0-9]+$ ]] || cores=1
+  cr_capacity_table "$mem" "$cores"
+}
+
+# cr_capacity_probe — prints "<free_mb>\x1f<load_1min>\x1f<ncpu>"; blanks when
+# a probe is unavailable (treated as "no constraint" by cr_capacity_ok).
+cr_capacity_probe() {
+  local free_mb="${CFW_RENDER_CAPACITY_FREE_MB:-}" load="${CFW_RENDER_CAPACITY_LOAD:-}" ncpu="${CFW_RENDER_CAPACITY_NCPU:-}"
+  # Test seam: a file whose content (MB) replaces the free-memory probe, so a
+  # test can change the value while the loop runs. Empty file = no override.
+  if [[ -z "$free_mb" && -n "${CFW_RENDER_CAPACITY_FREE_MB_FILE:-}" && -s "$CFW_RENDER_CAPACITY_FREE_MB_FILE" ]]; then
+    free_mb="$(tr -d '[:space:]' < "$CFW_RENDER_CAPACITY_FREE_MB_FILE")"
+  fi
+  local os; os="$(uname -s 2>/dev/null)"
+  if [[ -z "$free_mb" ]]; then
+    if [[ "$os" == "Darwin" ]] && command -v vm_stat >/dev/null 2>&1; then
+      # free + inactive pages: inactive is reclaimable, so counting only "free"
+      # would call a healthy Mac full. Page size comes from vm_stat's header.
+      free_mb="$(vm_stat 2>/dev/null | awk '
+        /page size of/ { for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+$/) ps = $i }
+        /^Pages free:/ { gsub(/\./, "", $3); f = $3 }
+        /^Pages inactive:/ { gsub(/\./, "", $3); ia = $3 }
+        END { if (ps == "") ps = 4096; printf "%d", (f + ia) * ps / 1048576 }')"
+    elif [[ -r /proc/meminfo ]]; then
+      free_mb="$(awk '/^MemAvailable:/ {printf "%d", $2 / 1024}' /proc/meminfo 2>/dev/null)"
+    fi
+  fi
+  if [[ -z "$load" ]]; then
+    if [[ "$os" == "Darwin" ]]; then
+      load="$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | awk '{print $1}')"
+    elif [[ -r /proc/loadavg ]]; then
+      load="$(awk '{print $1}' /proc/loadavg 2>/dev/null)"
+    fi
+  fi
+  if [[ -z "$ncpu" ]]; then
+    if [[ "$os" == "Darwin" ]]; then ncpu="$(cr_capacity_sysctl hw.ncpu)"; else ncpu="$(nproc 2>/dev/null)"; fi
+  fi
+  printf '%s\x1f%s\x1f%s' "$free_mb" "$load" "$ncpu"
+}
+
+# cr_capacity_ok <free_mb> <load> <ncpu> — 0 when a NORMAL request may be
+# claimed; 1 when only urgent work should be (floor or load breached).
+cr_capacity_ok() {
+  local free_mb="$1" load="$2" ncpu="$3" load_int
+  if [[ "$free_mb" =~ ^[0-9]+$ ]] && (( free_mb < CR_CAPACITY_FREE_MB_FLOOR )); then return 1; fi
+  if [[ "$load" =~ ^[0-9]+(\.[0-9]+)?$ && "$ncpu" =~ ^[0-9]+$ ]]; then
+    load_int="${load%%.*}"
+    (( load_int > ncpu )) && return 1
+  fi
+  return 0
+}
+
+# cr_capacity_json <running> <max> <free_mb> <load> — the claim's `capacity`
+# field (plans/m2/CONTRACTS.md §3): {running, max, freeMemoryMb?, cpuLoad?}.
+cr_capacity_json() {
+  python3 -c '
+import json, sys
+running, mx, free_mb, load = sys.argv[1:5]
+c = {"running": int(running), "max": int(mx)}
+if free_mb.isdigit(): c["freeMemoryMb"] = int(free_mb)
+try:
+    if load: c["cpuLoad"] = float(load)
+except ValueError:
+    pass
+print(json.dumps(c))' "$1" "$2" "${3:-}" "${4:-}"
+}
+
 # ===========================================================================
 # TOOLCHAIN PREFLIGHT (CFW-199)
 # ===========================================================================
 #
 # WHY THIS EXISTS
-# CFW-188 found hst with **no ImageMagick at all**. `cfw-render.timer` was one
-# `systemctl enable` away from claiming production orders on a box that could
+# CFW-188 found a render computer with **no ImageMagick at all**, one schedule
+# load away from claiming production orders on a computer that could
 # not finish a single one — every claimed order would have burned its attempt,
 # blocked, and shown the owner a failure. Nothing in the install path or the
 # drainer's startup checked. `--dry` checks config, credentials and a live
@@ -853,7 +1020,8 @@ cr_tick_lock_release() {
 _CR_REQUIRED_BINS=(curl python3 node npx ffmpeg ffprobe magick)
 
 # ---------------------------------------------------------------------------
-# cr_resolve_worker_path — CFW-291. Walks _CR_REQUIRED_BINS plus `claude`,
+# cr_resolve_worker_path — CFW-291. Walks _CR_REQUIRED_BINS plus `claude` and
+# `codex` (M1-10a: either engine is optional here; only one must exist),
 # resolving each with `command -v` in the CALLER's current environment (at
 # install time that's the installer's real, rich shell — the only place we
 # can observe where things are actually installed). Takes the `dirname` of
@@ -867,9 +1035,24 @@ _CR_REQUIRED_BINS=(curl python3 node npx ffmpeg ffprobe magick)
 # function's only job is turning "found, and here's where" into a PATH
 # string. Prints the colon-joined result on stdout. Never fails.
 # ---------------------------------------------------------------------------
+# M3-07a: the private toolchain. When the desktop app has installed a bundle
+# at ~/CFW Render/app/tools/<version>/ with tools/current -> <version>, its
+# bin/ dir goes FIRST so a bundled ffmpeg/node/magick beats whatever Homebrew
+# or the system has. When the dir is absent the output is byte-identical to
+# the pre-M3-07 behaviour. CFW_RENDER_TOOLS_DIR overrides the tools root
+# (tests); CFW_RENDER_HOME overrides the app home.
+# ---------------------------------------------------------------------------
+_cr_tools_bin() {
+  printf '%s' "${CFW_RENDER_TOOLS_DIR:-${CFW_RENDER_HOME:-$HOME/CFW Render}/app/tools}/current/bin"
+}
+
 cr_resolve_worker_path() {
-  local result="" b path dir fb
-  for b in "${_CR_REQUIRED_BINS[@]}" claude; do
+  local result="" b path dir fb tools_bin
+  tools_bin="$(_cr_tools_bin)"
+  if [[ -d "$tools_bin" ]]; then
+    result="$tools_bin"
+  fi
+  for b in "${_CR_REQUIRED_BINS[@]}" claude codex; do
     path="$(command -v "$b" 2>/dev/null)" || continue
     dir="$(dirname "$path")"
     case ":$result:" in
@@ -887,7 +1070,7 @@ cr_resolve_worker_path() {
 }
 
 # ---------------------------------------------------------------------------
-# cr_probe_claude_headless [worker_path] — CFW-291. The actual new safety
+# cr_probe_engine_headless <codex|claude> [worker_path] — CFW-291/M1-10a. The actual new safety
 # net: doesn't just ask "does claude resolve" (cr_preflight already does
 # that) — asks "does claude actually RUN in the narrowest environment a
 # scheduled tick will ever get." Defaults worker_path to a fresh
@@ -896,7 +1079,7 @@ cr_resolve_worker_path() {
 # Mirrors cr_preflight's existing stub-Director skip (CFW_RENDER_DIRECTOR_CMD
 # set → SKIP, not FAIL — a test/dev box that intentionally stubs out claude
 # must not suddenly be required to install a real one). Otherwise runs the
-# probe exactly the way launchd/systemd will run the real tick: `env -i` (a
+# probe exactly the way launchd will run the real tick: `env -i` (a
 # fully stripped environment) with only PATH=<worker_path>, HOME, and a
 # short, explicit allow-list of vars a CLI can legitimately need to behave
 # correctly (TMPDIR, LANG, LC_ALL, USER — passed through only if already set
@@ -911,12 +1094,16 @@ cr_resolve_worker_path() {
 # tried are always included in the failure message so a human (or
 # install.sh) gets an actionable message instead of a bare non-zero.
 # ---------------------------------------------------------------------------
-cr_probe_claude_headless() {
-  local worker_path="${1:-}"
+cr_probe_engine_headless() {
+  local engine="${1:-}" worker_path="${2:-}"
+  case "$engine" in
+    claude|codex) ;;
+    *) printf 'cr_probe_engine_headless: engine must be codex|claude (got %s)\n' "${engine:-<empty>}" >&2; return 1 ;;
+  esac
   [[ -n "$worker_path" ]] || worker_path="$(cr_resolve_worker_path)"
 
   if [[ -n "${CFW_RENDER_DIRECTOR_CMD:-}" ]]; then
-    printf 'SKIP — CFW_RENDER_DIRECTOR_CMD is set (stub Director); not probing a real claude\n'
+    printf 'SKIP — CFW_RENDER_DIRECTOR_CMD is set (stub Director); not probing a real %s\n' "$engine"
     return 0
   fi
 
@@ -927,16 +1114,56 @@ cr_probe_claude_headless() {
   done
 
   local out rc
-  out="$(env -i "${env_args[@]}" claude --version 2>&1)"
+  out="$(env -i "${env_args[@]}" "$engine" --version 2>&1 < /dev/null)"
   rc=$?
   if (( rc == 0 )) && [[ -n "$out" ]]; then
     printf '%s' "$out"
     return 0
   fi
   {
-    printf 'claude --version failed under a headless probe (env -i, rc=%s)\n' "$rc"
+    printf '%s --version failed under a headless probe (env -i, rc=%s)\n' "$engine" "$rc"
     printf 'worker_path tried: %s\n' "$worker_path"
     printf 'captured output: %s\n' "${out:-<empty>}"
+  } >&2
+  return 1
+}
+
+# cr_probe_claude_headless [worker_path] — thin wrapper kept for callers/tests.
+cr_probe_claude_headless() {
+  cr_probe_engine_headless claude "${1:-}"
+}
+
+# ---------------------------------------------------------------------------
+# cr_install_select_engine [worker_path] — M1-10a. Probes codex then claude
+# headless under the worker PATH and prints the engine name cr_engine_detect
+# understands (`codex` | `claude-code`). Honours a preset CFW_RENDER_ENGINE
+# when that engine passes its probe. Returns 1 with the abort message when
+# neither runs. Never reads, copies, or inspects any vendor sign-in state —
+# the probe is `<cli> --version` only; sign-in is the vendor tool's business.
+# ---------------------------------------------------------------------------
+cr_install_select_engine() {
+  local worker_path="${1:-}"
+  [[ -n "$worker_path" ]] || worker_path="$(cr_resolve_worker_path)"
+  local -a order=(codex claude)
+  case "${CFW_RENDER_ENGINE:-}" in
+    codex) order=(codex claude) ;;
+    claude|claude-code) order=(claude codex) ;;
+  esac
+  local e
+  for e in "${order[@]}"; do
+    if cr_probe_engine_headless "$e" "$worker_path" >/dev/null 2>&1; then
+      case "$e" in
+        claude) printf 'claude-code' ;;
+        *) printf '%s' "$e" ;;
+      esac
+      return 0
+    fi
+  done
+  {
+    printf 'Neither Codex nor Claude Code runs under the worker PATH. '
+    printf 'Sign in through the vendor\xe2\x80\x99s own tool (`codex login` or `claude login`) and re-run. '
+    printf 'CFW never asks for or stores those credentials.\n'
+    printf 'worker_path tried: %s\n' "$worker_path"
   } >&2
   return 1
 }
@@ -1032,12 +1259,17 @@ cr_preflight() {
 
   (( quiet )) || { echo "cfw-render preflight — toolchain"; echo "-------------------------------------"; }
 
-  local b path
+  local b path tools_bin
+  tools_bin="$(_cr_tools_bin)"
   for b in "${_CR_REQUIRED_BINS[@]}"; do
     if path="$(command -v "$b" 2>/dev/null)"; then
       _cr_pf_row 0 "binary:$b" "$path"
     else
-      _cr_pf_row 1 "binary:$b" "not on PATH"
+      if [[ -d "$tools_bin" ]]; then
+        _cr_pf_row 1 "binary:$b" "not on PATH (not in $tools_bin either)"
+      else
+        _cr_pf_row 1 "binary:$b" "not on PATH"
+      fi
       missing+=("$b")
     fi
   done
@@ -1091,7 +1323,7 @@ cr_preflight() {
   {
     echo ""
     echo "PREFLIGHT: FAIL — this host cannot finish a render. Refusing to continue."
-    echo "cfw-render claims orders fleet-wide; starting here would claim work and burn it."
+    echo "cfw-render claims real orders; starting here would claim work and burn it."
     echo ""
     echo "Missing:"
     for b in "${missing[@]}"; do
@@ -1101,4 +1333,157 @@ cr_preflight() {
     echo "Re-run 'bin/cfw-render-preflight.sh' until it prints PASS, then start the timer."
   } >&2
   return 1
+}
+
+# ---------------------------------------------------------------------------
+# [M3-01a] Worker version, status file, pause / battery state.
+# ---------------------------------------------------------------------------
+CR_LIB_REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# cr_worker_version — contents of $REPO/VERSION (0.0.0 when missing).
+cr_worker_version() {
+  local v
+  v="$(head -n1 "$CR_LIB_REPO_DIR/VERSION" 2>/dev/null | tr -d '[:space:]')"
+  printf '%s\n' "${v:-0.0.0}"
+}
+
+# cr_on_battery — rc 0 iff the Mac is on battery power (pmset). No pmset →
+# not on battery. CFW_RENDER_PMSET_CMD overrides the command (tests).
+cr_on_battery() {
+  local cmd="${CFW_RENDER_PMSET_CMD:-pmset}"
+  command -v "$cmd" >/dev/null 2>&1 || return 1
+  "$cmd" -g batt 2>/dev/null | grep -q 'Battery Power'
+}
+
+# cr_pause_state — echoes owner | battery | none.
+cr_pause_state() {
+  if [[ -e "$CFW_RENDER_STATE_DIR/paused" ]]; then
+    echo owner
+  elif [[ ! -e "$CFW_RENDER_STATE_DIR/allow-battery" ]] && cr_on_battery; then
+    echo battery
+  else
+    echo none
+  fi
+}
+
+# [M3-01c] cr_computer_name — the owner-facing computer name, cached per process.
+CR_COMPUTER_NAME_CACHE=""
+cr_computer_name() {
+  if [[ -z "$CR_COMPUTER_NAME_CACHE" ]]; then
+    CR_COMPUTER_NAME_CACHE="${CFW_RENDER_COMPUTER_NAME:-}"
+    [[ -n "$CR_COMPUTER_NAME_CACHE" ]] || CR_COMPUTER_NAME_CACHE="$(scutil --get ComputerName 2>/dev/null || true)"
+    [[ -n "$CR_COMPUTER_NAME_CACHE" ]] || CR_COMPUTER_NAME_CACHE="$(hostname -s 2>/dev/null || true)"
+  fi
+  printf '%s' "$CR_COMPUTER_NAME_CACHE"
+}
+
+# [M3-01c] cr_recent_append <order_json_file_or_empty> <outcome> [orderId] —
+# one finished request into recent.ndjson (24 h, max 50 lines, atomic).
+cr_recent_append() {
+  local dir="$CFW_RENDER_STATE_DIR"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  ( umask 077
+    python3 -c '
+import json, sys, os, datetime
+f, outcome, oid, path = sys.argv[1:5]
+o = {}
+if f and os.path.isfile(f):
+    try: o = json.load(open(f))
+    except Exception: o = {}
+m = {"complete": "done", "completed": "done"}
+for k in ("released", "revoked", "engine_limit", "cancelled"): m[k] = "stopped"
+nowdt = datetime.datetime.now(datetime.timezone.utc)
+row = {"shortCode": o.get("shortCode"), "brand": o.get("brandName"), "result": m.get(outcome, "failed"),
+       "finishedAt": nowdt.strftime("%Y-%m-%dT%H:%M:%SZ"), "orderId": o.get("id") or oid or None}
+rows = []
+try:
+    for line in open(path):
+        try: rows.append(json.loads(line))
+        except Exception: pass
+except OSError: pass
+rows.append(row)
+cut = nowdt - datetime.timedelta(hours=24)
+def fresh(r):
+    try: return datetime.datetime.fromisoformat(r["finishedAt"].replace("Z", "+00:00")) >= cut
+    except Exception: return False
+rows = [r for r in rows if fresh(r)][-50:]
+tmp = path + ".tmp.%d" % os.getpid()
+with open(tmp, "w") as fh:
+    for r in rows: fh.write(json.dumps(r) + "\n")
+os.replace(tmp, path)
+' "${1:-}" "${2:-}" "${3:-}" "$dir/recent.ndjson"
+  ) 2>/dev/null || true
+}
+
+# cr_status_write — atomically writes $CFW_RENDER_STATE_DIR/status.json in the
+# frozen contract shape (CONTRACTS.md §1). [M3-01c] engines/activeEngine from
+# cfw-render-engine.sh; `now` from <orderDir>/current-step.json; `brands` from
+# brands.json; `recent` from recent.ndjson. Never holds keys or tokens.
+cr_status_write() {
+  local dir="$CFW_RENDER_STATE_DIR" tmp engines="[]" active="none"
+  mkdir -p "$dir" 2>/dev/null || return 1
+  tmp="$dir/status.json.tmp.$$"
+  if declare -F cr_engines_json >/dev/null; then
+    engines="$(cr_engines_json)"; active="$(cr_engine_active)"
+  fi
+  ( umask 077
+    python3 -c '
+import json, sys, glob, os, datetime
+a = sys.argv
+def b(s): return s == "1"
+def n(s, d=0):
+    try: return int(s)
+    except ValueError: return d
+def load(p, d):
+    try: return json.load(open(p))
+    except Exception: return d
+labels = {"codex": "ChatGPT", "claude-code": "Claude"}
+engines = []
+try: raw = json.loads(a[13] or "[]")
+except Exception: raw = []
+for e in raw:
+    if not isinstance(e, dict): continue
+    row = {"name": e.get("name"), "label": e.get("label") or labels.get(e.get("name"), e.get("name")), "auth": e.get("auth") or "signin",
+                    "signedIn": bool(e.get("signedIn")), "limit": e.get("limit") or "unknown",
+                    "resetsAt": e.get("resetsAt") or None}
+    if e.get("reason"): row["reason"] = e["reason"]
+    engines.append(row)
+sd = a[15]
+brands = []
+for x in load(os.path.join(sd, "brands.json"), []) or []:
+    if isinstance(x, dict) and x.get("id"):
+        brands.append({"id": x.get("id"), "name": x.get("name"), "serving": True})
+now = []
+for p in sorted(glob.glob(os.path.join(a[16], "*", "*", "current-step.json"))):
+    d = load(p, None)
+    if not isinstance(d, dict): continue
+    now.append({k: d.get(k) for k in ("shortCode", "brand", "recipe", "step", "steps", "stepLabel", "pct", "startedAt")})
+recent = []
+cut = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
+try: lines = open(os.path.join(sd, "recent.ndjson")).read().splitlines()
+except OSError: lines = []
+for line in reversed(lines):
+    try:
+        r = json.loads(line)
+        if datetime.datetime.fromisoformat(r["finishedAt"].replace("Z", "+00:00")) < cut: continue
+    except Exception: continue
+    recent.append({k: r.get(k) for k in ("shortCode", "brand", "result", "finishedAt")})
+    if len(recent) >= 20: break
+doc = {
+  "schema": 1, "workerVersion": a[2], "engines": engines,
+  "activeEngine": (a[14] if a[14] not in ("", "none") else None),
+  "computer": {"name": a[1] or None, "max": n(a[11], 1), "running": n(a[10]), "onBattery": b(a[5]),
+               "paused": b(a[3]), "pauseReason": a[4] or None, "updateRequired": b(a[7])},
+  "brands": brands, "now": now, "next": [], "recent": recent,
+  "lastCheckAt": a[9] or None, "lastError": a[8] or None,
+}
+json.dump(doc, open(a[12], "w"), indent=2)
+' "$(cr_computer_name)" "$(cr_worker_version)" "${CR_STATUS_PAUSED:-0}" \
+      "${CR_STATUS_PAUSE_REASON:-}" "${CR_STATUS_ON_BATTERY:-0}" "" \
+      "${CR_STATUS_UPDATE_REQUIRED:-0}" "${CR_STATUS_LAST_ERROR:-}" "${CR_STATUS_LAST_CHECK_AT:-}" \
+      "${CR_STATUS_RUNNING:-0}" "${CR_STATUS_MAX:-1}" "$tmp" "$engines" "$active" "$dir" \
+      "${CFW_RENDER_SCRATCH:-/nonexistent}"
+  ) 2>/dev/null || { rm -f "$tmp"; return 1; }
+  chmod 600 "$tmp" 2>/dev/null
+  mv -f "$tmp" "$dir/status.json"
 }

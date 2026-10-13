@@ -48,18 +48,245 @@ PRESIGNS = {}  # storageKey -> {orderId, workerId, filename, mimeType, bytes}
 R2_OBJECTS = {}  # storageKey -> {bytes, contentType, md5, puts}
 VERCEL_BODY_CAP = 4_500_000  # the platform's request-body cap on Vercel Functions
 PRESIGN_MIMES = ("image/jpeg", "image/png", "image/gif", "image/webp",
-                 "video/mp4", "video/quicktime", "video/webm", "video/x-m4v", "application/pdf")
+                 "video/mp4", "video/quicktime", "video/webm", "video/x-m4v", "application/pdf",
+                 # M1: json/text step saves (cfw-social presigns them as the `data` kind)
+                 "application/json", "text/markdown", "text/plain")
 
-# ── Admin fleet-enable surface (mock of cfw-social's master-key admin brands
-# route, exercised by cfw-render-fleet.sh). Brands are seeded from the queue's
-# brandIds, all renderFleetEnabled=false — the real default. MOCK_MASTER_KEY,
-# when set, is the master key the route requires in the `cfw-api-key` header
-# (else any non-empty key is accepted, matching a "master key configured"
-# server that only checks presence-vs-match).
-MASTER_KEY = os.environ.get("MOCK_MASTER_KEY")
-BRANDS_FLEET = {o.get("brandId"): False for o in QUEUE if o.get("brandId")}
+TOOLS = ["claim_render_order", "append_render_event", "complete_render_order", "block_render_order", "report_render_step"]
+# M3-01: computer-level tools. CFW_MOCK_NO_M3_TOOLS=1 = an older server that
+# does not have them (the worker must carry on). CFW_MOCK_UPDATE_REQUIRED=1 =
+# every claim answers updateRequired instead of an order.
+MOCK_NO_M3_TOOLS = os.environ.get("CFW_MOCK_NO_M3_TOOLS") == "1"
+MOCK_UPDATE_REQUIRED = os.environ.get("CFW_MOCK_UPDATE_REQUIRED") == "1"
+# [M3-01c] CFW_MOCK_COMPUTER_BRANDS=<json list> → top-level computerBrands on
+# every claim reply; CFW_MOCK_ORDER_EXTRA=<json object> merged into each order.
+MOCK_COMPUTER_BRANDS = json.loads(os.environ["CFW_MOCK_COMPUTER_BRANDS"]) if os.environ.get("CFW_MOCK_COMPUTER_BRANDS") else None
+MOCK_ORDER_EXTRA = json.loads(os.environ.get("CFW_MOCK_ORDER_EXTRA") or "{}")
+if not MOCK_NO_M3_TOOLS:
+    TOOLS += ["set_computer_paused", "set_computer_limit"]
 
-TOOLS = ["claim_render_order", "append_render_event", "complete_render_order", "block_render_order"]
+# ── M1-08 step harness surface ────────────────────────────────────────────────
+# Orders carrying `recipeVersion` are manifest-driven: the fixture may name a
+# manifest JSON path in `manifest` (else env CFW_MOCK_MANIFEST). Such an order
+# is claimable ONLY when claim.capabilities.manifests lists its recipe +
+# recipeVersion. Control-file interface (all under $CFW_MOCK_CONTROL_DIR):
+#   directive        content continue|pause|cancel — read on every report
+#   down             exists ⇒ every HTTP request answers 503
+#   reports.ndjson   every report_render_step request, one JSON per line
+# CFW_MOCK_ASKS=1 ⇒ needs_input is accepted (directive pause) instead of
+# answering not_implemented.
+CONTROL_DIR = os.environ.get("CFW_MOCK_CONTROL_DIR") or os.path.join(STATE_DIR, "control")
+os.makedirs(CONTROL_DIR, exist_ok=True)
+REPORTS_LOG = open(os.path.join(CONTROL_DIR, "reports.ndjson"), "a", buffering=1)
+MOCK_ASKS = os.environ.get("CFW_MOCK_ASKS") == "1"
+# ── M2-04 capacity / stop_after_step / superseded / resume / error modes ──────
+# CONTRACTS.md (M2) §3: claim.capacity {running, max, ...} → the server hands
+# out at most max - running per call, or ONE urgent order when running >= max.
+# Orders are served in seed order (the real server's brand-turn ordering is
+# M2-03's, not under test here); an order with "urgent": true is the only
+# thing a full worker gets. Env modes:
+#   CFW_MOCK_IGNORE_CAPACITY=1   old server: `capacity` ignored, one order per call
+#   CFW_MOCK_ORDERS_ARRAY=1      reply carries orders[] (up to max - running)
+#   CFW_MOCK_MAX_PER_CLAIM=<n>   at most n orders per claim call
+#   CFW_MOCK_STOP_AFTER_STEP=1   first accepted non-heartbeat report → stop_after_step
+#   CFW_MOCK_SUPERSEDE=1         first report after step_started → attempt_superseded
+#   CFW_MOCK_RESUME_FROM=<stepId> claim reply resumes there; savedOutputs are
+#       served from GET /mock-saved/<stepId>/<saveId> for every completed
+#       computer step before it (content "saved <stepId>/<saveId>")
+#   CFW_MOCK_RESUME_404=<stepId/saveId>  that one saved output answers 404
+#   CFW_MOCK_CLAIM_ERROR=1       every claim_render_order answers HTTP 500
+# Control file $CFW_MOCK_CONTROL_DIR/enqueue.json (a JSON list of orders):
+# read and consumed on the next claim — "a request is confirmed" mid-loop.
+MOCK_IGNORE_CAPACITY = os.environ.get("CFW_MOCK_IGNORE_CAPACITY") == "1"
+MOCK_ORDERS_ARRAY = os.environ.get("CFW_MOCK_ORDERS_ARRAY") == "1"
+MOCK_STOP_AFTER_STEP = os.environ.get("CFW_MOCK_STOP_AFTER_STEP") == "1"
+MOCK_SUPERSEDE = os.environ.get("CFW_MOCK_SUPERSEDE") == "1"
+MOCK_RESUME_FROM = os.environ.get("CFW_MOCK_RESUME_FROM") or None
+MOCK_RESUME_404 = os.environ.get("CFW_MOCK_RESUME_404") or None
+MOCK_CLAIM_ERROR = os.environ.get("CFW_MOCK_CLAIM_ERROR") == "1"
+MOCK_FLAGS = {"stop_sent": False, "supersede_sent": False}
+ATTEMPTS = {}   # orderId -> {"id", "number", "lastSeq", "seen": set()}
+OUTPUT_HOSTS = ("media.cfw.social", "media.mock.cfw.social", "cfw-media.test", "localhost")
+STEP_EVENTS = ("step_started", "step_completed", "step_skipped", "step_failed", "needs_input",
+               "heartbeat", "attempt_completed", "attempt_failed", "attempt_cancelled", "attempt_released")
+
+
+def mock_down():
+    return os.path.exists(os.path.join(CONTROL_DIR, "down"))
+
+
+def scripted_directive(default):
+    try:
+        with open(os.path.join(CONTROL_DIR, "directive")) as fh:
+            val = fh.read().strip()
+    except OSError:
+        return default
+    return val if val in ("continue", "pause", "cancel", "stop_after_step") else default
+
+
+def drain_enqueue():
+    path = os.path.join(CONTROL_DIR, "enqueue.json")
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path) as fh:
+            extra = json.load(fh)
+        os.remove(path)
+    except (OSError, ValueError):
+        return
+    for o in extra:
+        QUEUE.append(o)
+        ORDERS_BY_ID[o["id"]] = o
+
+
+def saved_outputs_for(order, manifest, resume):
+    out = []
+    for s in manifest.get("steps") or []:
+        if s.get("id") == resume:
+            break
+        if s.get("runsOn", "computer") != "computer":
+            continue
+        for v in s.get("saves") or []:
+            out.append({"stepId": s["id"], "saveId": v["id"],
+                        "url": f"http://127.0.0.1:{PORT}/mock-saved/{s['id']}/{v['id']}"})
+    return out
+
+
+def claim_one(o, args):
+    STATUS[o["id"]] = "claimed"
+    CLAIMED[o["id"]] = args["workerId"]
+    out = manifest_order_payload(o) if o.get("recipeVersion") is not None else o
+    if MOCK_ORDER_EXTRA:
+        out = dict(out, **MOCK_ORDER_EXTRA)
+    return out
+
+
+def claim_orders(args):
+    """Pick claimable orders honoring capacity; returns the list handed out."""
+    cap = args.get("capacity") if not MOCK_IGNORE_CAPACITY else None
+    if isinstance(cap, dict):
+        running, mx = int(cap.get("running", 0)), int(cap.get("max", 1))
+        urgent_only = running >= mx
+        budget = 1 if urgent_only else (mx - running)
+    else:
+        urgent_only, budget = False, 1
+    if not MOCK_ORDERS_ARRAY:
+        budget = min(budget, 1)
+    # CFW_MOCK_MAX_PER_CLAIM=<n>: hand out at most n per call even when the
+    # budget is larger (a slow queue the worker must come back for).
+    per_claim = os.environ.get("CFW_MOCK_MAX_PER_CLAIM")
+    if per_claim:
+        budget = min(budget, int(per_claim))
+    picked = []
+    for o in QUEUE:
+        if len(picked) >= budget:
+            break
+        if STATUS.get(o["id"], "queued") != "queued":
+            continue
+        if urgent_only and not o.get("urgent"):
+            continue
+        if o.get("recipeVersion") is not None and not capability_matches(o, args.get("capabilities")):
+            continue
+        picked.append(claim_one(o, args))
+    return picked
+
+
+def load_manifest(order):
+    path = order.get("manifest") or os.environ.get("CFW_MOCK_MANIFEST")
+    if isinstance(path, dict):
+        return path
+    if not path:
+        return None
+    with open(path) as fh:
+        return json.load(fh)
+
+
+def capability_matches(order, capabilities):
+    if not isinstance(capabilities, dict):
+        return False
+    for m in capabilities.get("manifests") or []:
+        if isinstance(m, dict) and m.get("recipe") == order.get("recipe") \
+                and m.get("recipeVersion") == order.get("recipeVersion"):
+            return True
+    return False
+
+
+def manifest_order_payload(order):
+    manifest = load_manifest(order) or {}
+    steps = manifest.get("steps") or []
+    resume = next((s["id"] for s in steps if s.get("runsOn") == "computer"), None)
+    attempt = {"id": "att_1", "number": 1}
+    ATTEMPTS[order["id"]] = {"id": attempt["id"], "number": 1, "lastSeq": 0, "seen": set(),
+                            "stepIds": {s["id"] for s in steps}}
+    out = dict(order)
+    saved = []
+    if MOCK_RESUME_FROM and any(s.get("id") == MOCK_RESUME_FROM for s in steps):
+        resume = MOCK_RESUME_FROM
+        saved = saved_outputs_for(order, manifest, resume)
+    out.update({"attempt": attempt, "manifest": manifest, "resumeFromStepId": resume,
+                "savedOutputs": saved,
+                # the fixture may seed inputs/answers (M1-03 fills them for real)
+                "inputs": order.get("inputs") or {}, "answers": order.get("answers") or {}})
+    return out
+
+
+def step_reply(ok, code=None, error=None, directive="continue", duplicate=False):
+    payload = {"ok": ok, "duplicate": duplicate, "directive": directive}
+    if code is not None:
+        payload["code"] = code
+    if error is not None:
+        payload["error"] = error
+    return payload
+
+
+def record_report(args, reply):
+    # Every non-duplicate arrival (accepted or rejected) lands in reports.ndjson
+    # in arrival order; a duplicate seq stores nothing, per the contract.
+    if not reply.get("duplicate"):
+        REPORTS_LOG.write(json.dumps({**args, "_reply": reply}) + "\n")
+
+
+def handle_report_step(args):
+    order_id = args.get("orderId")
+    if CLAIMED.get(order_id) != args.get("workerId"):
+        return step_reply(False, "order_not_held", "order not held by this worker", "cancel")
+    att = ATTEMPTS.get(order_id)
+    if att is None or args.get("attemptId") != att["id"]:
+        return step_reply(False, "attempt_superseded", "attempt is not current", "cancel")
+    if MOCK_SUPERSEDE and args.get("event") != "step_started" and not MOCK_FLAGS["supersede_sent"] \
+            and any(json.loads(l).get("event") == "step_started" for l in open(REPORTS_LOG.name) if l.strip()):
+        MOCK_FLAGS["supersede_sent"] = True
+        return step_reply(False, "attempt_superseded", "another computer holds this request", "cancel")
+    event = args.get("event")
+    if event not in STEP_EVENTS:
+        return step_reply(False, "bad_event", f"unknown event {event!r}", scripted_directive("continue"))
+    seq = args.get("seq")
+    if not isinstance(seq, int):
+        return step_reply(False, "bad_seq", "seq must be an integer", scripted_directive("continue"))
+    with LOCK:
+        if seq in att["seen"]:
+            return step_reply(True, directive=scripted_directive("continue"), duplicate=True)
+        if seq < att["lastSeq"]:
+            return step_reply(False, "seq_out_of_order", f"seq {seq} < last {att['lastSeq']}",
+                              scripted_directive("continue"))
+        step_id = args.get("stepId")
+        if step_id is not None and step_id not in att["stepIds"]:
+            return step_reply(False, "unknown_step", f"step {step_id!r} not in manifest",
+                              scripted_directive("continue"))
+        for o in args.get("outputs") or []:
+            host = (o.get("url", "").split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]) if isinstance(o, dict) else ""
+            if host not in OUTPUT_HOSTS:
+                return step_reply(False, "invalid_output_url", f"output url host {host!r} not allowed",
+                                  scripted_directive("continue"))
+        if event == "needs_input" and not MOCK_ASKS:
+            return step_reply(False, "not_implemented", "asks not implemented", "pause")
+        att["seen"].add(seq)
+        att["lastSeq"] = seq
+    default = "pause" if event == "needs_input" else "continue"
+    if MOCK_STOP_AFTER_STEP and event != "heartbeat" and not MOCK_FLAGS["stop_sent"]:
+        MOCK_FLAGS["stop_sent"] = True
+        return step_reply(True, directive="stop_after_step")
+    return step_reply(True, directive=scripted_directive(default))
 
 
 def log_call(name, args, result_ok):
@@ -78,15 +305,32 @@ def handle_tool_call(name, args):
         if r is not None and (not isinstance(r, dict) or r.get("kind") not in ("mac", "box", "byo", "fleet")):
             log_call(name, args, False)
             return rpc_result({"order": None, "error": "bad renderer identity"}), None
-        with LOCK:
-            for o in QUEUE:
-                if STATUS.get(o["id"], "queued") == "queued":
-                    STATUS[o["id"]] = "claimed"
-                    CLAIMED[o["id"]] = args["workerId"]
-                    log_call(name, args, True)
-                    return rpc_result({"order": o}), None
+        if MOCK_CLAIM_ERROR:
+            log_call(name, args, False)
+            return None, {"code": -32000, "message": "mock claim error", "http": 500}
+        if MOCK_UPDATE_REQUIRED:
             log_call(name, args, True)
-            return rpc_result({"order": None}), None
+            return rpc_result({"order": None, "updateRequired": True, "minWorkerVersion": "9.0.0"}), None
+        with LOCK:
+            drain_enqueue()
+            picked = claim_orders(args)
+            log_call(name, args, True)
+            reply = {"order": picked[0] if picked else None}
+            if MOCK_ORDERS_ARRAY:
+                reply["orders"] = picked
+            if MOCK_COMPUTER_BRANDS is not None:
+                reply["computerBrands"] = MOCK_COMPUTER_BRANDS
+            return rpc_result(reply), None
+
+    if name in ("set_computer_paused", "set_computer_limit") and not MOCK_NO_M3_TOOLS:
+        log_call(name, args, True)
+        return rpc_result({"ok": True}), None
+
+    if name == "report_render_step":
+        reply = handle_report_step(args)
+        record_report(args, reply)
+        log_call(name, args, bool(reply.get("ok")))
+        return rpc_result(reply), None
 
     if name == "append_render_event":
         order_id = args.get("orderId")
@@ -176,6 +420,27 @@ def handle_tool_call(name, args):
         log_call(name, args, True)
         return rpc_result({"ok": True}), None
 
+    # M3-04a: the app-driven installer's setup reports + probe order.
+    if name == "revoke_this_computer":
+        # M3-06a: deactivate THIS computer's render key.
+        log_call(name, args, True)
+        return rpc_result({"ok": True}), None
+    if name == "create_probe_render_order":
+        log_call(name, args, True)
+        return rpc_result({"ok": True, "orderId": "probe_1"}), None
+    if name == "report_byoa_setup_step":
+        if args.get("step") == "probe_render":
+            with LOCK:
+                MOCK_FLAGS["probe_polls"] = MOCK_FLAGS.get("probe_polls", 0) + 1
+                n = MOCK_FLAGS["probe_polls"]
+            if n <= int(os.environ.get("CFW_MOCK_PROBE_PENDING", "2")):
+                log_call(name, args, False)
+                return rpc_result({"ok": False, "error": "probe_order_not_done"}), None
+            log_call(name, args, True)
+            return rpc_result({"ok": True, "state": "ready"}), None
+        log_call(name, args, True)
+        return rpc_result({"ok": True}), None
+
     # Unimplemented tool (e.g. requeue_render_order) — mirrors the real gap
     # (implementation-plan.md §0.4): the server genuinely has no such tool.
     log_call(name, args, False)
@@ -228,67 +493,89 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _admin_denied(self):
-        """Return True (and send 401) unless the master key is presented.
-        Mirrors cfw-social assertMasterOrAdmin() for the master-key path."""
-        key = self.headers.get("cfw-api-key", "")
-        if not key:
-            self._send_json({"error": "Not found"}, 404)
-            return True
-        if MASTER_KEY is not None and key != MASTER_KEY:
-            self._send_json({"error": "Invalid master API key"}, 401)
-            return True
-        return False
-
-    def _admin_brand_id(self):
-        """/api/v1/admin/brands/<id> -> <id>, else None."""
-        prefix = "/api/v1/admin/brands/"
-        if self.path.startswith(prefix):
-            rest = self.path[len(prefix):]
-            return rest.split("?", 1)[0].split("/", 1)[0] or None
-        return None
+    def handle_one_request(self):
+        # M1-08 unreachable switch: $CFW_MOCK_CONTROL_DIR/down ⇒ 503 for everything.
+        if not mock_down():
+            return BaseHTTPRequestHandler.handle_one_request(self)
+        self.raw_requestline = self.rfile.readline(65537)
+        if not self.raw_requestline:
+            self.close_connection = True
+            return
+        if not self.parse_request():
+            return
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length:
+            self.rfile.read(length)
+        self._send_json({"error": "mock down"}, 503)
 
     def do_GET(self):
-        brand_id = self._admin_brand_id()
-        if brand_id is not None:
-            if self._admin_denied():
+        if self.path.startswith("/mock-saved/"):
+            token = self.path[len("/mock-saved/"):]
+            if MOCK_RESUME_404 and token == MOCK_RESUME_404:
+                self._send_json({"error": "gone"}, 404)
                 return
-            if brand_id not in BRANDS_FLEET:
-                self._send_json({"error": "not_found"}, 404)
-                return
-            self._send_json({"id": brand_id, "renderFleetEnabled": BRANDS_FLEET[brand_id]})
+            body = f"saved {token}\n".encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
         # Any other GET (e.g. the test harness's /api/v1/mcp reachability probe)
         # just needs to answer so the socket is proven live.
         self._send_json({"error": "not found"}, 404)
 
-    def do_PATCH(self):
-        brand_id = self._admin_brand_id()
-        if brand_id is None:
-            self._send_json({"error": "not found"}, 404)
-            return
-        if self._admin_denied():
-            return
-        length = int(self.headers.get("Content-Length", 0))
-        raw = self.rfile.read(length) if length else b""
-        try:
-            body = json.loads(raw)
-        except Exception:
-            self._send_json({"error": "Invalid JSON"}, 400)
-            return
-        if "renderFleetEnabled" not in body or not isinstance(body["renderFleetEnabled"], bool):
-            self._send_json({"error": "Expected { renderFleetEnabled: boolean }"}, 422)
-            return
-        if brand_id not in BRANDS_FLEET:
-            self._send_json({"error": "not_found"}, 404)
-            return
-        with LOCK:
-            BRANDS_FLEET[brand_id] = body["renderFleetEnabled"]
-        self._send_json({"ok": True, "id": brand_id, "renderFleetEnabled": BRANDS_FLEET[brand_id]})
-
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length) if length else b""
+
+        if self.path in ("/api/v1/computers/logs", "/api/v1/computers/crash"):
+            # M3-06a: support uploads. The render key is checked, NEVER logged.
+            which = self.path.rsplit("/", 1)[1]
+            key = self.headers.get("cfw-render-key", "")
+            if not key.startswith("cfw_render_"):
+                CALLS_LOG.write(json.dumps({"tool": which, "ok": False}) + "\n")
+                self._send_json({"error": "unauthorized"}, 401)
+                return
+            if which == "logs":
+                ok = raw[:2] == b"\x1f\x8b" and len(raw) <= 5 * 1024 * 1024
+                if ok:
+                    with open(os.path.join(STATE_DIR, "logs-upload.gz"), "wb") as f:
+                        f.write(raw)
+                CALLS_LOG.write(json.dumps({"tool": "logs", "args": {"bytes": len(raw)}, "ok": ok}) + "\n")
+                if not ok:
+                    self._send_json({"error": "bad_bundle"}, 400)
+                    return
+                self._send_json({"ok": True, "reference": "LOG-TEST", "expiresInDays": 30})
+                return
+            try:
+                body = json.loads(raw or b"{}")
+            except Exception:
+                body = None
+            ok = isinstance(body, dict) and isinstance(body.get("frames"), list)
+            CALLS_LOG.write(json.dumps({"tool": "crash", "args": body if ok else None, "ok": ok}) + "\n")
+            self._send_json({"ok": True} if ok else {"error": "bad_request"}, 200 if ok else 400)
+            return
+
+        if self.path == "/api/v1/render-worker-keys/exchange":
+            # M3-04a: brand key → render key. The brand key is NEVER logged.
+            bkey = self.headers.get("x-api-key", "")
+            try:
+                body = json.loads(raw or b"{}")
+            except Exception:
+                body = None
+            dn = body.get("deviceName") if isinstance(body, dict) else None
+            if not bkey.startswith("cfw_") or bkey == "cfw_bad":
+                CALLS_LOG.write(json.dumps({"tool": "exchange", "args": {"deviceName": dn}, "ok": False}) + "\n")
+                self._send_json({"error": "invalid_api_key"}, 401)
+                return
+            if not isinstance(dn, str) or not 1 <= len(dn) <= 100:
+                CALLS_LOG.write(json.dumps({"tool": "exchange", "args": {"deviceName": dn}, "ok": False}) + "\n")
+                self._send_json({"error": "bad_request"}, 400)
+                return
+            CALLS_LOG.write(json.dumps({"tool": "exchange", "args": {"deviceName": dn}, "ok": True}) + "\n")
+            self._send_json({"key": {"plain": "cfw_render_mockexchanged000", "id": "rk_1"}}, 201)
+            return
 
         if self.path == "/api/v1/mcp":
             key = self.headers.get("cfw-render-key", "")
@@ -310,7 +597,10 @@ class Handler(BaseHTTPRequestHandler):
                 name = params.get("name")
                 args = params.get("arguments", {})
                 result, error = handle_tool_call(name, args)
-                if error:
+                if error and error.get("http"):
+                    status = error.pop("http")
+                    self._send_json({"jsonrpc": "2.0", "id": rid, "error": error}, status)
+                elif error:
                     self._send_json({"jsonrpc": "2.0", "id": rid, "error": error})
                 else:
                     self._send_json({"jsonrpc": "2.0", "id": rid, "result": result})

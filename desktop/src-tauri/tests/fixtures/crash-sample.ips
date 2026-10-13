@@ -1,0 +1,93 @@
+{"app_name": "CFW Render", "timestamp": "2026-10-12 10:00:00.00 +0100", "app_version": "0.1.0", "slice_uuid": "0b1c", "build_version": "1", "platform": 1, "bundleID": "social.cfw.render", "share_with_app_devs": 0, "is_first_party": 0, "bug_type": "309", "os_version": "macOS 15.3.1 (24D70)", "roots_installed": 0, "name": "CFW Render", "incident_id": "A1B2"}
+{
+  "uptime": 1200,
+  "procRole": "Foreground",
+  "version": 2,
+  "userID": 501,
+  "deployVersion": 210,
+  "modelCode": "Mac14,2",
+  "procPath": "/Applications/CFW Render.app/Contents/MacOS/cfw_render_app",
+  "procName": "cfw_render_app",
+  "osVersion": {
+    "train": "macOS 15.3.1",
+    "build": "24D70",
+    "releaseType": "User"
+  },
+  "exception": {
+    "codes": "0x0000000000000001, 0x0000000000000010",
+    "rawCodes": [
+      1,
+      16
+    ],
+    "type": "EXC_BAD_ACCESS",
+    "signal": "SIGSEGV",
+    "subtype": "KERN_INVALID_ADDRESS at 0x0000000000000010"
+  },
+  "termination": {
+    "flags": 0,
+    "code": 11,
+    "namespace": "SIGNAL",
+    "indicator": "Segmentation fault: 11",
+    "byProc": "exc handler",
+    "byPid": 812
+  },
+  "faultingThread": 0,
+  "threads": [
+    {
+      "triggered": true,
+      "id": 1,
+      "queue": "com.apple.main-thread",
+      "frames": [
+        {
+          "imageOffset": 4012,
+          "symbol": "__pthread_kill",
+          "symbolLocation": 8,
+          "imageIndex": 1
+        },
+        {
+          "imageOffset": 51200,
+          "symbol": "cfw_render_app_lib::support::crash_scan_in",
+          "symbolLocation": 120,
+          "imageIndex": 0
+        },
+        {
+          "imageOffset": 61000,
+          "symbol": "cfw_render_app_lib::run",
+          "symbolLocation": 44,
+          "imageIndex": 0
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "frames": [
+        {
+          "imageOffset": 100,
+          "symbol": "start_wqthread",
+          "imageIndex": 2
+        }
+      ]
+    }
+  ],
+  "usedImages": [
+    {
+      "source": "P",
+      "arch": "arm64",
+      "base": 4294967296,
+      "name": "cfw_render_app",
+      "path": "/Applications/CFW Render.app/Contents/MacOS/cfw_render_app"
+    },
+    {
+      "source": "P",
+      "arch": "arm64e",
+      "name": "libsystem_kernel.dylib",
+      "path": "/usr/lib/system/libsystem_kernel.dylib"
+    },
+    {
+      "source": "P",
+      "arch": "arm64e",
+      "name": "libsystem_pthread.dylib",
+      "path": "/usr/lib/system/libsystem_pthread.dylib"
+    }
+  ]
+}

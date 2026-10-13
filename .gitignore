@@ -4,3 +4,10 @@ node_modules/
 scratch/
 
 __pycache__/
+desktop/node_modules
+desktop/dist
+desktop/src-tauri/target
+desktop/src-tauri/gen
+desktop/src-tauri/resources/worker/*
+!desktop/src-tauri/resources/worker/README.md
+desktop/dist-release
