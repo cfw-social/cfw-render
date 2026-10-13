@@ -1,0 +1,47 @@
+{
+  "zai": {
+    "label": "Z.AI",
+    "baseUrl": "https://api.z.ai/api/paas/v4",
+    "envKey": "ZAI_API_KEY",
+    "wireApi": "chat",
+    "defaultModel": "glm-4.6",
+    "keyUrl": "https://z.ai/manage-apikey/apikey-list",
+    "verify": true
+  },
+  "moonshot": {
+    "label": "Moonshot",
+    "baseUrl": "https://api.moonshot.ai/v1",
+    "envKey": "MOONSHOT_API_KEY",
+    "wireApi": "chat",
+    "defaultModel": "kimi-k2-0905-preview",
+    "keyUrl": "https://platform.moonshot.ai/console/api-keys",
+    "verify": true
+  },
+  "minimax": {
+    "label": "MiniMax",
+    "baseUrl": "https://api.minimax.io/v1",
+    "envKey": "MINIMAX_API_KEY",
+    "wireApi": "chat",
+    "defaultModel": "MiniMax-M2",
+    "keyUrl": "https://www.minimax.io/platform/user-center/basic-information/interface-key",
+    "verify": true
+  },
+  "xai": {
+    "label": "xAI",
+    "baseUrl": "https://api.x.ai/v1",
+    "envKey": "XAI_API_KEY",
+    "wireApi": "chat",
+    "defaultModel": "grok-4",
+    "keyUrl": "https://console.x.ai/",
+    "verify": true
+  },
+  "openrouter": {
+    "label": "OpenRouter",
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "envKey": "OPENROUTER_API_KEY",
+    "wireApi": "chat",
+    "defaultModel": "openai/gpt-5",
+    "keyUrl": "https://openrouter.ai/settings/keys",
+    "verify": true
+  }
+}

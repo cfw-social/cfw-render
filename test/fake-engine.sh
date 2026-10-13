@@ -12,9 +12,17 @@
 #   FAKE_ENGINE_LIMIT_ENGINE=<codex|claude-code|all> + FAKE_ENGINE_LIMIT_STEP=<stepId>
 #       [M3-01b] when CFW_ENGINE_NAME matches on that step, print the vendor
 #       usage-limit fixture and exit 1 without writing saves
+#       [M3-08b] gemini → gemini-quota.txt; API-key engines → apikey-$FAKE_ENGINE_APIKEY_FIXTURE.txt (429|credit)
 #   FAKE_ENGINE_SLEEP=<secs>   sleep before writing saves (status.json requests test)
 set -euo pipefail
 cat > /dev/null   # consume the prompt
+# [M3-08b] FAKE_ENGINE_DUMP_DIR: record this process's argv + env (+ CODEX_HOME config).
+if [[ -n "${FAKE_ENGINE_DUMP_DIR:-}" ]]; then
+  mkdir -p "$FAKE_ENGINE_DUMP_DIR"
+  printf '%s\n' "$0" "$@" > "$FAKE_ENGINE_DUMP_DIR/${CFW_ENGINE_NAME:-x}.argv"
+  env > "$FAKE_ENGINE_DUMP_DIR/${CFW_ENGINE_NAME:-x}.env"
+  [[ -n "${CODEX_HOME:-}" && -f "$CODEX_HOME/config.toml" ]] && { echo "$CODEX_HOME" > "$FAKE_ENGINE_DUMP_DIR/${CFW_ENGINE_NAME:-x}.codexhome"; cp "$CODEX_HOME/config.toml" "$FAKE_ENGINE_DUMP_DIR/${CFW_ENGINE_NAME:-x}.config.toml"; }
+fi
 step="${CFW_STEP_ID:-}"
 counter=".fake-engine-runs"
 runs=0; [[ -f "$counter" ]] && runs="$(cat "$counter")"
@@ -26,7 +34,12 @@ if [[ -n "${FAKE_ENGINE_ASK_STEP:-}" && "$FAKE_ENGINE_ASK_STEP" == "$step" && "$
 fi
 if [[ -n "${FAKE_ENGINE_LIMIT_ENGINE:-}" && "${FAKE_ENGINE_LIMIT_STEP:-}" == "$step" ]] \
    && [[ "$FAKE_ENGINE_LIMIT_ENGINE" == "all" || "$FAKE_ENGINE_LIMIT_ENGINE" == "${CFW_ENGINE_NAME:-}" ]]; then
-  fx="codex-limit.txt"; [[ "${CFW_ENGINE_NAME:-}" == "claude-code" ]] && fx="claude-limit.txt"
+  fx="codex-limit.txt"
+  case "${CFW_ENGINE_NAME:-}" in
+    claude-code) fx="claude-limit.txt" ;;
+    gemini) fx="gemini-quota.txt" ;;
+    zai|moonshot|minimax|xai|openrouter) fx="apikey-${FAKE_ENGINE_APIKEY_FIXTURE:-429}.txt" ;;
+  esac
   cat "$(dirname "${BASH_SOURCE[0]}")/fixtures/engine-limits/$fx"
   exit 1
 fi

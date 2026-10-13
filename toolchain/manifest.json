@@ -95,6 +95,19 @@
       ],
       "pinNote": "verify in CI build",
       "sha256": "TODO-fill-from-first-build"
+    },
+    {
+      "name": "gemini",
+      "version": "0.9.0",
+      "license": "Apache-2.0",
+      "source": "https://github.com/google-gemini/gemini-cli",
+      "npmPackage": "@google/gemini-cli",
+      "relocatable": true,
+      "provides": [
+        "gemini"
+      ],
+      "pinNote": "verify version in CI build",
+      "sha256": "TODO-fill-from-first-build"
     }
   ],
   "archives": {

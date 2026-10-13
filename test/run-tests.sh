@@ -2562,6 +2562,7 @@ c21_worker() {
     export CFW_RENDER_CONCURRENCY=1
     export CFW_WORKER_ID="w-m2"
     export CFW_RENDER_UPLOAD_MODE=multipart
+    export CFW_RENDER_SECURITY_CMD=/usr/bin/false   # [M3-08b] no Keychain keys unless a case adds a stub
     for kv in "$@"; do export "${kv?}"; done
     "$REPO_DIR/bin/cfw-render.sh" "$mode" > "$dir/worker.out" 2>&1
   )
@@ -3051,7 +3052,7 @@ mb3_claims_a="$(m3_tool_count "$mb3" claim_render_order)"
 c21_worker "$mb3" $((MOCK_PORT_BASE + 951)) --once FAKE_ENGINE_LIMIT_ENGINE=all FAKE_ENGINE_LIMIT_STEP=a
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 mb3_claims_b="$(m3_tool_count "$mb3" claim_render_order)"
-mb3_status="$(m3_status "$mb3" '" ".join(e["limit"] for e in d["engines"])')"
+mb3_status="$(m3_status "$mb3" '" ".join(e["limit"] for e in d["engines"] if e["signedIn"])')"
 mb3_err="$(m3_status "$mb3" 'd["lastError"]')"
 if [[ "$mb3_rel" == "1" && "$mb3_reason" == "engine_limit" && "$(wc -l <<< "$mb3_lim" | tr -d ' ')" == "1" && "$mb3_lim" == *'"until": "20'* && "$mb3_failed" == "0" && "$mb3_claims_b" == "$mb3_claims_a" && "$mb3_status" == "limited limited" && "$mb3_err" == "AI limit reached; resumes "* ]]; then
   pass "both limited: attempt_released(engine_limit) once, set_computer_limit once with until, no attempt_failed; 2nd pass 0 claims, status engines=limited limited"
@@ -3515,6 +3516,152 @@ else
   fail "send-logs dry/offline" "dry=$m6f_dry path=$m6f_path up=$m6f_up $(cat "$m6f/up.log")"
 fi
 rm -rf "$m6f"
+
+# ===========================================================================
+# [M3-08b] more engines: gemini + API-key providers, credit limits
+# ===========================================================================
+# m8_keychain <dir> <engine=key>... — a `security` stub; items live in <dir>/kc/<account>.
+m8_keychain() {
+  local d="$1"; shift
+  mkdir -p "$d/kc"
+  for kv in "$@"; do printf '%s' "${kv#*=}" > "$d/kc/${kv%%=*}"; done
+  cat > "$d/security" <<SEC
+#!/usr/bin/env bash
+acct=""; w=0
+while (( \$# )); do case "\$1" in -a) acct="\$2"; shift ;; -w) w=1 ;; esac; shift; done
+[[ -n "\$acct" && -f "$d/kc/\$acct" ]] || exit 44
+(( w )) && cat "$d/kc/\$acct"
+exit 0
+SEC
+  chmod +x "$d/security"
+}
+m8_json() { CFW_RENDER_STATE_DIR="$1/cr-state" CFW_RENDER_SECURITY_CMD="$1/security" CFW_RENDER_ENGINE_CMD="$TEST_DIR/fake-engine.sh" \
+  bash -c 'cr_log(){ :; }; source "$1/bin/cfw-render-engine.sh"; cr_engines_json' _ "$REPO_DIR"; }
+
+echo "=== Case M3-08b-1: cr_engines_json lists 8 engines with label/auth; Keychain zai item → only zai (of the key engines) signed in ==="
+m8a="$(mktemp -d)"; mkdir -p "$m8a/cr-state"; m8_keychain "$m8a" zai=k-zai-000
+m8a_out="$(m8_json "$m8a" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print(" ".join("%s/%s/%s/%s" % (e["name"], e["label"], e["auth"], "Y" if e["signedIn"] else "n") for e in d))')"
+m8a_want="codex/ChatGPT/signin/Y claude-code/Claude/signin/Y gemini/Gemini/api_key/n zai/Z.AI/api_key/Y moonshot/Moonshot/api_key/n minimax/MiniMax/api_key/n xai/xAI/api_key/n openrouter/OpenRouter/api_key/n"
+if [[ "$m8a_out" == "$m8a_want" ]]; then
+  pass "engines json: 8 engines, labels + auth, zai signedIn via Keychain only"
+else
+  fail "engines json" "got '$m8a_out'"
+fi
+rm -rf "$m8a"
+
+echo "=== Case M3-08b-2: step on zai → temp CODEX_HOME under the request, key only in engine env, ~/.codex untouched ==="
+m8b="$(mktemp -d)"; m8b_key="zai-secret-$RANDOM-$RANDOM"
+m8_keychain "$m8b" "zai=$m8b_key"
+mkdir -p "$m8b/home/.codex"; echo planted > "$m8b/home/.codex/marker"
+# The fake HOME hides the real Playwright cache from preflight: point at it.
+m8b_pw="${PLAYWRIGHT_BROWSERS_PATH:-}"
+for r in "$HOME/Library/Caches/ms-playwright" "$HOME/.cache/ms-playwright"; do [[ -z "$m8b_pw" && -d "$r" ]] && m8b_pw="$r"; done
+c21_setup "$m8b" $((MOCK_PORT_BASE + 990)) harness-3step '[{"id":"o1"}]'
+c21_worker "$m8b" $((MOCK_PORT_BASE + 990)) --once CFW_RENDER_ENGINE=zai CFW_RENDER_SECURITY_CMD="$m8b/security" \
+  FAKE_ENGINE_DUMP_DIR="$m8b/dump" HOME="$m8b/home" PLAYWRIGHT_BROWSERS_PATH="$m8b_pw"
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+m8b_ev="$(c21_events_for "$m8b/control/reports.ndjson" o1)"
+m8b_ch="$(cat "$m8b/dump/zai.codexhome" 2>/dev/null)"
+m8b_ok=1; m8b_why=""
+[[ "$m8b_ev" == *"attempt_completed:-"* ]] || { m8b_ok=0; m8b_why+=" not-completed"; }
+[[ "$m8b_ch" == "$m8b/cr-scratch/"*"/.codex-home-zai" ]] || { m8b_ok=0; m8b_why+=" codexhome=$m8b_ch"; }
+[[ -n "$m8b_ch" && ! -e "$m8b_ch" ]] || { m8b_ok=0; m8b_why+=" codexhome-left"; }
+grep -qx 'model_provider = "zai"' "$m8b/dump/zai.config.toml" 2>/dev/null && [[ "$(grep -c '^\[model_providers\.' "$m8b/dump/zai.config.toml")" == 1 ]] || { m8b_ok=0; m8b_why+=" config"; }
+grep -qxF "ZAI_API_KEY=$m8b_key" "$m8b/dump/zai.env" 2>/dev/null || { m8b_ok=0; m8b_why+=" key-not-in-env"; }
+grep -qF "$m8b_key" "$m8b/dump/zai.argv" 2>/dev/null && { m8b_ok=0; m8b_why+=" key-in-argv"; }
+grep -qxF "model_provider=zai" "$m8b/dump/zai.argv" 2>/dev/null || { m8b_ok=0; m8b_why+=" no-c-flag"; }
+grep -rqF "$m8b_key" "$m8b/cr-state" "$m8b/worker.out" "$m8b/control" "$m8b/mockstate" 2>/dev/null && { m8b_ok=0; m8b_why+=" key-leaked"; }
+[[ "$(cat "$m8b/home/.codex/marker")" == planted && "$(ls -A "$m8b/home/.codex")" == marker ]] || { m8b_ok=0; m8b_why+=" home-codex-touched"; }
+if (( m8b_ok )); then
+  pass "zai step: CODEX_HOME under request (removed after), one provider table, key only as ZAI_API_KEY in engine env, ~/.codex untouched"
+else
+  fail "zai step" "$m8b_why ev='$m8b_ev'"
+fi
+rm -rf "$m8b"
+
+echo "=== Case M3-08b-3: apikey-429 → zai limited ~15 min, step fails over to codex ==="
+m8c="$(mktemp -d)"; m8_keychain "$m8c" zai=k-zai-c
+c21_setup "$m8c" $((MOCK_PORT_BASE + 991)) harness-3step '[{"id":"o1"}]'
+echo '{"order":["zai","codex","claude-code"]}' > "$m8c/cr-state/engines.json"
+c21_worker "$m8c" $((MOCK_PORT_BASE + 991)) --once CFW_RENDER_SECURITY_CMD="$m8c/security" FAKE_ENGINE_LIMIT_ENGINE=zai FAKE_ENGINE_LIMIT_STEP=a
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+m8c_started="$(m3b_started "$m8c" o1)"
+m8c_min="$(python3 -c '
+import json, sys, datetime
+u = json.load(open(sys.argv[1]))["zai"]["until"]
+t = datetime.datetime.fromisoformat(u.replace("Z", "+00:00"))
+print(round((t - datetime.datetime.now(datetime.timezone.utc)).total_seconds() / 60))' "$m8c/cr-state/engine-limits.json" 2>/dev/null)"
+if [[ "$m8c_started" == "a:zai a:codex "* && "$m8c_min" =~ ^1[45]$ ]]; then
+  pass "apikey 429: zai limited ${m8c_min} min, failover a:zai → a:codex"
+else
+  fail "apikey 429" "started='$m8c_started' min='$m8c_min'"
+fi
+rm -rf "$m8c"
+
+echo "=== Case M3-08b-4: apikey-credit → limited with resetsAt null + reason credit, never expires, clear-limit clears ==="
+m8d="$(mktemp -d)"; m8_keychain "$m8d" zai=k-zai-d
+c21_setup "$m8d" $((MOCK_PORT_BASE + 992)) harness-3step '[{"id":"o1"}]'
+echo '{"order":["zai","codex","claude-code"]}' > "$m8d/cr-state/engines.json"
+c21_worker "$m8d" $((MOCK_PORT_BASE + 992)) --once CFW_RENDER_SECURITY_CMD="$m8d/security" FAKE_ENGINE_LIMIT_ENGINE=zai FAKE_ENGINE_LIMIT_STEP=a FAKE_ENGINE_APIKEY_FIXTURE=credit
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+m8d_started="$(m3b_started "$m8d" o1)"
+m8d_file="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("zai")))' "$m8d/cr-state/engine-limits.json" 2>/dev/null)"
+m8d_row="$(m8_json "$m8d" | python3 -c '
+import json, sys
+e = [x for x in json.load(sys.stdin) if x["name"] == "zai"][0]
+print(e["limit"], e.get("resetsAt", "missing"), e.get("reason"))')"
+# A credit entry carries no timestamp: plant one with an old timestamp too — still limited.
+python3 -c 'import json,sys; json.dump({"zai":{"until":"2000-01-01T00:00:00Z","reason":"credit"}}, open(sys.argv[1],"w"))' "$m8d/cr-state/engine-limits.json"
+m8d_old="$(m8_json "$m8d" | python3 -c 'import json,sys; print([x for x in json.load(sys.stdin) if x["name"]=="zai"][0]["limit"])')"
+CFW_RENDER_STATE_DIR="$m8d/cr-state" "$REPO_DIR/bin/cfw-render-ctl.sh" clear-limit zai > /dev/null 2>&1; m8d_clr=$?
+m8d_after="$(m8_json "$m8d" | python3 -c 'import json,sys; print([x for x in json.load(sys.stdin) if x["name"]=="zai"][0]["limit"])')"
+if [[ "$m8d_started" == "a:zai a:codex "* && "$m8d_file" == '{"until": null, "reason": "credit"}' && "$m8d_row" == "limited None credit" \
+      && "$m8d_old" == limited && "$m8d_clr" == 0 && "$m8d_after" == ok ]]; then
+  pass "apikey credit: {until:null,reason:credit}, limited/resetsAt null, survives old timestamp, clear-limit → ok"
+else
+  fail "apikey credit" "started='$m8d_started' file='$m8d_file' row='$m8d_row' old=$m8d_old clr=$m8d_clr after=$m8d_after"
+fi
+rm -rf "$m8d"
+
+echo "=== Case M3-08b-4b: ordinary output that mentions credit, billing, 402 or 429 never trips a limit ==="
+m8n="$(mktemp -d)"; mkdir -p "$m8n/st"
+cat > "$m8n/ok.log" <<'EOF2'
+Added a credit line to the end card: "Photo credit: Priya".
+Billing page screenshot cropped; 402 frames rendered at 1080x1920.
+Scene 3 of 429 total keyframes encoded.
+Done. Captions mention the store credit offer.
+EOF2
+m8n_out=""
+for m8n_eng in zai gemini; do
+  if m8n_r="$(m3b_detect "$m8n/st" "$m8n_eng" "$m8n/ok.log" 1)"; then m8n_out+="$m8n_eng:$m8n_r "; fi
+done
+m8n_credit="$(m3b_detect "$m8n/st" zai "$REPO_DIR/test/fixtures/engine-limits/apikey-credit.txt" 1)"
+m8n_429="$(m3b_detect "$m8n/st" zai "$REPO_DIR/test/fixtures/engine-limits/apikey-429.txt" 1)"
+m8n_gq="$(m3b_detect "$m8n/st" gemini "$REPO_DIR/test/fixtures/engine-limits/gemini-quota.txt" 1)"
+if [[ -z "$m8n_out" && "$m8n_credit" == credit && "$m8n_429" == 20* && "$m8n_gq" == 20* ]]; then
+  pass "limit detect: ordinary 'credit'/'billing'/'402'/'429' output trips nothing; real vendor credit/429/quota replies still do"
+else
+  fail "limit detect false positives" "ordinary=[$m8n_out] credit=[$m8n_credit] 429=[$m8n_429] gemini=[$m8n_gq]"
+fi
+rm -rf "$m8n"
+
+echo "=== Case M3-08b-5: gemini with a Keychain key → GEMINI_API_KEY only in the gemini process env ==="
+m8e="$(mktemp -d)"; m8e_key="gem-secret-$RANDOM-$RANDOM"; m8_keychain "$m8e" "gemini=$m8e_key"
+c21_setup "$m8e" $((MOCK_PORT_BASE + 993)) harness-3step '[{"id":"o1"}]'
+c21_worker "$m8e" $((MOCK_PORT_BASE + 993)) --once CFW_RENDER_ENGINE=gemini CFW_RENDER_SECURITY_CMD="$m8e/security" FAKE_ENGINE_DUMP_DIR="$m8e/dump"
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+m8e_ev="$(c21_events_for "$m8e/control/reports.ndjson" o1)"
+if [[ "$m8e_ev" == *"attempt_completed:-"* ]] && grep -qxF "GEMINI_API_KEY=$m8e_key" "$m8e/dump/gemini.env" \
+   && grep -qx -- "-p" "$m8e/dump/gemini.argv" && ! grep -qF "$m8e_key" "$m8e/dump/gemini.argv" \
+   && ! grep -rqF "$m8e_key" "$m8e/cr-state" "$m8e/worker.out" "$m8e/control" "$m8e/mockstate"; then
+  pass "gemini: -p, key only as GEMINI_API_KEY in the engine env, nowhere else"
+else
+  fail "gemini key" "ev='$m8e_ev' $(cat "$m8e/dump/gemini.argv" 2>/dev/null | tr '\n' ' ')"
+fi
+rm -rf "$m8e"
 
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
