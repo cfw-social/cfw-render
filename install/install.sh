@@ -32,6 +32,7 @@ MODE="server"
 YES_REALLY=0
 NON_INTERACTIVE=0
 FROM_APP=0
+UPDATE=0
 UNINSTALL=0
 DELETE_OUTPUTS=0
 ASSUME_YES=0
@@ -45,6 +46,7 @@ while (( $# )); do
     --yes-really) YES_REALLY=1; shift ;;
     --non-interactive) NON_INTERACTIVE=1; shift ;;
     --from-app) FROM_APP=1; shift ;;
+    --update) UPDATE=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     --delete-outputs) DELETE_OUTPUTS=1; shift ;;
     --yes) ASSUME_YES=1; shift ;;
@@ -136,6 +138,14 @@ if [[ -z "$PREFIX" ]]; then
   else
     PREFIX="/opt/cfw-render"
   fi
+fi
+
+# ── [M3-05a] --from-app --update: after an app update, refresh the app files
+# in $PREFIX from the bundle and reload the LaunchAgent. No key, no stdin.
+if (( UPDATE )); then
+  (( FROM_APP )) || { echo "install.sh: --update requires --from-app" >&2; exit 2; }
+  fa_update
+  exit 0
 fi
 
 BRAND_KEY=""

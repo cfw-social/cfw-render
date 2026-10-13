@@ -58,6 +58,17 @@
     ],
     "macOS": {
       "minimumSystemVersion": "13.0"
+    },
+    "resources": {
+      "resources/worker/": "worker/"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "REPLACE_WITH_MINISIGN_PUBKEY",
+      "endpoints": [
+        "https://app.cfw.social/api/v1/desktop/latest.json"
+      ]
     }
   }
 }

@@ -101,11 +101,13 @@ pub fn write_settings(state: &Path, s: &SupportSettings) -> Result<(), String> {
     write_private(&path, serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?.as_bytes())
 }
 
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(d) = path.parent() {
         fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
     let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path).map_err(|e| e.to_string())?;
+    // `mode` applies only on create; tighten a pre-existing file too.
+    fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600)).map_err(|e| e.to_string())?;
     f.write_all(bytes).map_err(|e| e.to_string())
 }
 

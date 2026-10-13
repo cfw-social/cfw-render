@@ -142,3 +142,32 @@ except Exception:
   app_step test_render "done" "The test render worked"
   app_step ready "done" "This computer is ready"
 }
+
+# fa_update — [M3-05a] `--from-app --update`: copy the bundled worker files
+# over $PREFIX (settings, keys and state are untouched) and reload the
+# LaunchAgent if it is installed. Prints one "ready/done/Updated" line.
+fa_update() {
+  local d f
+  mkdir -p "$PREFIX" || app_fail ready 6 "Could not update CFW Render" "Reinstall CFW Render"
+  # config/ may hold local files: merge over it instead of replacing it.
+  if [[ -d "$REPO_DIR/config" ]]; then
+    mkdir -p "$PREFIX/config" && cp -a "$REPO_DIR/config/." "$PREFIX/config/" \
+      || app_fail ready 6 "Could not update CFW Render" "Reinstall CFW Render"
+  fi
+  for d in bin lib scripts skills; do
+    [[ -d "$REPO_DIR/$d" ]] || continue
+    rm -rf "${PREFIX:?}/$d.new"
+    cp -a "$REPO_DIR/$d" "$PREFIX/$d.new" && rm -rf "${PREFIX:?}/$d" && mv "$PREFIX/$d.new" "$PREFIX/$d" \
+      || app_fail ready 6 "Could not update CFW Render" "Reinstall CFW Render"
+  done
+  for f in AGENTS.md CLAUDE.md VERSION; do
+    [[ -f "$REPO_DIR/$f" ]] && cp -a "$REPO_DIR/$f" "$PREFIX/$f"
+  done
+  chmod +x "$PREFIX"/bin/*.sh "$PREFIX"/scripts/*.sh 2>/dev/null || true
+  local plist="$HOME/Library/LaunchAgents/com.cfw.render.plist"
+  if [[ -f "$plist" && "${CFW_RENDER_SKIP_LAUNCHCTL:-0}" != "1" && "${CFW_RENDER_INSTALL_NO_LAUNCHCTL:-0}" != "1" ]] && command -v launchctl >/dev/null 2>&1; then
+    launchctl bootout "gui/$(id -u)/com.cfw.render" >/dev/null 2>&1 || true
+    launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1 || true
+  fi
+  app_step ready "done" "Updated"
+}
