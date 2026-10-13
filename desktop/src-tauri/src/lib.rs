@@ -2,8 +2,10 @@
 
 pub mod chat;
 pub mod control;
+pub mod setup;
 pub mod signin;
 pub mod state;
+pub mod toolchain;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -331,7 +333,13 @@ pub fn run() {
             chat_remove_brand,
             chat_send,
             chat_cancel,
-            open_url
+            open_url,
+            setup::get_setup_status,
+            setup::setup_run,
+            setup::setup_adopt,
+            setup::setup_cancel,
+            setup::setup_tools_size,
+            setup::open_setup
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -349,6 +357,7 @@ pub fn run() {
                 refresh(&ticker);
             });
 
+            if !setup::setup_status().installed { setup::open_setup(handle.clone()); }
             autostart_first_run(&handle);
             refresh(&handle);
             Ok(())
