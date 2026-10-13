@@ -235,6 +235,24 @@ pub fn setup_run(app: AppHandle, brand_key: String, install_tools: bool) -> Resu
     Ok(())
 }
 
+/// Final event for `setup_install_tools`.
+pub fn tools_result_event(r: &Result<(), String>) -> SetupEvent {
+    match r {
+        Ok(()) => SetupEvent::new("tools_result", "done", "Tools installed"),
+        Err(e) => SetupEvent::new("tools_result", "failed", e.clone()),
+    }
+}
+
+/// Install only the private toolchain (codex/gemini CLIs) — usable before AI sign-in.
+#[tauri::command]
+pub fn setup_install_tools(app: AppHandle) {
+    std::thread::spawn(move || {
+        let emit = emitter(app);
+        let r = install_tools_step(&emit);
+        emit(tools_result_event(&r));
+    });
+}
+
 #[tauri::command]
 pub fn setup_adopt(app: AppHandle) -> Result<(), String> {
     let installer = installer_path(app.path().resource_dir().ok().as_deref())
@@ -391,5 +409,13 @@ exit 0"#,
         let s = status_at(d.path(), None);
         assert!(s.adoptable && !s.installed);
         assert!(!serde_json::to_string(&s).unwrap().contains("=x"));
+    }
+
+    #[test]
+    fn tools_result_event_maps_outcome() {
+        let ok = serde_json::to_value(tools_result_event(&Ok(()))).unwrap();
+        assert_eq!(ok, serde_json::json!({"step":"tools_result","state":"done","message":"Tools installed"}));
+        let bad = tools_result_event(&Err("disk full".into()));
+        assert_eq!((bad.step.as_str(), bad.state.as_str(), bad.message.as_str()), ("tools_result", "failed", "disk full"));
     }
 }

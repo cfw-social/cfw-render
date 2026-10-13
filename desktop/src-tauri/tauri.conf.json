@@ -14,9 +14,13 @@
       {
         "label": "main",
         "title": "CFW Render",
-        "width": 960,
-        "height": 640,
-        "visible": false
+        "width": 1180,
+        "height": 760,
+        "visible": false,
+        "minWidth": 960,
+        "minHeight": 600,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
       },
       {
         "label": "panel",

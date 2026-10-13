@@ -228,7 +228,7 @@ pub fn scan_new_crashes(reports: &Path, state: &Path, now: u64) -> Vec<CrashRepo
     found.iter().filter_map(|(_, p)| fs::read_to_string(p).ok()).filter_map(|r| reduce_crash(&r)).collect()
 }
 
-fn api_base(env_file: &Path) -> String {
+pub(crate) fn api_base(env_file: &Path) -> String {
     std::env::var("CFW_RENDER_API_BASE").ok().filter(|b| !b.is_empty())
         .or_else(|| env_value(env_file, "CFW_API_BASE"))
         .unwrap_or_else(|| "https://app.cfw.social".into())
