@@ -348,6 +348,7 @@ pub fn run() {
             web::web_show,
             web::web_hide,
             web::web_reload,
+            web::web_brands,
             support::uninstall,
             support::send_logs_preview,
             support::send_logs,

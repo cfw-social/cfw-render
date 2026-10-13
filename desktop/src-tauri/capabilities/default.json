@@ -1,12 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Core defaults for the main and panel windows",
+  "description": "Core defaults for the app's own windows (main, panel, setup). Never the embedded website.",
   "windows": [
     "main",
-    "panel"
+    "panel",
+    "setup"
   ],
   "permissions": [
-    "core:default"
+    "core:default",
+    "core:window:allow-start-dragging"
   ]
 }

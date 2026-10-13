@@ -55,7 +55,7 @@ describe("Settings", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send logs to CFW…" }));
     expect(await screen.findByText(/Send 2\.0 KB of logs/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
-    expect(await screen.findByText("Sent. Reference: LOG-AB12 — quote it to CFW support.")).toBeTruthy();
+    expect(await screen.findByText("Sent. Reference: LOG-AB12. Quote it to CFW support.")).toBeTruthy();
   });
 
   it("uninstall opens a confirm dialog with the delete-outputs checkbox", async () => {

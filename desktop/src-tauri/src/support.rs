@@ -234,7 +234,7 @@ pub(crate) fn api_base(env_file: &Path) -> String {
         .unwrap_or_else(|| "https://app.cfw.social".into())
 }
 
-fn curl_cmd() -> String {
+pub(crate) fn curl_cmd() -> String {
     std::env::var("CFW_RENDER_CURL").ok().filter(|c| !c.is_empty()).unwrap_or_else(|| "/usr/bin/curl".into())
 }
 
