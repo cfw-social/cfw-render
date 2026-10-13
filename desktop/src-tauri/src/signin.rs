@@ -169,7 +169,52 @@ pub fn run_sign_out(engine: &str, path: &OsString) -> Result<bool, SigninError> 
     command(&exe, cli.logout, path).status().map(|s| s.success()).map_err(|_| SigninError::Spawn(cli.bin.into()))
 }
 
+/// Gemini: the CLI (checked v0.x, `gemini --help`) has NO `login`/`auth status`/`logout` subcommand — sign-in
+/// happens inside its interactive TUI (`/auth`). So "Sign in" opens Terminal running `gemini`, and "connected"
+/// comes from the worker's `status.engines[gemini].signedIn`, not from a local status probe.
+pub const GEMINI: &str = "gemini";
+
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Writes a private `.command` script that runs the resolved `gemini` and opens it with Terminal.
+pub fn gemini_terminal_script(exe: &Path, dir: &Path) -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let script = dir.join("cfw-render-gemini-signin.command");
+    std::fs::write(&script, format!("#!/bin/sh\nexec {}\n", sh_quote(&exe.display().to_string())))?;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))?;
+    Ok(script)
+}
+
+fn gemini_sign_in(emit: &dyn Fn(SigninEvent)) -> Result<(), SigninError> {
+    let path = search_path();
+    let exe = resolve(GEMINI, &path).ok_or_else(|| SigninError::NotInstalled(GEMINI.into()))?;
+    let dir = tempfile_dir().map_err(|_| SigninError::Spawn(GEMINI.into()))?;
+    let script = gemini_terminal_script(&exe, &dir).map_err(|_| SigninError::Spawn(GEMINI.into()))?;
+    Command::new("/usr/bin/open")
+        .args(["-a", "Terminal"])
+        .arg(&script)
+        .status()
+        .map_err(|_| SigninError::Spawn(GEMINI.into()))?;
+    emit(SigninEvent {
+        engine: GEMINI.into(),
+        state: SigninState::Cancelled,
+        message: Some("Finish signing in to Gemini in the Terminal window (type /auth). It connects automatically.".into()),
+    });
+    Ok(())
+}
+
+fn tempfile_dir() -> std::io::Result<PathBuf> {
+    let d = std::env::temp_dir().join(format!("cfw-render-{}", std::process::id()));
+    std::fs::create_dir_all(&d)?;
+    Ok(d)
+}
+
 pub fn provider_status(engine: &str) -> Result<bool, SigninError> {
+    if engine == GEMINI {
+        return Ok(false);
+    }
     let cli = cli_for(engine)?;
     let path = search_path();
     Ok(resolve(cli.bin, &path).is_some_and(|exe| status_ok(&exe, &cli, &path)))
@@ -177,6 +222,9 @@ pub fn provider_status(engine: &str) -> Result<bool, SigninError> {
 
 /// Start a background sign-in; a previous attempt for the same engine is cancelled first.
 pub fn start_sign_in(engine: String, emit: impl Fn(SigninEvent) + Send + 'static) -> Result<(), SigninError> {
+    if engine == GEMINI {
+        return gemini_sign_in(&emit);
+    }
     cli_for(&engine)?;
     let session = Session::default();
     if let Some(old) = sessions().lock().unwrap().insert(engine.clone(), session.clone()) {
@@ -196,6 +244,9 @@ pub fn start_sign_in(engine: String, emit: impl Fn(SigninEvent) + Send + 'static
 }
 
 pub fn cancel_sign_in(engine: &str) -> Result<(), SigninError> {
+    if engine == GEMINI {
+        return Ok(());
+    }
     cli_for(engine)?;
     if let Some(s) = sessions().lock().unwrap().remove(engine) {
         s.cancel();
@@ -204,6 +255,9 @@ pub fn cancel_sign_in(engine: &str) -> Result<(), SigninError> {
 }
 
 pub fn sign_out(engine: &str) -> Result<bool, SigninError> {
+    if engine == GEMINI {
+        return Err(SigninError::Spawn("gemini (sign out inside the Gemini CLI with /auth)".into()));
+    }
     run_sign_out(engine, &search_path())
 }
 
@@ -278,11 +332,21 @@ mod tests {
     #[test]
     fn unknown_engine_rejected() {
         let (_d, path) = stubs(false);
-        let r = run_sign_in("gemini", &path, &Session::default(), MS, MS, &|_| {});
-        assert_eq!(r, Err(SigninError::UnknownEngine("gemini".into())));
+        let r = run_sign_in("nope", &path, &Session::default(), MS, MS, &|_| {});
+        assert_eq!(r, Err(SigninError::UnknownEngine("nope".into())));
         assert!(run_sign_out("../codex", &path).is_err());
         assert!(cancel_sign_in("rm").is_err());
         assert!(start_sign_in("x".into(), |_| {}).is_err());
+    }
+
+    #[test]
+    fn gemini_script_runs_quoted_cli() {
+        let d = tempfile::tempdir().unwrap();
+        let s = gemini_terminal_script(Path::new("/opt/it's/gemini"), d.path()).unwrap();
+        assert_eq!(std::fs::read_to_string(&s).unwrap(), "#!/bin/sh\nexec '/opt/it'\\''s/gemini'\n");
+        assert_eq!(std::fs::metadata(&s).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(provider_status(GEMINI), Ok(false));
+        assert!(cancel_sign_in(GEMINI).is_ok());
     }
 
     #[test]
