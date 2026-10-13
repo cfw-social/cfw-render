@@ -21,7 +21,7 @@ import { NOW, payload, workingStatus } from "../panel/fixtures";
 
 beforeEach(() => {
   h.invoke.mockImplementation((cmd: string) =>
-    Promise.resolve(cmd === "get_status" ? payload(workingStatus) : cmd === "get_settings" ? { allowBattery: true, startAtLogin: false } : null),
+    Promise.resolve(cmd === "get_status" ? payload(workingStatus) : cmd === "get_settings" ? { allowBattery: true, startAtLogin: false } : cmd === "chat_brands" ? [{ slug: "brand-a", name: "Brand A" }] : null),
   );
 });
 afterEach(() => {
@@ -49,6 +49,8 @@ describe("main window sidebar", () => {
     expect(current()).toBe("providers");
     fireEvent.click(screen.getByText("Chat"));
     expect(current()).toBe("chat");
+    expect(screen.getByRole("heading", { name: "Chat" })).toBeTruthy();
+    expect(await screen.findByLabelText("Brand")).toBeTruthy();
     fireEvent.click(screen.getByText("Settings"));
     expect(current()).toBe("settings");
     fireEvent.click(screen.getByText("Renders on this Mac"));

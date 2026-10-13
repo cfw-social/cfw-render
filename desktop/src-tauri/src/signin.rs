@@ -85,12 +85,12 @@ pub fn search_path() -> OsString {
     std::env::join_paths(dirs).unwrap_or_default()
 }
 
-fn resolve(bin: &str, path: &OsString) -> Option<PathBuf> {
+pub(crate) fn resolve(bin: &str, path: &OsString) -> Option<PathBuf> {
     std::env::split_paths(path).map(|d| d.join(bin)).find(|p| p.is_file())
 }
 
 /// Minimal environment: PATH (so the CLI finds node etc.), HOME, USER, LANG. Nothing else is passed.
-fn command(exe: &Path, args: &[&str], path: &OsString) -> Command {
+pub(crate) fn command(exe: &Path, args: &[&str], path: &OsString) -> Command {
     let mut c = Command::new(exe);
     c.args(args).env_clear().env("PATH", path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     for k in ["HOME", "USER", "LANG"] {

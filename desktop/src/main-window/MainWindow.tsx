@@ -1,10 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
-import { copy } from "../copy";
 import { SECTION_IDS, sectionFromId, type SectionId } from "../nav";
 import type { StatusPayload } from "../status";
 import { ProvidersScreen } from "../providers";
+import { ChatScreen } from "../chat";
 import { Renders } from "./Renders";
 import { Settings } from "./Settings";
 import { actions } from "./tauri";
@@ -44,7 +44,7 @@ export function MainWindow({ initial = "renders", clock }: { initial?: SectionId
         </ul>
       </nav>
       <main className="flex flex-1 flex-col overflow-y-auto p-6" data-section={section}>
-        {section === "chat" && <p>{copy.main.chatPlaceholder}</p>}
+        {section === "chat" && <ChatScreen />}
         {section === "providers" && <ProvidersScreen />}
         {section === "renders" && <Renders payload={payload} actions={{ ...actions, openMain: (s) => { const id = sectionFromId(s); if (id) setSection(id); } }} clock={clock} />}
         {section === "settings" && <Settings workerVersion={payload?.status?.workerVersion ?? null} />}
