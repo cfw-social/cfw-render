@@ -46,7 +46,8 @@ static CANCELLED: AtomicBool = AtomicBool::new(false);
 
 pub fn valid_key(k: &str) -> bool {
     let Some(rest) = k.strip_prefix("cfw_") else { return false };
-    (8..=200).contains(&rest.len()) && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    // CFW mints keys from base64url, so `-` is a real key character (~40% of keys).
+    (8..=200).contains(&rest.len()) && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 fn setup_marker() -> Option<PathBuf> {
@@ -315,7 +316,10 @@ mod tests {
     #[test]
     fn key_format() {
         assert!(valid_key("cfw_abcdefgh"));
+        // CFW keys are base64url: '-' and '_' both occur in real keys.
+        assert!(valid_key("cfw_Ab3-xY_9kLmN-pQrS"));
         assert!(!valid_key("cfw_short"));
+        assert!(!valid_key("cfw_abc+defgh/ij"));
         assert!(!valid_key("cfw_abc def gh"));
         assert!(!valid_key("xyz_abcdefgh"));
     }

@@ -98,7 +98,7 @@ try:
 except Exception:
     pass' <<< "$resp")"
   resp=""
-  [[ "$render_key" =~ ^cfw_render_[A-Za-z0-9_]+$ ]] || app_fail connecting 6 "CFW sent an unexpected reply" "Try again in a minute"
+  [[ "$render_key" =~ ^cfw_render_[A-Za-z0-9_-]+$ ]] || app_fail connecting 6 "CFW sent an unexpected reply" "Try again in a minute"
   printf '%s\n' "$render_key" | fa_env_set CFW_RENDER_WORKER_KEY "$ENV_FILE"
   printf '%s\n' "$base" | fa_env_set CFW_API_BASE "$ENV_FILE"
   export CFW_API_BASE="$base" CFW_RENDER_WORKER_KEY="$render_key"
