@@ -346,3 +346,6 @@ pub fn open_url(url: &str) -> Result<(), String> {
     std::process::Command::new("/usr/bin/open").arg(url).status().map_err(|e| e.to_string())?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
