@@ -12,6 +12,13 @@ export interface ProviderCard {
   connected: boolean;
   signingIn: boolean;
   badge: string;
+  /** "Sign in" and/or "API key" (Gemini shows both). */
+  badges: string[];
+  /** Card shows the key input / Key saved / Remove. */
+  acceptsKey: boolean;
+  keySaved: boolean;
+  /** Out of credit: show Try again. */
+  canRetry: boolean;
   stateLine: string;
   position: number;
   isFirst: boolean;
@@ -45,6 +52,7 @@ export function providersModel(
   engines: readonly Engine[] | undefined,
   order: readonly string[],
   signingIn: ReadonlySet<string> = new Set(),
+  keysSaved: ReadonlySet<string> = new Set(),
 ): ProvidersModel {
   const byName = new Map((engines ?? []).map((e) => [e.name, e]));
   const defs = new Map(registry.map((p) => [p.engine, p]));
@@ -52,11 +60,14 @@ export function providersModel(
   const cards = names.map((engine, i): ProviderCard => {
     const def = defs.get(engine)!;
     const st = byName.get(engine);
-    const connected = st?.signedIn === true;
+    const keySaved = keysSaved.has(engine);
+    const connected = st?.signedIn === true || keySaved;
+    const credit = st?.limit === "limited" && st.reason === "credit";
     const busy = signingIn.has(engine);
     let stateLine: string;
     if (busy) stateLine = copy.providers.state.signingIn;
     else if (!connected) stateLine = copy.providers.state.notConnected;
+    else if (credit) stateLine = copy.providers.outOfCredit;
     else if (st?.limit === "limited") {
       const t = st.resetsAt ? Date.parse(st.resetsAt) : NaN;
       stateLine = copy.providers.state.limited(Number.isNaN(t) ? null : hhmm(t));
@@ -70,6 +81,13 @@ export function providersModel(
       connected,
       signingIn: busy,
       badge: copy.providers.badge[def.auth],
+      badges:
+        def.auth === "signin" && def.alsoApiKey
+          ? [copy.providers.badge.signin, copy.providers.badge.api_key]
+          : [copy.providers.badge[def.auth]],
+      acceptsKey: def.auth === "api_key" || def.alsoApiKey === true,
+      keySaved,
+      canRetry: connected && credit,
       stateLine,
       position: i + 1,
       isFirst: i === 0,

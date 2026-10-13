@@ -69,6 +69,11 @@ export const copy = {
       failed: "Sign-in failed.",
     },
     orderHint: "Used in this order. If one reaches its limit, the next one takes over.",
+    outOfCredit: "Out of credit; add funds, then click Try again",
+    keySaved: "Key saved",
+    keyLabel: (name: string) => `${name} API key`,
+    keyPlaceholder: "Paste your API key",
+    keyAction: { get: "Get a key", save: "Save", remove: "Remove", tryAgain: "Try again" },
   },
   chat: {
     title: "Chat",

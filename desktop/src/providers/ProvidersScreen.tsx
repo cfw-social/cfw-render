@@ -20,6 +20,16 @@ export function ProvidersScreen() {
   const [order, setOrder] = useState<string[] | null>(null);
   const [signingIn, setSigningIn] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
+  const [keysSaved, setKeysSaved] = useState<Set<string>>(new Set());
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    for (const p of PROVIDERS.filter((d) => d.auth === "api_key" || d.alsoApiKey)) {
+      invoke<boolean>("provider_key_present", { engine: p.engine })
+        .then((ok) => ok && setKeysSaved((s) => new Set(s).add(p.engine)))
+        .catch(() => {});
+    }
+  }, []);
 
   useEffect(() => {
     invoke<StatusPayload>("get_status").then(setPayload).catch(() => {});
@@ -46,8 +56,8 @@ export function ProvidersScreen() {
   // Until the owner reorders, the worker's reported engine order is the current order.
   const effectiveOrder = order ?? orderedEngines(PROVIDERS, (engines ?? []).map((e) => e.name));
   const model = useMemo(
-    () => providersModel(PROVIDERS, engines, effectiveOrder, signingIn),
-    [engines, effectiveOrder, signingIn],
+    () => providersModel(PROVIDERS, engines, effectiveOrder, signingIn, keysSaved),
+    [engines, effectiveOrder, signingIn, keysSaved],
   );
 
   const move = (engine: string, delta: -1 | 1) => {
@@ -69,6 +79,33 @@ export function ProvidersScreen() {
   const cancel = (engine: string) => invoke("provider_sign_in_cancel", { engine }).catch(() => {});
   const signOut = (engine: string) =>
     invoke("provider_sign_out", { engine })
+      .then(() => invoke<StatusPayload>("get_status").then(setPayload))
+      .catch((e: unknown) => setNotice(String(e)));
+
+  const setDraft = (engine: string, v: string) => setDrafts((d) => ({ ...d, [engine]: v }));
+  const saveKey = (engine: string) => {
+    const key = (drafts[engine] ?? "").trim();
+    invoke("provider_key_save", { engine, key })
+      .then(() => {
+        setDraft(engine, "");
+        setKeysSaved((s) => new Set(s).add(engine));
+        setNotice(null);
+      })
+      .catch((e: unknown) => setNotice(String(e)));
+  };
+  const removeKey = (engine: string) =>
+    invoke("provider_key_remove", { engine })
+      .then(() =>
+        setKeysSaved((s) => {
+          const n = new Set(s);
+          n.delete(engine);
+          return n;
+        }),
+      )
+      .catch((e: unknown) => setNotice(String(e)));
+  const getKey = (engine: string) => invoke("open_provider_key_url", { engine }).catch((e: unknown) => setNotice(String(e)));
+  const tryAgain = (engine: string) =>
+    invoke("provider_clear_limit", { engine })
       .then(() => invoke<StatusPayload>("get_status").then(setPayload))
       .catch((e: unknown) => setNotice(String(e)));
 
@@ -98,19 +135,64 @@ export function ProvidersScreen() {
               </span>
               <span className="font-medium">{c.name}</span>
               {c.connected && <span aria-label={P.state.connected} className="h-2 w-2 rounded-full bg-green-500" />}
-              <span className="ml-auto rounded bg-neutral-100 px-2 py-0.5 text-xs text-neutral-600">{c.badge}</span>
+              <span className="ml-auto flex gap-1">
+                {c.badges.map((b) => (
+                  <span key={b} className="rounded bg-neutral-100 px-2 py-0.5 text-xs text-neutral-600">
+                    {b}
+                  </span>
+                ))}
+              </span>
             </div>
             <p className="mt-2 text-sm text-neutral-600">{c.stateLine}</p>
+            {c.canRetry && (
+              <button type="button" onClick={() => tryAgain(c.engine)} className="mt-2 rounded border px-3 py-1 text-sm">
+                {P.keyAction.tryAgain}
+              </button>
+            )}
+            {c.acceptsKey &&
+              (c.keySaved ? (
+                <div className="mt-3 flex items-center gap-2 text-sm">
+                  <span className="text-green-700">{P.keySaved}</span>
+                  <button type="button" onClick={() => removeKey(c.engine)} className="rounded border px-3 py-1">
+                    {P.keyAction.remove}
+                  </button>
+                </div>
+              ) : (
+                <form
+                  className="mt-3 flex items-center gap-2 text-sm"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    saveKey(c.engine);
+                  }}
+                >
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    spellCheck={false}
+                    aria-label={P.keyLabel(c.name)}
+                    placeholder={P.keyPlaceholder}
+                    value={drafts[c.engine] ?? ""}
+                    onChange={(e) => setDraft(c.engine, e.target.value)}
+                    className="min-w-0 flex-1 rounded border px-2 py-1"
+                  />
+                  <button type="submit" disabled={!drafts[c.engine]} className="rounded border px-3 py-1 disabled:opacity-40">
+                    {P.keyAction.save}
+                  </button>
+                  <button type="button" onClick={() => getKey(c.engine)} className="text-blue-700 underline">
+                    {P.keyAction.get}
+                  </button>
+                </form>
+              ))}
             <div className="mt-3 flex gap-2">
               {c.signingIn ? (
                 <button type="button" onClick={() => cancel(c.engine)} className="rounded border px-3 py-1 text-sm">
                   {P.action.cancel}
                 </button>
-              ) : c.connected ? (
+              ) : c.auth === "api_key" ? null : c.connected && !c.acceptsKey ? (
                 <button type="button" onClick={() => signOut(c.engine)} className="rounded border px-3 py-1 text-sm">
                   {P.action.signOut}
                 </button>
-              ) : (
+              ) : c.connected && c.keySaved ? null : (
                 <button
                   type="button"
                   onClick={() => signIn(c.engine)}
