@@ -1697,6 +1697,14 @@ else
 fi
 
 echo ""
+echo "=== Case 36: scripts/verify-skills-bundle.sh — committed skills/ bundle matches its index.json hashes (M2-06) ==="
+if "$REPO_DIR/scripts/verify-skills-bundle.sh" --skills-dir "$REPO_DIR/skills" >/dev/null 2>&1; then
+  pass "scripts/verify-skills-bundle.sh"
+else
+  fail "scripts/verify-skills-bundle.sh" "bundle verify failed — run it for the mismatch list"
+fi
+
+echo ""
 echo "=== Case F: fan-out routes a native Claude alias to the worker's own login (CFW-299) ==="
 cf_dir="$(mktemp -d)"; mkdir -p "$cf_dir/mockstate" "$cf_dir/work"
 empty_queue > "$cf_dir/queue.json"
@@ -2602,6 +2610,9 @@ c21_worker() {
     export CFW_RENDER_CONCURRENCY=1
     export CFW_WORKER_ID="w-m2"
     export CFW_RENDER_UPLOAD_MODE=multipart
+    # Pin the load-average seam: a busy dev box (load > ncpu) otherwise makes
+    # every normal claim skip and the M2-04 cases flake on host load.
+    export CFW_RENDER_CAPACITY_LOAD=0
     for kv in "$@"; do export "${kv?}"; done
     "$REPO_DIR/bin/cfw-render.sh" "$mode" > "$dir/worker.out" 2>&1
   )
@@ -2812,6 +2823,135 @@ else
   fail "loop start" "no 'loop: started' line: $(head -3 "$c28/cr-state/cfw-render.log")"
 fi
 rm -rf "$c28"
+
+echo "=== Case 30: resume — saved output 404 → step_failed lands on the step that needs it (plan_broll), with the reason; worker exits cleanly (M2-04) ==="
+c30="$(mktemp -d)"
+c21_setup "$c30" $((MOCK_PORT_BASE + 928)) harness-resume '[{"id":"o1"}]' CFW_MOCK_RESUME_FROM=plan_broll CFW_MOCK_RESUME_404=a/x
+c21_worker "$c30" $((MOCK_PORT_BASE + 928)) --once && c30_rc=0 || c30_rc=$?
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+c30_fail="$(python3 -c '
+import json, sys
+for l in open(sys.argv[1]):
+    d = json.loads(l)
+    if d["event"] == "step_failed": print(d.get("stepId"), "|", d.get("message"))' "$c21_ctl/reports.ndjson" 2>/dev/null)"
+c30_blocked="$(grep -c '"tool": "block_render_order"\|"tool": "release_render_order"\|"tool": "complete_render_order"' "$c30/mockstate/calls.jsonl" 2>/dev/null || true)"
+c30_done="$(grep -c '"tool": "complete_render_order".*"ok": true' "$c30/mockstate/calls.jsonl" 2>/dev/null || true)"
+if [[ "$c30_rc" == "0" && "$c30_fail" == "plan_broll | Saved result from step a is missing" && "$c30_done" == "0" ]] && ! grep -qiE 'unbound variable|syntax error|Traceback' "$c30/worker.out"; then
+  pass "resume 404: exactly one step_failed {stepId: plan_broll, message: 'Saved result from step a is missing'}; worker exit 0, no crash, no completion (terminal calls=$c30_blocked)"
+else
+  fail "resume 404 (step + reason)" "rc=$c30_rc step_failed='$c30_fail' done=$c30_done; $(tail -3 "$c30/worker.out")"
+fi
+rm -rf "$c30"
+
+echo "=== Case 31: old server (single \`order\`, no \`orders[]\`) at max 1 with an urgent order queued → exactly one claim, one order, no urgent re-ask (M2-04, M1 parity) ==="
+c31="$(mktemp -d)"
+c21_setup "$c31" $((MOCK_PORT_BASE + 929)) harness-3step '[{"id":"o1"},{"id":"o2","urgent":true}]' CFW_MOCK_IGNORE_CAPACITY=1
+c21_worker "$c31" $((MOCK_PORT_BASE + 929)) --once CFW_RENDER_CONCURRENCY=1
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+c31_claims="$(c21_claims "$c31")"
+c31_done="$(grep -c '"tool": "complete_render_order".*"ok": true' "$c31/mockstate/calls.jsonl" 2>/dev/null || true)"
+c31_orders="$(python3 -c '
+import json, sys
+print(" ".join(sorted({json.loads(l)["orderId"] for l in open(sys.argv[1]) if l.strip()})))' "$c21_ctl/reports.ndjson" 2>/dev/null)"
+if [[ "$c31_claims" == "0/1" && "$c31_done" == "1" && "$c31_orders" == "o1" ]] && ! grep -q "urgent ask" "$c31/cr-state/cfw-render.log"; then
+  pass "old server, max 1: one claim (0/1), one order (o1) run to completion, no urgent re-ask while full"
+else
+  fail "old server max 1" "claims='$c31_claims' (want '0/1') done=$c31_done orders='$c31_orders'; $(grep -i urgent "$c31/cr-state/cfw-render.log" | tail -2)"
+fi
+rm -rf "$c31"
+
+# c3x_install <home> — runs install/install.sh --mode byoa into a throwaway
+# HOME with launchctl disabled (never loads a real job, never touches the
+# real ~/Library/LaunchAgents). Plist lands at <home>/Library/LaunchAgents.
+c3x_install() {
+  local home="$1" prefix env
+  prefix="$home/prefix"; env="$home/test.env"; mkdir -p "$prefix"
+  cat > "$env" <<EOF2
+CFW_API_BASE=http://127.0.0.1:1
+CFW_RENDER_WORKER_KEY=[REDACTED]
+CFW_RENDER_STATE_DIR=$home/cfw-render-state
+CFW_RENDER_SCRATCH=$home/cfw-render-scratch
+EOF2
+  (
+    export PLAYWRIGHT_BROWSERS_PATH="$HOME/Library/Caches/ms-playwright"
+    export HOME="$home"
+    export PATH="$REPO_DIR/bin:$FAKE_BIN:$PATH"
+    export CFW_RENDER_INSTALL_NO_LAUNCHCTL=1
+    export CFW_RENDER_TEST_OS=Darwin
+    "$REPO_DIR/install/install.sh" --mode byoa --prefix "$prefix" --env-file "$env" >"$home/install.log" 2>&1
+  )
+}
+# c3x_plist <plist> <python expr over d> — plistlib-parsed value
+c3x_plist() { python3 -c 'import plistlib,sys; d=plistlib.load(open(sys.argv[1],"rb")); print(eval(sys.argv[2]))' "$1" "$2" 2>/dev/null; }
+
+echo "=== Case 32: idle computer claims within ~60 s — default idle cadence <= 60 s, plist runs the --loop (no schedule > 60 s), idle loop keeps re-claiming (M2-04, D89) ==="
+c32_idle="$(env -u CFW_RENDER_CAPACITY_UNIT_SECS bash -c 'source "$1/bin/cfw-render-lib.sh"; echo "$CR_CAPACITY_IDLE_CLAIM_SECS"' _ "$REPO_DIR")"
+if awk -v s="$c32_idle" 'BEGIN { exit !(s > 0 && s <= 60) }'; then
+  pass "idle claim cadence default = ${c32_idle}s (<= 60)"
+else
+  fail "idle claim cadence" "CR_CAPACITY_IDLE_CLAIM_SECS='$c32_idle' (want 0 < s <= 60)"
+fi
+c32_home="$(mktemp -d)"
+c3x_install "$c32_home"
+c32_plist="$c32_home/Library/LaunchAgents/com.cfw.render.plist"
+c32_shape="$(c3x_plist "$c32_plist" '(d["ProgramArguments"][1:], "StartCalendarInterval" in d, d.get("StartInterval", 0) <= 60, d.get("RunAtLoad"))')"
+if [[ "$c32_shape" == "(['--loop'], False, True, True)" ]]; then
+  pass "generated plist: ProgramArguments --loop, RunAtLoad, no StartCalendarInterval, no StartInterval > 60"
+else
+  fail "plist cadence" "got '$c32_shape'; install.log: $(tail -3 "$c32_home/install.log" 2>/dev/null)"
+fi
+rm -rf "$c32_home"
+c32="$(mktemp -d)"
+c21_setup "$c32" $((MOCK_PORT_BASE + 930)) harness-3step '[]' CFW_MOCK_ORDERS_ARRAY=1
+c21_worker "$c32" $((MOCK_PORT_BASE + 930)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=0.2 &
+c32_w=$!
+for _ in $(seq 1 60); do [[ "$(grep -c '"tool": "claim_render_order"' "$c32/mockstate/calls.jsonl" 2>/dev/null || true)" -ge 3 ]] && break; sleep 0.1; done
+pkill -P "$c32_w" 2>/dev/null; kill "$c32_w" 2>/dev/null; wait "$c32_w" 2>/dev/null
+pkill -f "cfw-render.sh --loop" 2>/dev/null || true
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+c32_n="$(grep -c '"tool": "claim_render_order"' "$c32/mockstate/calls.jsonl" 2>/dev/null || true)"
+if [[ "$c32_n" -ge 3 ]]; then
+  pass "idle --loop re-claims every idle unit ($c32_n claims within ~6 s at unit 0.2 s)"
+else
+  fail "idle loop re-claim" "claims=$c32_n (want >= 3); $(tail -3 "$c32/cr-state/cfw-render.log" 2>/dev/null)"
+fi
+rm -rf "$c32"
+
+echo "=== Case 33: generated plist is kept alive — KeepAlive true + ThrottleInterval > 0 (restart on kill, throttled) (M2-04, D89) ==="
+c33_home="$(mktemp -d)"
+c3x_install "$c33_home"
+c33_ka="$(c3x_plist "$c33_home/Library/LaunchAgents/com.cfw.render.plist" '(d.get("KeepAlive") is True, isinstance(d.get("ThrottleInterval"), int) and d["ThrottleInterval"] > 0)')"
+if [[ "$c33_ka" == "(True, True)" ]]; then
+  pass "generated plist: KeepAlive=true, ThrottleInterval=$(c3x_plist "$c33_home/Library/LaunchAgents/com.cfw.render.plist" 'd["ThrottleInterval"]')"
+else
+  fail "plist KeepAlive/Throttle" "got '$c33_ka'; install.log: $(tail -3 "$c33_home/install.log" 2>/dev/null)"
+fi
+rm -rf "$c33_home"
+
+echo "=== Case 34: claim back-off production defaults — base 60 s, cap 600 s (the 10-minute cap Case 29 reaches in test units) (M2-04, D89) ==="
+c34="$(env -u CFW_RENDER_CAPACITY_UNIT_SECS bash -c 'source "$1/bin/cfw-render-lib.sh"; echo "$CR_CLAIM_BACKOFF_BASE_SECS $CR_CLAIM_BACKOFF_MAX_SECS"' _ "$REPO_DIR")"
+if [[ "$c34" == "60 600" ]]; then
+  pass "back-off defaults: base 60 s → cap 600 s"
+else
+  fail "back-off defaults" "got '$c34' (want '60 600')"
+fi
+
+echo "=== Case 35: re-running install over an old-schedule (--once + StartCalendarInterval) plist rewrites it to the kept-alive loop (M2-04, D89) ==="
+c35_home="$(mktemp -d)"
+mkdir -p "$c35_home/Library/LaunchAgents"
+c35_plist="$c35_home/Library/LaunchAgents/com.cfw.render.plist"
+python3 -c '
+import plistlib, sys
+plistlib.dump({"Label": "com.cfw.render", "ProgramArguments": ["/old/bin/cfw-render.sh", "--once"],
+  "StartCalendarInterval": [{"Minute": m} for m in (5, 20, 35, 50)], "RunAtLoad": True}, open(sys.argv[1], "wb"))' "$c35_plist"
+c3x_install "$c35_home"
+c35_shape="$(c3x_plist "$c35_plist" '(d["ProgramArguments"][1:], "StartCalendarInterval" in d, d.get("KeepAlive"), d.get("ThrottleInterval", 0) > 0)')"
+if [[ "$c35_shape" == "(['--loop'], False, True, True)" ]] && grep -q 'launchctl bootout.*launchctl bootstrap' "$c35_home/install.log"; then
+  pass "old-schedule plist rewritten: --loop, no StartCalendarInterval, KeepAlive + ThrottleInterval; reload (bootout → bootstrap) surfaced"
+else
+  fail "old plist rewrite" "got '$c35_shape'; install.log: $(tail -3 "$c35_home/install.log" 2>/dev/null)"
+fi
+rm -rf "$c35_home"
 
 
 # ---------------------------------------------------------------------------
