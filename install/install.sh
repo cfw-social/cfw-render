@@ -133,7 +133,7 @@ if (( FROM_APP )); then
     if [[ -n "$(env_value CFW_RENDER_WORKER_KEY)" && -f "$APP_PLIST" ]]; then
       app_step checking started "Checking this computer"
       if fa_tools_list_ok "$(fa_api_base)" "$(env_value CFW_RENDER_WORKER_KEY)"; then
-        app_step ready done "Already set up"
+        app_step ready "done" "Already set up"
         exit 0
       fi
       app_fail checking 5 "The saved connection did not work" "Paste a fresh key from CFW Settings"
@@ -202,7 +202,7 @@ if [[ "${CFW_RENDER_TEST_NO_ENGINE:-0}" == "1" ]] || ! ENGINE="$(cr_install_sele
 fi
 echo "install.sh: engine=$ENGINE"
 echo ""
-app_step checking done "This computer is ready to install"
+app_step checking "done" "This computer is ready to install"
 app_step installing started "Installing CFW Render"
 
 mkdir -p "$PREFIX/bin" "$PREFIX/lib" "$PREFIX/config" "$PREFIX/scripts"

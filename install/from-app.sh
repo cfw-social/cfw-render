@@ -72,7 +72,7 @@ print(json.dumps(a))' "$FA_WORKER_ID" "$@")"
 }
 
 fa_connect_and_probe() {
-  app_step installing done "CFW Render is installed"
+  app_step installing "done" "CFW Render is installed"
   app_step connecting started "Connecting to CFW"
   local base code resp render_key
   base="$(fa_api_base)"
@@ -117,7 +117,7 @@ except Exception:
     launchctl bootstrap "gui/$(id -u)" "$PLIST_DST" >/dev/null 2>&1 \
       || app_fail connecting 6 "Could not start CFW Render in the background" "Restart your Mac and try again"
   fi
-  app_step connecting done "Connected to CFW"
+  app_step connecting "done" "Connected to CFW"
 
   app_step test_render started "Making a test render"
   out="$(cr_mcp_call_soft create_probe_render_order "$(python3 -c 'import json,sys;print(json.dumps({"workerId": sys.argv[1]}))' "$FA_WORKER_ID")")" \
@@ -139,6 +139,6 @@ except Exception:
     fi
     sleep "$poll"
   done
-  app_step test_render done "The test render worked"
-  app_step ready done "This computer is ready"
+  app_step test_render "done" "The test render worked"
+  app_step ready "done" "This computer is ready"
 }
