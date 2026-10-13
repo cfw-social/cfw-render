@@ -31,6 +31,13 @@ EOF2
 chmod +x "$FAKE_BIN/pmset"
 export CFW_RENDER_PMSET_CMD="$FAKE_BIN/pmset"
 
+# The worker skips normal claims while the 1-minute load average is above the
+# CPU count (cr_capacity_ok). On a busy dev Mac that made the capacity cases
+# (25-29) fail with "normal claims skipped, urgent only". Pin the load seam for
+# the whole suite so no case depends on what else the host is running; a case
+# that needs a busy machine sets CFW_RENDER_CAPACITY_LOAD itself.
+export CFW_RENDER_CAPACITY_LOAD=0
+
 OLLAMA_KEYS_FIXTURE="$(mktemp)"
 cat > "$OLLAMA_KEYS_FIXTURE" <<'EOF'
 OLLAMA_KEY_GOOFY_HUGLE_463_B=test-dummy-key-goofy
