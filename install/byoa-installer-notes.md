@@ -78,7 +78,6 @@ computed by walking every required binary with `command -v` in the shell
 `install.sh` itself runs from, not a guessed static list — and refuses to
 install at all unless it can also prove `claude` runs headless under that
 exact PATH (`env -i`, mirroring what launchd actually hands a
-scheduled tick). An already-installed box needs `install.sh` re-run (or the
-plist/unit manually re-rendered + reloaded) to pick up a re-resolved
-`WORKER_PATH`. The Linux `cfw-render.service` unit carries the identical
-resolved `WORKER_PATH` now too — this used to be macOS-only.
+scheduled tick). An already-installed computer needs `install.sh` re-run (or the
+plist manually re-rendered + reloaded) to pick up a re-resolved
+`WORKER_PATH`.
