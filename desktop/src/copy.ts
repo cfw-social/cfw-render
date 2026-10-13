@@ -94,4 +94,28 @@ export const copy = {
       search: "Searching…",
     } as Record<string, string>,
   },
+  setup: {
+    title: "Set up CFW Render",
+    keyLabel: "Brand key",
+    keyHint: "Copy it from CFW → Settings → Render.",
+    paste: "Paste",
+    consent: (mb: number | null) =>
+      mb ? `Install the tools CFW Render needs (about ${mb} MB, into CFW Render/app)` : "Install the tools CFW Render needs (into CFW Render/app)",
+    toolNames: "node, Python, ffmpeg, ImageMagick, Codex",
+    signInFirst: "Sign in to ChatGPT or Claude to continue",
+    connect: "Connect",
+    cancel: "Cancel",
+    tryAgain: "Try again",
+    steps: {
+      checking: "Checking",
+      tools: "Installing tools",
+      installing: "Installing",
+      connecting: "Connecting",
+      test_render: "Test render",
+      ready: "Ready",
+    } as Record<string, string>,
+    alreadySetUp: "Already set up",
+    finish: "Finish in CFW: brand basics, a channel, first automation",
+    openCfw: "Open CFW",
+  },
 } as const;
