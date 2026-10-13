@@ -4,6 +4,26 @@ Everything is built; the only missing pieces are the owner's secrets (gate G0).
 Until step 3 is done, the updater stays off (`plugins.updater.pubkey` is the
 placeholder `REPLACE_WITH_MINISIGN_PUBKEY`), so dev and unsigned builds never update.
 
+## Tester builds without an Apple account
+
+Until G0 is done you can still hand the app to a few testers. The build is
+**unsigned** (ad-hoc signed only, not notarized), so macOS blocks the first
+open and each tester allows it once — see `desktop/TESTERS.md`, which you can
+send them as is.
+
+- **From CI:** GitHub → Actions → *desktop* → *Run workflow* (or any push that
+  touches `desktop/`). Download the `cfw-render-tester-unsigned-universal`
+  artifact from the run; it holds the `.dmg` and its `.sha256`.
+- **On this Mac:** `desktop/scripts/release.sh --unsigned` (universal; needs the
+  `x86_64-apple-darwin` Rust target) or
+  `desktop/scripts/release.sh --unsigned --target aarch64-apple-darwin`
+  (Apple Silicon only). Output: `desktop/dist-release/CFW-Render-<version>-unsigned-<arch>.dmg`.
+
+Share the file privately (a direct link or file share), with the `.sha256`.
+Do not set `DESKTOP_RELEASE_BASE_URL` for it: the public download on
+app.cfw.social stays off until a signed release exists. Tester builds never
+update themselves; send a new `.dmg` for each change.
+
 ## One-time owner steps (G0)
 
 1. **Developer ID Application certificate** (CFW's Apple Developer org account):
