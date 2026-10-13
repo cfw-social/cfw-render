@@ -1,5 +1,11 @@
 # cfw-render ⊕ cfw-skills — Packaging & Distribution Design
 
+> **⚠ Superseded in part (owner decision D118, 2026-10):** Hermes and CFW-run rendering on
+> the `hst` server are gone. cfw-render now runs **only** in `byoa` mode on the brand's own
+> computers; `server` mode, the systemd units, `install/provisioner-snippet.md` and the
+> master-key fleet helper were removed. Everything below about `hst`, the fleet, Hermes or
+> `server` mode is the historical design record, not current behaviour.
+
 > **Status:** ✅ IMPLEMENTED (shipped `CFW-HST-BUNDLE`, 2026-08). The vendored-bundle model
 > below is live in `cfw-render/skills/` (pinned via `config/skills-version.json`, verified by
 > `scripts/verify-skills-bundle.sh`). As of 2026-09-01 the bundle is source-synced directly
@@ -57,7 +63,7 @@ unit + timer, launchd plist, `install.sh`).
   unit/timer (Linux) or launchd plist (macOS) from templates, and runs `--dry` as a
   post-install gate. It is explicitly a **separate service pool** — must not share a unit
   name, tmux session, or working directory with any `cfw-gw@<slug>` Hermes gateway
-  (`install/provisioner-snippet.md`).
+  (the provisioner snippet, since removed).
 - **Run:** `cfw-render.service` (oneshot) + `cfw-render.timer` (`OnCalendar=*:0/15`,
   `RandomizedDelaySec=60`) — every 15 minutes a **fresh process** boots, does one tick
   (claim → spawn Director → wait → reconcile), and exits. There is no long-lived daemon.
