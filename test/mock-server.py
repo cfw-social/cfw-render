@@ -429,6 +429,23 @@ def handle_tool_call(name, args):
         log_call(name, args, True)
         return rpc_result({"ok": True}), None
 
+    # M3-04a: the app-driven installer's setup reports + probe order.
+    if name == "create_probe_render_order":
+        log_call(name, args, True)
+        return rpc_result({"ok": True, "orderId": "probe_1"}), None
+    if name == "report_byoa_setup_step":
+        if args.get("step") == "probe_render":
+            with LOCK:
+                MOCK_FLAGS["probe_polls"] = MOCK_FLAGS.get("probe_polls", 0) + 1
+                n = MOCK_FLAGS["probe_polls"]
+            if n <= int(os.environ.get("CFW_MOCK_PROBE_PENDING", "2")):
+                log_call(name, args, False)
+                return rpc_result({"ok": False, "error": "probe_order_not_done"}), None
+            log_call(name, args, True)
+            return rpc_result({"ok": True, "state": "ready"}), None
+        log_call(name, args, True)
+        return rpc_result({"ok": True}), None
+
     # Unimplemented tool (e.g. requeue_render_order) — mirrors the real gap
     # (implementation-plan.md §0.4): the server genuinely has no such tool.
     log_call(name, args, False)
@@ -569,6 +586,26 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length) if length else b""
+
+        if self.path == "/api/v1/render-worker-keys/exchange":
+            # M3-04a: brand key → render key. The brand key is NEVER logged.
+            bkey = self.headers.get("x-api-key", "")
+            try:
+                body = json.loads(raw or b"{}")
+            except Exception:
+                body = None
+            dn = body.get("deviceName") if isinstance(body, dict) else None
+            if not bkey.startswith("cfw_") or bkey == "cfw_bad":
+                CALLS_LOG.write(json.dumps({"tool": "exchange", "args": {"deviceName": dn}, "ok": False}) + "\n")
+                self._send_json({"error": "invalid_api_key"}, 401)
+                return
+            if not isinstance(dn, str) or not 1 <= len(dn) <= 100:
+                CALLS_LOG.write(json.dumps({"tool": "exchange", "args": {"deviceName": dn}, "ok": False}) + "\n")
+                self._send_json({"error": "bad_request"}, 400)
+                return
+            CALLS_LOG.write(json.dumps({"tool": "exchange", "args": {"deviceName": dn}, "ok": True}) + "\n")
+            self._send_json({"key": {"plain": "cfw_render_mockexchanged000", "id": "rk_1"}}, 201)
+            return
 
         if self.path == "/api/v1/mcp":
             key = self.headers.get("cfw-render-key", "")

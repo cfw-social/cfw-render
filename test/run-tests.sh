@@ -3233,6 +3233,142 @@ else
 fi
 rm -rf "$mc4"
 
+# ── M3-04a: install.sh --from-app (app-driven, no prompts, JSON steps) ──
+m4_real_home="$HOME"
+# m4_setup <dir> <port> [mock KEY=VALUE...] — temp HOME + mock server.
+m4_setup() {
+  local dir="$1" port="$2"; shift 2
+  mkdir -p "$dir/home" "$dir/prefix" "$dir/mockstate"
+  echo '[]' > "$dir/queue.json"
+  m4_pid="$(
+    for kv in "$@"; do export "${kv?}"; done
+    start_mock "$dir/queue.json" "$dir/mockstate" "$port"
+  )"
+}
+# m4_run <dir> <port> <stdin-file> [KEY=VALUE...] — sets m4_rc.
+m4_run() {
+  local dir="$1" port="$2" in="$3"; shift 3
+  (
+    export HOME="$dir/home"
+    export PATH="$REPO_DIR/bin:$FAKE_BIN:$PATH"
+    export PLAYWRIGHT_BROWSERS_PATH="$m4_real_home/Library/Caches/ms-playwright"
+    export CFW_RENDER_DIRECTOR_CMD="$TEST_DIR/fake-director.sh"
+    export CFW_RENDER_API_BASE="http://127.0.0.1:$port"
+    export CFW_RENDER_SKIP_LAUNCHCTL=1 CFW_RENDER_PROBE_POLL_SEC=0.1
+    for kv in "$@"; do export "${kv?}"; done
+    "$REPO_DIR/install/install.sh" --mode byoa --non-interactive --from-app --prefix "$dir/prefix" \
+      < "$in" > "$dir/out.jsonl" 2> "$dir/err.log"
+  )
+  m4_rc=$?
+}
+m4_steps() { python3 -c '
+import json, sys
+print(" ".join(f"{(o:=json.loads(l))["step"]}:{o["state"]}" for l in open(sys.argv[1]) if l.strip()))' "$1/out.jsonl" 2>/dev/null || echo "NONJSON"; }
+
+echo "=== Case M3-04a-1/2: --from-app happy path; brand key never leaks ==="
+m4a="$(mktemp -d)"
+m4a_key="cfw_m4brand$(python3 -c 'import secrets;print(secrets.token_hex(8))')"
+printf '%s\n' "$m4a_key" > "$m4a/stdin"
+m4_setup "$m4a" $((MOCK_PORT_BASE + 970))
+( for _ in $(seq 1 600); do ps -axo args 2>/dev/null; sleep 0.05; done ) > "$m4a/ps.log" 2>/dev/null &
+m4a_ps=$!
+m4_run "$m4a" $((MOCK_PORT_BASE + 970)) "$m4a/stdin"
+kill "$m4a_ps" 2>/dev/null; wait "$m4a_ps" 2>/dev/null || true
+kill "$m4_pid" 2>/dev/null; wait "$m4_pid" 2>/dev/null || true
+rm -f "$m4a/stdin"
+m4a_steps="$(m4_steps "$m4a")"
+m4a_want="checking:started checking:done installing:started installing:done connecting:started connecting:done test_render:started test_render:done ready:done"
+m4a_envf="$m4a/home/.cfw-render/cfw-render.env"
+m4a_mode="$(stat -f '%Lp' "$m4a_envf" 2>/dev/null || stat -c '%a' "$m4a_envf" 2>/dev/null)"
+m4a_origin="$(python3 -c '
+import json, sys
+c = [json.loads(l) for l in open(sys.argv[1])]
+r = [x for x in c if x["tool"] == "report_byoa_setup_step"]
+steps = [x["args"]["step"] for x in r]
+print(all(x["args"].get("origin") == "app" for x in r), steps[:3], steps.count("probe_render"),
+      sum(1 for x in c if x["tool"] == "create_probe_render_order"))' "$m4a/mockstate/calls.jsonl" 2>/dev/null)"
+if [[ "$m4_rc" == "0" && "$m4a_steps" == "$m4a_want" ]]; then
+  pass "from-app: exit 0, stdout only JSON, steps in order with started+done"
+else
+  fail "from-app happy path" "rc=$m4_rc steps=$m4a_steps err=$(tail -15 "$m4a/err.log")"
+fi
+if grep -q '^CFW_RENDER_WORKER_KEY=cfw_render_mockexchanged000$' "$m4a_envf" 2>/dev/null && [[ "$m4a_mode" == "600" ]]; then
+  pass "from-app: env file holds the exchanged render key, mode 600"
+else
+  fail "from-app env file" "mode=$m4a_mode"
+fi
+if [[ "$m4a_origin" == "True ['deps', 'credential', 'recipe_fetch'] 3 1" ]]; then
+  pass "from-app: setup reports carry origin app; probe polled until ready"
+else
+  fail "from-app reports" "$m4a_origin"
+fi
+m4a_ps_lines="$(wc -l < "$m4a/ps.log" | tr -d ' ')"
+if ! grep -rqF "$m4a_key" "$m4a/out.jsonl" "$m4a/err.log" "$m4a/home" "$m4a/prefix" "$m4a/mockstate" "$m4a/mock-server.log" "$m4a/ps.log" 2>/dev/null \
+   && [[ "$m4a_ps_lines" -gt 0 ]]; then
+  pass "from-app: brand key nowhere (stdout, stderr, HOME, mock log, argv over $m4a_ps_lines ps lines)"
+else
+  fail "from-app brand key leak" "$(grep -rlF "$m4a_key" "$m4a" 2>/dev/null)"
+fi
+rm -rf "$m4a"
+
+echo "=== Case M3-04a-3: bad key → connecting failed, exit 5, no key written ==="
+m4b="$(mktemp -d)"
+printf 'cfw_bad\n' > "$m4b/stdin"
+m4_setup "$m4b" $((MOCK_PORT_BASE + 971))
+m4_run "$m4b" $((MOCK_PORT_BASE + 971)) "$m4b/stdin"
+kill "$m4_pid" 2>/dev/null; wait "$m4_pid" 2>/dev/null || true
+m4b_steps="$(m4_steps "$m4b")"
+if [[ "$m4_rc" == "5" && "$m4b_steps" == *"connecting:failed" ]] && ! grep -q 'CFW_RENDER_WORKER_KEY=' "$m4b/home/.cfw-render/cfw-render.env" 2>/dev/null; then
+  pass "from-app: bad key → connecting failed, exit 5, no key written"
+else
+  fail "from-app bad key" "rc=$m4_rc steps=$m4b_steps"
+fi
+rm -rf "$m4b"
+
+echo "=== Case M3-04a-4: no engine → checking failed, exit 3, AI Providers action ==="
+m4c="$(mktemp -d)"
+printf 'cfw_goodkey\n' > "$m4c/stdin"
+m4_setup "$m4c" $((MOCK_PORT_BASE + 972))
+m4_run "$m4c" $((MOCK_PORT_BASE + 972)) "$m4c/stdin" CFW_RENDER_TEST_NO_ENGINE=1
+kill "$m4_pid" 2>/dev/null; wait "$m4_pid" 2>/dev/null || true
+if [[ "$m4_rc" == "3" ]] && grep -q '"step": "checking", "state": "failed".*"action": "Sign in to ChatGPT or Claude in AI Providers"' "$m4c/out.jsonl"; then
+  pass "from-app: no engine → exit 3 with the AI Providers action"
+else
+  fail "from-app no engine" "rc=$m4_rc out=$(cat "$m4c/out.jsonl")"
+fi
+rm -rf "$m4c"
+
+echo "=== Case M3-04a-5: adopt — existing key + plist, empty stdin → Already set up ==="
+m4d="$(mktemp -d)"
+m4_setup "$m4d" $((MOCK_PORT_BASE + 973))
+mkdir -p "$m4d/home/.cfw-render" "$m4d/home/Library/LaunchAgents"
+printf 'CFW_API_BASE=http://127.0.0.1:%s\nCFW_RENDER_WORKER_KEY=cfw_render_existing0\n' $((MOCK_PORT_BASE + 973)) > "$m4d/home/.cfw-render/cfw-render.env"
+: > "$m4d/home/Library/LaunchAgents/com.cfw.render.plist"
+: > "$m4d/stdin"
+m4_run "$m4d" $((MOCK_PORT_BASE + 973)) "$m4d/stdin"
+kill "$m4_pid" 2>/dev/null; wait "$m4_pid" 2>/dev/null || true
+m4d_ready="$(grep -c '"step": "ready", "state": "done", "message": "Already set up"' "$m4d/out.jsonl" 2>/dev/null || true)"
+if [[ "$m4_rc" == "0" && "$m4d_ready" == "1" ]] && ! grep -q '"tool": "exchange"' "$m4d/mockstate/calls.jsonl" 2>/dev/null; then
+  pass "from-app adopt: one ready 'Already set up', no exchange"
+else
+  fail "from-app adopt" "rc=$m4_rc out=$(cat "$m4d/out.jsonl") err=$(tail -5 "$m4d/err.log")"
+fi
+rm -rf "$m4d"
+
+echo "=== Case M3-04a-6: probe never finishes → test_render failed, exit 7 ==="
+m4e="$(mktemp -d)"
+printf 'cfw_goodkey\n' > "$m4e/stdin"
+m4_setup "$m4e" $((MOCK_PORT_BASE + 974)) CFW_MOCK_PROBE_PENDING=999
+m4_run "$m4e" $((MOCK_PORT_BASE + 974)) "$m4e/stdin" CFW_RENDER_PROBE_TIMEOUT_SEC=1
+kill "$m4_pid" 2>/dev/null; wait "$m4_pid" 2>/dev/null || true
+m4e_steps="$(m4_steps "$m4e")"
+if [[ "$m4_rc" == "7" && "$m4e_steps" == *"test_render:started test_render:failed" ]]; then
+  pass "from-app: probe timeout → test_render failed, exit 7"
+else
+  fail "from-app probe timeout" "rc=$m4_rc steps=$m4e_steps"
+fi
+rm -rf "$m4e"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
