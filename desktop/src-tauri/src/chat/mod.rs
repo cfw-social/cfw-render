@@ -18,7 +18,11 @@ use stream::Event;
 
 pub const MCP_URL_ENV: &str = "CFW_RENDER_MCP_URL";
 pub const DEFAULT_MCP_URL: &str = "https://app.cfw.social/api/v1/mcp";
-/// Env var the codex child reads the brand key from (`env_http_headers`), so it never hits argv.
+/// Env var the CLI child reads the brand key from, so the key never hits argv.
+/// codex: `env_http_headers`; claude: `${CFW_BRAND_KEY}` inside the inline
+/// `--mcp-config` header, which claude expands from its own environment
+/// (checked on claude 2.1.288 against a local MCP stub: the header arrived
+/// expanded, not literal).
 pub const CODEX_KEY_ENV: &str = "CFW_BRAND_KEY";
 
 pub fn valid_slug(slug: &str) -> bool {
@@ -124,14 +128,17 @@ fn ev(slug: &str, kind: &str, engine: Option<&str>) -> ChatEvent {
 
 // ---------- running a turn ----------
 
-pub fn claude_mcp_config(url: &str, key: &str) -> String {
-    serde_json::json!({ "mcpServers": { "cfw": { "type": "http", "url": url, "headers": { "x-api-key": key } } } }).to_string()
+/// The inline MCP config for claude. The header is a `${VAR}` reference, never
+/// the key: claude fills it from the child env, so argv carries no secret.
+pub fn claude_mcp_config(url: &str) -> String {
+    let header = format!("${{{CODEX_KEY_ENV}}}");
+    serde_json::json!({ "mcpServers": { "cfw": { "type": "http", "url": url, "headers": { "x-api-key": header } } } }).to_string()
 }
 
 /// argv for one turn (excluding the binary). The prompt always goes on stdin.
-/// claude: the key is inside the inline `--mcp-config` JSON (claude has no env-indirection for headers).
-/// codex: `env_http_headers` names an env var; the key is only in the child's env.
-pub fn turn_args(engine: &str, url: &str, key: &str, resume: Option<&str>) -> Vec<String> {
+/// Neither CLI gets the key on argv: both read it from `CFW_BRAND_KEY` in the
+/// child env (codex via `env_http_headers`, claude via `${CFW_BRAND_KEY}`).
+pub fn turn_args(engine: &str, url: &str, resume: Option<&str>) -> Vec<String> {
     let mut a: Vec<String> = Vec::new();
     if engine == "codex" {
         a.push("exec".into());
@@ -156,7 +163,7 @@ pub fn turn_args(engine: &str, url: &str, key: &str, resume: Option<&str>) -> Ve
             a.extend(["--resume".into(), id.into()]);
         }
         // Last: --mcp-config is variadic.
-        a.extend(["--mcp-config".into(), claude_mcp_config(url, key)]);
+        a.extend(["--mcp-config".into(), claude_mcp_config(url)]);
     }
     a
 }
@@ -204,13 +211,11 @@ fn run_one(slug: &str, engine: &str, text: &str, key: &str, dir: &Path, emit: &d
     let resume = session::load(dir).get(engine).cloned();
     let url = mcp_url();
     let host = mcp_host();
-    let args = turn_args(engine, &url, key, resume.as_deref());
+    let args = turn_args(engine, &url, resume.as_deref());
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     let mut cmd = crate::signin::command(&exe, &argv, &path);
     cmd.env_remove("USER").env_remove("LANG").current_dir(dir).stdin(Stdio::piped()).stdout(Stdio::piped());
-    if engine == "codex" {
-        cmd.env(CODEX_KEY_ENV, key);
-    }
+    cmd.env(CODEX_KEY_ENV, key);
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return Outcome::Failed(e.to_string()),

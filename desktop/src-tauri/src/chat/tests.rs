@@ -83,6 +83,7 @@ fn assert_key_absent(env: &Env, events: &[ChatEvent]) {
         assert!(!String::from_utf8_lossy(&std::fs::read(&f).unwrap()).contains(KEY), "key in {f:?}");
     }
     assert!(!read(env.logs.path().join("argv-codex")).contains(KEY), "key on codex argv");
+    assert!(!read(env.logs.path().join("argv-claude")).contains(KEY), "key on claude argv");
     assert!(!read(env.logs.path().join("argv-security")).contains(KEY), "key on security argv");
     let _ = &env.bin;
 }
@@ -122,8 +123,10 @@ fn claude_turn_streams_and_saves_session() {
     let argv = read(env.logs.path().join("argv-claude"));
     assert!(argv.contains("--strict-mcp-config") && argv.contains("https://app.cfw.social/api/v1/mcp"));
     assert_eq!(read(env.logs.path().join("cwd-claude")).trim(), std::fs::canonicalize(&dir).unwrap().to_str().unwrap());
-    // claude has no env-indirection for MCP headers: the inline config carries the key (argv only).
-    assert!(argv.contains(KEY));
+    // The inline config names the env var; the key itself is only in the child env.
+    assert!(argv.contains("\"x-api-key\":\"${CFW_BRAND_KEY}\""), "claude header is an env reference: {argv}");
+    assert!(!argv.contains(KEY), "key on claude argv");
+    assert!(read(env.logs.path().join("env-claude")).contains(&format!("CFW_BRAND_KEY={KEY}")), "claude child env carries the key");
     assert_key_absent(&env, &ev);
 
     // Second turn resumes the saved session.
