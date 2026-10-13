@@ -1,12 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Core defaults for the main and panel windows",
-  "windows": [
+  "description": "Core defaults for the app's own webviews (main, panel, setup). Scoped by webview, not window, so the embedded website (webview `web`, inside the main window) is never covered.",
+  "webviews": [
     "main",
-    "panel"
+    "panel",
+    "setup"
   ],
   "permissions": [
-    "core:default"
+    "core:default",
+    "core:window:allow-start-dragging"
   ]
 }

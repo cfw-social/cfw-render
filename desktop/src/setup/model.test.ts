@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { setupModel } from "./model";
+import { looksLikeBrandKey, setupModel, toolsModel } from "./model";
 
 describe("setupModel", () => {
   it("starts idle with all steps pending", () => {
@@ -20,5 +20,21 @@ describe("setupModel", () => {
     m = setupModel([{ step: "ready", state: "done", message: "Already set up" }, { step: "result", state: "done" }]);
     expect(m).toMatchObject({ phase: "ready", readyMessage: "Already set up" });
     expect(setupModel([{ step: "bogus", state: "done" }]).steps.every((s) => s.state === "pending")).toBe(true);
+  });
+
+  it("brand key shape matches the app's own check", () => {
+    expect(looksLikeBrandKey(" cfw_abcdefgh ")).toBe(true);
+    expect(looksLikeBrandKey("cfw_short")).toBe(false);
+    expect(looksLikeBrandKey("cfw_abc-defgh")).toBe(false);
+    expect(looksLikeBrandKey("sk-abcdefghijkl")).toBe(false);
+  });
+});
+
+describe("toolsModel", () => {
+  it("follows tools progress to its result", () => {
+    expect(toolsModel([])).toEqual({ state: "idle", pct: null });
+    expect(toolsModel([{ step: "tools", state: "started", pct: 10 }, { step: "tools", state: "started", pct: 55 }])).toMatchObject({ state: "started", pct: 55 });
+    expect(toolsModel([{ step: "tools", state: "started", pct: 55 }, { step: "tools_result", state: "done", message: "Tools installed" }])).toMatchObject({ state: "done" });
+    expect(toolsModel([{ step: "tools", state: "failed", message: "offline" }, { step: "tools_result", state: "failed" }]).state).toBe("failed");
   });
 });

@@ -9,6 +9,7 @@ pub mod state;
 pub mod toolchain;
 pub mod updates;
 pub mod support;
+pub mod web;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -86,7 +87,7 @@ fn is_pause_file_present() -> bool {
     control::state_dir().is_ok_and(|d| d.join("paused").exists())
 }
 
-fn show_main(app: &AppHandle) {
+pub(crate) fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         set_dock(app, true);
         let _ = w.show();
@@ -343,6 +344,11 @@ pub fn run() {
             setup::setup_cancel,
             setup::setup_tools_size,
             setup::open_setup,
+            setup::setup_install_tools,
+            web::web_show,
+            web::web_hide,
+            web::web_reload,
+            web::web_brands,
             support::uninstall,
             support::send_logs_preview,
             support::send_logs,
@@ -388,13 +394,28 @@ pub fn run() {
                     set_dock(window.app_handle(), false);
                 }
             }
+            WindowEvent::Resized(_) if window.label() == "main" => {
+                web::layout(window.app_handle());
+            }
             WindowEvent::Focused(false) if window.label() == "panel" => {
                 let _ = window.hide();
             }
             _ => {}
         })
-        .run(tauri::generate_context!())
-        .expect("error while running CFW Render");
+        .build(tauri::generate_context!())
+        .expect("error while building CFW Render")
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if !setup::setup_status().installed {
+                    setup::open_setup(app.clone());
+                } else {
+                    show_main(app);
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
 }
 
 #[cfg(test)]

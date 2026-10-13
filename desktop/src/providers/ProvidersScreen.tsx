@@ -3,7 +3,9 @@ import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useState } from "react";
 import { copy } from "../copy";
 import type { StatusPayload } from "../status";
-import { moveEngine, orderedEngines, providersModel } from "./model";
+import { Icon } from "../ui/Icon";
+import { Button, Card, Pill, SectionLabel, type Tone } from "../ui/kit";
+import { moveEngine, orderedEngines, providersModel, type ProviderCard } from "./model";
 import { PROVIDERS } from "./registry";
 
 export interface SigninEvent {
@@ -22,6 +24,7 @@ export function ProvidersScreen() {
   const [notice, setNotice] = useState<string | null>(null);
   const [keysSaved, setKeysSaved] = useState<Set<string>>(new Set());
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [editing, setEditing] = useState<string | null>(null);
 
   useEffect(() => {
     for (const p of PROVIDERS.filter((d) => d.auth === "api_key" || d.alsoApiKey)) {
@@ -88,6 +91,7 @@ export function ProvidersScreen() {
     invoke("provider_key_save", { engine, key })
       .then(() => {
         setDraft(engine, "");
+        setEditing(null);
         setKeysSaved((s) => new Set(s).add(engine));
         setNotice(null);
       })
@@ -109,120 +113,134 @@ export function ProvidersScreen() {
       .then(() => invoke<StatusPayload>("get_status").then(setPayload))
       .catch((e: unknown) => setNotice(String(e)));
 
+  const tone = (c: ProviderCard): Tone =>
+    c.signingIn ? "info" : !c.connected ? "idle" : c.canRetry ? "bad" : c.stateLine === P.state.connected ? "ok" : "warn";
+
+  const row = (c: ProviderCard) => (
+    <li key={c.engine} data-testid={`provider-${c.engine}`} className="px-4 py-3">
+      <div className="flex items-center gap-3">
+        <span className="w-4 text-right text-xs tabular-nums text-subtle">{c.position}</span>
+        <span
+          aria-hidden
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[7px] text-[11px] font-bold text-white"
+          style={{ background: c.logoColor }}
+        >
+          {c.logo}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="flex items-center gap-1.5 text-[13px] font-semibold">
+            {c.name}
+            {c.connected && <span role="img" aria-label={P.state.connected} className="inline-block h-[7px] w-[7px] rounded-full bg-emerald-500" />}
+          </p>
+          <p className="mt-0.5 text-xs text-subtle">
+            {P.how(c.badges.length > 1 ? "both" : c.auth)}
+            {c.acceptsKey && !c.keySaved && (
+              <>
+                {" · "}
+                <button type="button" onClick={() => getKey(c.engine)} className="rounded font-medium text-accent-foreground hover:underline">
+                  {P.keyAction.get}
+                </button>
+              </>
+            )}
+          </p>
+        </div>
+        <Pill tone={tone(c)}>{c.canRetry ? P.pill.credit : c.keySaved && c.stateLine === P.state.connected ? P.keySaved : c.stateLine}</Pill>
+        <div className="flex w-[168px] shrink-0 items-center justify-end gap-1.5">
+          {c.canRetry && (
+            <Button size="sm" onClick={() => tryAgain(c.engine)}>{P.keyAction.tryAgain}</Button>
+          )}
+          {c.signingIn ? (
+            <Button size="sm" variant="ghost" onClick={() => cancel(c.engine)}>{P.action.cancel}</Button>
+          ) : c.keySaved ? (
+            <Button size="sm" variant="ghost" onClick={() => removeKey(c.engine)}>{P.keyAction.remove}</Button>
+          ) : c.auth === "api_key" ? (
+            editing !== c.engine && <Button size="sm" icon="key-round" onClick={() => setEditing(c.engine)}>{P.addKey}</Button>
+          ) : c.connected ? (
+            <Button size="sm" variant="ghost" onClick={() => signOut(c.engine)}>{P.action.signOut}</Button>
+          ) : (
+            <>
+              {c.acceptsKey && editing !== c.engine && (
+                <Button size="sm" variant="ghost" onClick={() => setEditing(c.engine)}>{P.addKey}</Button>
+              )}
+              <Button size="sm" variant="primary" onClick={() => signIn(c.engine)}>{P.action.signIn}</Button>
+            </>
+          )}
+        </div>
+        <div className="flex shrink-0 flex-col">
+          <button
+            type="button"
+            aria-label={`${P.action.up}: ${c.name}`}
+            disabled={c.isFirst}
+            onClick={() => move(c.engine, -1)}
+            className="flex h-4 w-6 items-center justify-center rounded text-zinc-500 hover:bg-secondary disabled:opacity-25"
+          >
+            <Icon name="arrow-up" size={12} />
+          </button>
+          <button
+            type="button"
+            aria-label={`${P.action.down}: ${c.name}`}
+            disabled={c.isLast}
+            onClick={() => move(c.engine, 1)}
+            className="flex h-4 w-6 items-center justify-center rounded text-zinc-500 hover:bg-secondary disabled:opacity-25"
+          >
+            <Icon name="arrow-down" size={12} />
+          </button>
+        </div>
+      </div>
+      {editing === c.engine && !c.keySaved && (
+        <form
+          className="mt-3 ml-[60px] flex items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            saveKey(c.engine);
+          }}
+        >
+          <input
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            autoFocus
+            aria-label={P.keyLabel(c.name)}
+            placeholder={P.keyPlaceholder}
+            value={drafts[c.engine] ?? ""}
+            onChange={(e) => setDraft(c.engine, e.target.value)}
+            className="h-[34px] min-w-0 flex-1 rounded-[8px] border border-input bg-white px-3 font-mono text-[13px] focus:border-primary"
+          />
+          <Button type="submit" variant="primary" disabled={!drafts[c.engine]}>{P.keyAction.save}</Button>
+          <Button variant="ghost" onClick={() => setEditing(null)}>{P.action.cancel}</Button>
+        </form>
+      )}
+    </li>
+  );
+
+  const plans = model.cards.filter((c) => c.auth === "signin");
+  const keys = model.cards.filter((c) => c.auth === "api_key");
   return (
-    <section className="p-6">
-      <header className="mb-4 flex items-baseline gap-3">
-        <h1 className="text-xl font-semibold">{P.title}</h1>
-        <span className="text-sm text-neutral-500">{model.countLine}</span>
+    <section className="mx-auto flex w-full max-w-[920px] flex-col gap-5 px-8 pt-4 pb-10">
+      <header>
+        <div className="flex items-baseline gap-3">
+          <h1 className="text-xl font-bold">{P.title}</h1>
+          <span className="text-[13px] text-subtle">{model.countLine}</span>
+        </div>
+        <p className="mt-1 text-[13px] text-subtle">{P.orderHint}</p>
       </header>
-      <p className="mb-4 text-sm text-neutral-500">{P.orderHint}</p>
       {notice && (
-        <p role="status" className="mb-4 text-sm text-amber-700">
+        <p role="status" className="rounded-[8px] border border-warn-border bg-warn-bg px-3 py-2 text-[13px] text-warn-strong">
           {notice}
         </p>
       )}
-      <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {model.cards.map((c) => (
-          <li key={c.engine} data-testid={`provider-${c.engine}`} className="rounded-lg border border-neutral-200 p-4">
-            <div className="flex items-center gap-3">
-              <span className="w-5 text-xs text-neutral-400">{c.position}</span>
-              <span
-                aria-hidden
-                className="flex h-9 w-9 items-center justify-center rounded-md text-xs font-bold text-white"
-                style={{ background: c.logoColor }}
-              >
-                {c.logo}
-              </span>
-              <span className="font-medium">{c.name}</span>
-              {c.connected && <span aria-label={P.state.connected} className="h-2 w-2 rounded-full bg-green-500" />}
-              <span className="ml-auto flex gap-1">
-                {c.badges.map((b) => (
-                  <span key={b} className="rounded bg-neutral-100 px-2 py-0.5 text-xs text-neutral-600">
-                    {b}
-                  </span>
-                ))}
-              </span>
-            </div>
-            <p className="mt-2 text-sm text-neutral-600">{c.stateLine}</p>
-            {c.canRetry && (
-              <button type="button" onClick={() => tryAgain(c.engine)} className="mt-2 rounded border px-3 py-1 text-sm">
-                {P.keyAction.tryAgain}
-              </button>
-            )}
-            {c.acceptsKey &&
-              (c.keySaved ? (
-                <div className="mt-3 flex items-center gap-2 text-sm">
-                  <span className="text-green-700">{P.keySaved}</span>
-                  <button type="button" onClick={() => removeKey(c.engine)} className="rounded border px-3 py-1">
-                    {P.keyAction.remove}
-                  </button>
-                </div>
-              ) : (
-                <form
-                  className="mt-3 flex items-center gap-2 text-sm"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    saveKey(c.engine);
-                  }}
-                >
-                  <input
-                    type="password"
-                    autoComplete="off"
-                    spellCheck={false}
-                    aria-label={P.keyLabel(c.name)}
-                    placeholder={P.keyPlaceholder}
-                    value={drafts[c.engine] ?? ""}
-                    onChange={(e) => setDraft(c.engine, e.target.value)}
-                    className="min-w-0 flex-1 rounded border px-2 py-1"
-                  />
-                  <button type="submit" disabled={!drafts[c.engine]} className="rounded border px-3 py-1 disabled:opacity-40">
-                    {P.keyAction.save}
-                  </button>
-                  <button type="button" onClick={() => getKey(c.engine)} className="text-blue-700 underline">
-                    {P.keyAction.get}
-                  </button>
-                </form>
-              ))}
-            <div className="mt-3 flex gap-2">
-              {c.signingIn ? (
-                <button type="button" onClick={() => cancel(c.engine)} className="rounded border px-3 py-1 text-sm">
-                  {P.action.cancel}
-                </button>
-              ) : c.auth === "api_key" ? null : c.connected && !c.acceptsKey ? (
-                <button type="button" onClick={() => signOut(c.engine)} className="rounded border px-3 py-1 text-sm">
-                  {P.action.signOut}
-                </button>
-              ) : c.connected && c.keySaved ? null : (
-                <button
-                  type="button"
-                  onClick={() => signIn(c.engine)}
-                  className="rounded bg-neutral-900 px-3 py-1 text-sm text-white"
-                >
-                  {P.action.signIn}
-                </button>
-              )}
-              <button
-                type="button"
-                aria-label={`${P.action.up}: ${c.name}`}
-                disabled={c.isFirst}
-                onClick={() => move(c.engine, -1)}
-                className="ml-auto rounded border px-2 text-sm disabled:opacity-30"
-              >
-                ↑
-              </button>
-              <button
-                type="button"
-                aria-label={`${P.action.down}: ${c.name}`}
-                disabled={c.isLast}
-                onClick={() => move(c.engine, 1)}
-                className="rounded border px-2 text-sm disabled:opacity-30"
-              >
-                ↓
-              </button>
-            </div>
-          </li>
-        ))}
-      </ul>
+      <div className="flex flex-col gap-2">
+        <SectionLabel>{P.groupPlans}</SectionLabel>
+        <Card>
+          <ul className="divide-y divide-border">{plans.map(row)}</ul>
+        </Card>
+      </div>
+      <div className="flex flex-col gap-2">
+        <SectionLabel>{P.groupKeys}</SectionLabel>
+        <Card>
+          <ul className="divide-y divide-border">{keys.map(row)}</ul>
+        </Card>
+      </div>
     </section>
   );
 }

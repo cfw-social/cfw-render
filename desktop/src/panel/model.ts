@@ -5,14 +5,16 @@ export const STALE_MS = 3 * 60 * 1000;
 
 export type BannerKind = "notRunning" | "paused" | "battery" | "update" | "limit";
 export interface Banner { kind: BannerKind; text: string }
-export interface NowRow { title: string; recipe: string; stepText: string; pct: number | null; elapsed: string | null }
-export interface SimpleRow { title: string; recipe: string }
-export interface DoneRow { mark: string; result: "done" | "failed" | "stopped"; title: string; time: string }
+export interface NowRow { title: string; recipe: string; stepText: string; pct: number | null; elapsed: string | null; code: string; brand: string; stepLabel: string; step: string }
+export interface SimpleRow { title: string; recipe: string; code: string; brand: string }
+export interface DoneRow { mark: string; result: "done" | "failed" | "stopped"; title: string; time: string; code: string; brand: string }
 
 export interface PanelModel {
   providerLine: string;
   noProvider: boolean;
   banner: Banner | null;
+  /** When the AI limit lifts (HH:MM), if every provider is limited. */
+  limitAt: string | null;
   paused: boolean;
   brandsLine: string | null;
   now: NowRow[];
@@ -56,13 +58,15 @@ export function panelModel(payload: StatusPayload | null, now: number, opts: Mod
   const paused = !!c.paused;
 
   let banner: Banner | null = null;
+  let limitAt: string | null = null;
   if (!s || !running) banner = { kind: "notRunning", text: copy.banner.notRunning };
   else if (paused && c.pauseReason === "battery") banner = { kind: "battery", text: copy.banner.battery };
   else if (paused) banner = { kind: "paused", text: copy.banner.paused };
   else if (c.updateRequired) banner = { kind: "update", text: copy.banner.update };
   else if (!noProvider && engines.every((e) => e.limit === "limited")) {
     const resets = engines.map((e) => ms(e.resetsAt)).filter((t): t is number => t != null);
-    banner = { kind: "limit", text: copy.banner.limit(resets.length ? hhmm(Math.min(...resets)) : null) };
+    limitAt = resets.length ? hhmm(Math.min(...resets)) : null;
+    banner = { kind: "limit", text: copy.banner.limit(limitAt) };
   }
 
   const brands = (s?.brands ?? []).filter((b) => b.serving && b.name).map((b) => b.name!);
@@ -72,6 +76,7 @@ export function panelModel(payload: StatusPayload | null, now: number, opts: Mod
     providerLine: noProvider ? copy.noProvider : (payload?.providerLine ?? fallbackProviderLine(engines)),
     noProvider,
     banner,
+    limitAt,
     paused,
     brandsLine: brands.length ? copy.workingFor(brands.join(", ")) : null,
     now: (s?.now ?? []).map((n) => {
@@ -82,9 +87,13 @@ export function panelModel(payload: StatusPayload | null, now: number, opts: Mod
         stepText: copy.step(n.step ?? null, n.steps ?? null, n.stepLabel ?? null),
         pct: typeof n.pct === "number" ? Math.max(0, Math.min(100, n.pct)) : null,
         elapsed: started == null ? null : copy.elapsed(Math.max(0, Math.floor((now - started) / 1000))),
+        code: n.shortCode ?? "",
+        brand: n.brand ?? "",
+        stepLabel: n.stepLabel ?? "",
+        step: n.step != null && n.steps != null ? copy.stepOf(n.step, n.steps) : "",
       };
     }),
-    next: (s?.next ?? []).map((n) => ({ title: title(n.shortCode, n.brand), recipe: n.recipe ?? "" })),
+    next: (s?.next ?? []).map((n) => ({ title: title(n.shortCode, n.brand), recipe: n.recipe ?? "", code: n.shortCode ?? "", brand: n.brand ?? "" })),
     // Newest first by finishedAt, whatever order the file lists them in
     // (entries without a time sort last, keeping their file order).
     done: [...(s?.recent ?? [])]
@@ -95,7 +104,7 @@ export function panelModel(payload: StatusPayload | null, now: number, opts: Mod
       .map(({ r }) => {
       const result = (results as readonly string[]).includes(r.result ?? "") ? (r.result as DoneRow["result"]) : "failed";
       const t = ms(r.finishedAt);
-      return { mark: copy.marks[result], result, title: title(r.shortCode, r.brand), time: t == null ? "" : hhmm(t) };
+      return { mark: copy.marks[result], result, title: title(r.shortCode, r.brand), time: t == null ? "" : hhmm(t), code: r.shortCode ?? "", brand: r.brand ?? "" };
     }),
     lastCheck: lastCheckMs == null ? copy.lastCheckNever : copy.lastCheck(copy.ago(Math.max(0, Math.floor((now - lastCheckMs) / 1000)))),
   };
@@ -103,4 +112,45 @@ export function panelModel(payload: StatusPayload | null, now: number, opts: Mod
 
 function fallbackProviderLine(engines: Engine[]) {
   return `AI: ${engines.map(label).join(", ")}`;
+}
+
+/** One line of overall state for the menu bar, the rail footer and Renders. */
+export type HealthKind = "rendering" | "ready" | "paused" | "notRunning" | "battery" | "update" | "limit" | "noProvider";
+export interface Health {
+  kind: HealthKind;
+  tone: "ok" | "warn" | "idle" | "bad";
+  label: string;
+  /** What's wrong and what to do; null when nothing needs the owner. */
+  callout: { title: string; body: string } | null;
+  waiting: number;
+}
+
+export function health(m: PanelModel): Health {
+  const waiting = m.next.length;
+  const kind: HealthKind = m.banner
+    ? m.banner.kind
+    : m.noProvider
+      ? "noProvider"
+      : m.now.length > 0
+        ? "rendering"
+        : "ready";
+  switch (kind) {
+    case "rendering":
+      return { kind, tone: "ok", label: copy.health.rendering, callout: null, waiting };
+    case "ready":
+      return { kind, tone: "ok", label: copy.health.ready, callout: null, waiting };
+    case "paused":
+      return { kind, tone: "idle", label: copy.health.paused, callout: null, waiting };
+    case "notRunning":
+      return { kind, tone: "bad", label: copy.health.notRunning, callout: copy.callout.notRunning, waiting };
+    case "battery":
+      return { kind, tone: "warn", label: copy.health.paused, callout: copy.callout.battery, waiting };
+    case "update":
+      return { kind, tone: "warn", label: copy.health.attention, callout: copy.callout.update, waiting };
+    case "noProvider":
+      return { kind, tone: "warn", label: copy.health.attention, callout: copy.callout.noProvider, waiting };
+    case "limit": {
+      return { kind, tone: "warn", label: copy.health.attention, callout: copy.callout.limit(m.limitAt), waiting };
+    }
+  }
 }
