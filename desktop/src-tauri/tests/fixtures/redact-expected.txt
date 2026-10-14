@@ -1,0 +1,10 @@
+render key: cfw_render_[redacted]
+brand key cfw_[redacted] short cfw_abc stays
+openai sk-[redacted] and anthropic sk-ant-[redacted]
+google AIza[redacted] xai xai-[redacted]
+Authorization: Bearer [redacted]
+mail [email] ok
+url https://r2.example.com/o.mp4?X-Amz=1&sig=[redacted]&token=[redacted]&width=720#frag
+also https://app.cfw.social/cb?code=[redacted]&state=keep&password=[redacted]
+path /Users/[user]/CFW Render/logs/cfw-render.log and /Users/Shared stays
+plain line with no secrets

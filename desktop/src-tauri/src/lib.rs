@@ -1,7 +1,15 @@
 //! Tauri shell: tray, state-dir watcher, and commands. Logic lives in `state` / `control`.
 
+pub mod apikeys;
+pub mod chat;
 pub mod control;
+pub mod setup;
+pub mod signin;
 pub mod state;
+pub mod toolchain;
+pub mod updates;
+pub mod support;
+pub mod web;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -79,8 +87,9 @@ fn is_pause_file_present() -> bool {
     control::state_dir().is_ok_and(|d| d.join("paused").exists())
 }
 
-fn show_main(app: &AppHandle) {
+pub(crate) fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
+        set_dock(app, true);
         let _ = w.show();
         let _ = w.set_focus();
     }
@@ -143,6 +152,54 @@ fn set_allow_battery(allow: bool) -> Result<(), String> {
     control::set_allow_battery(allow).map_err(err)
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Settings {
+    pub allow_battery: bool,
+    pub start_at_login: bool,
+}
+
+/// Settings snapshot; `start_at_login` comes from the autostart plugin.
+pub fn settings(start_at_login: bool) -> Result<Settings, control::ControlError> {
+    Ok(Settings { allow_battery: control::allow_battery()?, start_at_login })
+}
+
+#[tauri::command]
+fn get_settings(app: AppHandle) -> Result<Settings, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let on = app.autolaunch().is_enabled().unwrap_or(false);
+    settings(on).map_err(err)
+}
+
+#[tauri::command]
+fn set_start_at_login(app: AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let al = app.autolaunch();
+    if enabled { al.enable() } else { al.disable() }.map_err(|e| e.to_string())
+}
+
+/// First run only: turn Start at login on, then leave the owner's choice alone.
+fn autostart_first_run(app: &AppHandle) {
+    use tauri_plugin_autostart::ManagerExt;
+    let Ok(dir) = app.path().app_config_dir() else { return };
+    let marker = dir.join("autostart-initialised");
+    if marker.exists() {
+        return;
+    }
+    if app.autolaunch().enable().is_ok() {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(marker, b"");
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn set_dock(app: &AppHandle, visible: bool) {
+    let policy = if visible { tauri::ActivationPolicy::Regular } else { tauri::ActivationPolicy::Accessory };
+    let _ = app.set_activation_policy(policy);
+}
+#[cfg(not(target_os = "macos"))]
+fn set_dock(_app: &AppHandle, _visible: bool) {}
+
 #[tauri::command]
 fn run_now() -> Result<(), String> {
     control::run_now().map_err(err)
@@ -151,6 +208,61 @@ fn run_now() -> Result<(), String> {
 #[tauri::command]
 fn set_engine_order(order: Vec<String>) -> Result<(), String> {
     control::write_engine_order(&order).map_err(err)
+}
+
+#[tauri::command]
+fn provider_sign_in(app: AppHandle, engine: String) -> Result<(), String> {
+    signin::start_sign_in(engine, move |ev| {
+        let _ = app.emit("provider-signin", ev);
+    })
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn provider_sign_in_cancel(engine: String) -> Result<(), String> {
+    signin::cancel_sign_in(&engine).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn provider_sign_out(engine: String) -> Result<bool, String> {
+    signin::sign_out(&engine).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn provider_status(engine: String) -> Result<bool, String> {
+    signin::provider_status(&engine).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn chat_brands() -> Result<Vec<chat::Brand>, String> {
+    chat::brands()
+}
+
+#[tauri::command]
+async fn chat_add_brand(slug: String, name: String, key: String) -> Result<Vec<chat::Brand>, String> {
+    chat::add_brand(&slug, &name, &key)
+}
+
+#[tauri::command]
+async fn chat_remove_brand(slug: String) -> Result<Vec<chat::Brand>, String> {
+    chat::remove_brand(&slug)
+}
+
+#[tauri::command]
+fn chat_send(app: AppHandle, slug: String, text: String) -> Result<(), String> {
+    chat::send(slug, text, move |ev| {
+        let _ = app.emit("chat-event", ev);
+    })
+}
+
+#[tauri::command]
+fn chat_cancel(slug: String) -> Result<bool, String> {
+    chat::cancel(&slug)
+}
+
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    chat::open_url(&url)
 }
 
 fn build_tray(app: &AppHandle) -> tauri::Result<(TrayIcon, MenuItem<Wry>)> {
@@ -204,6 +316,7 @@ fn start_watcher(app: &AppHandle) -> Option<RecommendedWatcher> {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .invoke_handler(tauri::generate_handler![
             get_status,
             set_paused,
@@ -212,7 +325,44 @@ pub fn run() {
             set_engine_order,
             open_main,
             start_worker,
-            open_logs
+            open_logs,
+            get_settings,
+            set_start_at_login,
+            provider_sign_in,
+            provider_sign_in_cancel,
+            provider_sign_out,
+            provider_status,
+            chat_brands,
+            chat_add_brand,
+            chat_remove_brand,
+            chat_send,
+            chat_cancel,
+            open_url,
+            setup::get_setup_status,
+            setup::setup_run,
+            setup::setup_adopt,
+            setup::setup_cancel,
+            setup::setup_tools_size,
+            setup::open_setup,
+            setup::setup_install_tools,
+            web::web_show,
+            web::web_hide,
+            web::web_reload,
+            web::web_brands,
+            support::uninstall,
+            support::send_logs_preview,
+            support::send_logs,
+            support::crash_scan,
+            support::get_support_settings,
+            support::set_share_crash_reports,
+            apikeys::provider_key_save,
+            apikeys::provider_key_remove,
+            apikeys::provider_key_present,
+            apikeys::provider_clear_limit,
+            apikeys::open_provider_key_url,
+            updates::check_for_update,
+            updates::get_update_settings,
+            updates::set_auto_update
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -230,6 +380,9 @@ pub fn run() {
                 refresh(&ticker);
             });
 
+            if !setup::setup_status().installed { setup::open_setup(handle.clone()); }
+            autostart_first_run(&handle);
+            updates::start(&handle);
             refresh(&handle);
             Ok(())
         })
@@ -237,12 +390,47 @@ pub fn run() {
             WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();
+                if window.label() == "main" {
+                    set_dock(window.app_handle(), false);
+                }
+            }
+            WindowEvent::Resized(_) if window.label() == "main" => {
+                web::layout(window.app_handle());
             }
             WindowEvent::Focused(false) if window.label() == "panel" => {
                 let _ = window.hide();
             }
             _ => {}
         })
-        .run(tauri::generate_context!())
-        .expect("error while running CFW Render");
+        .build(tauri::generate_context!())
+        .expect("error while building CFW Render")
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if !setup::setup_status().installed {
+                    setup::open_setup(app.clone());
+                } else {
+                    show_main(app);
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    #[test]
+    fn get_settings_reflects_allow_battery_file() {
+        let _g = control::tests::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let d = tempfile::tempdir().unwrap();
+        std::env::set_var("CFW_RENDER_STATE_DIR", d.path());
+        assert_eq!(settings(true).unwrap(), Settings { allow_battery: false, start_at_login: true });
+        std::fs::write(d.path().join("allow-battery"), b"").unwrap();
+        assert_eq!(settings(false).unwrap(), Settings { allow_battery: true, start_at_login: false });
+        let json = serde_json::to_string(&settings(true).unwrap()).unwrap();
+        assert_eq!(json, r#"{"allowBattery":true,"startAtLogin":true}"#);
+    }
 }

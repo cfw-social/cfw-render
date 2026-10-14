@@ -15,6 +15,7 @@ under Anthropic's terms.
 | fontconfig  | 2.16.0     | MIT                  | https://gitlab.freedesktop.org/fontconfig/fontconfig     | MIT-style; ship `COPYING`. |
 | freetype    | 2.13.3     | FTL                  | https://freetype.org/                                    | FreeType License (BSD-style with attribution); ship `FTL.TXT`; credit "Portions of this software are copyright © The FreeType Project". |
 | codex       | 0.45.0     | Apache-2.0           | https://github.com/openai/codex                          | Official release binary; ship `LICENSE` + `NOTICE`. |
+| gemini      | 0.9.0      | Apache-2.0           | https://github.com/google-gemini/gemini-cli              | `@google/gemini-cli` via bundled npm; ship `LICENSE`. |
 
 Versions marked `pinNote` in the manifest are provisional until the CI build
 confirms them; keep this table and `manifest.json` in lockstep.

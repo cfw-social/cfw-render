@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hhmm, panelModel } from "./model";
+import { health, hhmm, panelModel } from "./model";
 import { NOW, payload, workingStatus } from "./fixtures";
 import type { StatusFile } from "../status";
 
@@ -44,8 +44,8 @@ describe("panelModel", () => {
     expect(m.banner).toBeNull();
     expect(m.providerLine).toBe("AI: ChatGPT limited until 15:40, using Claude");
     expect(m.brandsLine).toBe("Working for: Brand A, Brand C");
-    expect(m.now).toEqual([{ title: "R-7KQ4 · Brand A", recipe: "Spotlight reel", stepText: "step 5 of 7 · Render scenes", pct: 62, elapsed: "1:30" }]);
-    expect(m.next).toEqual([{ title: "R-C1 · Brand C", recipe: "Carousel" }]);
+    expect(m.now).toEqual([{ title: "R-7KQ4 · Brand A", recipe: "Spotlight reel", stepText: "step 5 of 7 · Render scenes", pct: 62, elapsed: "1:30", code: "R-7KQ4", brand: "Brand A", stepLabel: "Render scenes", step: "step 5 of 7" }]);
+    expect(m.next).toEqual([{ title: "R-C1 · Brand C", recipe: "Carousel", code: "R-C1", brand: "Brand C" }]);
     // Newest three by finishedAt; the oldest (R-OLD) drops off.
     expect(m.done.map((d) => [d.mark, d.result, d.title])).toEqual([
       ["–", "stopped", "R-6TT3 · Brand A"],
@@ -61,9 +61,22 @@ describe("panelModel", () => {
     const m = panelModel(payload(s), NOW);
     expect(m.brandsLine).toBeNull();
     expect(m.noProvider).toBe(true);
-    expect(m.now).toEqual([{ title: "Brand A", recipe: "", stepText: "", pct: null, elapsed: null }]);
+    expect(m.now).toEqual([{ title: "Brand A", recipe: "", stepText: "", pct: null, elapsed: null, code: "", brand: "Brand A", stepLabel: "", step: "" }]);
     expect(m.next).toEqual([]);
-    expect(m.done).toEqual([{ mark: "✗", result: "failed", title: "R-1", time: "" }]);
+    expect(m.done).toEqual([{ mark: "✗", result: "failed", title: "R-1", time: "", code: "R-1", brand: "" }]);
     expect(m.lastCheck).toBe("Last check: never");
+  });
+
+  it("health: one state for the menu bar, with a fix when the owner is needed", () => {
+    expect(health(panelModel(payload(workingStatus), NOW))).toMatchObject({ kind: "rendering", tone: "ok", callout: null });
+    expect(health(panelModel(payload({ ...workingStatus, now: [] }), NOW))).toMatchObject({ kind: "ready", label: "Ready" });
+    expect(health(panelModel(null, NOW))).toMatchObject({ kind: "notRunning", tone: "bad" });
+    expect(health(panelModel(payload(withComputer({ paused: true, pauseReason: "owner" })), NOW))).toMatchObject({ kind: "paused", callout: null, waiting: 1 });
+    const lim: StatusFile = { ...workingStatus, engines: [{ name: "codex", signedIn: true, limit: "limited", resetsAt: "2026-10-11T15:40:00Z" }] };
+    const h = health(panelModel(payload(lim), NOW));
+    expect(h.kind).toBe("limit");
+    expect(h.callout?.body).toContain(hhmm(Date.parse("2026-10-11T15:40:00Z")));
+    const none: StatusFile = { ...workingStatus, engines: [{ name: "codex", signedIn: false }] };
+    expect(health(panelModel(payload(none), NOW))).toMatchObject({ kind: "noProvider", tone: "warn" });
   });
 });

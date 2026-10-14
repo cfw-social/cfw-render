@@ -122,7 +122,7 @@ Every ingredient URL in `order.json` is already on CFW Media; fetch it into
 `ingredients/`. You cannot upload NEW ingredients from here (the worker
 credential is write-only for outputs via `cfw-render-upload.sh`). Reused
 renders / outros are uploaded BEFORE the order is submitted — by the brand's
-Hermes Director via the `upload_media` MCP tool, or by an operator with
+assistant via the `upload_media` MCP tool, or by an operator with
 `bin/cfw-render-media.sh <file|url>` and a brand API key.
 
 ## Owner-safe language

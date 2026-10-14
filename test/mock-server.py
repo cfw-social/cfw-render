@@ -52,15 +52,6 @@ PRESIGN_MIMES = ("image/jpeg", "image/png", "image/gif", "image/webp",
                  # M1: json/text step saves (cfw-social presigns them as the `data` kind)
                  "application/json", "text/markdown", "text/plain")
 
-# ── Admin fleet-enable surface (mock of cfw-social's master-key admin brands
-# route, exercised by cfw-render-fleet.sh). Brands are seeded from the queue's
-# brandIds, all renderFleetEnabled=false — the real default. MOCK_MASTER_KEY,
-# when set, is the master key the route requires in the `cfw-api-key` header
-# (else any non-empty key is accepted, matching a "master key configured"
-# server that only checks presence-vs-match).
-MASTER_KEY = os.environ.get("MOCK_MASTER_KEY")
-BRANDS_FLEET = {o.get("brandId"): False for o in QUEUE if o.get("brandId")}
-
 TOOLS = ["claim_render_order", "append_render_event", "complete_render_order", "block_render_order", "report_render_step"]
 # M3-01: computer-level tools. CFW_MOCK_NO_M3_TOOLS=1 = an older server that
 # does not have them (the worker must carry on). CFW_MOCK_UPDATE_REQUIRED=1 =
@@ -429,6 +420,27 @@ def handle_tool_call(name, args):
         log_call(name, args, True)
         return rpc_result({"ok": True}), None
 
+    # M3-04a: the app-driven installer's setup reports + probe order.
+    if name == "revoke_this_computer":
+        # M3-06a: deactivate THIS computer's render key.
+        log_call(name, args, True)
+        return rpc_result({"ok": True}), None
+    if name == "create_probe_render_order":
+        log_call(name, args, True)
+        return rpc_result({"ok": True, "orderId": "probe_1"}), None
+    if name == "report_byoa_setup_step":
+        if args.get("step") == "probe_render":
+            with LOCK:
+                MOCK_FLAGS["probe_polls"] = MOCK_FLAGS.get("probe_polls", 0) + 1
+                n = MOCK_FLAGS["probe_polls"]
+            if n <= int(os.environ.get("CFW_MOCK_PROBE_PENDING", "2")):
+                log_call(name, args, False)
+                return rpc_result({"ok": False, "error": "probe_order_not_done"}), None
+            log_call(name, args, True)
+            return rpc_result({"ok": True, "state": "ready"}), None
+        log_call(name, args, True)
+        return rpc_result({"ok": True}), None
+
     # Unimplemented tool (e.g. requeue_render_order) — mirrors the real gap
     # (implementation-plan.md §0.4): the server genuinely has no such tool.
     log_call(name, args, False)
@@ -481,26 +493,6 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _admin_denied(self):
-        """Return True (and send 401) unless the master key is presented.
-        Mirrors cfw-social assertMasterOrAdmin() for the master-key path."""
-        key = self.headers.get("cfw-api-key", "")
-        if not key:
-            self._send_json({"error": "Not found"}, 404)
-            return True
-        if MASTER_KEY is not None and key != MASTER_KEY:
-            self._send_json({"error": "Invalid master API key"}, 401)
-            return True
-        return False
-
-    def _admin_brand_id(self):
-        """/api/v1/admin/brands/<id> -> <id>, else None."""
-        prefix = "/api/v1/admin/brands/"
-        if self.path.startswith(prefix):
-            rest = self.path[len(prefix):]
-            return rest.split("?", 1)[0].split("/", 1)[0] or None
-        return None
-
     def handle_one_request(self):
         # M1-08 unreachable switch: $CFW_MOCK_CONTROL_DIR/down ⇒ 503 for everything.
         if not mock_down():
@@ -529,46 +521,61 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        brand_id = self._admin_brand_id()
-        if brand_id is not None:
-            if self._admin_denied():
-                return
-            if brand_id not in BRANDS_FLEET:
-                self._send_json({"error": "not_found"}, 404)
-                return
-            self._send_json({"id": brand_id, "renderFleetEnabled": BRANDS_FLEET[brand_id]})
-            return
         # Any other GET (e.g. the test harness's /api/v1/mcp reachability probe)
         # just needs to answer so the socket is proven live.
         self._send_json({"error": "not found"}, 404)
 
-    def do_PATCH(self):
-        brand_id = self._admin_brand_id()
-        if brand_id is None:
-            self._send_json({"error": "not found"}, 404)
-            return
-        if self._admin_denied():
-            return
-        length = int(self.headers.get("Content-Length", 0))
-        raw = self.rfile.read(length) if length else b""
-        try:
-            body = json.loads(raw)
-        except Exception:
-            self._send_json({"error": "Invalid JSON"}, 400)
-            return
-        if "renderFleetEnabled" not in body or not isinstance(body["renderFleetEnabled"], bool):
-            self._send_json({"error": "Expected { renderFleetEnabled: boolean }"}, 422)
-            return
-        if brand_id not in BRANDS_FLEET:
-            self._send_json({"error": "not_found"}, 404)
-            return
-        with LOCK:
-            BRANDS_FLEET[brand_id] = body["renderFleetEnabled"]
-        self._send_json({"ok": True, "id": brand_id, "renderFleetEnabled": BRANDS_FLEET[brand_id]})
-
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length) if length else b""
+
+        if self.path in ("/api/v1/computers/logs", "/api/v1/computers/crash"):
+            # M3-06a: support uploads. The render key is checked, NEVER logged.
+            which = self.path.rsplit("/", 1)[1]
+            key = self.headers.get("cfw-render-key", "")
+            if not key.startswith("cfw_render_"):
+                CALLS_LOG.write(json.dumps({"tool": which, "ok": False}) + "\n")
+                self._send_json({"error": "unauthorized"}, 401)
+                return
+            if which == "logs":
+                ok = raw[:2] == b"\x1f\x8b" and len(raw) <= 5 * 1024 * 1024
+                if ok:
+                    with open(os.path.join(STATE_DIR, "logs-upload.gz"), "wb") as f:
+                        f.write(raw)
+                CALLS_LOG.write(json.dumps({"tool": "logs", "args": {"bytes": len(raw)}, "ok": ok}) + "\n")
+                if not ok:
+                    self._send_json({"error": "bad_bundle"}, 400)
+                    return
+                self._send_json({"ok": True, "reference": "LOG-TEST", "expiresInDays": 30})
+                return
+            try:
+                body = json.loads(raw or b"{}")
+            except Exception:
+                body = None
+            ok = isinstance(body, dict) and isinstance(body.get("frames"), list)
+            CALLS_LOG.write(json.dumps({"tool": "crash", "args": body if ok else None, "ok": ok}) + "\n")
+            self._send_json({"ok": True} if ok else {"error": "bad_request"}, 200 if ok else 400)
+            return
+
+        if self.path == "/api/v1/render-worker-keys/exchange":
+            # M3-04a: brand key → render key. The brand key is NEVER logged.
+            bkey = self.headers.get("x-api-key", "")
+            try:
+                body = json.loads(raw or b"{}")
+            except Exception:
+                body = None
+            dn = body.get("deviceName") if isinstance(body, dict) else None
+            if not bkey.startswith("cfw_") or bkey == "cfw_bad":
+                CALLS_LOG.write(json.dumps({"tool": "exchange", "args": {"deviceName": dn}, "ok": False}) + "\n")
+                self._send_json({"error": "invalid_api_key"}, 401)
+                return
+            if not isinstance(dn, str) or not 1 <= len(dn) <= 100:
+                CALLS_LOG.write(json.dumps({"tool": "exchange", "args": {"deviceName": dn}, "ok": False}) + "\n")
+                self._send_json({"error": "bad_request"}, 400)
+                return
+            CALLS_LOG.write(json.dumps({"tool": "exchange", "args": {"deviceName": dn}, "ok": True}) + "\n")
+            self._send_json({"key": {"plain": "cfw_render_mockexchanged000", "id": "rk_1"}}, 201)
+            return
 
         if self.path == "/api/v1/mcp":
             key = self.headers.get("cfw-render-key", "")

@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  com.cfw.render.plist — launchd template (macOS dev box / macOS render host).
+  com.cfw.render.plist — launchd template (the owner's Mac).
   Placeholders {{PREFIX}}, {{ENV_FILE}}, {{HOME}}, {{WORKER_PATH}} are
-  substituted by install/install.sh. NOT loaded by this task (AB-RNDR-WORKER
-  is code-authoring only) — a human loads it later per docs/deploy.md.
+  substituted by install/install.sh. install.sh writes it and prints the
+  launchctl line to load it (docs/deploy.md).
 
   PATH (CFW-291): {{WORKER_PATH}} is computed once in install.sh by
   cr_resolve_worker_path — a *resolved* location for every required binary

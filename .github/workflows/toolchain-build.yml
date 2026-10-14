@@ -18,19 +18,42 @@ permissions:
   contents: read
 
 jobs:
+  # Picks which arches to build. A job-level `if:` cannot read `matrix`, so the
+  # skip has to happen here, before the matrix exists. Tags build both.
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      include: ${{ steps.pick.outputs.include }}
+    steps:
+      - id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          ARCH: ${{ inputs.arch }}
+        run: |
+          set -euo pipefail
+          arm='{"arch":"arm64","runner":"macos-14"}'
+          intel='{"arch":"x86_64","runner":"macos-15-intel"}'
+          if [ "$EVENT" = "push" ] || [ "$ARCH" = "both" ]; then
+            include="[$arm,$intel]"
+          elif [ "$ARCH" = "arm64" ]; then
+            include="[$arm]"
+          elif [ "$ARCH" = "x86_64" ]; then
+            include="[$intel]"
+          else
+            echo "unknown arch: $ARCH" >&2
+            exit 1
+          fi
+          echo "include=$include" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: plan
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: arm64
-            runner: macos-14
-          - arch: x86_64
-            runner: macos-13
+        include: ${{ fromJSON(needs.plan.outputs.include) }}
     runs-on: ${{ matrix.runner }}
-    # Skip the arch the dispatcher did not ask for (tags build both).
-    if: ${{ github.event_name == 'push' || inputs.arch == 'both' || inputs.arch == matrix.arch }}
     steps:
       - uses: actions/checkout@v4
       # Build-time only. The bundle must not link brew libs — verify.sh

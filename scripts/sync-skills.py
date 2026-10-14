@@ -12,9 +12,9 @@ scripts/gen-skills-manifest.sh expect.
 Mostly a plain copy — EXCEPT for one deliberate rewrite (CFW-312):
 rewrite_host_path_resolvers() patches the source's "locate my own dir / locate
 a sub-skill dir" bash idiom, which does a `find` over host install locations
-($HOME/.claude/skills, $HOME/.hermes/*, the source library's own absolute
-path). That idiom is correct for the SOURCE library (where Hermes/Claude Code
-install skills as siblings under those host roots) but wrong for cfw-render's
+($HOME/.claude/skills or any other $HOME/.<tool>/ install root, the source
+library's own absolute path). That idiom is correct for the SOURCE library
+(where agent tools install skills as siblings under those host roots) but wrong for cfw-render's
 vendored, runtime-free bundle, where none of those host roots exist — it was
 silently resolving to "" or "/.hub/<dep>" on the render box. The rewrite
 anchors "my own dir" on $CFW_RENDER_SKILLS_DIR (already exported into the
@@ -90,13 +90,13 @@ def copy_tree(src: Path, dest: Path):
 # ---- CFW-312: rewrite host-path sub-skill resolvers to bundle-relative ----
 #
 # Source shape (correct for the source library, wrong for this bundle):
-#   SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.hermes/skills" \
-#     "$HOME/.hermes/profiles" /Users/<user>/ecosystem/harness/skills \
+#   SKILL_DIR=$(find "$HOME/.claude/skills" "$HOME/.<tool>/skills" \
+#     "$HOME/.<tool>/profiles" /Users/<user>/ecosystem/harness/skills \
 #     -maxdepth N -type d -name <literal-name> 2>/dev/null | head -1)
 # optionally followed by a dead-on-arrival fallback line:
 #   [ -n "$VAR" ] || VAR="$SKILL_DIR/.hub/<dep>"
 _HOST_ROOT_ALT = (
-    r'(?:"\$HOME/\.claude/skills"|"\$HOME/\.hermes/skills"|"\$HOME/\.hermes/profiles"'
+    r'(?:"\$HOME/\.[A-Za-z0-9_-]+/(?:skills|profiles)"'
     r'|/Users/[A-Za-z0-9_.\-]+/ecosystem/harness/skills)'
 )
 _FIND_ASSIGN_RE = re.compile(
@@ -106,17 +106,17 @@ _FIND_ASSIGN_RE = re.compile(
     r'2>/dev/null[ \t]*\|[ \t]*head[ \t]+-1[ \t]*\)'
 )
 _HOST_COMMENT_RE = re.compile(
-    r'^[ \t]*#.*(?:\$HOME/\.claude|\$HOME/\.hermes|/Users/[A-Za-z0-9_.\-]+/ecosystem/harness/skills).*\n?',
+    r'^[ \t]*#.*(?:\$HOME/\.claude|\$HOME/\.[A-Za-z0-9_-]+/(?:skills|profiles)|/Users/[A-Za-z0-9_.\-]+/ecosystem/harness/skills).*\n?',
     re.MULTILINE,
 )
 # The same idiom, wrapped in a parameterized helper (scripts/verify-skill.sh):
 #   _find_skill() {
-#     find "$HOME/.claude/skills" "$HOME/.hermes/skills" /Users/<user>/ecosystem/harness/skills \
+#     find "$HOME/.claude/skills" "$HOME/.<tool>/skills" /Users/<user>/ecosystem/harness/skills \
 #       -maxdepth N -type d -name "$1" 2>/dev/null | head -1
 #   }
 _FIND_SKILL_FN_RE = re.compile(
     r'(?P<indent>[ \t]*)_find_skill\(\) \{\n'
-    r'[ \t]*find\s+"\$HOME/\.claude/skills"\s+"\$HOME/\.hermes/skills"\s+'
+    r'[ \t]*find\s+"\$HOME/\.claude/skills"\s+"\$HOME/\.[A-Za-z0-9_-]+/skills"\s+'
     r'/Users/[A-Za-z0-9_.\-]+/ecosystem/harness/skills[ \t]*\\\n'
     r'[ \t]*-maxdepth\s+\d+\s+-type\s+d\s+-name\s+"\$1"\s+2>/dev/null\s*\|\s*head\s+-1\n'
     r'(?P=indent)\}\n'

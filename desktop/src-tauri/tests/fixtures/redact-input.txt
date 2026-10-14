@@ -1,0 +1,10 @@
+render key: cfw_render_abcDEF123_456
+brand key cfw_brand0123456789 short cfw_abc stays
+openai sk-proj_ABCDEFGHIJ0123456789xyz and anthropic sk-ant-api03-ABCDEFGHIJKLMNOPqrst
+google AIzaSyA1234567890abcdefghijklmnopqrstuv xai xai-ABCDEFGHIJ0123456789abcd
+Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig
+mail owner.name+tag@example.co.uk ok
+url https://r2.example.com/o.mp4?X-Amz=1&sig=abc123&token=zzz&width=720#frag
+also https://app.cfw.social/cb?code=xyz&state=keep&password=hunter2
+path /Users/vasanth/CFW Render/logs/cfw-render.log and /Users/Shared stays
+plain line with no secrets

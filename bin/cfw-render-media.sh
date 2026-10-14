@@ -3,7 +3,7 @@
 # card, b-roll clip) to CFW Media so it can be referenced from a render order's
 # `ingredients[]`. Wraps cfw-social's `upload_media` two-door capability
 # (CFW-131): the REST twin is POST /api/v1/media/upload-media, the MCP twin is
-# the `upload_media` tool the brand's Hermes Director calls.
+# the `upload_media` MCP tool.
 #
 #   local file → (1) POST {filePath,kind,filename}        → presigned R2 PUT
 #                (2) PUT the bytes (any size; bypasses the Vercel body cap)
@@ -18,7 +18,7 @@
 # AUTH: this is a BRAND capability. It needs a brand API key (`cfw_…`) in
 # CFW_BRAND_API_KEY — the render worker key (CFW_RENDER_WORKER_KEY, header
 # cfw-render-key) is write-only for render OUTPUTS and is rejected here by
-# design. Run this from the Hermes gateway env / an operator shell BEFORE
+# design. Run this from an operator shell BEFORE
 # submitting the order, not from inside a Director run.
 #
 # Usage:  cfw-render-media.sh [--kind image|video|doc] [--filename NAME] [--note TEXT] <file-or-url> [...]

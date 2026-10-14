@@ -554,7 +554,10 @@ o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alt
           rm -f "$order_dir/current-step.json"
           cr_h_report attempt_released "{\"stepId\":\"$step_id\",\"reason\":\"engine_limit\"}"
           local earliest; earliest="$(cr_engine_limit_earliest)"
-          cr_mcp_call_soft set_computer_limit "{\"engine\":\"$engine\",\"until\":\"${earliest:-$limit_until}\"}" >/dev/null 2>&1 \
+          # [M3-08b] An out-of-credit engine has no reset: send no `until`.
+          local lim_args="{\"engine\":\"$engine\",\"until\":\"${earliest:-$limit_until}\"}"
+          [[ -z "$earliest" && "$limit_until" == credit ]] && lim_args="{\"engine\":\"$engine\"}"
+          cr_mcp_call_soft set_computer_limit "$lim_args" >/dev/null 2>&1 \
             || cr_log "harness: set_computer_limit failed (ignored)"
           return 24
         fi

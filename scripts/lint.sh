@@ -8,7 +8,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAILED=0
 
 shopt -s nullglob
-SCRIPTS=("$REPO_DIR"/bin/*.sh "$REPO_DIR"/install/*.sh "$REPO_DIR"/test/*.sh "$REPO_DIR"/scripts/*.sh "$REPO_DIR"/toolchain/scripts/*.sh)
+SCRIPTS=("$REPO_DIR"/bin/*.sh "$REPO_DIR"/install/*.sh "$REPO_DIR"/test/*.sh "$REPO_DIR"/scripts/*.sh "$REPO_DIR"/toolchain/scripts/*.sh "$REPO_DIR"/desktop/scripts/*.sh)
 
 echo "== bash -n =="
 for f in "${SCRIPTS[@]}"; do
@@ -33,6 +33,21 @@ if command -v shellcheck >/dev/null 2>&1; then
   done
 else
   echo "== shellcheck not installed — skipping (dev-only nicety, not a hard requirement) =="
+fi
+
+echo ""
+if command -v actionlint >/dev/null 2>&1; then
+  echo "== actionlint (.github/workflows) =="
+  for f in "$REPO_DIR"/.github/workflows/*.yml; do
+    if actionlint "$f"; then
+      echo "  ok    $f"
+    else
+      echo "  FAIL  $f"
+      FAILED=1
+    fi
+  done
+else
+  echo "== actionlint not installed — skipping (dev-only nicety, not a hard requirement) =="
 fi
 
 echo ""

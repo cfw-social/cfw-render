@@ -9,6 +9,8 @@ export interface Engine {
   signedIn?: boolean;
   limit?: Limit;
   resetsAt?: string | null;
+  /** Why it's limited, e.g. "credit" (out of funds). */
+  reason?: string | null;
 }
 export interface Computer {
   name?: string | null;

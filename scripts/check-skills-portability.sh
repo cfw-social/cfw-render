@@ -14,8 +14,8 @@
 #
 # Scope: this is a bundle-RESOLUTION gate, not a "never mention a host path"
 # gate. It flags the specific idiom that caused CFW-312 — a `find` invocation
-# searching a host skill-install root ($HOME/.claude/skills, $HOME/.hermes/*,
-# or the source library's own absolute path) — not every line that happens to
+# searching a host skill-install root (any $HOME/.<tool>/ dir such as
+# $HOME/.claude/skills, or the source library's own absolute path) — not every line that happens to
 # mention one of those strings. A handful of recipes legitimately hardcode the
 # SOURCE LIBRARY's absolute path for asset/data lookups that only ever run on
 # the author's own machine (c-audio's SFX library doc, c-kie-ai/sync-models.sh's
@@ -84,7 +84,7 @@ skills_dir = Path(sys.argv[1])
 scan_roots = [Path(p) for p in sys.argv[2:]]
 
 HOST_ROOT_RE = re.compile(
-    r'\$HOME/\.claude|\$HOME/\.hermes|/Users/[A-Za-z0-9_.\-]+/ecosystem/harness/skills'
+    r'\$HOME/\.claude|\$HOME/\.[A-Za-z0-9_-]+/(?:skills|profiles)|/Users/[A-Za-z0-9_.\-]+/ecosystem/harness/skills'
 )
 
 # The one known, intentionally-kept exception — same shape as the bug but
@@ -96,11 +96,15 @@ HOST_ROOT_RE = re.compile(
 # a third entry, that's a signal the rewrite in scripts/sync-skills.py missed
 # a case — fix the rewrite, don't grow this list.
 ALLOWLIST_PATH_SUFFIX = "c-eval-runner/scripts/eval_run.py"
-ALLOWLIST_TEXT = 'find "$HOME/.hermes/skills" "$HOME/.claude/skills" "$HOME/Code/skills"'
+# The vendored text names one other host tool dir before .claude; matched by
+# shape (any $HOME/.<tool>/skills) so this gate names no retired runtime.
+ALLOWLIST_RE = re.compile(
+    r'find "\$HOME/\.[A-Za-z0-9_-]+/skills" "\$HOME/\.claude/skills" "\$HOME/Code/skills"'
+)
 
 
 def is_allowlisted(rel: str, logical: str) -> bool:
-    return rel.endswith(ALLOWLIST_PATH_SUFFIX) and ALLOWLIST_TEXT in logical
+    return rel.endswith(ALLOWLIST_PATH_SUFFIX) and bool(ALLOWLIST_RE.search(logical))
 
 
 def logical_lines(text: str):

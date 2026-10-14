@@ -27,7 +27,7 @@ pub fn state_dir() -> Result<PathBuf, ControlError> {
 }
 
 /// Atomic write: temp file in the same dir (mode 0600) then rename.
-fn write_atomic(dir: &Path, name: &str, contents: &[u8]) -> Result<(), ControlError> {
+pub(crate) fn write_atomic(dir: &Path, name: &str, contents: &[u8]) -> Result<(), ControlError> {
     fs::create_dir_all(dir)?;
     let tmp = dir.join(format!(".{name}.tmp-{}", std::process::id()));
     let result = (|| {
@@ -65,6 +65,11 @@ pub fn set_paused(paused: bool) -> Result<(), ControlError> {
 
 pub fn set_allow_battery(allow: bool) -> Result<(), ControlError> {
     set_flag("allow-battery", allow)
+}
+
+/// Whether the owner has allowed rendering on battery (the `allow-battery` file exists).
+pub fn allow_battery() -> Result<bool, ControlError> {
+    Ok(state_dir()?.join("allow-battery").exists())
 }
 
 pub const LAUNCHD_LABEL: &str = "com.cfw.render";
@@ -181,6 +186,16 @@ pub(crate) mod tests {
         }
         run_now().unwrap();
         assert_eq!(mode(&d.path().join("run-now")), 0o600);
+    }
+
+    #[test]
+    fn allow_battery_reads_file_presence() {
+        let (_g, d) = with_dir();
+        assert!(!allow_battery().unwrap());
+        fs::write(d.path().join("allow-battery"), b"").unwrap();
+        assert!(allow_battery().unwrap());
+        set_allow_battery(false).unwrap();
+        assert!(!allow_battery().unwrap());
     }
 
     #[test]
