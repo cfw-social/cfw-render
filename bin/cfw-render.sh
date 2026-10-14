@@ -800,9 +800,12 @@ fi
 # ---------------------------------------------------------------------------
 loop_sleep() { # loop_sleep <secs> — returns early when a running order ends,
   # on run-now (ctl), or when the pause state changes (M3-01a).
-  local secs="$1" step tick ticks before after i prev now
+  local secs="$1" step tick ticks before after i prev now wake_limit
   step="$(awk -v s="$secs" 'BEGIN { s = s / 10; if (s < 0.05) s = 0.05; printf "%.3f", s }')"
   tick="$(awk -v s="$step" 'BEGIN { printf "%.3f", (s < 2) ? s : 2 }')"
+  # Epoch differences are integers, so floor(tick + gap) preserves the strict
+  # comparison even for sub-two-second ticks used by fast loops.
+  wake_limit="$(awk -v t="$tick" -v g="$CR_WAKE_GAP_SECS" 'BEGIN { printf "%d", t+g }')"
   ticks="$(awk -v s="$secs" -v t="$tick" 'BEGIN { n = int(s / t + 0.999); if (n < 1) n = 1; print n }')"
   prune_running; before=$RUNNING
   prev="$(cr_now_epoch)"
@@ -811,7 +814,7 @@ loop_sleep() { # loop_sleep <secs> — returns early when a running order ends,
     # Wake: the wall clock jumped well past one tick (the Mac slept). Claim
     # now; the main loop also resets the back-off.
     now="$(cr_now_epoch)"
-    if [[ "$now" =~ ^[0-9]+$ && "$prev" =~ ^[0-9]+$ ]] && (( now - prev > 2 + CR_WAKE_GAP_SECS )); then
+    if [[ "$now" =~ ^[0-9]+$ && "$prev" =~ ^[0-9]+$ ]] && (( now - prev > wake_limit )); then
       CR_WOKE=1; cr_log "woke from sleep ($(( now - prev ))s gap): checking for requests now"; return 0
     fi
     prev="$now"

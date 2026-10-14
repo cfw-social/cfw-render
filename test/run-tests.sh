@@ -2545,7 +2545,7 @@ for _ in $(seq 1 100); do grep -q '"tool": "claim_render_order"' "$c23b/mockstat
 printf '1000' > "$c23b_floor"
 sleep 3
 pkill -P "$c23b_w" 2>/dev/null; kill "$c23b_w" 2>/dev/null; wait "$c23b_w" 2>/dev/null
-pkill -f "cfw-render.sh --loop" 2>/dev/null || true
+pkill -f "$REPO_DIR/bin/cfw-render.sh --loop" 2>/dev/null || true  # scoped: never the owner's installed worker
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 c23b_claims="$(c21_claims "$c23b")"
 # Round 1 fills the computer one order per reply (0/2, 1/2, then the full
@@ -2646,7 +2646,7 @@ c28_at_cap="$(grep -c '"tool": "claim_render_order"' "$c28/mockstate/calls.jsonl
 for _ in $(seq 1 40); do [[ "$(grep -c '"tool": "claim_render_order"' "$c28/mockstate/calls.jsonl" 2>/dev/null || true)" -gt "$c28_at_cap" ]] && break; sleep 0.5; done
 # the loop runs cfw-render.sh under a subshell; stop the whole tree
 pkill -P "$c28_w" 2>/dev/null; kill "$c28_w" 2>/dev/null; wait "$c28_w" 2>/dev/null
-pkill -f "cfw-render.sh --loop" 2>/dev/null || true
+pkill -f "$REPO_DIR/bin/cfw-render.sh --loop" 2>/dev/null || true  # scoped: never the owner's installed worker
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 c28_steps="$(grep 'claim back-off: claim_render_order keeps failing' "$c28/cr-state/cfw-render.log" | sed -E 's/.*retrying every ([0-9.]+)s.*/\1/' | tr '\n' ' ' | sed 's/ $//')"
 c28_tries="$(grep -c '"tool": "claim_render_order"' "$c28/mockstate/calls.jsonl" 2>/dev/null || true)"
@@ -2746,7 +2746,7 @@ c21_worker "$c32" $((MOCK_PORT_BASE + 930)) --loop CFW_RENDER_CAPACITY_UNIT_SECS
 c32_w=$!
 for _ in $(seq 1 60); do [[ "$(grep -c '"tool": "claim_render_order"' "$c32/mockstate/calls.jsonl" 2>/dev/null || true)" -ge 3 ]] && break; sleep 0.1; done
 pkill -P "$c32_w" 2>/dev/null; kill "$c32_w" 2>/dev/null; wait "$c32_w" 2>/dev/null
-pkill -f "cfw-render.sh --loop" 2>/dev/null || true
+pkill -f "$REPO_DIR/bin/cfw-render.sh --loop" 2>/dev/null || true  # scoped: never the owner's installed worker
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 c32_n="$(grep -c '"tool": "claim_render_order"' "$c32/mockstate/calls.jsonl" 2>/dev/null || true)"
 if [[ "$c32_n" -ge 3 ]]; then
@@ -2857,7 +2857,7 @@ for _ in $(seq 1 15); do m3_after="$(m3_tool_count "$m3" claim_render_order)"; [
 m3_flag=0; [[ -e "$m3/cr-state/run-now" ]] && m3_flag=1
 m3_last="$(m3_status "$m3" 'd["lastCheckAt"]')"
 pkill -P "$m3_w" 2>/dev/null; kill "$m3_w" 2>/dev/null; wait "$m3_w" 2>/dev/null
-pkill -f "cfw-render.sh --loop" 2>/dev/null || true
+pkill -f "$REPO_DIR/bin/cfw-render.sh --loop" 2>/dev/null || true  # scoped: never the owner's installed worker
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 if [[ "$m3_after" -gt "$m3_before" && "$m3_flag" == "0" && -n "$m3_last" && "$m3_last" != "None" ]]; then
   pass "run-now: claims ${m3_before}→${m3_after} within 1.5s, flag consumed, lastCheckAt=$m3_last"
@@ -2927,7 +2927,12 @@ rm -rf "$m6"
 cat > "$FAKE_BIN/fake-date" <<'EOF2'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "+%s" ]]; then
-  echo $(( $(/bin/date +%s) + $(cat "${FAKE_DATE_OFFSET_FILE:-/nonexistent}" 2>/dev/null || echo 0) ))
+  off="$(cat "${FAKE_DATE_OFFSET_FILE:-/nonexistent}" 2>/dev/null || echo 0)"
+  [[ "$off" =~ ^[0-9]+$ ]] || off=0   # mid-write reads must yield a number
+  now=$(( $(/bin/date +%s) + off ))
+  echo "$now"
+  # Optional barrier: the test can jump only after a loop sample was taken.
+  [[ -z "${FAKE_DATE_TICK_FILE:-}" ]] || printf '%s\n' "$now" >> "$FAKE_DATE_TICK_FILE"
 else
   exec /bin/date "$@"
 fi
@@ -2944,7 +2949,7 @@ m3_err_set() { local e; e="$(m3_status "$1" 'd.get("lastError")')"; [[ -n "$e" &
 # m3_stop_loop <worker pid> — stop the loop's whole tree and this case's mock
 m3_stop_loop() {
   pkill -P "$1" 2>/dev/null; kill "$1" 2>/dev/null; wait "$1" 2>/dev/null
-  pkill -f "cfw-render.sh --loop" 2>/dev/null || true
+  pkill -f "$REPO_DIR/bin/cfw-render.sh --loop" 2>/dev/null || true  # scoped: never the owner's installed worker
   kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 }
 M3_PING_BATTERY='"tool": "set_computer_paused", "args": {"paused": true, "reason": "battery"}'
@@ -2987,7 +2992,7 @@ p8_since="$(m3_status "$p8" 'd.get("cfwReachSince")')"
 sleep 3   # more failed check-ins: still one log line
 rm -f "$p8/control/down"
 p8_t0=$SECONDS
-m3_until 40 0.1 m3_conn_is "$p8" ok; p8_up_ok=$?
+m3_until 6 0.1 m3_conn_is "$p8" ok; p8_up_ok=$?
 p8_secs=$(( SECONDS - p8_t0 ))
 m3_stop_loop "$p8_w"
 rm -f "$FAKE_PMSET_BATTERY"
@@ -3092,7 +3097,7 @@ rm -rf "$p11"
 echo "=== Case M3-01a-12: wake from sleep mid back-off → claim within 3 s, back-off reset ==="
 p12="$(mktemp -d)"
 c21_setup "$p12" $((MOCK_PORT_BASE + 958)) harness-3step '[]'
-echo 0 > "$p12/date-offset"
+printf '0\n' > "$p12/date-offset.tmp" && mv "$p12/date-offset.tmp" "$p12/date-offset"
 touch "$p12/control/down"
 c21_worker "$p12" $((MOCK_PORT_BASE + 958)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=30 \
   CFW_RENDER_DATE_CMD="$FAKE_BIN/fake-date" FAKE_DATE_OFFSET_FILE="$p12/date-offset" &
@@ -3100,16 +3105,46 @@ p12_w=$!
 m3_until 200 0.1 grep -qs 'retrying every 30s' "$p12/cr-state/cfw-render.log"; p12_backoff=$?
 rm -f "$p12/control/down"
 sleep 0.3
-echo 3600 > "$p12/date-offset"
+printf '3600\n' > "$p12/date-offset.tmp" && mv "$p12/date-offset.tmp" "$p12/date-offset"
 m3_until 30 0.1 m3_count_ge "$p12" "$M3_CLAIM" 1; p12_ok=$?
 p12_woke="$(m3_log_count "$p12" "woke from sleep")"; p12_reset="$(m3_log_count "$p12" "claim back-off: reset after sleep")"
 m3_stop_loop "$p12_w"
 if [[ "$p12_backoff" == 0 && "$p12_ok" == 0 && "$p12_woke" -ge 1 && "$p12_reset" -ge 1 ]]; then
   pass "wake: 'woke from sleep', back-off reset, claim within 3 s of the clock jump (not after the 30 s back-off)"
 else
-  fail "wake" "backoff_seen=$p12_backoff claimed=$p12_ok woke=$p12_woke reset=$p12_reset; $(tail -4 "$p12/cr-state/cfw-render.log")"
+  fail "wake" "backoff_seen=$p12_backoff claimed=$p12_ok woke=$p12_woke reset=$p12_reset"
+  # flake forensics: dump everything relevant while the dir still exists
+  echo "--- p12 date-offset: $(cat "$p12/date-offset" 2>/dev/null); fake-date now: $(FAKE_DATE_OFFSET_FILE="$p12/date-offset" "$FAKE_BIN/fake-date" +%s 2>&1); real: $(/bin/date +%s)"
+  echo "--- p12 control: $(ls "$p12/control" 2>/dev/null)"; echo "--- p12 status.json: $(cat "$p12/cr-state/status.json" 2>/dev/null)"
+  echo "--- p12 worker log:"; tail -25 "$p12/cr-state/cfw-render.log" 2>/dev/null
+  echo "--- p12 calls: $(cat "$p12/mockstate/calls.jsonl" 2>/dev/null)"
 fi
 rm -rf "$p12"
+
+echo "=== Case M3-01a-12b: a 31 s clock jump exceeds a sub-two-second tick + wake gap ==="
+p12b="$(mktemp -d)"
+c21_setup "$p12b" $((MOCK_PORT_BASE + 966)) harness-3step '[]'
+echo 0 > "$p12b/date-offset"
+touch "$p12b/control/down"
+c21_worker "$p12b" $((MOCK_PORT_BASE + 966)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=0.3 \
+  CFW_RENDER_DATE_CMD="$FAKE_BIN/fake-date" FAKE_DATE_OFFSET_FILE="$p12b/date-offset" FAKE_DATE_TICK_FILE="$p12b/date-tick" &
+p12b_w=$!
+m3_until 150 0.1 grep -qs 'retrying every 3s' "$p12b/cr-state/cfw-render.log"; p12b_cap=$?
+# The cap log precedes loop_sleep's baseline. Wait for a clock sample before
+# jumping, otherwise the offset can become the baseline rather than a wake.
+rm -f "$p12b/date-tick"
+m3_until 20 0.05 test -s "$p12b/date-tick"; p12b_sample=$?
+rm -f "$p12b/control/down"
+printf '31\n' > "$p12b/date-offset.tmp" && mv "$p12b/date-offset.tmp" "$p12b/date-offset"
+m3_until 30 0.1 grep -qs 'claim back-off: reset after sleep' "$p12b/cr-state/cfw-render.log"; p12b_reset=$?
+m3_until 10 0.1 m3_count_ge "$p12b" "$M3_CLAIM" 1; p12b_claim=$?
+m3_stop_loop "$p12b_w"
+if [[ "$p12b_cap" == 0 && "$p12b_sample" == 0 && "$p12b_reset" == 0 && "$p12b_claim" == 0 ]]; then
+  pass "wake: a 31 s jump exceeds tick 0.3 s + gap 30 s; back-off reset and a new claim"
+else
+  fail "short-tick wake" "cap=$p12b_cap reset=$p12b_reset claim=$p12b_claim; $(tail -4 "$p12b/cr-state/cfw-render.log")"
+fi
+rm -rf "$p12b"
 
 echo "=== Case M3-01a-13: network back at the back-off cap → a claim within cap + one claim round ==="
 p13="$(mktemp -d)"
@@ -3120,9 +3155,11 @@ p13_w=$!
 m3_until 120 0.5 grep -qs 'retrying every 0.5s' "$p13/cr-state/cfw-render.log"; p13_cap=$?
 rm -f "$p13/control/down"
 p13_t0=$SECONDS
-# cap 0.5 s + one round (cr_mcp_call: 3 tries, sleeping 2 s then 4 s) + 2 s slack
-m3_until 85 0.1 m3_count_ge "$p13" "$M3_CLAIM" 1; p13_ok=$?
-m3_until 20 0.1 m3_conn_is "$p13" ok; p13_conn=$?
+# This mock returns a nonempty HTTP 503, so cr_mcp_call does not sleep/retry.
+# Assert a successful claim AND its status within cap 0.5 s + 2 s slack.
+m3_recovered() { m3_count_ge "$1" "$M3_CLAIM" 1 && m3_conn_is "$1" ok; }
+m3_until 25 0.1 m3_recovered "$p13"; p13_ok=$?
+p13_conn="$p13_ok"
 p13_secs=$(( SECONDS - p13_t0 ))
 m3_stop_loop "$p13_w"
 if [[ "$p13_cap" == 0 && "$p13_ok" == 0 && "$p13_conn" == 0 ]]; then
@@ -3347,7 +3384,7 @@ for _ in $(seq 1 120); do mb6_req="$(m3_status "$mb6" '" ".join("%s/%s/%s" % (r[
 mb6_after="x"
 for _ in $(seq 1 200); do mb6_after="$(m3_status "$mb6" 'len(d["now"])')"; [[ "$mb6_after" == "0" ]] && grep -q '"event": "attempt_completed"' "$mb6/control/reports.ndjson" 2>/dev/null && break; sleep 0.1; done
 pkill -P "$mb6_w" 2>/dev/null; kill "$mb6_w" 2>/dev/null; wait "$mb6_w" 2>/dev/null
-pkill -f "cfw-render.sh --loop" 2>/dev/null || true
+pkill -f "$REPO_DIR/bin/cfw-render.sh --loop" 2>/dev/null || true  # scoped: never the owner's installed worker
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 mb6_want="$(python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); s=[x for x in m["steps"] if x.get("runsOn","computer")=="computer"]; print("1/%d/%s" % (len(s), s[0].get("label")))' "$REPO_DIR/test/fixtures/manifests/harness-3step/manifest.json")"
 if [[ "$mb6_req" == "$mb6_want"* && "$mb6_after" == "0" && "$(m3_status "$mb6" 'd["activeEngine"]')" == "codex" ]]; then
