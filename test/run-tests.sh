@@ -2168,6 +2168,45 @@ print(" ".join(x for x in (one(s) for s in m["steps"]) if x) + " attempt_complet
   rm -rf "$c19i"; c19i_port=$((c19i_port + 1))
 done
 
+echo "=== Case 19j: harness reads the claim's owner files in CFW's array shape (and the old dict shape) ==="
+# CFW sends CONTRACTS §7 arrays: inputs [{inputId, items:[{kind,url}]}]. The
+# harness used to read only a dict, so a talking-head video or B-roll the
+# owner attached never reached inputs/<id>/ and `when: inputPresent` skipped.
+c19j="$(mktemp -d)"
+printf 'talking head bytes' > "$c19j/take.mp4"
+printf 'broll one' > "$c19j/b1.mp4"
+printf 'broll two' > "$c19j/b2.mp4"
+python3 -c '
+import json, sys
+d = sys.argv[1]
+json.dump({"inputs": [
+  {"inputId": "talking_head", "items": [{"kind": "video", "url": d + "/take.mp4"}]},
+  {"inputId": "broll", "items": [{"kind": "video", "url": d + "/b1.mp4"}, {"kind": "video", "url": d + "/b2.mp4"}]}],
+  "answers": [{"inputId": "cta", "text": "Follow for more"}]}, open(d + "/arr.json", "w"))
+json.dump({"inputs": {"talking_head": [{"url": d + "/take.mp4"}]}, "answers": {}}, open(d + "/dict.json", "w"))
+json.dump({"inputs": [], "answers": []}, open(d + "/empty.json", "w"))
+' "$c19j"
+c19j_out="$(
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/bin/cfw-render-lib.sh" >/dev/null 2>&1
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/bin/cfw-render-harness.sh"
+  mkdir -p "$c19j/wa/inputs" "$c19j/wd/inputs"
+  cr_h_stage_inputs "$c19j/wa" "$c19j/arr.json"
+  cr_h_stage_inputs "$c19j/wd" "$c19j/dict.json"
+  printf '%s %s %s %s ' \
+    "$(cr_h_input_present "$c19j/arr.json" broll)" "$(cr_h_input_present "$c19j/arr.json" cta)" \
+    "$(cr_h_input_present "$c19j/dict.json" talking_head)" "$(cr_h_input_present "$c19j/empty.json" broll)"
+  (cd "$c19j" && find wa wd -type f | sort | tr '\n' ' ')
+)"
+c19j_want="1 0 1 0 wa/inputs/broll/b1.mp4 wa/inputs/broll/b2.mp4 wa/inputs/talking_head/take.mp4 wd/inputs/talking_head/take.mp4 "
+if [[ "$c19j_out" == "$c19j_want" ]]; then
+  pass "harness: array-shape claim inputs staged per input id (talking_head + 2 B-roll clips); dict shape still works; inputPresent follows them"
+else
+  fail "harness: claim inputs array shape" "got '$c19j_out' want '$c19j_want'"
+fi
+rm -rf "$c19j"
+
 echo "=== Case 20a: check-step-files.py green — ok fixture PASSes, exit 0 (M1-09) ==="
 c20_checker="$REPO_DIR/scripts/check-step-files.py"
 c20_fixture="$TEST_DIR/fixtures/manifests/stepfiles-ok"
