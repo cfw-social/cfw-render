@@ -110,6 +110,7 @@
       "label": "Prepare footage",
       "weight": 10,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg"] },
       "when": "always",
       "instructions": "steps/01-prepare-footage.md",
       "saves": [
@@ -139,6 +140,7 @@
       "label": "Transcribe",
       "weight": 10,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "python3", "npx"] },
       "when": "always",
       "instructions": "steps/02-transcribe.md",
       "saves": [
@@ -161,6 +163,7 @@
       "label": "Plan the top-zone beats",
       "weight": 15,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "node>=22", "python3"] },
       "when": "always",
       "instructions": "steps/03-plan-beats.md",
       "saves": [
@@ -186,6 +189,7 @@
       "label": "Build the top-zone track",
       "weight": 20,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "node>=22", "npx", "chromium"] },
       "when": "always",
       "instructions": "steps/04-build-top.md",
       "saves": [
@@ -216,6 +220,7 @@
       "label": "Build the face track",
       "weight": 10,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg"] },
       "when": "always",
       "instructions": "steps/05-build-bottom.md",
       "saves": [
@@ -246,6 +251,7 @@
       "label": "Composite the split reel",
       "weight": 20,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "node>=22", "npx", "chromium"] },
       "when": "always",
       "instructions": "steps/06-composite.md",
       "saves": [
@@ -272,6 +278,7 @@
       "label": "Final checks and captions",
       "weight": 15,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "python3"] },
       "when": "always",
       "instructions": "steps/07-final-checks.md",
       "saves": [

@@ -1,0 +1,103 @@
+{
+  "manifestFormat": 1,
+  "recipe": "bad-uses-required-and-optional",
+  "recipeVersion": "2026.10.1",
+  "label": "Fixture recipe",
+  "deliverable": {
+    "kind": "video",
+    "aspect": "9:16",
+    "width": 1080,
+    "height": 1920,
+    "durationSec": {
+      "min": 20,
+      "max": 60
+    }
+  },
+  "needs": {
+    "os": [
+      "macos"
+    ],
+    "engines": [
+      "codex"
+    ],
+    "tools": [
+      "ffmpeg",
+      "curl"
+    ],
+    "providers": [
+      "heygen",
+      "elevenlabs"
+    ]
+  },
+  "inputs": [
+    {
+      "id": "clip",
+      "label": "Clip",
+      "kinds": [
+        "video"
+      ],
+      "required": true,
+      "count": {
+        "min": 1,
+        "max": 1
+      },
+      "neededAt": "start"
+    }
+  ],
+  "steps": [
+    {
+      "id": "prepare",
+      "label": "Prepare",
+      "weight": 10,
+      "runsOn": "computer",
+      "when": "always",
+      "instructions": "steps/01-prepare.md",
+      "saves": [
+        {
+          "id": "out",
+          "kind": "video",
+          "preview": false
+        }
+      ],
+      "checks": [
+        {
+          "id": "ok",
+          "label": "ok"
+        }
+      ],
+      "maxCheckRetries": 1,
+      "canAsk": [
+        "clip"
+      ],
+      "uses": {
+        "tools": [
+          "curl",
+          "ffmpeg"
+        ],
+        "providers": [
+          [
+            "heygen",
+            "elevenlabs"
+          ]
+        ],
+        "optionalProviders": [
+          "gemini",
+          "heygen"
+        ]
+      }
+    },
+    {
+      "id": "finish",
+      "label": "Finish",
+      "weight": 10,
+      "runsOn": "computer",
+      "when": "always",
+      "instructions": "steps/02-finish.md",
+      "uses": {
+        "tools": [
+          "ffmpeg"
+        ]
+      }
+    }
+  ]
+}

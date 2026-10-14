@@ -14,6 +14,8 @@
 #       usage-limit fixture and exit 1 without writing saves
 #       [M3-08b] gemini → gemini-quota.txt; API-key engines → apikey-$FAKE_ENGINE_APIKEY_FIXTURE.txt (429|credit)
 #   FAKE_ENGINE_SLEEP=<secs>   sleep before writing saves (status.json requests test)
+#   FAKE_ENGINE_KEYS_DIR=<dir> write <dir>/<stepId>.keys: the NAMES (never values) of the
+#       provider-key env vars this step's process received, sorted, one per line
 set -euo pipefail
 cat > /dev/null   # consume the prompt
 # [M3-08b] FAKE_ENGINE_DUMP_DIR: record this process's argv + env (+ CODEX_HOME config).
@@ -24,6 +26,10 @@ if [[ -n "${FAKE_ENGINE_DUMP_DIR:-}" ]]; then
   [[ -n "${CODEX_HOME:-}" && -f "$CODEX_HOME/config.toml" ]] && { echo "$CODEX_HOME" > "$FAKE_ENGINE_DUMP_DIR/${CFW_ENGINE_NAME:-x}.codexhome"; cp "$CODEX_HOME/config.toml" "$FAKE_ENGINE_DUMP_DIR/${CFW_ENGINE_NAME:-x}.config.toml"; }
 fi
 step="${CFW_STEP_ID:-}"
+if [[ -n "${FAKE_ENGINE_KEYS_DIR:-}" ]]; then
+  mkdir -p "$FAKE_ENGINE_KEYS_DIR"
+  env | sed -n 's/^\([A-Z][A-Z0-9_]*_API_KEY\)=.*/\1/p; s/^\([A-Z][A-Z0-9_]*_API_TOKEN\)=.*/\1/p; s/^\(FAL_KEY\)=.*/\1/p' | sort > "$FAKE_ENGINE_KEYS_DIR/${step:-x}.keys"
+fi
 counter=".fake-engine-runs"
 runs=0; [[ -f "$counter" ]] && runs="$(cat "$counter")"
 runs=$((runs + 1)); printf '%s' "$runs" > "$counter"

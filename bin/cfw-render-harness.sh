@@ -316,6 +316,42 @@ import json, sys
 o = json.load(open(sys.argv[1])); print("1" if inputs_of(o).get(sys.argv[2]) else "0")' "$1" "$2"
 }
 
+# cr_h_export_step_keys <order-file> <stepId> — export the brand's provider keys
+# THIS stage needs into the current shell (call it inside a subshell around one
+# step's engine run, so the keys never outlive that stage).
+#
+# CFW delivers the order's keys on the claim (`providerKeys: [{provider, value}]`).
+# A stage that declares `uses` gets only the providers it lists (required groups
+# + optional); a stage without `uses` (older manifests) gets every delivered key.
+# Names are the ones the recipe step files read (HEYGEN_API_KEY, …). Values go
+# from python to bash over a NUL-separated pipe — never argv, never a file,
+# never a log line.
+cr_h_export_step_keys() {
+  local order_file="$1" step_id="$2" name value
+  while IFS= read -r -d '' name && IFS= read -r -d '' value; do
+    [[ "$name" =~ ^[A-Z][A-Z0-9_]*$ && -n "$value" ]] || continue
+    export "$name=$value"
+  done < <(python3 -c '
+import json, sys
+o = json.load(open(sys.argv[1]))
+keys = [k for k in (o.get("providerKeys") or []) if isinstance(k, dict)
+        and isinstance(k.get("provider"), str) and isinstance(k.get("value"), str) and k["value"]]
+step = next((s for s in ((o.get("manifest") or {}).get("steps") or []) if s.get("id") == sys.argv[2]), {})
+uses = step.get("uses")
+if isinstance(uses, dict):
+    allowed = {p for g in (uses.get("providers") or []) for p in g} | set(uses.get("optionalProviders") or [])
+    keys = [k for k in keys if k["provider"] in allowed]
+ENV = {"heygen": "HEYGEN_API_KEY", "elevenlabs": "ELEVENLABS_API_KEY", "kie": "KIE_AI_API_KEY",
+       "gemini": "GEMINI_API_KEY", "fal": "FAL_KEY", "replicate": "REPLICATE_API_TOKEN"}
+out = sys.stdout.buffer
+for k in keys:
+    if "\x00" in k["value"]:
+        continue
+    name = ENV.get(k["provider"]) or (k["provider"].upper().replace("-", "_") + "_API_KEY")
+    out.write(name.encode() + b"\x00" + k["value"].encode() + b"\x00")
+' "$order_file" "$step_id" 2>/dev/null)
+}
+
 # cr_h_stage_inputs <workdir> <order-file> — copy/download claim inputs.
 cr_h_stage_inputs() {
   local workdir="$1" order_file="$2" iid src dest
@@ -570,9 +606,12 @@ o = json.load(open(sys.argv[1])); print("1" if answers_of(o).get("alternative") 
       cr_h_build_prompt "$step_id" "$workdir" "$order_file"
       rc=0; log_from=0
       [[ -f "$log" ]] && log_from="$(wc -c < "$log" | tr -d ' ')"
-      CFW_STEP_SAVES="$saves" CFW_STEP_ID="$step_id" \
-        cr_h_run_with_timeout "$CFW_RENDER_STEP_TIMEOUT_SEC" cr_engine_run "$engine" "$workdir/prompt.md" "$workdir" "$log" \
-        || { rc=$?; cr_log "harness: step $step_id engine exited nonzero (run $run)"; }
+      # The stage's own provider keys live only in this subshell (cr_h_export_step_keys).
+      (
+        cr_h_export_step_keys "$order_file" "$step_id"
+        CFW_STEP_SAVES="$saves" CFW_STEP_ID="$step_id" \
+          cr_h_run_with_timeout "$CFW_RENDER_STEP_TIMEOUT_SEC" cr_engine_run "$engine" "$workdir/prompt.md" "$workdir" "$log"
+      ) || { rc=$?; cr_log "harness: step $step_id engine exited nonzero (run $run)"; }
 
       if limit_until="$(cr_engine_limit_detect "$engine" "$log" "$rc" "$log_from")"; then
         cr_engine_limit_set "$engine" "$limit_until"

@@ -16,6 +16,12 @@ Schema cannot express:
   * `steps[].instructions` points at a file that exists inside the skill folder
   * `count.min <= count.max`, `durationSec.min <= durationSec.max`
   * `alternatives` only on `required: true` inputs; `choices` only with kind `choice`
+  * `steps[].uses` (per-stage providers and tools): every tool is in `needs.tools`; every
+    provider a stage REQUIRES is in `needs.providers`, and every `needs.providers` entry is
+    required by some stage (`needs.providers` stays "keys this recipe can't run without" —
+    the meaning every server already acts on); optional providers are NOT listed there, so
+    a server that predates `uses` never blocks on them; once any computer step declares
+    `uses`, every computer step must (annotated fully or not at all)
 
 Runtime-free repo: Python 3 standard library only. If the `jsonschema` package
 happens to be importable it is used as an extra layer; every rule above is also
@@ -64,7 +70,8 @@ INPUT_REQUIRED = ["id", "label", "kinds", "required", "count", "neededAt"]
 INPUT_ALLOWED = set(INPUT_REQUIRED) | {"constraints", "alternatives", "default", "prompt", "choices"}
 CONSTRAINT_ALLOWED = {"durationSec", "orientation", "maxBytes"}
 STEP_REQUIRED = ["id", "label", "weight", "runsOn", "when"]
-STEP_ALLOWED = set(STEP_REQUIRED) | {"instructions", "saves", "checks", "maxCheckRetries", "canAsk"}
+STEP_ALLOWED = set(STEP_REQUIRED) | {"instructions", "saves", "checks", "maxCheckRetries", "canAsk", "uses"}
+USES_ALLOWED = {"tools", "providers", "optionalProviders"}
 
 
 class Errors:
@@ -196,6 +203,11 @@ def validate_structure(err: Errors, m: object, skill_dir: Path) -> None:
                         err.add(f"needs.{key}[{i}]: '{item}' does not match {pat.pattern}")
             if isinstance(n.get("engines"), list) and len(n["engines"]) == 0:
                 err.add("needs.engines: must list at least one engine")
+
+    nd = n if isinstance(n, dict) else {}
+    needs_tools = {t for t in nd.get("tools") or [] if isinstance(t, str)} if isinstance(nd.get("tools"), list) else set()
+    needs_providers = {x for x in nd.get("providers") or [] if isinstance(x, str)} if isinstance(nd.get("providers"), list) else set()
+    used_providers: set[str] = set()
 
     inputs = m.get("inputs")
     steps = m.get("steps")
@@ -405,6 +417,71 @@ def validate_structure(err: Errors, m: object, skill_dir: Path) -> None:
             err.add(f"{where}.maxCheckRetries: must be an integer >= 0")
         if "canAsk" in st:
             _check_id_list(err, st["canAsk"], f"{where}.canAsk", input_ids, "input")
+        if "uses" in st:
+            _check_uses(err, st["uses"], f"{where}.uses", needs_tools, needs_providers, used_providers)
+    _check_uses_coverage(err, steps, needs_providers, used_providers)
+
+
+def _check_uses(err: Errors, u: object, where: str, needs_tools: set[str], needs_providers: set[str],
+                used_providers: set[str]) -> None:
+    """One step's `uses`: what this stage runs (tools) and which provider keys it needs.
+
+    `providers` is a list of groups; each group means "any ONE of these" (an avatar
+    stage that can use HeyGen OR ElevenLabs is one group of two). `optionalProviders`
+    are used when the brand has the key and skipped otherwise (a local fallback runs).
+    """
+    if not isinstance(u, dict):
+        err.add(f"{where}: must be an object")
+        return
+    _check_keys(err, u, where, ["tools"], USES_ALLOWED)
+    tools = u.get("tools")
+    if "tools" in u:
+        if not isinstance(tools, list) or not all(isinstance(t, str) and TOOL.match(t) for t in tools):
+            err.add(f"{where}.tools: must be an array of tool names")
+        else:
+            _check_unique(err, tools, f"{where}.tools")
+            for t in tools:
+                if t not in needs_tools:
+                    err.add(f"{where}.tools: '{t}' is not listed in needs.tools")
+    groups = u.get("providers")
+    if "providers" in u:
+        if not isinstance(groups, list) or not groups:
+            err.add(f"{where}.providers: must be a non-empty array of provider groups")
+        else:
+            for j, g in enumerate(groups):
+                gw = f"{where}.providers[{j}]"
+                if not isinstance(g, list) or not g or not all(isinstance(x, str) and PROVIDER.match(x) for x in g):
+                    err.add(f"{gw}: must be a non-empty array of provider names (any one of them is enough)")
+                    continue
+                _check_unique(err, g, gw)
+                for x in g:
+                    used_providers.add(x)
+                    if x not in needs_providers:
+                        err.add(f"{gw}: '{x}' is not listed in needs.providers")
+    opt = u.get("optionalProviders")
+    if "optionalProviders" in u:
+        if not isinstance(opt, list) or not all(isinstance(x, str) and PROVIDER.match(x) for x in opt):
+            err.add(f"{where}.optionalProviders: must be an array of provider names")
+        else:
+            _check_unique(err, opt, f"{where}.optionalProviders")
+            for x in opt:
+                if isinstance(groups, list) and any(isinstance(g, list) and x in g for g in groups):
+                    err.add(f"{where}.optionalProviders: '{x}' is also required by this stage")
+
+
+def _check_uses_coverage(err: Errors, steps: object, needs_providers: set[str], used_providers: set[str]) -> None:
+    """All-or-nothing annotation, and no provider key the recipe asks for but no stage uses."""
+    if not isinstance(steps, list):
+        return
+    computer = [st for st in steps if isinstance(st, dict) and st.get("runsOn") == "computer"]
+    annotated = [st for st in computer if "uses" in st]
+    if not annotated:
+        return
+    for st in computer:
+        if "uses" not in st:
+            err.add(f"steps[{st.get('id')}].uses: required once any computer step declares uses")
+    for x in sorted(needs_providers - used_providers):
+        err.add(f"needs.providers: '{x}' is not required by any stage")
 
 
 def validate_with_jsonschema(err: Errors, m: object, schema: dict) -> None:
