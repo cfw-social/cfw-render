@@ -561,6 +561,7 @@ prune_running() {
 # server, or the single `order` from an older one). rc 1 = call failed.
 claim_once() {
   local capacity resp
+  CLAIM_CALLS=$(( CLAIM_CALLS + 1 ))
   capacity="$(cr_capacity_json "$1" "$2" "$3" "$4")"
   # [CFW-146] renderer identity → "Working on your Mac"; [M1-08] capabilities
   # → manifest orders; [M2-04] capacity → the server hands out at most
@@ -616,6 +617,25 @@ CLAIM_WORKER_VERSION="$(cr_worker_version)"
 export CR_STATUS_UPDATE_REQUIRED=0 CR_STATUS_LAST_ERROR="" CR_STATUS_LAST_CHECK_AT=""
 export CR_STATUS_PAUSED=0 CR_STATUS_PAUSE_REASON="" CR_STATUS_ON_BATTERY=0 CR_STATUS_ALLOW_BATTERY=0
 export CR_STATUS_RUNNING=0 CR_STATUS_MAX=1
+# cfwReach — "ok" | "unreachable", set only from a round's actual server call
+# (the claim when taking requests, the pause check-in when paused). The Mac app
+# reads it for "Can't reach CFW"; lastError keeps its own meanings untouched.
+export CR_STATUS_CFW_REACH="" CR_STATUS_CFW_REACH_SINCE=""
+CLAIM_CALLS=0
+
+# cr_reach_set ok|unreachable — records the outcome of a server call; stamps
+# cfwReachSince and logs one line when the value flips.
+cr_reach_set() {
+  local next="$1"
+  [[ "$next" == "$CR_STATUS_CFW_REACH" ]] && return 0
+  if [[ "$next" == "unreachable" ]]; then
+    cr_log "connection: can't reach CFW — retrying"
+  elif [[ "$CR_STATUS_CFW_REACH" == "unreachable" ]]; then
+    cr_log "connection: reached CFW again"
+  fi
+  CR_STATUS_CFW_REACH="$next"
+  CR_STATUS_CFW_REACH_SINCE="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+}
 
 # spawn_orders <file> — start one order process per JSON line; sets SPAWNED.
 SPAWNED=0
@@ -705,31 +725,52 @@ claim_round() {
 }
 
 # [M3-01a] pause gate. gated_claim_round — runs claim_round unless the owner
-# paused this computer or it is on battery (without allow-battery); tells the
-# server once per state change; writes status.json after every round/skip.
+# paused this computer or it is on battery (without allow-battery). While
+# paused, every round checks in with set_computer_paused (the site's "paused"
+# needs a fresh report); resuming sends {"paused":false} once. Writes
+# status.json after every round/skip.
 LAST_PAUSE_STATE="__unset__"
+# PING_SUPPORTED drops to 0 when the server answers the check-in with an error
+# (an older server without the tool): logged once, then no more calls.
+PING_SUPPORTED=1
 gated_claim_round() {
-  local state rc=0 args
+  local state rc=0 args prc
+  # lastCheckAt = the loop is alive, paused or not (the app shows "not
+  # running" when it goes stale).
+  CR_STATUS_LAST_CHECK_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   state="$(cr_pause_state)"
   if [[ "$state" != "$LAST_PAUSE_STATE" ]]; then
     if [[ "$state" != "none" ]]; then
       cr_log "paused ($state): not taking new requests; running requests continue"
-      args="$(python3 -c 'import json,sys; print(json.dumps({"paused": True, "reason": sys.argv[1]}))' "$state")"
-    else
-      args='{"paused":false}'
-    fi
-    if [[ "$state" != "none" || "$LAST_PAUSE_STATE" != "__unset__" ]]; then
-      [[ "$state" == "none" ]] && cr_log "resumed: taking requests again"
-      cr_mcp_call_soft set_computer_paused "$args" >/dev/null 2>&1 \
-        || cr_log "set_computer_paused call failed (server may not have the tool yet) — carrying on"
+    elif [[ "$LAST_PAUSE_STATE" != "__unset__" ]]; then
+      cr_log "resumed: taking requests again"
+      if (( PING_SUPPORTED )); then
+        cr_mcp_call_soft set_computer_paused '{"paused":false}' >/dev/null 2>&1 \
+          || cr_log "set_computer_paused call failed (server may not have the tool yet) — carrying on"
+      fi
     fi
     LAST_PAUSE_STATE="$state"
   fi
   if [[ "$state" == "none" ]]; then
-    CR_STATUS_LAST_CHECK_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    CLAIM_CALLS=0
     claim_round && rc=0 || rc=$?
+    # An engine-limited round makes no call: leave cfwReach as last known.
+    if (( CLAIM_CALLS > 0 )); then
+      if (( rc == 2 )); then cr_reach_set unreachable; else cr_reach_set ok; fi
+    fi
   else
     prune_running; STARTED=0
+    if (( PING_SUPPORTED )); then
+      args="$(python3 -c 'import json,sys; print(json.dumps({"paused": True, "reason": sys.argv[1]}))' "$state")"
+      cr_mcp_call_soft set_computer_paused "$args" >/dev/null 2>&1 && prc=0 || prc=$?
+      case "$prc" in
+        0) cr_reach_set ok ;;
+        75) cr_reach_set unreachable ;;
+        *) # the server answered, without the tool (or refused it)
+          cr_reach_set ok; PING_SUPPORTED=0
+          cr_log "set_computer_paused call failed (server may not have the tool yet) — carrying on" ;;
+      esac
+    fi
   fi
   [[ "$state" == "none" ]] && CR_STATUS_PAUSED=0 || CR_STATUS_PAUSED=1
   CR_STATUS_PAUSE_REASON=""; [[ "$state" != "none" ]] && CR_STATUS_PAUSE_REASON="$state"
@@ -759,13 +800,21 @@ fi
 # ---------------------------------------------------------------------------
 loop_sleep() { # loop_sleep <secs> — returns early when a running order ends,
   # on run-now (ctl), or when the pause state changes (M3-01a).
-  local secs="$1" step tick ticks before after i
+  local secs="$1" step tick ticks before after i prev now
   step="$(awk -v s="$secs" 'BEGIN { s = s / 10; if (s < 0.05) s = 0.05; printf "%.3f", s }')"
   tick="$(awk -v s="$step" 'BEGIN { printf "%.3f", (s < 2) ? s : 2 }')"
   ticks="$(awk -v s="$secs" -v t="$tick" 'BEGIN { n = int(s / t + 0.999); if (n < 1) n = 1; print n }')"
   prune_running; before=$RUNNING
+  prev="$(cr_now_epoch)"
   for (( i = 0; i < ticks; i++ )); do
     sleep "$tick"
+    # Wake: the wall clock jumped well past one tick (the Mac slept). Claim
+    # now; the main loop also resets the back-off.
+    now="$(cr_now_epoch)"
+    if [[ "$now" =~ ^[0-9]+$ && "$prev" =~ ^[0-9]+$ ]] && (( now - prev > 2 + CR_WAKE_GAP_SECS )); then
+      CR_WOKE=1; cr_log "woke from sleep ($(( now - prev ))s gap): checking for requests now"; return 0
+    fi
+    prev="$now"
     if [[ -e "$CFW_RENDER_STATE_DIR/run-now" ]]; then
       rm -f "$CFW_RENDER_STATE_DIR/run-now"; cr_log "run-now: claiming now"; return 0
     fi
@@ -777,6 +826,7 @@ loop_sleep() { # loop_sleep <secs> — returns early when a running order ends,
 }
 
 backoff=0
+CR_WOKE=0
 cr_log "loop: started (pid $$) — idle claim every ${CR_CAPACITY_IDLE_CLAIM_SECS}s, back-off ${CR_CLAIM_BACKOFF_BASE_SECS}s..${CR_CLAIM_BACKOFF_MAX_SECS}s"
 while true; do
   cr_tick_lock_touch
@@ -791,7 +841,8 @@ while true; do
       backoff="$next"
       cr_log "claim back-off: claim_render_order keeps failing — retrying every ${backoff}s (cap ${CR_CLAIM_BACKOFF_MAX_SECS}s)"
     fi
-    loop_sleep "$backoff"
+    CR_WOKE=0; loop_sleep "$backoff"
+    if (( CR_WOKE )); then backoff=0; cr_log "claim back-off: reset after sleep"; fi
     continue
   fi
   if [[ "$backoff" != "0" ]]; then

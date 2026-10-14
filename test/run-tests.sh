@@ -2916,6 +2916,221 @@ else
   fail "old server M3" "rc=$m6_rc lines=$m6_lines claims=$(m3_tool_count "$m6" claim_render_order); $(tail -3 "$m6/cr-state/cfw-render.log")"
 fi
 rm -rf "$m6"
+
+# ---------------------------------------------------------------------------
+# Handshake: a paused computer keeps checking in; `cfwReach` (ok |
+# unreachable) comes only from real server calls and never touches lastError;
+# plugging in, waking and the network coming back all claim promptly.
+# ---------------------------------------------------------------------------
+# A fake `date` whose +%s jumps by the seconds in $FAKE_DATE_OFFSET_FILE (as
+# after the lid was shut). Named fake-date so PATH's date stays the real one.
+cat > "$FAKE_BIN/fake-date" <<'EOF2'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "+%s" ]]; then
+  echo $(( $(/bin/date +%s) + $(cat "${FAKE_DATE_OFFSET_FILE:-/nonexistent}" 2>/dev/null || echo 0) ))
+else
+  exec /bin/date "$@"
+fi
+EOF2
+chmod +x "$FAKE_BIN/fake-date"
+# m3_until <tries> <sleep> <cmd...> — retry cmd until it succeeds; rc 1 when it never did.
+m3_until() { local n="$1" s="$2" i; shift 2; for (( i = 0; i < n; i++ )); do "$@" && return 0; sleep "$s"; done; return 1; }
+# m3_count <dir> <fixed string> — matching lines in calls.jsonl
+m3_count() { grep -cF -- "$2" "$1/mockstate/calls.jsonl" 2>/dev/null || true; }
+m3_count_ge() { (( $(m3_count "$1" "$2") >= $3 )); }
+m3_log_count() { grep -cF -- "$2" "$1/cr-state/cfw-render.log" 2>/dev/null || true; }
+m3_conn_is() { [[ "$(m3_status "$1" 'd.get("cfwReach")')" == "$2" ]]; }
+m3_err_set() { local e; e="$(m3_status "$1" 'd.get("lastError")')"; [[ -n "$e" && "$e" != "None" ]]; }
+# m3_stop_loop <worker pid> — stop the loop's whole tree and this case's mock
+m3_stop_loop() {
+  pkill -P "$1" 2>/dev/null; kill "$1" 2>/dev/null; wait "$1" 2>/dev/null
+  pkill -f "cfw-render.sh --loop" 2>/dev/null || true
+  kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+}
+M3_PING_BATTERY='"tool": "set_computer_paused", "args": {"paused": true, "reason": "battery"}'
+M3_RESUME='"tool": "set_computer_paused", "args": {"paused": false}'
+M3_CLAIM='"tool": "claim_render_order"'
+
+echo "=== Case M3-01a-7: --loop on battery → a battery check-in every round, 0 claims; lastCheckAt advances; cfwReach ok ==="
+p7="$(mktemp -d)"
+c21_setup "$p7" $((MOCK_PORT_BASE + 946)) harness-3step '[]'
+touch "$FAKE_PMSET_BATTERY"
+c21_worker "$p7" $((MOCK_PORT_BASE + 946)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=0.3 &
+p7_w=$!
+m3_until 100 0.1 m3_count_ge "$p7" "$M3_PING_BATTERY" 1
+m3_until 50 0.1 m3_conn_is "$p7" ok   # status.json lands after the call
+p7_first="$(m3_status "$p7" 'd.get("lastCheckAt")')"
+m3_until 100 0.1 m3_count_ge "$p7" "$M3_PING_BATTERY" 3
+sleep 1.2   # lastCheckAt has one-second resolution
+p7_last="$(m3_status "$p7" 'd.get("lastCheckAt")')"
+p7_conn="$(m3_status "$p7" 'd.get("cfwReach")')"
+m3_stop_loop "$p7_w"
+rm -f "$FAKE_PMSET_BATTERY"
+p7_pings="$(m3_count "$p7" "$M3_PING_BATTERY")"; p7_claims="$(m3_count "$p7" "$M3_CLAIM")"
+if [[ "$p7_pings" -ge 3 && "$p7_claims" == "0" && -n "$p7_first" && "$p7_first" != "None" && "$p7_last" > "$p7_first" && "$p7_conn" == "ok" ]]; then
+  pass "paused check-in: $p7_pings battery pings, 0 claims, lastCheckAt $p7_first → $p7_last, cfwReach ok"
+else
+  fail "paused check-in" "pings=$p7_pings claims=$p7_claims lastCheckAt '$p7_first' → '$p7_last' cfwReach=$p7_conn; $(tail -3 "$p7/cr-state/cfw-render.log")"
+fi
+rm -rf "$p7"
+
+echo "=== Case M3-01a-8: paused, CFW unreachable → cfwReach unreachable (one log line); back → ok (one log line) ==="
+p8="$(mktemp -d)"
+c21_setup "$p8" $((MOCK_PORT_BASE + 947)) harness-3step '[]'
+touch "$FAKE_PMSET_BATTERY"
+c21_worker "$p8" $((MOCK_PORT_BASE + 947)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=0.3 &
+p8_w=$!
+m3_until 100 0.1 m3_conn_is "$p8" ok
+touch "$p8/control/down"
+m3_until 100 0.1 m3_conn_is "$p8" unreachable; p8_down_ok=$?
+p8_since="$(m3_status "$p8" 'd.get("cfwReachSince")')"
+sleep 3   # more failed check-ins: still one log line
+rm -f "$p8/control/down"
+p8_t0=$SECONDS
+m3_until 40 0.1 m3_conn_is "$p8" ok; p8_up_ok=$?
+p8_secs=$(( SECONDS - p8_t0 ))
+m3_stop_loop "$p8_w"
+rm -f "$FAKE_PMSET_BATTERY"
+p8_lost="$(m3_log_count "$p8" "connection: can't reach CFW")"
+p8_back="$(m3_log_count "$p8" "connection: reached CFW again")"
+if [[ "$p8_down_ok" == 0 && "$p8_up_ok" == 0 && -n "$p8_since" && "$p8_since" != "None" && "$p8_lost" == 1 && "$p8_back" == 1 ]]; then
+  pass "paused offline: unreachable since $p8_since (1 line), ok again within ${p8_secs}s (1 line)"
+else
+  fail "paused offline" "down_ok=$p8_down_ok up_ok=$p8_up_ok since='$p8_since' lost_lines=$p8_lost back_lines=$p8_back; $(tail -4 "$p8/cr-state/cfw-render.log")"
+fi
+rm -rf "$p8"
+
+# m3_keep_err <label> <dir> <port> <expected lastError glob> [mock env...] — run
+# unpaused until lastError is set (no claim for an AI limit), then on battery,
+# CFW down, CFW back: lastError reads the same at every checkpoint.
+m3_keep_err() {
+  local label="$1" dir="$2" port="$3" want="$4" w e0 e1 e2 e3 c1 c2 c3; shift 4
+  c21_setup "$dir" "$port" harness-3step '[]' "$@"
+  [[ -n "${M3_LIMITS_JSON:-}" ]] && printf '%s' "$M3_LIMITS_JSON" > "$dir/cr-state/engine-limits.json"
+  c21_worker "$dir" "$port" --loop CFW_RENDER_CAPACITY_UNIT_SECS=0.3 &
+  w=$!
+  m3_until 100 0.1 m3_err_set "$dir"
+  e0="$(m3_status "$dir" 'd.get("lastError")')"
+  touch "$FAKE_PMSET_BATTERY"
+  m3_until 100 0.1 m3_count_ge "$dir" "$M3_PING_BATTERY" 1
+  m3_until 50 0.1 m3_conn_is "$dir" ok; c1="$(m3_status "$dir" 'd.get("cfwReach")')"
+  e1="$(m3_status "$dir" 'd.get("lastError")')"
+  touch "$dir/control/down"
+  m3_until 100 0.1 m3_conn_is "$dir" unreachable; c2="$(m3_status "$dir" 'd.get("cfwReach")')"
+  e2="$(m3_status "$dir" 'd.get("lastError")')"
+  rm -f "$dir/control/down"
+  m3_until 100 0.1 m3_conn_is "$dir" ok; c3="$(m3_status "$dir" 'd.get("cfwReach")')"
+  e3="$(m3_status "$dir" 'd.get("lastError")')"
+  m3_stop_loop "$w"
+  rm -f "$FAKE_PMSET_BATTERY"
+  # shellcheck disable=SC2053 # $want is a glob on purpose
+  if [[ "$e0" == $want && "$e1" == "$e0" && "$e2" == "$e0" && "$e3" == "$e0" && "$c1/$c2/$c3" == "ok/unreachable/ok" ]]; then
+    pass "$label: lastError '$e0' unchanged through battery, offline, online (cfwReach $c1/$c2/$c3)"
+  else
+    fail "$label" "lastError '$e0' / '$e1' / '$e2' / '$e3' (want $want) cfwReach $c1/$c2/$c3; $(tail -3 "$dir/cr-state/cfw-render.log")"
+  fi
+}
+M3_HOUR="$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+
+echo "=== Case M3-01a-9a: AI limit lastError survives the check-in's cfwReach flips ==="
+p9a="$(mktemp -d)"
+M3_LIMITS_JSON="{\"codex\":{\"until\":\"$M3_HOUR\"},\"claude-code\":{\"until\":\"$M3_HOUR\"}}" \
+  m3_keep_err "AI limit" "$p9a" $((MOCK_PORT_BASE + 948)) 'AI limit reached; resumes *'
+rm -rf "$p9a"
+
+echo "=== Case M3-01a-9b: AI credit lastError survives the check-in's cfwReach flips ==="
+p9b="$(mktemp -d)"
+M3_LIMITS_JSON='{"codex":{"until":null,"reason":"credit"},"claude-code":{"until":null,"reason":"credit"}}' \
+  m3_keep_err "AI credit" "$p9b" $((MOCK_PORT_BASE + 949)) 'AI credit ran out; add credit or pick another AI'
+rm -rf "$p9b"
+
+echo "=== Case M3-01a-9c: update-required lastError survives the check-in's cfwReach flips ==="
+p9c="$(mktemp -d)"
+M3_LIMITS_JSON="" m3_keep_err "update required" "$p9c" $((MOCK_PORT_BASE + 955)) 'Update this computer' CFW_MOCK_UPDATE_REQUIRED=1
+rm -rf "$p9c"
+
+echo "=== Case M3-01a-10: update required, claim fails then succeeds → cfwReach flips, lastError kept ==="
+p10="$(mktemp -d)"
+c21_setup "$p10" $((MOCK_PORT_BASE + 956)) harness-3step '[]' CFW_MOCK_UPDATE_REQUIRED=1
+c21_worker "$p10" $((MOCK_PORT_BASE + 956)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=0.3 &
+p10_w=$!
+m3_until 100 0.1 m3_conn_is "$p10" ok
+touch "$p10/control/down"
+m3_until 200 0.1 m3_conn_is "$p10" unreachable; p10_c1="$(m3_status "$p10" 'd.get("cfwReach")')"
+p10_e1="$(m3_status "$p10" 'd.get("lastError")')"
+rm -f "$p10/control/down"
+m3_until 200 0.1 m3_conn_is "$p10" ok; p10_c2="$(m3_status "$p10" 'd.get("cfwReach")')"
+p10_e2="$(m3_status "$p10" 'd.get("lastError")')"
+m3_stop_loop "$p10_w"
+if [[ "$p10_c1/$p10_c2" == "unreachable/ok" && "$p10_e1" == "Update this computer" && "$p10_e2" == "Update this computer" ]]; then
+  pass "claim path: cfwReach unreachable → ok, lastError 'Update this computer' both times"
+else
+  fail "claim path" "cfwReach $p10_c1/$p10_c2 lastError '$p10_e1' / '$p10_e2'; $(tail -4 "$p10/cr-state/cfw-render.log")"
+fi
+rm -rf "$p10"
+
+echo "=== Case M3-01a-11: charger back in mid-loop → one {paused:false} and a claim within 1.5 s ==="
+p11="$(mktemp -d)"
+c21_setup "$p11" $((MOCK_PORT_BASE + 957)) harness-3step '[]'
+touch "$FAKE_PMSET_BATTERY"
+c21_worker "$p11" $((MOCK_PORT_BASE + 957)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=0.3 &
+p11_w=$!
+m3_until 100 0.1 m3_count_ge "$p11" "$M3_PING_BATTERY" 2
+rm -f "$FAKE_PMSET_BATTERY"
+m3_until 15 0.1 m3_count_ge "$p11" "$M3_CLAIM" 1; p11_ok=$?
+p11_resume_at="$(m3_count "$p11" "$M3_RESUME")"
+sleep 1   # more rounds: still exactly one resume
+p11_resume="$(m3_count "$p11" "$M3_RESUME")"; p11_claims="$(m3_count "$p11" "$M3_CLAIM")"
+m3_stop_loop "$p11_w"
+if [[ "$p11_ok" == 0 && "$p11_resume_at" == 1 && "$p11_resume" == 1 && "$p11_claims" -ge 1 ]]; then
+  pass "plugged in: {paused:false} once, $p11_claims claim(s), first within 1.5 s"
+else
+  fail "plugged in" "within=$p11_ok resume=$p11_resume_at/$p11_resume claims=$p11_claims; $(tail -3 "$p11/cr-state/cfw-render.log")"
+fi
+rm -rf "$p11"
+
+echo "=== Case M3-01a-12: wake from sleep mid back-off → claim within 3 s, back-off reset ==="
+p12="$(mktemp -d)"
+c21_setup "$p12" $((MOCK_PORT_BASE + 958)) harness-3step '[]'
+echo 0 > "$p12/date-offset"
+touch "$p12/control/down"
+c21_worker "$p12" $((MOCK_PORT_BASE + 958)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=30 \
+  CFW_RENDER_DATE_CMD="$FAKE_BIN/fake-date" FAKE_DATE_OFFSET_FILE="$p12/date-offset" &
+p12_w=$!
+m3_until 200 0.1 grep -qs 'retrying every 30s' "$p12/cr-state/cfw-render.log"; p12_backoff=$?
+rm -f "$p12/control/down"
+sleep 0.3
+echo 3600 > "$p12/date-offset"
+m3_until 30 0.1 m3_count_ge "$p12" "$M3_CLAIM" 1; p12_ok=$?
+p12_woke="$(m3_log_count "$p12" "woke from sleep")"; p12_reset="$(m3_log_count "$p12" "claim back-off: reset after sleep")"
+m3_stop_loop "$p12_w"
+if [[ "$p12_backoff" == 0 && "$p12_ok" == 0 && "$p12_woke" -ge 1 && "$p12_reset" -ge 1 ]]; then
+  pass "wake: 'woke from sleep', back-off reset, claim within 3 s of the clock jump (not after the 30 s back-off)"
+else
+  fail "wake" "backoff_seen=$p12_backoff claimed=$p12_ok woke=$p12_woke reset=$p12_reset; $(tail -4 "$p12/cr-state/cfw-render.log")"
+fi
+rm -rf "$p12"
+
+echo "=== Case M3-01a-13: network back at the back-off cap → a claim within cap + one claim round ==="
+p13="$(mktemp -d)"
+c21_setup "$p13" $((MOCK_PORT_BASE + 959)) harness-3step '[]'
+touch "$p13/control/down"
+c21_worker "$p13" $((MOCK_PORT_BASE + 959)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=0.05 &
+p13_w=$!
+m3_until 120 0.5 grep -qs 'retrying every 0.5s' "$p13/cr-state/cfw-render.log"; p13_cap=$?
+rm -f "$p13/control/down"
+p13_t0=$SECONDS
+# cap 0.5 s + one round (cr_mcp_call: 3 tries, sleeping 2 s then 4 s) + 2 s slack
+m3_until 85 0.1 m3_count_ge "$p13" "$M3_CLAIM" 1; p13_ok=$?
+m3_until 20 0.1 m3_conn_is "$p13" ok; p13_conn=$?
+p13_secs=$(( SECONDS - p13_t0 ))
+m3_stop_loop "$p13_w"
+if [[ "$p13_cap" == 0 && "$p13_ok" == 0 && "$p13_conn" == 0 ]]; then
+  pass "at the cap: claim succeeded ${p13_secs}s after the network came back (bound 0.5 s + one round), cfwReach ok"
+else
+  fail "at the cap" "cap_seen=$p13_cap claimed=$p13_ok conn_ok=$p13_conn after ${p13_secs}s; $(tail -4 "$p13/cr-state/cfw-render.log")"
+fi
+rm -rf "$p13"
 # ===========================================================================
 # M3-07a — private toolchain: tools/current/bin PATH precedence + verify.sh
 # ===========================================================================
@@ -3199,7 +3414,7 @@ c21_setup "$mc1" $((MOCK_PORT_BASE + 960)) harness-3step '[]'
 c21_worker "$mc1" $((MOCK_PORT_BASE + 960)) --once CFW_RENDER_ENGINE=none CFW_RENDER_COMPUTER_NAME="Test Mac"
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 mc1_keys="$(m3_status "$mc1" '",".join(sorted(d))')"
-mc1_want="$(python3 -c 'print(",".join(sorted("schema workerVersion engines activeEngine computer brands now next recent lastCheckAt lastError".split())))')"
+mc1_want="$(python3 -c 'print(",".join(sorted("schema workerVersion engines activeEngine computer brands now next recent lastCheckAt lastError cfwReach cfwReachSince".split())))')"
 mc1_eng="$(m3_status "$mc1" 'all("label" in e and e["auth"] == "signin" for e in d["engines"])')"
 mc1_rest="$(m3_status "$mc1" '(d["schema"], d["activeEngine"], d["computer"]["name"], d["next"])')"
 if [[ "$mc1_keys" == "$mc1_want" && "$mc1_eng" == "True" && "$mc1_rest" == "(1, None, 'Test Mac', [])" ]]; then

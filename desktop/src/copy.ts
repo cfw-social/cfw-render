@@ -9,6 +9,7 @@ export const copy = {
     paused: "Paused",
     battery: "On battery",
     update: "Update this computer",
+    offline: "Can't reach CFW. Retrying",
     limit: (hhmm: string | null) => (hhmm ? `AI limit reached; resumes about ${hhmm}` : "AI limit reached"),
   },
   health: {
@@ -17,6 +18,7 @@ export const copy = {
     attention: "Needs you",
     paused: "Paused",
     notRunning: "Not running",
+    offline: "Offline",
   },
   callout: {
     notRunning: { title: "CFW Render isn't running", body: "Renders for your brands wait until it starts." },
@@ -28,6 +30,10 @@ export const copy = {
     }),
     noProvider: { title: "Sign in to an AI provider", body: "CFW Render uses your own AI plan to make renders." },
     paused: { title: "Paused", body: "Nothing renders on this Mac until you resume." },
+    offline: {
+      title: "Can't reach CFW",
+      body: "Check this Mac's internet connection. Renders start again on their own when it is back.",
+    },
   },
   pausedTitle: "Paused",
   waitingCount: (n: number) => (n === 0 ? "Nothing is waiting." : n === 1 ? "1 render is waiting for this Mac." : `${n} renders are waiting for this Mac.`),

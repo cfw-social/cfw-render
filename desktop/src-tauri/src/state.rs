@@ -25,6 +25,10 @@ pub struct StatusFile {
     pub recent: Vec<RecentItem>,
     pub last_check_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
+    /// "ok" | "unreachable": did the worker's last server call reach CFW.
+    /// The only source of "Can't reach CFW"; `last_error` never is.
+    pub cfw_reach: Option<String>,
+    pub cfw_reach_since: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -164,6 +168,9 @@ pub fn icon_state(
     };
     if s.computer.update_required {
         return attention("Update this computer");
+    }
+    if s.cfw_reach.as_deref() == Some("unreachable") {
+        return attention("Can't reach CFW");
     }
     if s.computer.paused {
         return if s.computer.pause_reason.as_deref() == Some("battery") {
@@ -330,6 +337,33 @@ mod tests {
 
     fn st(s: &StatusFile) -> (IconState, String) {
         icon_state(Some(s), None, now())
+    }
+
+    #[test]
+    fn cant_reach_cfw_comes_only_from_cfw_reach() {
+        let mut s = fresh();
+        s.cfw_reach = Some("unreachable".into());
+        assert_eq!(st(&s), (IconState::Attention, "Can't reach CFW".into()));
+        // An update outranks it; a stale file is "not running" first.
+        s.computer.update_required = true;
+        assert_eq!(st(&s), (IconState::Attention, "Update this computer".into()));
+        // lastError texts never mean offline.
+        for e in [
+            "AI credit ran out; add credit or pick another AI",
+            "AI limit reached; resumes 2026-10-11T15:40:00Z",
+            "Update this computer",
+        ] {
+            let mut s = fresh();
+            s.cfw_reach = Some("ok".into());
+            s.last_error = Some(e.into());
+            assert_ne!(st(&s).1, "Can't reach CFW", "{e}");
+            s.cfw_reach = None;
+            assert_ne!(st(&s).1, "Can't reach CFW", "{e}");
+        }
+        let p = parse_status(r#"{"schema":1,"cfwReach":"unreachable","cfwReachSince":"2026-10-11T11:00:00Z"}"#).unwrap();
+        assert_eq!(p.cfw_reach.as_deref(), Some("unreachable"));
+        assert_eq!(p.cfw_reach_since.as_deref(), Some("2026-10-11T11:00:00Z"));
+        assert_eq!(parse_status(r#"{"schema":1}"#).unwrap().cfw_reach, None);
     }
 
     #[test]

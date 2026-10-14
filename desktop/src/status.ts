@@ -47,6 +47,9 @@ export interface StatusFile {
   recent?: RecentItem[];
   lastCheckAt?: string | null;
   lastError?: string | null;
+  /** Did this Mac's last server call reach CFW? Set only from real calls; null until the first one. */
+  cfwReach?: "ok" | "unreachable" | null;
+  cfwReachSince?: string | null;
 }
 
 export type Liveness = "Running" | "NotRunning";

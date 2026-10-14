@@ -3,7 +3,7 @@ import type { Engine, StatusPayload } from "../status";
 
 export const STALE_MS = 3 * 60 * 1000;
 
-export type BannerKind = "notRunning" | "paused" | "battery" | "update" | "limit";
+export type BannerKind = "notRunning" | "offline" | "paused" | "battery" | "update" | "limit";
 export interface Banner { kind: BannerKind; text: string }
 export interface NowRow { title: string; recipe: string; stepText: string; pct: number | null; elapsed: string | null; code: string; brand: string; stepLabel: string; step: string }
 export interface SimpleRow { title: string; recipe: string; code: string; brand: string }
@@ -60,6 +60,9 @@ export function panelModel(payload: StatusPayload | null, now: number, opts: Mod
   let banner: Banner | null = null;
   let limitAt: string | null = null;
   if (!s || !running) banner = { kind: "notRunning", text: copy.banner.notRunning };
+  // Only the worker's own reach signal: lastError carries update / AI limit /
+  // credit text and never means "offline".
+  else if (s.cfwReach === "unreachable") banner = { kind: "offline", text: copy.banner.offline };
   else if (paused && c.pauseReason === "battery") banner = { kind: "battery", text: copy.banner.battery };
   else if (paused) banner = { kind: "paused", text: copy.banner.paused };
   else if (c.updateRequired) banner = { kind: "update", text: copy.banner.update };
@@ -115,7 +118,7 @@ function fallbackProviderLine(engines: Engine[]) {
 }
 
 /** One line of overall state for the menu bar, the rail footer and Renders. */
-export type HealthKind = "rendering" | "ready" | "paused" | "notRunning" | "battery" | "update" | "limit" | "noProvider";
+export type HealthKind = "rendering" | "ready" | "paused" | "notRunning" | "offline" | "battery" | "update" | "limit" | "noProvider";
 export interface Health {
   kind: HealthKind;
   tone: "ok" | "warn" | "idle" | "bad";
@@ -143,6 +146,8 @@ export function health(m: PanelModel): Health {
       return { kind, tone: "idle", label: copy.health.paused, callout: null, waiting };
     case "notRunning":
       return { kind, tone: "bad", label: copy.health.notRunning, callout: copy.callout.notRunning, waiting };
+    case "offline":
+      return { kind, tone: "warn", label: copy.health.offline, callout: copy.callout.offline, waiting };
     case "battery":
       return { kind, tone: "warn", label: copy.health.paused, callout: copy.callout.battery, waiting };
     case "update":

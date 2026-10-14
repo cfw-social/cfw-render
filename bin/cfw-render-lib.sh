@@ -861,6 +861,16 @@ CR_CLAIM_BACKOFF_BASE_SECS="${CFW_RENDER_CAPACITY_UNIT_SECS:-60}"
 # awk, not $(( )): the test seam may be fractional (0.05 s).
 # shellcheck disable=SC2034
 CR_CLAIM_BACKOFF_MAX_SECS="$(awk -v u="${CFW_RENDER_CAPACITY_UNIT_SECS:-60}" 'BEGIN { print u * 10 }')"
+# Wake detection: the --loop sleeps in ticks of at most 2 s. When the wall
+# clock moves more than one tick plus this gap between two ticks, the Mac was
+# asleep (lid shut) and the loop claims at once instead of finishing a long
+# back-off. Read by bin/cfw-render.sh's --loop.
+# shellcheck disable=SC2034
+CR_WAKE_GAP_SECS=30
+
+# cr_now_epoch — wall-clock seconds. CFW_RENDER_DATE_CMD is a test seam (a fake
+# date that can jump forward, as after sleep).
+cr_now_epoch() { "${CFW_RENDER_DATE_CMD:-date}" +%s; }
 
 # [M2-04, D78] cr_capacity_setup_note — the setup summary line when max is 1.
 # Wording mirrored in cfw-social labels.ts by M2-12 (docs/capacity.md).
@@ -1476,13 +1486,15 @@ doc = {
                "paused": b(a[3]), "pauseReason": a[4] or None, "updateRequired": b(a[7])},
   "brands": brands, "now": now, "next": [], "recent": recent,
   "lastCheckAt": a[9] or None, "lastError": a[8] or None,
+  "cfwReach": (a[17] if a[17] in ("ok", "unreachable") else None),
+  "cfwReachSince": a[18] or None,
 }
 json.dump(doc, open(a[12], "w"), indent=2)
 ' "$(cr_computer_name)" "$(cr_worker_version)" "${CR_STATUS_PAUSED:-0}" \
       "${CR_STATUS_PAUSE_REASON:-}" "${CR_STATUS_ON_BATTERY:-0}" "" \
       "${CR_STATUS_UPDATE_REQUIRED:-0}" "${CR_STATUS_LAST_ERROR:-}" "${CR_STATUS_LAST_CHECK_AT:-}" \
       "${CR_STATUS_RUNNING:-0}" "${CR_STATUS_MAX:-1}" "$tmp" "$engines" "$active" "$dir" \
-      "${CFW_RENDER_SCRATCH:-/nonexistent}"
+      "${CFW_RENDER_SCRATCH:-/nonexistent}" "${CR_STATUS_CFW_REACH:-}" "${CR_STATUS_CFW_REACH_SINCE:-}"
   ) 2>/dev/null || { rm -f "$tmp"; return 1; }
   chmod 600 "$tmp" 2>/dev/null
   mv -f "$tmp" "$dir/status.json"

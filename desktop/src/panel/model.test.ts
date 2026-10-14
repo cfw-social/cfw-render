@@ -5,6 +5,45 @@ import type { StatusFile } from "../status";
 
 const withComputer = (c: StatusFile["computer"]): StatusFile => ({ ...workingStatus, computer: { ...workingStatus.computer, ...c } });
 
+describe("Can't reach CFW (cfwReach)", () => {
+  const limited: StatusFile["engines"] = [{ name: "codex", signedIn: true, limit: "limited", resetsAt: "2026-10-11T15:40:00Z" }];
+
+  it("cfwReach unreachable → offline banner, Offline health with its callout", () => {
+    const m = panelModel(payload({ ...workingStatus, cfwReach: "unreachable", cfwReachSince: "2026-10-11T11:59:00Z" }), NOW);
+    expect(m.banner).toEqual({ kind: "offline", text: "Can't reach CFW. Retrying" });
+    const h = health(m);
+    expect([h.kind, h.tone, h.label]).toEqual(["offline", "warn", "Offline"]);
+    expect(h.callout?.title).toBe("Can't reach CFW");
+  });
+
+  it("offline outranks battery; not running outranks offline", () => {
+    const s: StatusFile = { ...withComputer({ paused: true, pauseReason: "battery" }), cfwReach: "unreachable" };
+    expect(panelModel(payload(s), NOW).banner?.kind).toBe("offline");
+    expect(panelModel(payload(s, { liveness: "NotRunning" }), NOW).banner?.kind).toBe("notRunning");
+  });
+
+  it("an AI-limit lastError with cfwReach ok → the limit banner", () => {
+    const s: StatusFile = { ...workingStatus, engines: limited, lastError: "AI limit reached; resumes 2026-10-11T15:40:00Z", cfwReach: "ok" };
+    expect(panelModel(payload(s), NOW).banner?.kind).toBe("limit");
+  });
+
+  it("an AI-credit lastError with cfwReach ok → not offline", () => {
+    const s: StatusFile = {
+      ...workingStatus,
+      engines: [{ name: "codex", signedIn: true, limit: "limited", resetsAt: null, reason: "credit" }],
+      lastError: "AI credit ran out; add credit or pick another AI",
+      cfwReach: "ok",
+    };
+    expect(panelModel(payload(s), NOW).banner?.kind).not.toBe("offline");
+  });
+
+  it("an update lastError → the update banner, never offline", () => {
+    const s: StatusFile = { ...withComputer({ updateRequired: true }), lastError: "Update this computer" };
+    expect(panelModel(payload(s), NOW).banner?.kind).toBe("update");
+    expect(panelModel(payload({ ...s, cfwReach: "ok" }), NOW).banner?.kind).toBe("update");
+  });
+});
+
 describe("panelModel", () => {
   it("worker not running", () => {
     expect(panelModel(payload(workingStatus, { liveness: "NotRunning" }), NOW).banner).toEqual({ kind: "notRunning", text: "Worker not running" });
