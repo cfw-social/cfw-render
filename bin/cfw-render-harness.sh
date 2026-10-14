@@ -275,7 +275,10 @@ def listing(d):
 print("\n## Order\n")
 print("Brief:\n```json\n" + json.dumps(o.get("taskOrder") or {}, indent=1) + "\n```\n")
 print("Inputs:\n" + listing(os.path.join(wd, "inputs")) + "\n")
-print("Answers:\n```json\n" + json.dumps(o.get("answers") or {}) + "\n```\n")
+ans = o.get("answers") or {}
+if isinstance(ans, list):  # CONTRACTS §7 array → {inputId: text}
+    ans = {x.get("inputId"): x.get("text") for x in ans if isinstance(x, dict) and x.get("inputId")}
+print("Answers:\n```json\n" + json.dumps(ans) + "\n```\n")
 fb = o.get("feedback")
 if fb: print("Feedback:\n" + str(fb) + "\n")
 print("Prior saves:\n" + listing(os.path.join(wd, "prior")) + "\n")
@@ -283,6 +286,34 @@ print("## You must produce\n")
 for sv in s.get("saves") or []:
     print(f"- saves/{sv['id']}.{ext.get(sv.get('kind'), 'bin')} ({sv.get('kind')})")
 PY
+}
+
+# CR_H_CLAIM_PY — python prelude: `inputs_of(o)` / `answers_of(o)` read the
+# claim's owner files and answers as dicts. CFW sends the CONTRACTS §7 arrays
+# (`inputs: [{inputId, items:[{kind,url}]}]`, `answers: [{inputId, text}]`);
+# fixtures and older servers send dicts — both work.
+CR_H_CLAIM_PY='
+def inputs_of(o):
+    v = o.get("inputs") or {}
+    if isinstance(v, list):
+        out = {}
+        for x in v:
+            if isinstance(x, dict) and x.get("inputId"):
+                out.setdefault(x["inputId"], []).extend(x.get("items") or [])
+        return out
+    return v if isinstance(v, dict) else {}
+def answers_of(o):
+    v = o.get("answers") or {}
+    if isinstance(v, list):
+        return {x["inputId"]: x.get("text") for x in v if isinstance(x, dict) and x.get("inputId")}
+    return v if isinstance(v, dict) else {}
+'
+
+# cr_h_input_present <order-file> <inputId> → 1 when the claim carries files for it.
+cr_h_input_present() {
+  python3 -c "$CR_H_CLAIM_PY"'
+import json, sys
+o = json.load(open(sys.argv[1])); print("1" if inputs_of(o).get(sys.argv[2]) else "0")' "$1" "$2"
 }
 
 # cr_h_stage_inputs <workdir> <order-file> — copy/download claim inputs.
@@ -297,10 +328,10 @@ cr_h_stage_inputs() {
     elif [[ -e "$src" ]]; then
       cp -R "$src" "$dest/" 2>/dev/null || true
     fi
-  done < <(python3 -c '
+  done < <(python3 -c "$CR_H_CLAIM_PY"'
 import json, sys
 o = json.load(open(sys.argv[1]))
-for k, v in (o.get("inputs") or {}).items():
+for k, v in inputs_of(o).items():
     vals = v if isinstance(v, list) else [v]
     for x in vals:
         u = (x.get("url") or x.get("path")) if isinstance(x, dict) else x
@@ -511,13 +542,10 @@ for s in (o.get("manifest") or {}).get("steps", []):
 
     cond=1
     case "$when_kind" in
-      inputPresent) cond="$(python3 -c '
+      inputPresent) cond="$(cr_h_input_present "$order_file" "$when_arg")" ;;
+      alternative) cond="$(python3 -c "$CR_H_CLAIM_PY"'
 import json, sys
-o = json.load(open(sys.argv[1])); v = (o.get("inputs") or {}).get(sys.argv[2])
-print("1" if v else "0")' "$order_file" "$when_arg")" ;;
-      alternative) cond="$(python3 -c '
-import json, sys
-o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alternative") == sys.argv[2] else "0")' "$order_file" "$when_arg")" ;;
+o = json.load(open(sys.argv[1])); print("1" if answers_of(o).get("alternative") == sys.argv[2] else "0")' "$order_file" "$when_arg")" ;;
     esac
     if [[ "$cond" != "1" ]]; then
       cr_h_report step_skipped "{\"stepId\":\"$step_id\",\"message\":\"condition not met\"}"
