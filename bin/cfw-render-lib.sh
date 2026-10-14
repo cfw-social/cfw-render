@@ -1390,11 +1390,20 @@ o = {}
 if f and os.path.isfile(f):
     try: o = json.load(open(f))
     except Exception: o = {}
+if not isinstance(o, dict): o = {}
+def obj(value): return value if isinstance(value, dict) else {}
+def text(value): return value if isinstance(value, str) else None
+attempt = obj(o.get("attempt"))
+brand = obj(obj(o.get("taskOrder")).get("brand"))
 m = {"complete": "done", "completed": "done"}
 for k in ("released", "revoked", "engine_limit", "cancelled"): m[k] = "stopped"
 nowdt = datetime.datetime.now(datetime.timezone.utc)
 row = {"shortCode": o.get("shortCode"), "brand": o.get("brandName"), "result": m.get(outcome, "failed"),
-       "finishedAt": nowdt.strftime("%Y-%m-%dT%H:%M:%SZ"), "orderId": o.get("id") or oid or None}
+       "finishedAt": nowdt.strftime("%Y-%m-%dT%H:%M:%SZ"), "orderId": o.get("id") or oid or None,
+       "attemptId": text(attempt.get("id")) or text(o.get("attemptId")),
+       "brandSlug": text(brand.get("slug")) or text(o.get("brandSlug")), "recipe": text(o.get("recipe")),
+       "startedAt": None, "directorLog": None}
+# This worker does not record attempt start/log identity here. Never guess from current scratch.
 rows = []
 try:
     for line in open(path):
@@ -1467,7 +1476,7 @@ for line in reversed(lines):
         r = json.loads(line)
         if datetime.datetime.fromisoformat(r["finishedAt"].replace("Z", "+00:00")) < cut: continue
     except Exception: continue
-    recent.append({k: r.get(k) for k in ("shortCode", "brand", "result", "finishedAt")})
+    recent.append({k: r.get(k) for k in ("shortCode", "brand", "result", "finishedAt", "orderId", "attemptId", "brandSlug", "recipe", "startedAt", "directorLog")})
     if len(recent) >= 20: break
 doc = {
   "schema": 1, "workerVersion": a[2], "engines": engines,

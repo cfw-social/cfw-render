@@ -1,8 +1,27 @@
 import { describe, expect, it } from "vitest";
+import bundledGuide from "../../../lib/render-debug.md?raw";
+import bundledGuideManifest from "../../../config/agent-guides.json?raw";
 import { panelModel, rendersModel } from "./model";
 import { NOW, payload, workingStatus } from "./fixtures";
 
 describe("rendersModel", () => {
+  it("ships a pinned, read-only debug guide with a matching source checksum", async () => {
+    const body = bundledGuide;
+    const manifest = JSON.parse(bundledGuideManifest);
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body));
+    const sha256 = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    expect(manifest.schemaVersion).toBe(1);
+    expect(manifest.documents).toEqual([{
+      path: "lib/render-debug.md",
+      source: "src/lib/agent-library/content/render-debug.md",
+      url: "https://app.cfw.social/assets/guides/render-debug.md",
+      sha256,
+    }]);
+    expect(body).toContain("Investigate read-only");
+    expect(body).toContain("Ask before fixes,\npaid calls or retries");
+    expect(body).toContain("Do not download, install or invent a missing helper");
+    expect(body).toContain("Null means\nunknown");
+  });
   const recent = [
     { shortCode: "R-1", result: "done", finishedAt: "2026-10-11T08:00:00Z" },
     { shortCode: "R-STALE", result: "done", finishedAt: "2026-10-10T11:59:00Z" }, // >24h

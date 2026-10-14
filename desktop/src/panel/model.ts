@@ -1,5 +1,5 @@
 import { copy } from "../copy";
-import type { Engine, StatusPayload } from "../status";
+import type { Engine, RecentItem, StatusPayload } from "../status";
 
 export const STALE_MS = 3 * 60 * 1000;
 
@@ -7,7 +7,7 @@ export type BannerKind = "notRunning" | "paused" | "battery" | "update" | "limit
 export interface Banner { kind: BannerKind; text: string }
 export interface NowRow { title: string; recipe: string; stepText: string; pct: number | null; elapsed: string | null; code: string; brand: string; stepLabel: string; step: string }
 export interface SimpleRow { title: string; recipe: string; code: string; brand: string }
-export interface DoneRow { mark: string; result: "done" | "failed" | "stopped"; title: string; time: string; code: string; brand: string }
+export interface DoneRow { mark: string; result: "done" | "failed" | "stopped"; title: string; time: string; code: string; brand: string; identity: RecentItem }
 
 export interface PanelModel {
   providerLine: string;
@@ -104,7 +104,7 @@ export function panelModel(payload: StatusPayload | null, now: number, opts: Mod
       .map(({ r }) => {
       const result = (results as readonly string[]).includes(r.result ?? "") ? (r.result as DoneRow["result"]) : "failed";
       const t = ms(r.finishedAt);
-      return { mark: copy.marks[result], result, title: title(r.shortCode, r.brand), time: t == null ? "" : hhmm(t), code: r.shortCode ?? "", brand: r.brand ?? "" };
+      return { mark: copy.marks[result], result, title: title(r.shortCode, r.brand), time: t == null ? "" : hhmm(t), code: r.shortCode ?? "", brand: r.brand ?? "", identity: r };
     }),
     lastCheck: lastCheckMs == null ? copy.lastCheckNever : copy.lastCheck(copy.ago(Math.max(0, Math.floor((now - lastCheckMs) / 1000)))),
   };

@@ -3190,7 +3190,7 @@ c21_setup "$mc3" $((MOCK_PORT_BASE + 962)) harness-3step '[{"id":"o1"}]' 'CFW_MO
 c21_worker "$mc3" $((MOCK_PORT_BASE + 962)) --once
 c21_worker "$mc3" $((MOCK_PORT_BASE + 962)) --once
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
-mc3_r="$(m3_status "$mc3" 'sorted(d["recent"][0]) == ["brand","finishedAt","result","shortCode"] and (d["recent"][0]["shortCode"], d["recent"][0]["brand"], d["recent"][0]["result"]) == ("R-TEST","Brand A","done") and d["recent"][0]["finishedAt"].endswith("Z")')"
+mc3_r="$(m3_status "$mc3" 'sorted(d["recent"][0]) == ["attemptId","brand","brandSlug","directorLog","finishedAt","orderId","recipe","result","shortCode","startedAt"] and (d["recent"][0]["shortCode"], d["recent"][0]["brand"], d["recent"][0]["result"]) == ("R-TEST","Brand A","done") and d["recent"][0]["finishedAt"].endswith("Z") and d["recent"][0]["orderId"] == "o1" and d["recent"][0]["attemptId"] == "att_1" and d["recent"][0]["brandSlug"] == "test-brand" and d["recent"][0]["recipe"] == "harness-3step" and d["recent"][0]["startedAt"] is None and d["recent"][0]["directorLog"] is None')"
 if [[ "$mc3_r" == "True" ]]; then
   pass "status recent: R-TEST / Brand A / done"
 else

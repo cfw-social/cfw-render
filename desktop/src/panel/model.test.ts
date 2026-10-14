@@ -63,7 +63,7 @@ describe("panelModel", () => {
     expect(m.noProvider).toBe(true);
     expect(m.now).toEqual([{ title: "Brand A", recipe: "", stepText: "", pct: null, elapsed: null, code: "", brand: "Brand A", stepLabel: "", step: "" }]);
     expect(m.next).toEqual([]);
-    expect(m.done).toEqual([{ mark: "✗", result: "failed", title: "R-1", time: "", code: "R-1", brand: "" }]);
+    expect(m.done).toEqual([{ mark: "✗", result: "failed", title: "R-1", time: "", code: "R-1", brand: "", identity: { shortCode: "R-1", result: "weird" } }]);
     expect(m.lastCheck).toBe("Last check: never");
   });
 

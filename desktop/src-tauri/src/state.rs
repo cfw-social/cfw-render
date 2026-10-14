@@ -114,6 +114,12 @@ pub enum RunResult {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct RecentItem {
+    pub order_id: Option<String>,
+    pub attempt_id: Option<String>,
+    pub brand_slug: Option<String>,
+    pub recipe: Option<String>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub director_log: Option<String>,
     pub short_code: Option<String>,
     pub brand: Option<String>,
     pub result: RunResult,
@@ -279,6 +285,20 @@ mod tests {
         assert_eq!(s.recent[1].result, RunResult::Failed);
         assert_eq!(s.recent[1].short_code, None);
         assert_eq!(s.active_engine.as_deref(), Some("claude-code"));
+    }
+
+    #[test]
+    fn debug_identity_survives_status_round_trip() {
+        let s = parse_status(r#"{"schema":1,"recent":[{"orderId":"order-1","attemptId":"attempt-1","brandSlug":"brand-a","recipe":"reel","startedAt":"2026-10-11T10:00:00Z","directorLog":"order-1-123.out"},{}]}"#).unwrap();
+        let value = serde_json::to_value(&s).unwrap();
+        assert_eq!(value["recent"][0]["orderId"], "order-1");
+        assert_eq!(value["recent"][0]["attemptId"], "attempt-1");
+        assert_eq!(value["recent"][0]["brandSlug"], "brand-a");
+        assert_eq!(value["recent"][0]["recipe"], "reel");
+        assert_eq!(value["recent"][0]["startedAt"], "2026-10-11T10:00:00Z");
+        assert_eq!(value["recent"][0]["directorLog"], "order-1-123.out");
+        assert!(value["recent"][1]["orderId"].is_null());
+        assert!(value["recent"][1]["attemptId"].is_null());
     }
 
     #[test]
