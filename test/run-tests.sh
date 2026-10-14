@@ -1863,6 +1863,55 @@ else
   fail "validate-manifests.py: no-jsonschema mode" "expected RC=1 and 'FAIL — 4 of 5' in: $c16d_nojs"
 fi
 
+echo "=== Case 16e: validate-manifests.py — per-stage uses (providers, optional providers, tools) ==="
+# Each stage says which provider keys it needs (groups: any ONE of a group is enough),
+# which it uses only when present, and which local tools it runs. The validator ties
+# them to needs.* so a recipe can't ask for a key no stage uses, or a stage run a tool
+# the computer was never checked for.
+c16e_ok="$(python3 "$c16_validator" "$c16_fixtures/uses-ok/manifest.json" 2>&1)"
+c16e_ok_rc=$?
+if [[ "$c16e_ok_rc" == "0" ]]; then
+  pass "validate-manifests.py: uses with an any-one-of group + an optional provider is valid"
+else
+  fail "validate-manifests.py: uses-ok" "expected exit 0, got $c16e_ok_rc: $c16e_ok"
+fi
+c16e_check() {
+  # c16e_check <fixture> <expected error substring> <description>
+  local out rc
+  out="$(python3 "$c16_validator" "$c16_fixtures/$1/manifest.json" 2>&1)"
+  rc=$?
+  if [[ "$rc" == "1" ]] && grep -qF "$2" <<< "$out"; then
+    pass "validate-manifests.py: $3"
+  else
+    fail "validate-manifests.py: $1" "expected exit 1 + '$2', got rc=$rc: $out"
+  fi
+}
+c16e_check bad-uses-unknown-tool "steps[prepare].uses.tools: 'yt-dlp' is not listed in needs.tools" \
+  "a stage tool missing from needs.tools is refused, naming the stage and tool"
+c16e_check bad-uses-orphan-provider "needs.providers: 'kie' is not required by any stage" \
+  "a provider key no stage requires is refused (optional keys never go in needs.providers)"
+c16e_check bad-uses-half-annotated "steps[finish].uses: required once any computer step declares uses" \
+  "a half-annotated recipe is refused, naming the stage without uses"
+c16e_check bad-uses-required-and-optional "steps[prepare].uses.optionalProviders: 'heygen' is also required by this stage" \
+  "a provider both required and optional on one stage is refused"
+c16e_nojs="$(python3 - "$c16_validator" "$c16_fixtures" <<'PY' 2>&1
+import runpy, sys
+validator, fixtures = sys.argv[1], sys.argv[2]
+sys.modules["jsonschema"] = None
+bad = ["bad-uses-unknown-tool", "bad-uses-orphan-provider", "bad-uses-half-annotated", "bad-uses-required-and-optional"]
+sys.argv = [validator] + [f"{fixtures}/{b}/manifest.json" for b in bad] + [f"{fixtures}/uses-ok/manifest.json"]
+try:
+    runpy.run_path(validator, run_name="__main__")
+except SystemExit as e:
+    print(f"RC={e.code}")
+PY
+)"
+if grep -q '^RC=1$' <<< "$c16e_nojs" && grep -q 'FAIL — 4 of 5' <<< "$c16e_nojs"; then
+  pass "validate-manifests.py: without jsonschema, the uses rules fail exactly the 4 bad fixtures"
+else
+  fail "validate-manifests.py: uses no-jsonschema mode" "expected RC=1 and 'FAIL — 4 of 5' in: $c16e_nojs"
+fi
+
 echo "=== Case 18: step harness mock — capability-gated claim, report_render_step, control files (M1-08 b) ==="
 c18_dir="$(mktemp -d)"
 c18_port=$((MOCK_PORT_BASE + 900))
@@ -2167,6 +2216,67 @@ print(" ".join(x for x in (one(s) for s in m["steps"]) if x) + " attempt_complet
   fi
   rm -rf "$c19i"; c19i_port=$((c19i_port + 1))
 done
+
+echo "--- 19k: each stage gets only the provider keys its uses lists (names the step files read); values never leak"
+c19k="$(mktemp -d)"; c19k_port=$((MOCK_PORT_BASE + 935))
+c19k_m="$c19k/manifest.json"
+python3 - "$c19_manifest" "$c19k_m" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+uses = {"a": {"tools": ["ffmpeg"], "providers": [["heygen", "elevenlabs"]], "optionalProviders": ["gemini"]},
+        "c": {"tools": ["ffmpeg"]}}
+for s in m["steps"]:
+    if s["id"] in uses:
+        s["uses"] = uses[s["id"]]
+json.dump(m, open(sys.argv[2], "w"))
+PY
+c19_manifest_saved="$c19_manifest"; c19_manifest="$c19k_m"
+c19_setup "$c19k" "$c19k_port"
+c19_manifest="$c19_manifest_saved"
+kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
+python3 - "$c19k/queue.json" <<'PY'
+import json, sys
+q = json.load(open(sys.argv[1]))
+q[0]["providerKeys"] = [{"provider": "heygen", "value": "hg-PLANTED-c19k"},
+                        {"provider": "elevenlabs", "value": "el-PLANTED-c19k"},
+                        {"provider": "kie", "value": "kie-PLANTED-c19k"},
+                        {"provider": "gemini", "value": "gm-PLANTED-c19k"}]
+json.dump(q, open(sys.argv[1], "w"))
+PY
+c19_pid="$(CFW_MOCK_CONTROL_DIR="$c19_ctl" start_mock "$c19k/queue.json" "$c19_state" "$c19k_port")"
+c19_worker "$c19k" "$c19k_port" "FAKE_ENGINE_KEYS_DIR=$c19k/keys"
+kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
+c19k_a="$(tr '\n' ' ' < "$c19k/keys/a.keys" 2>/dev/null)"
+c19k_c="$(tr '\n' ' ' < "$c19k/keys/c.keys" 2>/dev/null)"
+c19k_leak="$(grep -rl 'PLANTED-c19k' "$c19k/worker.out" "$c19_ctl/reports.ndjson" "$c19k/cr-state" "$c19k/keys" 2>/dev/null | tr '\n' ' ')"
+if [[ "$c19k_a" == "ELEVENLABS_API_KEY GEMINI_API_KEY HEYGEN_API_KEY " && -z "$c19k_c" && -z "$c19k_leak" && "$(c19_completed "$c19k")" == "1" ]]; then
+  pass "harness: stage a got HeyGen + ElevenLabs + optional Gemini (not Kie); stage c got no key; no value in logs, reports or state"
+else
+  fail "harness: per-stage keys" "a='$c19k_a' c='$c19k_c' leak='$c19k_leak' completed=$(c19_completed "$c19k"); worker.out: $(tail -5 "$c19k/worker.out")"
+fi
+rm -rf "$c19k"
+
+echo "--- 19l: a manifest without uses → every stage still gets every delivered key (older recipes keep working)"
+c19l="$(mktemp -d)"; c19l_port=$((MOCK_PORT_BASE + 936))
+c19_setup "$c19l" "$c19l_port"
+kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
+python3 - "$c19l/queue.json" <<'PY'
+import json, sys
+q = json.load(open(sys.argv[1]))
+q[0]["providerKeys"] = [{"provider": "heygen", "value": "hg-PLANTED-c19l"}, {"provider": "kie", "value": "kie-PLANTED-c19l"}]
+json.dump(q, open(sys.argv[1], "w"))
+PY
+c19_pid="$(CFW_MOCK_CONTROL_DIR="$c19_ctl" start_mock "$c19l/queue.json" "$c19_state" "$c19l_port")"
+c19_worker "$c19l" "$c19l_port" "FAKE_ENGINE_KEYS_DIR=$c19l/keys"
+kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
+c19l_a="$(tr '\n' ' ' < "$c19l/keys/a.keys" 2>/dev/null)"
+c19l_c="$(tr '\n' ' ' < "$c19l/keys/c.keys" 2>/dev/null)"
+if [[ "$c19l_a" == "HEYGEN_API_KEY KIE_AI_API_KEY " && "$c19l_c" == "HEYGEN_API_KEY KIE_AI_API_KEY " && "$(c19_completed "$c19l")" == "1" ]]; then
+  pass "harness: no uses → both stages got every delivered key under the step files' names"
+else
+  fail "harness: no-uses keys" "a='$c19l_a' c='$c19l_c' completed=$(c19_completed "$c19l"); worker.out: $(tail -5 "$c19l/worker.out")"
+fi
+rm -rf "$c19l"
 
 echo "=== Case 19j: harness reads the claim's owner files in CFW's array shape (and the old dict shape) ==="
 # CFW sends CONTRACTS §7 arrays: inputs [{inputId, items:[{kind,url}]}]. The

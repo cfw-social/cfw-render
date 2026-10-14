@@ -1,0 +1,239 @@
+{
+  "manifestFormat": 1,
+  "recipe": "p-carousel",
+  "recipeVersion": "2026.10.2",
+  "label": "Carousel",
+  "deliverable": {
+    "kind": "image",
+    "aspect": "4:5",
+    "width": 1080,
+    "height": 1350
+  },
+  "needs": {
+    "os": [
+      "macos"
+    ],
+    "engines": [
+      "codex",
+      "claude-code"
+    ],
+    "tools": [
+      "node>=22",
+      "npx",
+      "chromium",
+      "ffmpeg",
+      "imagemagick",
+      "python3"
+    ],
+    "providers": []
+  },
+  "inputs": [
+    {
+      "id": "topic",
+      "label": "Carousel topic",
+      "kinds": [
+        "text"
+      ],
+      "required": true,
+      "count": {
+        "min": 1,
+        "max": 1
+      },
+      "neededAt": "start",
+      "prompt": "What is this carousel about? One or two sentences: the hook, the insight and who it is for."
+    },
+    {
+      "id": "num_slides",
+      "label": "Number of slides",
+      "kinds": [
+        "choice"
+      ],
+      "required": false,
+      "count": {
+        "min": 0,
+        "max": 1
+      },
+      "neededAt": {
+        "step": "outline"
+      },
+      "prompt": "How many slides? (cover + content + closing slide)",
+      "choices": [
+        "3",
+        "5",
+        "7",
+        "10"
+      ]
+    },
+    {
+      "id": "aspect_ratio",
+      "label": "Slide shape",
+      "kinds": [
+        "choice"
+      ],
+      "required": false,
+      "count": {
+        "min": 0,
+        "max": 1
+      },
+      "neededAt": {
+        "step": "author_slides"
+      },
+      "prompt": "Which slide shape?",
+      "choices": [
+        {
+          "id": "portrait_4_5",
+          "label": "Portrait 4:5 (1080×1350)"
+        },
+        {
+          "id": "square_1_1",
+          "label": "Square 1:1 (1080×1080)"
+        }
+      ]
+    },
+    {
+      "id": "cta",
+      "label": "Call to action",
+      "kinds": [
+        "text"
+      ],
+      "required": false,
+      "count": {
+        "min": 0,
+        "max": 1
+      },
+      "neededAt": {
+        "step": "author_slides"
+      },
+      "default": "brand"
+    }
+  ],
+  "steps": [
+    {
+      "id": "outline",
+      "label": "Outline the slides",
+      "weight": 15,
+      "runsOn": "computer",
+      "uses": { "tools": ["python3"] },
+      "when": "always",
+      "instructions": "steps/01-outline.md",
+      "saves": [
+        {
+          "id": "outline",
+          "kind": "json",
+          "preview": false
+        }
+      ],
+      "checks": [
+        {
+          "id": "outline_shape",
+          "label": "Outline has a cover, content slides and a closing slide"
+        }
+      ],
+      "maxCheckRetries": 2,
+      "canAsk": [
+        "topic"
+      ]
+    },
+    {
+      "id": "author_slides",
+      "label": "Write copy and author the HTML",
+      "weight": 25,
+      "runsOn": "computer",
+      "uses": { "tools": ["python3"] },
+      "when": "always",
+      "instructions": "steps/02-author-slides.md",
+      "saves": [
+        {
+          "id": "slide_copy",
+          "kind": "json",
+          "preview": false
+        },
+        {
+          "id": "carousel_html",
+          "kind": "text",
+          "preview": false
+        }
+      ],
+      "checks": [
+        {
+          "id": "html_has_slides",
+          "label": "HTML has one section per outlined slide"
+        },
+        {
+          "id": "brand_vars_set",
+          "label": "Brand palette is injected into the CSS vars"
+        }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "render_slides",
+      "label": "Render and vision-check every slide",
+      "weight": 40,
+      "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "imagemagick", "node>=22", "npx", "chromium"] },
+      "when": "always",
+      "instructions": "steps/03-render-slides.md",
+      "saves": [
+        {
+          "id": "cover",
+          "kind": "image",
+          "preview": true
+        },
+        {
+          "id": "slide_sheet",
+          "kind": "image",
+          "preview": true
+        },
+        {
+          "id": "slides",
+          "kind": "json",
+          "preview": false
+        },
+        {
+          "id": "qa_report",
+          "kind": "json",
+          "preview": false
+        }
+      ],
+      "checks": [
+        {
+          "id": "slide_dims",
+          "label": "Every slide is exactly the chosen canvas"
+        },
+        {
+          "id": "slide_not_blank",
+          "label": "No slide is blank or black"
+        },
+        {
+          "id": "vision_qa_pass",
+          "label": "Every slide passed the vision QA gate"
+        }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "captions",
+      "label": "Write the post captions",
+      "weight": 20,
+      "runsOn": "computer",
+      "uses": { "tools": ["python3"] },
+      "when": "always",
+      "instructions": "steps/04-captions.md",
+      "saves": [
+        {
+          "id": "captions",
+          "kind": "json",
+          "preview": false
+        }
+      ],
+      "checks": [
+        {
+          "id": "captions_per_target",
+          "label": "One non-blank caption per target platform"
+        }
+      ],
+      "maxCheckRetries": 2
+    }
+  ]
+}
