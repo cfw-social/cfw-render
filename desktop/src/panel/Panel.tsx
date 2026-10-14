@@ -143,7 +143,11 @@ export function Panel({ payload, actions, clock = Date.now }: { payload: StatusP
 
       <footer className="flex items-center gap-2 border-t border-border bg-[#fcfcfc] px-4 py-3">
         {h.kind !== "paused" && h.kind !== "notRunning" && (
-          <Button icon="pause" className="flex-1" onClick={() => actions.setPaused(true)}>{copy.action.pause}</Button>
+          h.kind === "offline" && m.paused ? (
+            <Button icon="play" className="flex-1" onClick={() => actions.setPaused(false)}>{copy.action.resume}</Button>
+          ) : (
+            <Button icon="pause" className="flex-1" onClick={() => actions.setPaused(true)}>{copy.action.pause}</Button>
+          )
         )}
         <Button variant="primary" className="flex-1" onClick={() => actions.openMain("renders")}>{copy.action.open}</Button>
       </footer>

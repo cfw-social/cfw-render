@@ -114,6 +114,7 @@ export function Rail({
   web,
   slug,
   health,
+  paused,
   computerName,
   onSection,
   onPickBrand,
@@ -125,6 +126,7 @@ export function Rail({
   web: WebBrands | null;
   slug: string | null;
   health: Health;
+  paused: boolean;
   computerName: string | null;
   onSection: (s: SectionId) => void;
   onPickBrand: (slug: string) => void;
@@ -150,7 +152,6 @@ export function Rail({
     );
   };
   const providerTrouble = health.kind === "limit" || health.kind === "noProvider";
-  const paused = health.kind === "paused" || health.kind === "battery";
 
   return (
     <aside className="flex h-full w-[208px] shrink-0 flex-col border-r border-border bg-card">

@@ -26,7 +26,7 @@ export function Renders({ payload, actions, clock = Date.now }: { payload: Statu
   const h = health(m);
   const brands = (payload?.status?.brands ?? []).filter((b) => b.serving && b.name).map((b) => b.name as string);
   const now = h.kind === "notRunning" ? undefined : m.now[0];
-  const paused = h.kind === "paused" || h.kind === "battery";
+  const paused = m.paused;
 
   return (
     <div className="mx-auto flex w-full max-w-[920px] flex-col gap-5 px-8 pt-4 pb-10">

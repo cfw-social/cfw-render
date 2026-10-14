@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 
 const h = vi.hoisted(() => ({
   listeners: {} as Record<string, (e: { payload: unknown }) => void>,
@@ -98,6 +98,21 @@ describe("main window", () => {
     expect(current()).toBe("assistant");
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(current()).toBe("settings");
+  });
+
+  it.each(["rail", "renders"] as const)("offline owner pause: %s still offers Resume and clears the local pause", async (surface) => {
+    const status = { ...workingStatus, cfwReach: "unreachable" as const, computer: { ...workingStatus.computer, paused: true, pauseReason: "owner" } };
+    h.invoke.mockImplementation((cmd: string) => Promise.resolve(cmd === "get_status" ? payload(status) : cmd === "web_brands" ? BRANDS : null));
+    render(<MainWindow clock={() => NOW} />);
+    expect(await screen.findByText("Offline")).toBeTruthy();
+    if (surface === "renders") {
+      fireEvent.click(screen.getByRole("button", { name: "Renders" }));
+      expect(screen.getByRole("alert").textContent).toContain("Can't reach CFW");
+    }
+    const controls = within(screen.getByRole(surface === "rail" ? "complementary" : "main"));
+    expect(controls.queryByRole("button", { name: "Pause this Mac" })).toBeNull();
+    fireEvent.click(controls.getByRole("button", { name: "Resume this Mac" }));
+    expect(h.invoke).toHaveBeenCalledWith("set_paused", { paused: false });
   });
 
   it("rail footer shows this Mac's state and pauses it", async () => {

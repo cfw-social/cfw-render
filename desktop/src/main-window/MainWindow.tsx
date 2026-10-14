@@ -125,7 +125,7 @@ export function MainWindow({ clock = Date.now }: { clock?: () => number } = {}) 
 
   const m = panelModel(payload, clock());
   const h = health(m);
-  const paused = h.kind === "paused" || h.kind === "battery";
+  const paused = m.paused;
 
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground">
@@ -134,6 +134,7 @@ export function MainWindow({ clock = Date.now }: { clock?: () => number } = {}) 
         web={web}
         slug={slug}
         health={h}
+        paused={paused}
         computerName={payload?.status?.computer?.name ?? null}
         onSection={(s) => go(s)}
         onPickBrand={(s) => {
