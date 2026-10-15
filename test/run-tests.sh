@@ -15,6 +15,43 @@ PASS_COUNT=0
 pass() { printf '  PASS  %s\n' "$1"; PASS_COUNT=$((PASS_COUNT+1)); }
 fail() { printf '  FAIL  %s — %s\n' "$1" "$2"; FAILURES=$((FAILURES+1)); }
 
+# Reporting instructions are tested independently of the deferred checkpoint runtime.
+if python3 - "$REPO_DIR" <<'PY'
+import json, os, pathlib, subprocess, sys, tempfile
+repo = pathlib.Path(sys.argv[1])
+with tempfile.TemporaryDirectory(prefix='cfw-reporting-prompts-') as tmp:
+    work = pathlib.Path(tmp)
+    manifests = sorted((repo/'skills').glob('p-*/manifest.json'))
+    assert len(manifests) == 13
+    for path in manifests:
+        m = json.loads(path.read_text())
+        assert 'RECIPE-STAGE-REPORTING.md' in (path.parent/'SKILL.md').read_text()
+        for stage in m['steps']:
+            if stage.get('runsOn') == 'server':
+                continue
+            (work/'order.json').write_text(json.dumps({'manifest':m,'taskOrder':{'intent':'synthetic'}}))
+            p = subprocess.run(['bash','-c', '''source "$REPO/bin/cfw-render-harness.sh"
+CR_H_RECIPE_DIR="$RECIPE"
+cr_h_build_prompt "$STAGE" "$WORK" "$WORK/order.json"
+'''], env={**os.environ,'REPO':str(repo),'RECIPE':str(path.parent),'STAGE':stage['id'],'WORK':str(work)},
+                capture_output=True,text=True)
+            assert p.returncode == 0, (m['recipe'], stage['id'], p.stderr)
+            prompt = (work/'prompt.md').read_text()
+            assert 'The harness alone calls `report_render_step`' in prompt
+            assert 'The harness uploads exactly these files, then runs' not in prompt
+            assert 'missing validators, missing evidence' in prompt
+            assert (path.parent/stage['instructions']).read_text() in prompt
+    longform = json.loads((repo/'skills/p-longform/manifest.json').read_text())
+    visuals = next(s for s in longform['steps'] if s['id'] == 'build_visuals')
+    assert visuals['uses']['optionalProviders'] == ['kie']
+    assert 'kie' not in longform['needs']['providers']
+PY
+then
+  pass "all 13 recipe entry points and real managed prompts carry single-owner reporting; Longform Kie stays optional"
+else
+  fail "recipe reporting instructions" "entry point, prompt ownership or optional-provider contract failed"
+fi
+
 FAKE_BIN="$(mktemp -d)"
 cp "$TEST_DIR/fake-claude.sh" "$FAKE_BIN/claude"
 chmod +x "$FAKE_BIN/claude"
@@ -634,7 +671,7 @@ else
 fi
 if ! pgrep -f "cfw-render" >/dev/null 2>&1 || true; then :; fi
 
-echo "=== Case 4e: block carries `needs` (CFW-146) ==="
+echo '=== Case 4e: block carries `needs` (CFW-146) ==='
 run_case "needs-ingredient" "needs-ingredient" "order_fixture order-needs-1 brand-1 video" true
 needs_check="$(python3 -c '
 import json, sys
@@ -1778,7 +1815,7 @@ for c16_r in $c16_batch; do
     p-ai-image|p-ai-character) c16_prov_want="kie" ;;
     p-reels-faceless)     c16_prov_want="elevenlabs" ;;
     p-clone-reel)         c16_prov_want="elevenlabs,heygen" ;;
-    p-longform)           c16_prov_want="elevenlabs,heygen,kie" ;;
+    p-longform)           c16_prov_want="elevenlabs,heygen" ;;
     *)                    c16_prov_want="" ;;
   esac
   if [[ "$c16_prov" == "$c16_prov_want" ]]; then

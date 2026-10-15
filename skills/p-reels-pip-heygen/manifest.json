@@ -26,7 +26,8 @@
       "node>=22",
       "npx",
       "chromium",
-      "python3"
+      "python3",
+      "curl"
     ],
     "providers": [
       "heygen"
@@ -133,6 +134,7 @@
       "label": "Generate the avatar video",
       "weight": 10,
       "runsOn": "computer",
+      "uses": { "tools": ["curl", "ffmpeg", "python3"], "providers": [["heygen"]] },
       "when": "always",
       "instructions": "steps/00-generate-avatar.md",
       "saves": [
@@ -164,6 +166,7 @@
       "label": "Prepare footage",
       "weight": 9,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg"] },
       "when": "always",
       "instructions": "steps/01-prepare-footage.md",
       "saves": [
@@ -190,6 +193,7 @@
       "label": "Transcribe",
       "weight": 9,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "python3", "npx"] },
       "when": "always",
       "instructions": "steps/02-transcribe.md",
       "saves": [
@@ -212,6 +216,7 @@
       "label": "Plan the background beats",
       "weight": 14,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "node>=22", "python3"] },
       "when": "always",
       "instructions": "steps/03-plan-beats.md",
       "saves": [
@@ -237,6 +242,7 @@
       "label": "Build the background track",
       "weight": 26,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "node>=22", "npx", "chromium"] },
       "when": "always",
       "instructions": "steps/04-build-background.md",
       "saves": [
@@ -263,6 +269,7 @@
       "label": "Composite the PIP reel",
       "weight": 18,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "node>=22", "npx", "chromium"] },
       "when": "always",
       "instructions": "steps/05-composite.md",
       "saves": [
@@ -289,6 +296,7 @@
       "label": "Final checks and captions",
       "weight": 14,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "python3"] },
       "when": "always",
       "instructions": "steps/06-final-checks.md",
       "saves": [

@@ -4,14 +4,22 @@ Every recipe can declare, in one machine-readable file, its ordered steps and
 the inputs it needs from the user. CFW uses it to show "step 3 of 7", to ask
 for missing inputs before a computer ever connects, and to resume a run at a
 step. This page is for recipe authors. The contract is
-`plans/m1/CONTRACTS.md` sections 2–3 in the cfw-social repo; this page copies
-it and does not add fields.
+`plans/m1/CONTRACTS.md` sections 2–3 and the additive local-checkpoint
+contract in `plans/m2/CONTRACTS.md` section 10 in the cfw-social repo.
 
 - **File:** `skills/<recipe>/manifest.json` (source of truth, one per recipe).
 - **Schema:** `schemas/recipe-manifest.v1.schema.json` (JSON Schema 2020-12).
 - **Validator:** `python3 scripts/validate-manifests.py` (also run by `scripts/lint.sh`).
 - **Reference manifest:** `skills/p-reels-spotlight/manifest.json` (Spotlight reel).
 - **Recipes without a manifest** keep today's behaviour exactly (Director prompt, five generic stages).
+
+## Reporting ownership and readiness
+
+Read [Recipe stage reporting](RECIPE-STAGE-REPORTING.md) for managed versus
+standalone execution, single-owner MCP reporting, failed gates and interruption
+handling. Declared checks and catalog diagrams are not proof of executable
+validators. See [coverage](RECIPE-REPORTING-COVERAGE.md) for tested boundaries and
+blocked recipes. No display manifest is enabled by these documents.
 
 ## Fields
 
@@ -39,7 +47,7 @@ it and does not add fields.
 | `steps[].runsOn` | `computer` or `server` (`server` steps can also run on a computer under D43; M1 runs them on the server only). |
 | `steps[].when` | `"always"`, `{ "inputPresent": "<inputId>" }` or `{ "alternative": "<alternativeId>" }`. A step whose condition is false is reported `step_skipped`. |
 | `steps[].instructions` | Path relative to the skill folder. Holds only this step's instructions (D45). Required for `computer` steps; the file must exist. |
-| `steps[].saves` | Outputs uploaded to CFW Media when the step completes, so another computer can resume after it (D30). `preview: true` shows it in run details. |
+| `steps[].saves` | Declared outputs. Legacy mode uploads them to CFW Media for cross-computer recovery. Negotiated local mode keeps bytes on the assigned computer and reports metadata only; `preview: true` does not make a file a final deliverable or a web preview. |
 | `steps[].checks` | Run by the harness after the step. The step only completes when every check passes. |
 | `steps[].maxCheckRetries` | How many times the harness reruns the step after a failed check before failing the attempt. |
 | `steps[].canAsk` | Input ids this step may raise a mid-run ask for. |
@@ -83,6 +91,13 @@ Exit `0` means every manifest is valid; `1` lists each error as
 `<path>: <message>`. The validator is standard-library Python; if the
 `jsonschema` package happens to be installed it is used as an extra layer, but
 every rule is also hand-checked so the result is the same without it.
+
+## Deferred local recovery
+
+The separate `local-checkpoints-v1` runtime, validator adapter, `finalOutputs`
+schema and Spotlight 2026.10.4 contract are not included in this isolated
+UI/reporting release. See the coverage record for the preserved broader-branch
+evidence and remaining execution/delivery blockers.
 
 ## Adding a manifest to another recipe
 

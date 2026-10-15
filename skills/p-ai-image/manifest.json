@@ -117,6 +117,7 @@
       "label": "Write the generation prompts",
       "weight": 20,
       "runsOn": "computer",
+      "uses": { "tools": ["python3"] },
       "when": "always",
       "instructions": "steps/01-plan-prompts.md",
       "saves": [
@@ -142,6 +143,7 @@
       "label": "Generate the images",
       "weight": 50,
       "runsOn": "computer",
+      "uses": { "tools": ["curl", "ffmpeg", "python3"], "providers": [["kie"]] },
       "when": "always",
       "instructions": "steps/02-generate.md",
       "saves": [
@@ -178,6 +180,7 @@
       "label": "Vision QA and final checks",
       "weight": 30,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "imagemagick", "python3"] },
       "when": "always",
       "instructions": "steps/03-qa-gate.md",
       "saves": [
