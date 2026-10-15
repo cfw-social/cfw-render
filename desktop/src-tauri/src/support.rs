@@ -26,8 +26,8 @@ fn rules() -> &'static [(Regex, &'static str)] {
     static R: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
     R.get_or_init(|| {
         [
-            (r"cfw_render_[A-Za-z0-9_]+", "cfw_render_[redacted]"),
-            (r"cfw_[A-Za-z0-9_]{8,}", "cfw_[redacted]"),
+            (r"cfw_render_[A-Za-z0-9_-]+", "cfw_render_[redacted]"),
+            (r"cfw_[A-Za-z0-9_-]{8,}", "cfw_[redacted]"),
             (r"sk-ant-[A-Za-z0-9_-]{16,}", "sk-ant-[redacted]"),
             (r"sk-[A-Za-z0-9_-]{16,}", "sk-[redacted]"),
             (r"AIza[0-9A-Za-z_-]{30,}", "AIza[redacted]"),

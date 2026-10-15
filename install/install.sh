@@ -159,7 +159,8 @@ if (( FROM_APP )); then
     fi
     app_fail connecting 5 "No key was given" "Paste the key from CFW Settings"
   fi
-  if ! [[ "$BRAND_KEY" =~ ^cfw_[A-Za-z0-9_]+$ ]]; then
+  # CFW keys are base64url: `-` is a normal key character.
+  if ! [[ "$BRAND_KEY" =~ ^cfw_[A-Za-z0-9_-]+$ ]]; then
     BRAND_KEY=""
     app_fail connecting 5 "That key does not look right" "Copy the key again from CFW Settings"
   fi

@@ -4777,7 +4777,8 @@ print(" ".join(f"{(o:=json.loads(l))["step"]}:{o["state"]}" for l in open(sys.ar
 
 echo "=== Case M3-04a-1/2: --from-app happy path; brand key never leaks ==="
 m4a="$(mktemp -d)"
-m4a_key="cfw_m4brand$(python3 -c 'import secrets;print(secrets.token_hex(8))')"
+# Real CFW keys are base64url (~40% contain '-'): always include one here.
+m4a_key="cfw_m4-brand$(python3 -c 'import secrets;print(secrets.token_hex(8))')"
 printf '%s\n' "$m4a_key" > "$m4a/stdin"
 m4_setup "$m4a" $((MOCK_PORT_BASE + 970))
 ( for _ in $(seq 1 600); do ps -axo args 2>/dev/null; sleep 0.05; done ) > "$m4a/ps.log" 2>/dev/null &
@@ -4802,7 +4803,7 @@ if [[ "$m4_rc" == "0" && "$m4a_steps" == "$m4a_want" ]]; then
 else
   fail "from-app happy path" "rc=$m4_rc steps=$m4a_steps err=$(tail -15 "$m4a/err.log")"
 fi
-if grep -q '^CFW_RENDER_WORKER_KEY=cfw_render_mockexchanged000$' "$m4a_envf" 2>/dev/null && [[ "$m4a_mode" == "600" ]]; then
+if grep -q '^CFW_RENDER_WORKER_KEY=cfw_render_mock-brand_xchg-0Ab9_Zq1$' "$m4a_envf" 2>/dev/null && [[ "$m4a_mode" == "600" ]]; then
   pass "from-app: env file holds the exchanged render key, mode 600"
 else
   fail "from-app env file" "mode=$m4a_mode"

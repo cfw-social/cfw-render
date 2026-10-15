@@ -577,7 +577,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": "bad_request"}, 400)
                 return
             CALLS_LOG.write(json.dumps({"tool": "exchange", "args": {"deviceName": dn}, "ok": True}) + "\n")
-            self._send_json({"key": {"plain": "cfw_render_mockexchanged000", "id": "rk_1"}}, 201)
+            self._send_json({"key": {"plain": "cfw_render_mock-brand_xchg-0Ab9_Zq1", "id": "rk_1"}}, 201)
             return
 
         if self.path == "/api/v1/mcp":

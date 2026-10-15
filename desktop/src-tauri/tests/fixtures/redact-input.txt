@@ -8,3 +8,5 @@ url https://r2.example.com/o.mp4?X-Amz=1&sig=abc123&token=zzz&width=720#frag
 also https://app.cfw.social/cb?code=xyz&state=keep&password=hunter2
 path /Users/vasanth/CFW Render/logs/cfw-render.log and /Users/Shared stays
 plain line with no secrets
+dashed brand key cfw_Ab3-xY_9kLmN-pQrStUv end
+dashed render key cfw_render_my-brand_Zq-1_abcDEF end

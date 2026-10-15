@@ -25,7 +25,11 @@ describe("setupModel", () => {
   it("brand key shape matches the app's own check", () => {
     expect(looksLikeBrandKey(" cfw_abcdefgh ")).toBe(true);
     expect(looksLikeBrandKey("cfw_short")).toBe(false);
-    expect(looksLikeBrandKey("cfw_abc-defgh")).toBe(false);
+    // Real CFW keys are base64url, so '-' is accepted (it was wrongly refused).
+    expect(looksLikeBrandKey("cfw_abc-defgh")).toBe(true);
+    expect(looksLikeBrandKey("cfw_Ab3-xY_9kLmN-pQrStUvWx-1234567")).toBe(true);
+    expect(looksLikeBrandKey("cfw_abc def gh")).toBe(false);
+    expect(looksLikeBrandKey("cfw_abc+defgh/ij")).toBe(false);
     expect(looksLikeBrandKey("sk-abcdefghijkl")).toBe(false);
   });
 });
