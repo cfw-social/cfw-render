@@ -27,7 +27,8 @@
       "node>=22",
       "npx",
       "chromium",
-      "python3"
+      "python3",
+      "curl"
     ],
     "providers": [
       "heygen"
@@ -116,6 +117,7 @@
       "label": "Generate the avatar video",
       "weight": 10,
       "runsOn": "computer",
+      "uses": { "tools": ["curl", "ffmpeg", "python3"], "providers": [["heygen"]] },
       "when": "always",
       "instructions": "steps/00-generate-avatar.md",
       "saves": [
@@ -147,6 +149,7 @@
       "label": "Prepare footage",
       "weight": 9,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg"] },
       "when": "always",
       "instructions": "steps/01-prepare-footage.md",
       "saves": [
@@ -173,6 +176,7 @@
       "label": "Transcribe",
       "weight": 9,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "python3"], "optionalProviders": ["gemini"] },
       "when": "always",
       "instructions": "steps/02-transcribe.md",
       "saves": [
@@ -195,6 +199,7 @@
       "label": "Plan the edit",
       "weight": 14,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "python3"] },
       "when": "always",
       "instructions": "steps/03-plan-edit.md",
       "saves": [
@@ -217,6 +222,7 @@
       "label": "Plan b-roll",
       "weight": 4,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "node>=22", "python3"] },
       "when": {
         "inputPresent": "broll"
       },
@@ -244,6 +250,7 @@
       "label": "Render scenes",
       "weight": 31,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "node>=22", "npx", "chromium"] },
       "when": "always",
       "instructions": "steps/05-render-scenes.md",
       "saves": [
@@ -266,6 +273,7 @@
       "label": "Assemble",
       "weight": 14,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "imagemagick", "node>=22", "npx", "chromium"] },
       "when": "always",
       "instructions": "steps/06-assemble.md",
       "saves": [
@@ -288,6 +296,7 @@
       "label": "Final checks and captions",
       "weight": 9,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "python3"] },
       "when": "always",
       "instructions": "steps/07-final-checks.md",
       "saves": [

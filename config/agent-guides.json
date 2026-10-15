@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "documents": [
+    {
+      "path": "lib/render-debug.md",
+      "url": "https://app.cfw.social/assets/guides/render-debug.md",
+      "source": "src/lib/agent-library/content/render-debug.md",
+      "sha256": "72d1c62c15727e81d653a88348adef4a14e34685f73b205e80d815a1d7fdd794"
+    }
+  ]
+}

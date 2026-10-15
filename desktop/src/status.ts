@@ -33,7 +33,18 @@ export interface NowItem {
   startedAt?: string | null;
 }
 export interface NextItem { shortCode?: string | null; brand?: string | null; recipe?: string | null }
-export interface RecentItem { shortCode?: string | null; brand?: string | null; result?: RunResult | string; finishedAt?: string | null }
+export interface RecentItem {
+  shortCode?: string | null;
+  brand?: string | null;
+  result?: RunResult | string;
+  finishedAt?: string | null;
+  orderId?: string | null;
+  attemptId?: string | null;
+  brandSlug?: string | null;
+  recipe?: string | null;
+  startedAt?: string | null;
+  directorLog?: string | null;
+}
 
 export interface StatusFile {
   schema: number;

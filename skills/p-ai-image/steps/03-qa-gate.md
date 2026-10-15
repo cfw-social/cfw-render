@@ -15,8 +15,11 @@ fails is a regeneration job for the previous step, not something to deliver.
 
 ## You must produce
 
-- `saves/final.png` — the delivered image (the best-scoring one; with a batch of 1 it is
-  `image_1`), exact canvas.
+- `saves/final.png` — a selected preview (with a batch of 1 it is `image_1`), exact
+  canvas. It does not deliver the batch. The current manifest lacks ordered
+  individual-image final outputs: tracked delivery remains blocked. Standalone
+  delivery retains every passing full-resolution image in prompt order, never
+  only this preview or the contact sheet.
 - `saves/qa_report.json` — `{ "final_n": 1, "images": [ { "n", "verdict": "PASS",
   "scores": { "subject_rendered": "PASS", "no_artifacts": "PASS", "legible_text": "PASS",
   "palette_premium": "PASS", "composition_quality": "PASS" }, "notes": [] } ] }`.

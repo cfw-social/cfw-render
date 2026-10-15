@@ -15,6 +15,1017 @@ PASS_COUNT=0
 pass() { printf '  PASS  %s\n' "$1"; PASS_COUNT=$((PASS_COUNT+1)); }
 fail() { printf '  FAIL  %s — %s\n' "$1" "$2"; FAILURES=$((FAILURES+1)); }
 
+# Case 19 local checkpoint regressions can run alone without services/providers.
+c19_local_checkpoints() {
+  python3 - "$REPO_DIR" <<'PY'
+import copy, json, os, pathlib, shutil, subprocess, sys, tempfile, time
+repo = pathlib.Path(sys.argv[1])
+helper = repo / 'bin/cfw-render-checkpoint.py'
+# Real installed prompt assembly must carry reporting ownership, not only SKILL.md.
+with tempfile.TemporaryDirectory(prefix='cfw-reporting-prompts-') as tmp:
+    work = pathlib.Path(tmp)
+    manifests = sorted((repo/'skills').glob('p-*/manifest.json'))
+    assert len(manifests) == 13
+    for path in manifests:
+        m = json.loads(path.read_text())
+        assert 'RECIPE-STAGE-REPORTING.md' in (path.parent/'SKILL.md').read_text()
+        for stage in m['steps']:
+            if stage.get('runsOn') == 'server':
+                continue
+            (work/'order.json').write_text(json.dumps({'manifest':m,'taskOrder':{'intent':'synthetic'}}))
+            p = subprocess.run(['bash','-c', '''source "$REPO/bin/cfw-render-harness.sh"
+CR_H_RECIPE_DIR="$RECIPE"
+cr_h_build_prompt "$STAGE" "$WORK" "$WORK/order.json"
+'''], env={**os.environ,'REPO':str(repo),'RECIPE':str(path.parent),'STAGE':stage['id'],'WORK':str(work)},
+                capture_output=True,text=True)
+            assert p.returncode == 0, (m['recipe'], stage['id'], p.stderr)
+            prompt = (work/'prompt.md').read_text()
+            assert 'The harness alone calls `report_render_step`' in prompt
+            assert 'The harness uploads exactly these files, then runs' not in prompt
+            assert 'missing validators, missing evidence' in prompt
+            assert (path.parent/stage['instructions']).read_text() in prompt
+    print('PASS: all 13 recipe entry points and real managed prompts carry single-owner reporting rules')
+# Real completed commands must close their pipes, not leave watchdog sleepers.
+# Repeat because an instant `true` could race before the old sleeper started.
+for _ in range(5):
+    timer = subprocess.run(['bash','-c',
+        'source "$1"; cr_h_run_with_timeout 4 "$2" -c "sum(range(1000000))"',
+        'timer-check',str(repo/'bin/cfw-render-harness.sh'),sys.executable],
+        capture_output=True,text=True,timeout=2)
+    assert timer.returncode == 0, timer.stderr
+expired = subprocess.run(['bash','-c',
+    'source "$1"; cr_h_run_with_timeout 0.05 "$2" -c "import time; time.sleep(3)"',
+    'timer-check',str(repo/'bin/cfw-render-harness.sh'),sys.executable],
+    capture_output=True,text=True,timeout=2)
+assert expired.returncode == 143, expired.returncode
+manifest = json.loads((repo / 'test/fixtures/manifests/harness-3step/manifest.json').read_text())
+manifest['finalOutputs'] = [{'stepId':'c', 'saveId':'z', 'role':'deliverable'}]
+script = r'''
+set -uo pipefail
+source "$REPO/bin/cfw-render-lib.sh"
+source "$REPO/bin/cfw-render-engine.sh"
+source "$REPO/bin/cfw-render-harness.sh"
+cr_engine_detect() { echo codex; }
+cr_engine_limit_detect() { return 1; }
+cr_engine_limit_until() { echo ''; }
+cr_harness_heartbeat_start() { :; }
+cr_harness_heartbeat_stop() { :; }
+cr_h_run_with_timeout() { shift; "$@"; }
+cr_report_step() {
+  python3 -c 'import json,sys
+extra=json.loads(sys.argv[4])
+if sys.argv[3]=="step_completed":
+    stage=next(s for s in json.load(open(sys.argv[5]))["manifest"]["steps"] if s["id"]==extra["stepId"])
+    declared=sorted(c["id"] for c in stage.get("checks",[]))
+    assert sorted(c["id"] for c in extra.get("checks",[]))==declared
+    assert all(c["passed"] for c in extra.get("checks",[]))
+print(json.dumps({"attemptId":sys.argv[1],"seq":int(sys.argv[2]),"event":sys.argv[3],"extra":extra}))' "$3" "$4" "$5" "$6" "$ORDER_DIR/order.json" >> "$TEST_ROOT/reports.ndjson" || return 1
+  if [[ "${LOSE_ACK:-}" == "$5" && ! -e "$TEST_ROOT/lost-ack" ]]; then
+    touch "$TEST_ROOT/lost-ack"
+    return 75
+  fi
+  if [[ "${STOP_AFTER_START:-0}" == 1 && "$5" == step_started ]]; then
+    printf '{"ok":true,"directive":"stop_after_step"}'; return 0
+  fi
+  printf '{"ok":true,"directive":"continue"}'
+}
+cr_h_upload_with_retry() {
+  if [[ "${LEGACY_MODE:-0}" == 1 ]]; then
+    echo legacy-upload >> "$TEST_ROOT/network"; printf 'https://media.cfw.social/final.mp4'; return 0
+  fi
+  echo unexpected-upload >> "$TEST_ROOT/network"; return 1
+}
+cr_h_restore_saved_outputs() { echo unexpected-download >> "$TEST_ROOT/network"; return 1; }
+cr_mcp_call_soft() { echo "$1" >> "$TEST_ROOT/blocks"; printf '{"ok":true}'; }
+cr_harness_run "$ORDER_DIR/order.json" "$ORDER_DIR" "$TEST_RECIPE"
+'''
+with tempfile.TemporaryDirectory(prefix='cfw-checkpoint-test-') as tmp:
+    root = pathlib.Path(tmp).resolve()
+    # Explicit fixture validator; production never treats fake bytes as media.
+    fixture_recipe = root/'fixture-recipe'
+    shutil.copytree(repo/'test/fixtures/manifests/harness-3step', fixture_recipe)
+    (fixture_recipe/'checks').mkdir(exist_ok=True)
+    (fixture_recipe/'checks/z_ok.sh').write_text('set -euo pipefail\n[[ -s "$1/saves/z.mp4" ]]\n')
+    fixture_video = root/'fixture.mp4'
+    subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','color=white:s=16x16:d=0.1',
+                    '-c:v','libx264','-pix_fmt','yuv420p',str(fixture_video)],check=True)
+    fixture_engine = root/'fixture-engine.sh'
+    fixture_engine.write_text('''#!/bin/bash
+set -euo pipefail
+bash "$REPO/test/fake-engine.sh" "$@"
+for f in saves/*; do
+  [[ -s "$f" ]] || continue
+  case "$f" in
+    *.json) printf '{"fixture":true}' > "$f" ;;
+    *.mp4) cp "$TEST_ROOT/fixture.mp4" "$f" ;;
+  esac
+done
+''')
+    fixture_engine.chmod(0o700)
+    def order_dir(name='job'):
+        d = root / name
+        d.mkdir(exist_ok=True)
+        return d
+    def claim(d, attempt='att1', action='start', generation=0, resume='a'):
+        o = {'id':d.name, 'brandId':'brand1', 'recipeVersion':'1.0.0', 'manifest':copy.deepcopy(manifest),
+             'attempt':{'id':attempt}, 'checkpoint':{'mode':'local-v1','generation':generation,'action':action},
+             'resumeFromStepId':resume, 'taskOrder':{}}
+        (d / 'order.json').write_text(json.dumps(o))
+        return o
+    def run(d, expected=0, **env):
+        p = subprocess.run(['bash','-c',script], capture_output=True, text=True,
+            env={**os.environ, 'REPO':str(repo), 'TEST_ROOT':str(root), 'ORDER_DIR':str(d),
+                 'CFW_WORKER_ID':'install-A', 'CFW_RENDER_ENGINE_CMD':str(fixture_engine),
+                 'TEST_RECIPE':str(fixture_recipe), 'CFW_RENDER_STATE_DIR':str(root/'state'), **env})
+        assert p.returncode == expected, (p.returncode, expected, p.stderr[-3000:])
+        return p
+    def cp(d, cmd, *args, worker='install-A', expected=0):
+        p = subprocess.run([sys.executable,str(helper),cmd,str(d),worker,*args], capture_output=True,text=True)
+        assert p.returncode == expected, (cmd,p.returncode,expected,p.stderr)
+        return json.loads(p.stdout) if p.returncode == 0 else None
+    def count(d, step):
+        return int((d/'steps'/step/'.fake-engine-runs').read_text())
+    # An incomplete installed bundle must block before any engine invocation.
+    incomplete_bin = root/'incomplete-bin'; incomplete_bin.mkdir()
+    shutil.copy2(helper, incomplete_bin/helper.name)
+    unavailable = order_dir('missing-validator-helper'); claim(unavailable)
+    original_script = script
+    script = script.replace('cr_harness_run "$ORDER_DIR/order.json"',
+                            'CR_H_SELF_DIR="$TEST_ROOT/incomplete-bin"\ncr_harness_run "$ORDER_DIR/order.json"')
+    try:
+        run(unavailable, 31)
+        assert not (unavailable/'steps/a/.fake-engine-runs').exists()
+    finally:
+        script = original_script
+    d = order_dir(); claim(d)
+    run(d, 30, FAKE_ENGINE_FAIL_STEP='c', FAKE_ENGINE_FAIL_CHECK_TIMES='5')
+    assert count(d,'a') == 1 and count(d,'c') == 3
+    state = json.loads((d/'checkpoint.json').read_text())
+    assert state['stages']['a']['outputs'][0]['checksum'].startswith('sha256:')
+    assert state['stages']['b']['event'] == 'step_skipped'
+    claim(d,'att2','resume',resume='c'); run(d)
+    assert count(d,'a') == 1 and count(d,'c') == 4
+    assert not (root/'network').exists(), 'intermediate upload/download attempted'
+    claim(d,'att3','finalize-only',resume=''); finalized = run(d)
+    assert count(d,'a') == 1 and count(d,'c') == 4
+    delivered = json.loads(finalized.stdout)
+    assert [x['id'] for x in delivered] == ['z'], delivered
+    assert delivered == cp(d,'final')
+    # Missing or invalid final mapping blocks before any paid stage starts.
+    for refs in ([], [{'stepId':'a','saveId':'x','role':'deliverable'}],
+                 [{'stepId':'c','saveId':'unknown','role':'deliverable'}]):
+        bad = order_dir('mapping'+str(len(refs))+str(len(json.dumps(refs))))
+        o = claim(bad); o['manifest']['finalOutputs'] = refs
+        (bad/'order.json').write_text(json.dumps(o)); run(bad,31)
+        assert not (bad/'steps/a/.fake-engine-runs').exists()
+    # Exercise the existing final delivery script with local-only upload/MCP fakes.
+    report_bin = root/'report-bin'; report_bin.mkdir()
+    shutil.copy2(repo/'bin/cfw-render-report.sh', report_bin/'cfw-render-report.sh')
+    (report_bin/'cfw-render-lib.sh').write_text('''
+CFW_RENDER_DIRECTOR_MODEL=sonnet
+cr_log() { :; }
+cr_heartbeat_stop_if_pending() { :; }
+cr_mcp_call() { printf '%s\\n' "$2" >> "$TEST_ROOT/completions"; printf '{"ok":true}'; }
+''')
+    upload = report_bin/'cfw-render-upload.sh'
+    upload.write_text('''#!/bin/bash
+printf '%s\\n' "$1" >> "$TEST_ROOT/uploads"
+[[ "${FAIL_UPLOAD:-0}" == 1 ]] && exit 1
+printf 'https://media.cfw.social/brands/brand1/renders/job/%s\\n' "$(basename "$1")"
+'''); upload.chmod(0o700)
+    captions = root/'captions.json'; captions.write_text('{"instagram":"Final caption"}')
+    report_env = {**os.environ, 'TEST_ROOT':str(root), 'CFW_ORDER_ID':'job','CFW_WORKER_ID':'install-A',
+                  'CFW_ATTEMPT_ID':'att3','CFW_API_BASE':'http://127.0.0.1:1',
+                  'CFW_RENDER_WORKER_KEY':'test-only','CFW_CAPTIONS_FILE':str(captions)}
+    command = ['bash',str(report_bin/'cfw-render-report.sh'),'complete',*[x['path'] for x in delivered]]
+    failed = subprocess.run(command,cwd=d,env={**report_env,'FAIL_UPLOAD':'1'},capture_output=True)
+    assert failed.returncode == 1 and pathlib.Path(delivered[0]['path']).exists()
+    assert not (root/'completions').exists()
+    success = subprocess.run(command,cwd=d,env=report_env,capture_output=True)
+    assert success.returncode == 0, success.stderr
+    sent = json.loads((root/'completions').read_text())
+    assert sent['attemptId']=='att3' and sent['captions']=={'instagram':'Final caption'}
+    assert len(sent['outputs'])==1 and sent['outputs'][0]['kind']=='video'
+    assert all(pathlib.Path(p).name=='z.mp4' for p in (root/'uploads').read_text().splitlines())
+    assert count(d,'a')==1 and count(d,'c')==4, 'final upload failure reran paid work'
+    # Caption normalization is a pre-upload gate only when local delivery
+    # declares captions. Legacy absent/invalid files retain server fallback.
+    caption_job = order_dir('caption-report')
+    caption_order = claim(caption_job)
+    caption_order['manifest']['finalOutputs'].append({'stepId':'c','saveId':'captions','role':'captions'})
+    (caption_job/'order.json').write_text(json.dumps(caption_order))
+    nested_captions = {
+        'default': {'caption':'Default copy','hashtags':['#one','#two']},
+        ' Instagram ': {'caption':'Instagram copy','hashtags':'#three #four'},
+        'youtube': {'title':'A title','description':'Full description','hashtags':['#five']},
+        'linkedin': {'caption':'LinkedIn copy'}, 'tiktok':' Flat copy ',
+    }
+    normalized_captions = {'default':'Default copy\n\n#one #two',
+        'instagram':'Instagram copy\n\n#three #four',
+        'youtube':'A title\n\nFull description\n\n#five',
+        'linkedin':'LinkedIn copy', 'tiktok':'Flat copy'}
+    def report_caption(raw, expected, wanted=None, local=True):
+        if raw is None:
+            captions.unlink(missing_ok=True)
+        else:
+            captions.write_text(raw)
+        before_uploads = (root/'uploads').read_bytes()
+        before_completions = (root/'completions').read_bytes()
+        p = subprocess.run(command,cwd=caption_job if local else root,env=report_env,capture_output=True,text=True)
+        assert p.returncode == expected, (raw,p.stderr)
+        if expected:
+            assert (root/'uploads').read_bytes() == before_uploads
+            assert (root/'completions').read_bytes() == before_completions
+            assert 'local files are retained' in p.stderr and str(root) not in p.stderr
+            assert all(pathlib.Path(x['path']).is_file() for x in delivered)
+        else:
+            sent = json.loads((root/'completions').read_text().splitlines()[-1])
+            assert sent.get('captions',{}) == wanted, sent
+    for raw in (None, '', '{broken', '[]', 'null', '{}', '{"instagram":" "}',
+                '{"instagram":{}}', '{"instagram":42}', '{"instagram":false}',
+                '{"instagram":["copy"]}', '{"instagram":{"caption":[]}}',
+                '{"instagram":{"caption":"copy","hashtags":[4]}}',
+                '{"instagram":{"caption":"copy","unsupported":"do not drop"}}',
+                '{"instagram":"good","youtube":null}',
+                '{"instagram":"first","instagram":"second"}',
+                '{" Instagram ":"first","instagram":"second"}',
+                '{"instagram":NaN}', json.dumps({'instagram':'a'*6001}),
+                json.dumps({'a'*41:'copy'}), json.dumps({str(i):'copy' for i in range(13)})):
+        report_caption(raw,1)
+    report_caption(json.dumps(nested_captions),0,normalized_captions)
+    report_caption('{" Instagram ":" Flat caption ","x":"Legacy alias"}',0,
+                   {'instagram':'Flat caption','x':'Legacy alias'})
+    for raw in (None, '{broken', '{}', '{"instagram":false}'):
+        report_caption(raw,0,{},local=False)
+    report_caption('{"instagram":" Valid legacy ","youtube":null}',0,{'instagram':'Valid legacy'},local=False)
+    report_caption(json.dumps(nested_captions),0,normalized_captions,local=False)
+    cp(d,'init',worker='install-B',expected=31)
+    o = json.loads((d/'order.json').read_text()); o['manifest']['recipeVersion']='2.0.0'
+    (d/'order.json').write_text(json.dumps(o)); run(d,31)
+    claim(d,'att4','resume',resume='c')
+    save = d/'steps/a/saves/x.json'; original = save.read_bytes()
+    save.write_bytes(b'changed'); run(d,31); assert count(d,'c') == 4
+    save.write_bytes(b''); run(d,31)
+    save.unlink(); save.symlink_to(root/'outside'); (root/'outside').write_bytes(original); run(d,31)
+    save.unlink(); run(d,31)
+    save.write_bytes(original)
+    claim(d,'att5','start',generation=1); run(d)
+    assert count(d,'a') == 1 and count(d,'c') == 1
+    assert len(list(d.glob('retired-*'))) == 1
+    # Lost ack: same attempt replays the exact sequence; a different attempt
+    # re-reports the validated completion, never the old attempt's queued event.
+    lost = order_dir('lost'); claim(lost)
+    run(lost,31,LOSE_ACK='step_completed')
+    pending = cp(lost,'pending'); assert pending[0]['event']=='step_completed'
+    seq = pending[0]['seq']; run(lost)
+    assert count(lost,'a') == 1 and cp(lost,'pending') == []
+    reports = [json.loads(x) for x in (root/'reports.ndjson').read_text().splitlines()]
+    assert sum(r['seq']==seq and r['event']=='step_completed' for r in reports) >= 2
+    other = order_dir('other'); claim(other); (root/'lost-ack').unlink()
+    run(other,31,LOSE_ACK='step_completed'); old = cp(other,'pending')
+    claim(other,'att2','resume'); run(other)
+    assert count(other,'a') == 1
+    s = json.loads((other/'checkpoint.json').read_text())
+    assert s['attempts']['att1']['pending'] == old
+    assert s['stages']['a']['acknowledgedAttempts'] == ['att2']
+    # Revision imports only the authorized prefix and retains no source outbox.
+    revision = order_dir('revision'); o=claim(revision,'att1','resume',resume='c')
+    o['taskOrder']['resume']={'fromOrderId':'other','fromGeneration':0,'fromStepId':'c'}
+    (revision/'order.json').write_text(json.dumps(o)); run(revision)
+    assert not (revision/'steps/a/.fake-engine-runs').exists() and count(revision,'c') == 1
+    # An interrupted stage cannot pass using an old incomplete save.
+    stale = order_dir('stale'); claim(stale); cp(stale,'init')
+    target=stale/'steps/a/saves'; target.mkdir(parents=True); (target/'x.json').write_text('stale')
+    cp(stale,'prepare','a'); assert not (target/'x.json').exists()
+    # Retention/credential cleanup runs only in a disposable scratch tree.
+    scratch = root/'scratch'; brand = scratch/'brand'; brand.mkdir(parents=True)
+    def lifecycle(cmd, path, *args, expected=0):
+        p = subprocess.run([sys.executable,str(helper),cmd,str(path),*args],capture_output=True,text=True)
+        assert p.returncode == expected, (cmd,p.returncode,p.stderr)
+    # Real mktemp paths on macOS use /var -> /private/var. Do not resolve the
+    # caller's path first: production admission/janitor see the alias spelling.
+    alias_scratch = pathlib.Path(tmp)/'scratch'
+    lifecycle('janitor',alias_scratch)
+    alias_job = alias_scratch/'brand'/'alias-job'
+    lifecycle('active',alias_job,str(os.getpid()))
+    lifecycle('finish',alias_job,'local-v1')
+    assert (alias_job/'.activity.json').is_file()
+    retained = brand/'retained'; shutil.copytree(other,retained)
+    (retained/'order.json').write_text('{"providerKeys":[{"value":"test-only-provider-secret"}]}')
+    (retained/'steps/a/prompt.md').write_text('test-only-provider-secret')
+    (retained/'steps/a/provider-config.json').write_text('test-only-provider-secret')
+    lifecycle('active',retained,str(os.getpid()))
+    lifecycle('active',retained,str(os.getpid()),expected=31)
+    lifecycle('finish',retained,'local-v1')
+    assert (retained/'checkpoint.json').exists() and (retained/'steps/a/saves/x.json').exists()
+    assert not (retained/'order.json').exists() and not (retained/'steps/a/prompt.md').exists()
+    assert not any(b'test-only-provider-secret' in p.read_bytes() for p in retained.rglob('*') if p.is_file())
+    # Admission refuses symlinked parents without writing outside scratch.
+    link = brand/'link'; link.symlink_to(root/'outside-dir'); (root/'outside-dir').mkdir()
+    lifecycle('active',link/'job',str(os.getpid()),expected=31)
+    assert not (root/'outside-dir/job').exists()
+    old = time.time()-3*86400
+    def age(path, active=False, fresh=False):
+        (path/'.activity.json').write_text(json.dumps({'at': time.time() if fresh else old}))
+        cpfile = path/'checkpoint.json'
+        if cpfile.exists():
+            s=json.loads(cpfile.read_text()); s['activityAt']=old; cpfile.write_text(json.dumps(s))
+        if active: (path/'.active.json').write_text(json.dumps({'pid':os.getpid()}))
+        os.utime(path,(old,old))
+    protected=brand/'active'; shutil.copytree(retained,protected); age(protected,active=True)
+    recent=brand/'recent'; shutil.copytree(retained,recent); age(recent,fresh=True)
+    age(retained); lifecycle('janitor',scratch)
+    assert not retained.exists() and protected.exists() and recent.exists()
+    # Exercise the real director outcome reconciliation without a provider or server.
+    source=(repo/'bin/cfw-render.sh').read_text()
+    functions=source[source.index('sanitize_slug() {'):source.index('# [M2-04] Claims with capacity')]
+    reconcile=r'''
+set -u
+SELF_DIR="$REPO/bin"
+source "$SELF_DIR/cfw-render-lib.sh"
+cr_recipe_needs_heygen() { return 1; }
+cr_verify_skills_bundle() { return 0; }
+cr_recent_append() { :; }
+cr_keep_output_dir() { echo "$TEST_ROOT/kept/$2"; }
+cr_harness_run() {
+  printf '{"activityAt":1}' > "$2/checkpoint.json"
+  mkdir -p "$2/steps/a/saves" "$2/logs"
+  printf paid-output > "$2/steps/a/saves/x.json"
+  printf test-only-provider-secret > "$2/logs/a.log"
+  return "$TEST_OUTCOME"
+}
+''' + functions + '\nspawn_director "$TEST_CLAIM"\n'
+    for outcome in (21,22,23,24,30,31):
+        job='outcome'+str(outcome)
+        o=claim(order_dir(job)); o['taskOrder']={'brand':{'slug':'brand'}}
+        o['providerKeys']=[{'provider':'test','value':'test-only-provider-secret'}]
+        env={**os.environ,'REPO':str(repo),'TEST_ROOT':str(root),'TEST_CLAIM':json.dumps(o),
+             'TEST_OUTCOME':str(outcome),'CFW_RENDER_SCRATCH':str(scratch),
+             'CFW_RENDER_SKILLS_DIR':str(root/'skills'),'CFW_RENDER_STATE_DIR':str(root/'state'),
+             'CFW_RENDER_LOG_DIR':str(root/'logs'),'CFW_WORKER_ID':'install-A',
+             'CFW_API_BASE':'http://unused.invalid','CFW_RENDER_WORKER_KEY':'test-only-worker',
+             'JOURNAL':str(root/'journal')}
+        p=subprocess.run(['bash','-c',reconcile],env=env,capture_output=True,text=True)
+        assert p.returncode==0, (outcome,p.stderr)
+        folder=brand/job
+        if outcome in (22,23): assert not folder.exists()
+        else:
+            assert (folder/'steps/a/saves/x.json').read_text()=='paid-output'
+            assert not (folder/'order.json').exists() and not (folder/'logs').exists()
+            assert not (folder/'.active.json').exists()
+    # A legacy stop_after_step reply finishes the already-started stage; local
+    # mode stops before engine execution. Both paths still return revoked.
+    revoked = order_dir('revoked-local'); claim(revoked)
+    run(revoked, 22, STOP_AFTER_START='1')
+    assert not (revoked/'steps/a/.fake-engine-runs').exists(), 'local revoked work must never start an engine'
+    legacy = order_dir('revoked-legacy'); legacy_claim = claim(legacy)
+    del legacy_claim['checkpoint']; del legacy_claim['resumeFromStepId']
+    (legacy/'order.json').write_text(json.dumps(legacy_claim))
+    before = len((root/'reports.ndjson').read_text().splitlines())
+    run(legacy, 22, STOP_AFTER_START='1', LEGACY_MODE='1')
+    legacy_reports = [json.loads(line) for line in (root/'reports.ndjson').read_text().splitlines()[before:]]
+    legacy_events = [r['event'] for r in legacy_reports]
+    assert legacy_events == ['step_started','step_completed','attempt_released'], legacy_events
+    assert count(legacy,'a') == 1 and not (legacy/'steps/c/.fake-engine-runs').exists()
+    assert (root/'network').read_text().splitlines() == ['legacy-upload']
+    assert legacy_reports[-1]['extra']['reason'] == 'revoked'
+    # Required-check gap: missing validators fail only local mode, scripts run
+    # once, and every declared save is checked even with no declared checks.
+    checks_helper = repo/'bin/cfw-render-checks.py'
+    check_work = root/'check-work'; (check_work/'saves').mkdir(parents=True)
+    (check_work/'saves/x.json').write_text('{"ok":true}')
+    check_order = root/'check-order.json'
+    check_manifest = {'recipe':'fixture','steps':[{'id':'a','saves':[{'id':'x','kind':'json'}],
+                                                'checks':[{'id':'required'}]}]}
+    check_recipe = root/'check-recipe'; (check_recipe/'checks').mkdir(parents=True)
+    def local_check(expected, declaration=None):
+        check_order.write_text(json.dumps({'manifest':declaration or check_manifest}))
+        p = subprocess.run([sys.executable,str(checks_helper),'run',str(check_order),str(check_recipe),str(check_work),'a'],
+                           capture_output=True,text=True)
+        assert p.returncode == expected, (p.returncode,p.stdout,p.stderr)
+        rows = json.loads(p.stdout)
+        assert str(root) not in p.stdout and 'private-validator-log' not in p.stdout
+        return rows
+    assert local_check(1)[-1]['passed'] is False
+    validator = check_recipe/'checks/required.sh'
+    validator.write_text('set -euo pipefail\nprintf run >> "$1/counter"\necho /private-validator-log\nexit 1\n')
+    local_check(1); assert (check_work/'counter').read_text() == 'run'
+    validator.write_text('set -euo pipefail\nprintf run >> "$1/counter"\n')
+    local_check(0); assert (check_work/'counter').read_text() == 'runrun'
+    # The harness ignores an empty caller check list in local mode; legacy still
+    # allows its missing-validator fallback, including nonempty historical saves.
+    validator.unlink()
+    shell = '''source "$REPO/bin/cfw-render-harness.sh"
+CR_H_LOCAL="$MODE"; CR_H_ORDER_DIR="$CHECK_ORDER_DIR"; CR_H_RECIPE_DIR="$CHECK_RECIPE"
+cr_h_run_checks a "$CHECK_WORK" ${CHECK_IDS:-}
+'''
+    shutil.copy2(check_order, check_work/'order.json')
+    check_env = {**os.environ,'REPO':str(repo),'CHECK_ORDER_DIR':str(check_work),
+                 'CHECK_RECIPE':str(check_recipe),'CHECK_WORK':str(check_work)}
+    for mode, expected in (('1',1),('0',0)):
+        p = subprocess.run(['bash','-c',shell],env={**check_env,'MODE':mode,'CHECK_IDS':'required' if mode=='0' else ''},
+                           capture_output=True,text=True)
+        assert p.returncode == expected, p.stdout
+    missing_helper_shell = shell.replace('cr_h_run_checks a', 'CR_H_SELF_DIR="$CHECK_WORK/missing-tools"\ncr_h_run_checks a')
+    p = subprocess.run(['bash','-c',missing_helper_shell],env={**check_env,'MODE':'1'},capture_output=True,text=True)
+    assert p.returncode == 1 and json.loads(p.stdout)[0]['passed'] is False and str(root) not in p.stdout
+    validator.write_text('set -euo pipefail\nprintf legacy >> "$1/counter"\nexit 1\n')
+    p = subprocess.run(['bash','-c',shell],env={**check_env,'MODE':'0','CHECK_IDS':'required'},capture_output=True)
+    assert p.returncode == 1 and (check_work/'counter').read_text() == 'runrunlegacy'
+    for kind, suffix in (('json','json'),('video','mp4'),('image','png')):
+        (check_work/f'saves/bad.{suffix}').write_text('corrupt but nonempty')
+        declaration = {'recipe':'fixture','steps':[{'id':'a','saves':[{'id':'bad','kind':kind}]}]}
+        assert local_check(1,declaration)[0]['passed'] is False
+    # Every real recipe's local gate must reject missing saves/evidence, even
+    # when its caller supplies NO check IDs. This is negative coverage, not
+    # successful execution or permission to enable the other twelve recipes.
+    import importlib.util
+    checkpoint_spec = importlib.util.spec_from_file_location('checkpoint_contract', helper)
+    checkpoint_contract = importlib.util.module_from_spec(checkpoint_spec)
+    checkpoint_spec.loader.exec_module(checkpoint_contract)
+    with tempfile.TemporaryDirectory(prefix='cfw-real-gates-') as gate_tmp:
+        gate_root = pathlib.Path(gate_tmp).resolve()
+        for manifest_path in sorted((repo/'skills').glob('p-*/manifest.json')):
+            real = json.loads(manifest_path.read_text())
+            wd = gate_root/real['recipe']; (wd/'saves').mkdir(parents=True)
+            (wd/'order.json').write_text(json.dumps({'manifest':real}))
+            stages = [s for s in real['steps'] if s['runsOn']=='computer']
+            for s in stages:
+                gate_shell = '''source "$REPO/bin/cfw-render-harness.sh"
+CR_H_LOCAL=1; CR_H_ORDER_DIR="$WORK"; CR_H_RECIPE_DIR="$RECIPE"
+cr_h_run_checks "$STAGE" "$WORK"
+'''
+                p = subprocess.run(['bash','-c',gate_shell],capture_output=True,text=True,
+                    env={**os.environ,'REPO':str(repo),'WORK':str(wd),
+                         'RECIPE':str(manifest_path.parent),'STAGE':s['id']})
+                assert p.returncode == 1, (real['recipe'],s['id'],p.stdout)
+                rows = json.loads(p.stdout)
+                assert any(not r['passed'] for r in rows)
+                assert {c['id'] for c in s.get('checks',[])} <= {r['id'] for r in rows}
+                if real['recipe'] != 'p-reels-spotlight':
+                    for c in s.get('checks',[]):
+                        if not (manifest_path.parent/'checks'/f"{c['id']}.sh").exists():
+                            result = next(r for r in rows if r['id']==c['id'])
+                            assert not result['passed'] and 'validator is missing' in result['detail']
+            if real.get('finalOutputs'):
+                assert checkpoint_contract.final_refs({'manifest':real}) == real['finalOutputs']
+            else:
+                try:
+                    checkpoint_contract.final_refs({'manifest':real})
+                except checkpoint_contract.Blocked:
+                    pass
+                else:
+                    raise AssertionError(f"{real['recipe']}: missing output contract accepted")
+            print(f"PASS: {real['recipe']} — {len(stages)} real stage gates reject missing evidence; explicit output contract enforced", flush=True)
+    # Exercise real Spotlight acceptance with synthetic 1080x1920 media, never
+    # paid providers or a test-only production bypass. Visual PASS records below
+    # simulate a reviewer solely to test evidence validation, not real aesthetics.
+    import importlib.util
+    module_spec = importlib.util.spec_from_file_location('local_checks',checks_helper)
+    checks = importlib.util.module_from_spec(module_spec); module_spec.loader.exec_module(checks)
+    spotlight_recipe = repo/'skills/p-reels-spotlight'
+    spotlight_manifest = json.loads((spotlight_recipe/'manifest.json').read_text())
+    bed = root/'synthetic-bed.mp4'
+    subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','color=white:s=1080x1920:r=30:d=20',
+                    '-f','lavfi','-i','sine=frequency=440:sample_rate=48000:duration=20',
+                    '-af','loudnorm=I=-14:TP=-1.5:LRA=11','-c:v','libx264','-preset','ultrafast',
+                    '-crf','28','-pix_fmt','yuv420p','-c:a','aac','-ar','48000',str(bed)],check=True)
+    final = root/'synthetic-final.mp4'
+    subprocess.run(['ffmpeg','-v','error','-i',str(bed),'-vf','tpad=start_duration=0.4:start_mode=clone',
+                    '-af','adelay=400:all=1','-c:v','libx264','-preset','ultrafast','-crf','28',
+                    '-c:a','aac','-ar','48000',str(final)],check=True)
+    cover = root/'synthetic-cover.png'
+    subprocess.run(['ffmpeg','-v','error','-i',str(bed),'-frames:v','1',str(cover)],check=True)
+    words = [{'text':'Word','start':i,'end':i+0.9} for i in range(20)]
+    plan = {'duration':20,'brand':{'bg':'#123456','accent':'#abcdef','fg':'#ffffff'},'cover_at':8,
+            'takeovers':[{'start':3,'end':6,'template':'tk-stat','fill':{'STAT':'3X'}},
+                         {'start':10,'end':13,'template':'tk-keyword','fill':{'WORD':'HELLO'}}],
+            'caption_groups':[{'start':i,'end':i+2,'words':[{'w':'Word','s':i,'e':i+0.9},
+                               {'w':'Word','s':i+1,'e':i+1.9}]} for i in range(0,20,2)]}
+    beats = {'beats':[{'kind':'broll','start':15,'end':18,
+                      'broll':{'clip':'inputs/broll/clip.mp4','in':0,'out':3}}]}
+    stage_work = root/'spotlight'; stage_work.mkdir()
+    for folder in ('saves','prior','inputs/broll'):
+        (stage_work/folder).mkdir(parents=True)
+    for name in ('voice_track','assembled_video'):
+        shutil.copy2(bed, stage_work/f'prior/{name}.mp4')
+    shutil.copy2(bed, stage_work/'inputs/broll/clip.mp4')
+    (stage_work/'prior/edit_plan.json').write_text(json.dumps(plan))
+    (stage_work/'prior/beat_list.json').write_text(json.dumps(beats))
+    (stage_work/'prior/transcripts.json').write_text(json.dumps({'words':words}))
+    for name in ('voice_track','rendered_scenes','assembled_video'):
+        shutil.copy2(bed, stage_work/f'saves/{name}.mp4')
+    shutil.copy2(final,stage_work/'saves/final_video.mp4')
+    shutil.copy2(cover,stage_work/'saves/cover.png')
+    for name, value in (('transcripts',{'words':words}),('edit_plan',plan),('beat_list',beats),('captions',{'default':'Synthetic caption'})):
+        (stage_work/f'saves/{name}.json').write_text(json.dumps(value))
+    def adapter(sid):
+        return checks.Spotlight(spotlight_recipe,stage_work,sid)
+    def reject(fn):
+        try:
+            fn()
+        except (checks.Invalid,ValueError,OSError,KeyError,TypeError):
+            return
+        raise AssertionError('invalid artifact/evidence passed')
+    def review(sid):
+        a = adapter(sid); a.make_evidence()
+        path = stage_work/'qa/review.json'; doc = json.loads(path.read_text())
+        for row in doc['checks']:
+            row.update(status='PASS',reviewer='synthetic test reviewer',observations='Synthetic white frame and continuous test tone.',audioReviewed=True)
+        path.write_text(json.dumps(doc)); return doc
+    def stage(sid, expected=0):
+        check_order.write_text(json.dumps({'manifest':spotlight_manifest}))
+        p = subprocess.run([sys.executable,str(checks_helper),'run',str(check_order),str(spotlight_recipe),str(stage_work),sid],
+                           capture_output=True,text=True)
+        assert p.returncode == expected, (sid,p.stdout,p.stderr)
+        rows = json.loads(p.stdout)
+        declared = next(s for s in spotlight_manifest['steps'] if s['id']==sid)
+        assert {c['id'] for c in declared['checks']} <= {r['id'] for r in rows}
+        if expected == 0:
+            assert sorted(c['id'] for c in declared['checks']) == sorted(r['id'] for r in rows), rows
+        return rows
+    for sid in ('prepare_footage','transcribe','plan_edit','plan_broll','render_scenes'):
+        stage(sid)
+    # Schema/timing guards: malformed-but-nonempty JSON is not a valid transcript,
+    # nor are unordered words, out-of-range times, bad colours or overlapping beats.
+    transcript_path = stage_work/'saves/transcripts.json'
+    original = transcript_path.read_text()
+    for bad in ({'words':[]},{'words':[{'text':'','start':0,'end':20}]},
+                {'words':[{'text':'Word','start':19,'end':21}]},
+                {'words':[{'text':'Word','start':0,'end':1}]},
+                {'words':[words[-1],words[0]]}):
+        transcript_path.write_text(json.dumps(bad)); reject(lambda: adapter('transcribe').check('words_found'))
+    transcript_path.write_text(original)
+    plan_path = stage_work/'saves/edit_plan.json'; original = plan_path.read_text()
+    for key, value in (('cover_at',1),('duration',99),('takeovers',[]),('brand',{'bg':'red'}),('caption_groups',[])):
+        bad=copy.deepcopy(plan); bad[key]=value; plan_path.write_text(json.dumps(bad))
+        reject(lambda: adapter('plan_edit').check('plan_valid'))
+    bad=copy.deepcopy(plan); bad['caption_groups'][0]['words'][0]['w']='नमस्ते'
+    plan_path.write_text(json.dumps(bad)); reject(lambda: adapter('plan_edit').check('plan_valid'))
+    plan_path.write_text(original)
+    beats_path = stage_work/'saves/beat_list.json'; original = beats_path.read_text()
+    for change in ({'start':1},{'start':11,'end':14},{'broll':{'clip':'../../outside','in':0,'out':3}},
+                   {'broll':{'clip':'inputs/broll/clip.mp4','in':0,'out':30}}):
+        bad=copy.deepcopy(beats); bad['beats'][0].update(change); beats_path.write_text(json.dumps(bad))
+        reject(lambda: adapter('plan_broll').check('beats_covered'))
+    beats_path.write_text(original)
+    # Full stage stays red without review, even though objective media is valid.
+    rows = stage('assemble',1); assert not next(r for r in rows if r['id']=='vo_continuous_bed')['passed']
+    review('assemble'); stage('assemble')
+    (stage_work/'qa/review.json').unlink()
+    reject(lambda: adapter('final_checks').review('grade_is_subtle'))
+    adapter('final_checks').make_evidence()
+    reject(lambda: adapter('final_checks').review('grade_is_subtle'))  # PENDING
+    good_review = review('final_checks')
+    # Real pinned Spotlight, real harness/checkpoint/check/report code. Only
+    # engine + HTTP + upload providers are faked; no harness/check bypasses.
+    # Snapshot the good fixtures BEFORE the corruption cases below.
+    assert spotlight_manifest['recipeVersion'] == '2026.10.4'
+    integration = root/'spotlight-integration'; integration.mkdir()
+    fixtures = integration/'fixtures'; shutil.copytree(stage_work/'saves',fixtures)
+    (fixtures/'captions.json').write_text(json.dumps(nested_captions))
+    shutil.copy2(bed,fixtures/'clip.mp4')
+    providers = integration/'providers'; providers.mkdir()
+    http = providers/'curl'
+    http.write_text('#!' + sys.executable + '\n' + r'''
+import json, os, pathlib, sys
+args = sys.argv[1:]
+log = pathlib.Path(os.environ['SPOTLIGHT_TEST'])/'http.ndjson'
+# No forwarding: even an unexpected URL/download remains strictly offline.
+if '-d' not in args:
+    with log.open('a') as f: f.write(json.dumps({'unexpected':args})+'\n')
+    sys.exit(1)
+request = json.loads(args[args.index('-d')+1])['params']
+with log.open('a') as f: f.write(json.dumps(request)+'\n')
+assert request['name'] in ('report_render_step','complete_render_order'), request
+reply = {'ok':True,'directive':'continue'}
+print(json.dumps({'jsonrpc':'2.0','id':1,'result':{'content':[{'type':'text','text':json.dumps(reply)}]}}))
+if '-w' in args: print('200')
+'''); http.chmod(0o700)
+    engine = integration/'engine'
+    engine.write_text('#!' + sys.executable + '\n' + r'''
+import importlib.util, json, os, pathlib, shutil, sys
+sys.dont_write_bytecode = True
+root = pathlib.Path(os.environ['SPOTLIGHT_TEST'])
+sid = os.environ['CFW_STEP_ID']
+with (root/'engine-stages').open('a') as f: f.write(sid+'\n')
+assert sid not in ('research','script')
+for save in os.environ['CFW_STEP_SAVES'].split():
+    name = save.replace(':','.')
+    shutil.copy2(root/'fixtures'/name, pathlib.Path('saves')/name)
+if sid == 'transcribe' and os.environ.get('SPOTLIGHT_FAIL') == '1':
+    pathlib.Path('saves/transcripts.json').write_text('{"words":[]}')
+if sid in ('assemble','final_checks'):
+    spec = importlib.util.spec_from_file_location('checks',pathlib.Path(os.environ['REPO'])/'bin/cfw-render-checks.py')
+    checks = importlib.util.module_from_spec(spec); spec.loader.exec_module(checks)
+    # Explicitly synthetic evidence. The real checks independently compare all
+    # current-artifact hashes/frames, media and voice; this is not aesthetic QA.
+    checks.Spotlight(pathlib.Path(os.environ['TEST_RECIPE']),pathlib.Path.cwd(),sid).make_evidence()
+    path = pathlib.Path('qa/review.json'); doc = json.loads(path.read_text())
+    for row in doc['checks']:
+        row.update(status='PASS',reviewer='synthetic integration reviewer',
+                   observations='Synthetic white frames and continuous test tone only.',audioReviewed=True)
+    path.write_text(json.dumps(doc))
+'''); engine.chmod(0o700)
+    final_bin = integration/'bin'; final_bin.mkdir()
+    for name in ('cfw-render-report.sh','cfw-render-lib.sh'):
+        shutil.copy2(repo/'bin'/name,final_bin/name)
+    shutil.copy2(upload,final_bin/upload.name)
+    spot_job = order_dir('spotlight job; literal')
+    def spot_claim(attempt, action, resume):
+        o = {'id':'spotlight-job','brandId':'brand1','recipeVersion':spotlight_manifest['recipeVersion'],
+             'manifest':spotlight_manifest,'attempt':{'id':attempt},
+             'checkpoint':{'mode':'local-v1','generation':0,'action':action},
+             'resumeFromStepId':resume,'taskOrder':{'targets':['instagram','youtube']},
+             'inputs':[{'inputId':'talking_head','items':[{'kind':'video','path':str(bed)}]},
+                       {'inputId':'broll','items':[{'kind':'video','path':str(fixtures/'clip.mp4')}]}]}
+        (spot_job/'order.json').write_text(json.dumps(o))
+    spot_env = {**os.environ,'REPO':str(repo),'SPOTLIGHT_TEST':str(integration),'TEST_ROOT':str(integration),
+        'ORDER_DIR':str(spot_job),'TEST_RECIPE':str(spotlight_recipe),'CFW_RENDER_ENGINE':'codex',
+        'CFW_RENDER_ENGINE_CMD':str(engine),'CFW_RENDER_STATE_DIR':str(integration/'state'),
+        'CFW_RENDER_LOG_DIR':str(integration/'logs'),'CFW_WORKER_ID':'install-A',
+        'CFW_ORDER_ID':'spotlight-job','CFW_API_BASE':'http://offline.invalid',
+        'CFW_RENDER_WORKER_KEY':'test-only','CFW_RENDER_DIRECTOR_MODEL':'sonnet',
+        'PATH':str(providers)+os.pathsep+os.environ['PATH']}
+    spot_script = r'''
+set -euo pipefail
+source "$REPO/bin/cfw-render-lib.sh"
+source "$REPO/bin/cfw-render-engine.sh"
+source "$REPO/bin/cfw-render-harness.sh"
+cr_harness_run "$ORDER_DIR/order.json" "$ORDER_DIR" "$TEST_RECIPE"
+'''
+    def spot_run(expected=0, **env):
+        p = subprocess.run(['bash','-c',spot_script],cwd=spot_job,env={**spot_env,**env},capture_output=True,text=True)
+        assert p.returncode == expected, (p.returncode,p.stdout,p.stderr[-5000:])
+        return json.loads(p.stdout) if not expected else None
+    def requests():
+        return [json.loads(line) for line in (integration/'http.ndjson').read_text().splitlines()]
+    spot_claim('spot1','start','prepare_footage'); spot_run(30,SPOTLIGHT_FAIL='1')
+    assert (integration/'engine-stages').read_text().splitlines() == ['prepare_footage']+['transcribe']*3
+    saved_bed = spot_job/'steps/prepare_footage/saves/voice_track.mp4'
+    bed_hash = checks.digest(saved_bed)
+    state = json.loads((spot_job/'checkpoint.json').read_text())
+    assert state['identity']['workerId'] == 'install-A' and state['identity']['recipeVersion'] == '2026.10.4'
+    assert state['stages']['prepare_footage']['outputs'][0]['checksum'] == bed_hash
+    assert any(r['arguments']['event']=='step_failed' and r['arguments']['stepId']=='transcribe' for r in requests())
+    spot_claim('spot2','resume','transcribe'); spot_final = spot_run()
+    computer_steps = [s for s in spotlight_manifest['steps'] if s['runsOn']=='computer']
+    computer_ids = [s['id'] for s in computer_steps]
+    ran = (integration/'engine-stages').read_text().splitlines()
+    assert ran == ['prepare_footage']+['transcribe']*3+computer_ids[1:], ran
+    assert checks.digest(saved_bed) == bed_hash
+    assert [x['id'] for x in spot_final] == ['final_video','cover','captions']
+    assert [x['role'] for x in spot_final] == ['deliverable','poster','captions']
+    assert spot_final == cp(spot_job,'final')
+    assert all(r['name']=='report_render_step' for r in requests()), 'intermediate HTTP upload/download'
+    events = [r['arguments'] for r in requests()]
+    assert {r['stepId'] for r in events if r['event']=='step_started'} == set(computer_ids)
+    assert {r['stepId'] for r in events if r['event']=='step_completed'} == set(computer_ids)
+    assert not any(r.get('stepId') in ('research','script') for r in events)
+    for attempt in ('spot1','spot2'):
+        seqs = [r['seq'] for r in events if r['attemptId']==attempt]
+        assert seqs == sorted(set(seqs)), seqs
+    for r in events:
+        assert r['workerId']=='install-A' and r['orderId']=='spotlight-job'
+        assert str(root) not in json.dumps(r)
+        if r['event'] != 'step_completed': continue
+        s = next(s for s in computer_steps if s['id']==r['stepId'])
+        assert sorted(c['id'] for c in r['checks']) == sorted(c['id'] for c in s['checks'])
+        assert all(c['passed'] for c in r['checks'])
+        assert not r.get('outputs'), r
+        assert {o['saveId'] for o in r['localOutputs']} == {o['id'] for o in s['saves']}
+        for o in r['localOutputs']:
+            assert set(o) == {'saveId','fileName','kind','bytes','checksum'}, o
+            path = spot_job/'steps'/s['id']/'saves'/o['fileName']
+            assert path.stat().st_size == o['bytes'] and checks.digest(path) == o['checksum']
+    saved_hashes = {str(p):checks.digest(p) for p in spot_job.glob('steps/*/saves/*')}
+    def spot_report(attempt, fail_upload=False):
+        # Same declared-role routing as spawn_director: captions are request
+        # metadata, never an uploaded JSON image or an intermediate deliverable.
+        media = [x['path'] for x in spot_final if x['role']!='captions']
+        caption_file = next(x['path'] for x in spot_final if x['role']=='captions')
+        return subprocess.run(['bash',str(final_bin/'cfw-render-report.sh'),'complete',*media],
+            cwd=spot_job,env={**spot_env,'CFW_ATTEMPT_ID':attempt,'CFW_CAPTIONS_FILE':caption_file,
+                             'FAIL_UPLOAD':'1' if fail_upload else '0'},capture_output=True,text=True)
+    p = spot_report('spot2',True); assert p.returncode == 1, p.stderr
+    assert not (spot_job/'.outcome').exists()
+    assert all(checks.digest(pathlib.Path(p))==h for p,h in saved_hashes.items())
+    assert all(r['name']=='report_render_step' for r in requests())
+    spot_claim('spot3','finalize-only',''); assert spot_run() == spot_final
+    assert (integration/'engine-stages').read_text().splitlines() == ran, 'finalize-only executed engine stages'
+    p = spot_report('spot3'); assert p.returncode == 0, p.stderr
+    completion = [r['arguments'] for r in requests() if r['name']=='complete_render_order']
+    assert len(completion)==1
+    sent = completion[0]
+    assert sent['attemptId']=='spot3' and sent['captions']==normalized_captions
+    assert [(o['kind'],o['role']) for o in sent['outputs']] == [('video','cover'),('image','poster')]
+    assert [pathlib.Path(p).name for p in (integration/'uploads').read_text().splitlines()] == ['final_video.mp4','final_video.mp4','cover.png']
+    assert (spot_job/'.outcome').read_text().strip() == 'complete'
+    assert all(checks.digest(pathlib.Path(p))==h for p,h in saved_hashes.items())
+    print('PASS: Spotlight 2026.10.4 real harness/checks/checkpoints/report; all seven computer stages, no research/script; failure/resume, metadata/check IDs, no intermediate transfers, final video/poster/nested captions, upload retention and finalize-only without engines')
+    print('PASS: caption nested/flat normalization; declared local missing/empty/malformed/unsupported/oversize maps fail before uploads; legacy fallback')
+    review_path = stage_work/'qa/review.json'
+    for status in ('PENDING','FAIL','SKIP','NEEDS_VISION'):
+        bad=copy.deepcopy(good_review)
+        next(r for r in bad['checks'] if r['id']=='grade_is_subtle')['status']=status
+        review_path.write_text(json.dumps(bad)); reject(lambda: adapter('final_checks').review('grade_is_subtle'))
+    bad=copy.deepcopy(good_review); bad['artifacts']['saves/final_video.mp4']='sha256:stale'
+    review_path.write_text(json.dumps(bad)); reject(lambda: adapter('final_checks').review('grade_is_subtle'))
+    bad=copy.deepcopy(good_review); bad['frames']=[]
+    review_path.write_text(json.dumps(bad)); reject(lambda: adapter('final_checks').review('grade_is_subtle'))
+    bad=copy.deepcopy(good_review); bad['frames'][0]['path']='../../outside'
+    review_path.write_text(json.dumps(bad)); reject(lambda: adapter('final_checks').review('grade_is_subtle'))
+    review_path.write_text(json.dumps(good_review))
+    evidence = stage_work/good_review['frames'][0]['path']; saved_frame=evidence.read_bytes()
+    evidence.write_text('not an image')
+    bad=copy.deepcopy(good_review); bad['frames'][0]['sha256']=checks.digest(evidence)
+    review_path.write_text(json.dumps(bad)); reject(lambda: adapter('final_checks').review('grade_is_subtle'))
+    evidence.write_bytes(saved_frame); review_path.write_text(json.dumps(good_review))
+    # A genuine but unrelated readable frame also cannot stand in for the media.
+    subprocess.run(['ffmpeg','-v','error','-y','-f','lavfi','-i','color=red:s=1080x1920',
+                    '-frames:v','1',str(evidence)],check=True)
+    bad=copy.deepcopy(good_review); bad['frames'][0]['sha256']=checks.digest(evidence)
+    review_path.write_text(json.dumps(bad)); reject(lambda: adapter('final_checks').review('grade_is_subtle'))
+    evidence.write_bytes(saved_frame); review_path.write_text(json.dumps(good_review))
+    # Stale evidence from an earlier render cannot approve even a harmless edit.
+    caption_path = stage_work/'saves/captions.json'; original = caption_path.read_text()
+    caption_path.write_text('{"default":"Changed"}')
+    reject(lambda: adapter('final_checks').review('grade_is_subtle'))
+    caption_path.write_text(original)
+    stage('final_checks')
+    # Objective checks are independent: a PASS review cannot approve missing
+    # audio, black frames, wrong dimensions, or corrupt declared outputs.
+    assembled = stage_work/'saves/assembled_video.mp4'
+    subprocess.run(['ffmpeg','-v','error','-y','-i',str(bed),'-c:v','copy','-an',str(assembled)],check=True)
+    reject(lambda: adapter('assemble').voice())
+    subprocess.run(['ffmpeg','-v','error','-y','-i',str(bed),'-c:v','copy',
+                    '-af',"volume=enable='between(t,3,6)':volume=0",'-c:a','aac',str(assembled)],check=True)
+    reject(lambda: adapter('assemble').voice())
+    shutil.copy2(bed,assembled)
+    rendered = stage_work/'saves/rendered_scenes.mp4'
+    shutil.copy2(fixture_video,rendered); reject(lambda: adapter('render_scenes').check('scenes_not_blank'))
+    subprocess.run(['ffmpeg','-v','error','-y','-f','lavfi','-i','color=black:s=1080x1920:r=30:d=20',
+                    '-c:v','libx264','-preset','ultrafast',str(rendered)],check=True)
+    reject(lambda: adapter('render_scenes').check('scenes_not_blank'))
+    for name in ('final_video.mp4','cover.png','captions.json'):
+        path=stage_work/'saves'/name; data=path.read_bytes(); path.write_text('corrupt but nonempty')
+        # Check only the save declaration here; final's expensive QA is already
+        # exercised above, and never trusts these bytes merely for being nonempty.
+        save=next(s for s in spotlight_manifest['steps'] if s['id']=='final_checks')['saves']
+        declaration={'recipe':'fixture','steps':[{'id':'a','saves':save}]}
+        check_order.write_text(json.dumps({'manifest':declaration}))
+        p=subprocess.run([sys.executable,str(checks_helper),'run',str(check_order),str(check_recipe),str(stage_work),'a'],capture_output=True,text=True)
+        assert p.returncode==1 and not next(r for r in json.loads(p.stdout) if r['id']=='validation')['passed']
+        path.write_bytes(data)
+    # Reproduce the original twelve-green-checks bug end to end: text masquerading
+    # as video/image and malformed JSON now fail ALL twelve declared final checks.
+    for name in ('final_video.mp4','cover.png','captions.json'):
+        (stage_work/'saves'/name).write_text('invalid nonempty artifact')
+    rows=stage('final_checks',1)
+    final_ids={c['id'] for s in spotlight_manifest['steps'] if s['id']=='final_checks' for c in s['checks']}
+    assert len(final_ids)==12 and all(not r['passed'] for r in rows if r['id'] in final_ids)
+    # Unsupported eval types never inherit the installed eval runner's SKIP=0.
+    a=adapter('transcribe'); a.spec['steps']['transcribe']['checks'][0]['type']='unimplemented'
+    reject(lambda: a.check('words_found'))
+    print('PASS: fail-closed validators, one invocation, every save, legacy fallback, safe details')
+    print('PASS: Spotlight synthetic stage/final checks; corrupt media/JSON; transcript/plan/beat guards; missing/stale/failed/pending/unreadable/unrelated-frame QA; independent media and voice checks')
+    print('PASS: local immediate revocation and legacy stop-after-step retain their separate contracts')
+    print('PASS: local retry, finalize-only, identity/version/generation, corrupt/empty/missing/symlink, lost ack, revision, stale saves; zero intermediate uploads/downloads')
+    print('PASS: release/engine-limit/failure retention, revoked/superseded deletion, credential cleanup, active/recent janitor protection and path containment')
+PY
+}
+if [[ "${1:-}" == --local-checkpoints ]]; then
+  c19_local_checkpoints
+  exit $?
+fi
+
+# Exact-attempt diagnostics use the real spawn/status functions with fake engines
+# and no network/config loading. Each worker owns a separate process session.
+recent_identity_cases() {
+  python3 - "$REPO_DIR" <<'PY'
+import datetime, json, os, pathlib, signal, subprocess, sys, tempfile
+repo = pathlib.Path(sys.argv[1])
+source = (repo/'bin/cfw-render.sh').read_text()
+functions = source[source.index('sanitize_slug() {'):source.index('# [M2-04] Claims with capacity')]
+with tempfile.TemporaryDirectory(prefix='cfw-recent-') as tmp:
+    root = pathlib.Path(tmp)
+    (root/'logs with spaces/runs').mkdir(parents=True)
+    (root/'state').mkdir()
+    director = root/'director'
+    director.write_text('''#!/bin/bash
+printf '%s' "$TEST_OUTCOME" > .outcome
+printf 'synthetic transcript %s\\n' "$TEST_ATTEMPT"
+# Completion must not rediscover identity from this now-reused claim file.
+printf '{"id":"wrong-order","attempt":{"id":"wrong-attempt"}}' > order.json
+''')
+    director.chmod(0o700)
+    env = {'PATH': os.environ['PATH'], 'HOME': str(root), 'REPO': str(repo),
+        'TEST_ROOT': str(root), 'CFW_RENDER_SCRATCH': str(root/'scratch'),
+        'CFW_RENDER_STATE_DIR': str(root/'state'), 'CFW_RENDER_LOG_DIR': str(root/'logs with spaces'),
+        'CFW_RENDER_SKILLS_DIR': str(root/'skills'), 'CFW_RENDER_COMPUTER_NAME': 'Synthetic Mac',
+        'CFW_WORKER_ID': 'synthetic-worker', 'CFW_API_BASE': 'http://unused.invalid',
+        'CFW_RENDER_WORKER_KEY': 'synthetic-key', 'CFW_RENDER_DIRECTOR_CMD': str(director),
+        'CFW_RENDER_TIMEOUT_IMAGE': '60', 'CFW_RENDER_TIMEOUT_VIDEO': '60',
+        'CFW_RENDER_GATE_FAIL_CAP': '1', 'CFW_RENDER_FANOUT_MODELS': '',
+        'CFW_RENDER_OLLAMA_KEYS_FILE': str(root/'absent'), 'CFW_RENDER_KEEP_OUTPUTS': '0',
+        'TEST_OUTCOME': 'blocked', 'TEST_ATTEMPT': 'attempt-A', 'TEST_GATE': '', 'TEST_HARNESS_RC': '30'}
+    setup = '''
+set -u
+SELF_DIR="$REPO/bin"
+source "$SELF_DIR/cfw-render-lib.sh"
+RUNS_DIR="$CFW_RENDER_LOG_DIR/runs"
+JOURNAL="$CFW_RENDER_STATE_DIR/journal.tsv"
+cr_recipe_needs_heygen() { [[ "$TEST_GATE" == provider ]]; }
+cr_verify_skills_bundle() { [[ "$TEST_GATE" != integrity ]]; }
+cr_mcp_call() { return 0; }
+cr_event() { :; }
+cr_heartbeat_start() { :; }
+cr_heartbeat_stop() { :; }
+cr_keep_output_dir() { echo "$TEST_ROOT/kept/$2"; }
+cr_harness_run() { return "$TEST_HARNESS_RC"; }
+# Force transcript allocations into one clock second, but leave observed UTC
+# starts/finishes real. No sleeps/timing assumptions in the collision test.
+date() { if [[ "${1:-}" == +%s ]]; then echo 1234567890; else command date "$@"; fi; }
+'''
+    def run(script, **extra):
+        p = subprocess.Popen(['bash', '-c', setup + script], env={**env, **extra},
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+        try:
+            out, err = p.communicate(timeout=30)
+            return p.returncode, out, err
+        finally:
+            # Only this test session, never a name-based kill of real workers.
+            try: os.killpg(p.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            p.wait()
+    claim = {'id': 'order-1', 'shortCode': 'R-FAIL', 'brandId': 'b1', 'brandName': 'Brand A',
+             'taskOrder': {'brand': {'slug': 'brand-a'}, 'credentials': {'test': 'synthetic-provider-secret'}},
+             'recipe': 'reel', 'kind': 'image', 'attempt': {'id': 'attempt-A'}, 'attemptId': 'wrong-flat-id',
+             'reason': 'private failure detail', 'providerKeys': ['synthetic-provider-secret'],
+             'unrelated': 'do-not-copy', 'startedAt': '1999-01-01T00:00:00Z', 'directorLog': 'invented.out'}
+    fields = set('shortCode brand result finishedAt orderId attemptId brandSlug recipe startedAt directorLog'.split())
+    def rows(): return [json.loads(s) for s in (root/'state/recent.ndjson').read_text().splitlines()]
+    def spawn(order, rc=0, **extra):
+        before = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+        result, out, err = run(functions + '\nspawn_director "$TEST_CLAIM"\nrc=$?\ncr_status_write\nexit "$rc"\n',
+                               TEST_CLAIM=json.dumps(order), **extra)
+        assert result == rc, (result, rc, err)
+        row = rows()[-1]
+        assert set(row) == fields, row
+        assert before <= datetime.datetime.fromisoformat(row['startedAt'].replace('Z', '+00:00')) <= datetime.datetime.now(datetime.timezone.utc)
+        assert row['attemptId'] == order.get('attempt', {}).get('id', order.get('attemptId'))
+        assert row['orderId'] == order['id'] and row['recipe'] == order['recipe']
+        for path in ('recent.ndjson', 'status.json'):
+            data = (root/'state'/path).read_text()
+            assert all(s not in data for s in ('synthetic-provider-secret', 'private failure detail', 'do-not-copy', 'wrong-order', 'wrong-attempt'))
+            assert (root/'state'/path).stat().st_mode & 0o777 == 0o600
+        return row
+    a = spawn(claim)
+    assert a['result'] == 'failed' and a['directorLog']
+    assert (root/'scratch/brand-a/order-1').is_dir()
+    first_log = root/'logs with spaces/runs'/a['directorLog']
+    first_bytes = first_log.read_bytes()
+    assert first_bytes == b'synthetic transcript attempt-A\n'
+    b = spawn({**claim, 'attempt': {'id': 'attempt-B'}}, TEST_OUTCOME='complete', TEST_ATTEMPT='attempt-B')
+    assert b['result'] == 'done' and b['brand'] == 'Brand A' and b['brandSlug'] == 'brand-a'
+    assert not (root/'scratch/brand-a/order-1').exists()
+    assert rows()[:2] == [a, b]
+    assert a['directorLog'] != b['directorLog']
+    assert all(r['directorLog'].startswith('order-1-1234567890-') and r['directorLog'].endswith('.out') for r in (a,b))
+    assert first_log.read_bytes() == first_bytes
+    assert (root/'logs with spaces/runs'/b['directorLog']).read_bytes() == b'synthetic transcript attempt-B\n'
+    assert first_log.stat().st_mode & 0o777 == 0o600
+    status = json.loads((root/'state/status.json').read_text())
+    assert status['recent'] == [b, a]
+    for gate in ('provider', 'integrity', 'brand'):
+        order = {**claim, 'id': 'gate-'+gate}
+        if gate == 'brand': order.update(brandId='', taskOrder={})
+        r = spawn(order, rc=1, TEST_GATE=gate)
+        assert r['result'] == 'failed' and r['directorLog'] is None
+    for code, outcome in ((20,'stopped'), (21,'stopped'), (22,'stopped'), (23,'failed'), (24,'stopped'), (30,'failed'), (31,'failed')):
+        r = spawn({**claim, 'id': 'harness-'+str(code), 'manifest': {'steps': []}}, TEST_HARNESS_RC=str(code))
+        assert r['result'] == outcome and r['directorLog'] is None
+        if code in (22,23,24): assert not (root/'scratch/brand-a'/('harness-'+str(code))).exists()
+    # Bad identifiers are refused before either scratch or a transcript exists.
+    count = len(rows())
+    for oid in ('../escape', 'bad/name', 'bad\\name', 'bad id', '.hidden'):
+        rc, _, _ = run(functions + '\nspawn_director "$TEST_CLAIM"\n', TEST_CLAIM=json.dumps({**claim, 'id': oid}))
+        assert rc == 1 and len(rows()) == count
+    assert not (root/'escape').exists()
+    # No Director or heartbeat starts when exclusive allocation fails, and no
+    # shared-name fallback is created. Cover absent, non-directory and readonly.
+    (root/'not-directory').write_text('untouched')
+    (root/'readonly/runs').mkdir(parents=True)
+    (root/'readonly/runs').chmod(0o500)
+    try:
+        for folder in ('missing', 'not-directory', 'readonly'):
+            r = spawn({**claim, 'id': 'allocation-'+folder}, rc=1, CFW_RENDER_LOG_DIR=str(root/folder))
+            assert r['result'] == 'failed' and r['directorLog'] is None
+            assert not (root/'scratch/brand-a'/('allocation-'+folder)/'.outcome').exists()
+        assert (root/'not-directory').read_text() == 'untouched'
+        assert not list((root/'readonly/runs').iterdir())
+    finally:
+        (root/'readonly/runs').chmod(0o700)
+    # Old callers keep their file-derived identity but never guess start/log.
+    legacy = root/'legacy.json'
+    legacy.write_text(json.dumps(claim))
+    rc, _, err = run('cr_recent_append "$TEST_ROOT/legacy.json" complete fallback\n')
+    assert rc == 0, err
+    assert rows()[-1]['attemptId'] == 'attempt-A'
+    assert rows()[-1]['startedAt'] is None and rows()[-1]['directorLog'] is None
+    rc, _, err = run('cr_recent_append "" blocked legacy\n')
+    assert rc == 0, err
+    r = rows()[-1]
+    assert r['orderId'] == 'legacy' and all(r[k] is None for k in fields - {'orderId','result','finishedAt'})
+    # Explicit invalid/missing identity cannot fall back to stale scratch.
+    for identity in ('', '[]', '{', json.dumps({'orderId': {'secret': 'do-not-copy'}, 'brand': ['do-not-copy'],
+            'startedAt': 'not-a-date', 'directorLog': '../outside.out', 'reason': 'private failure detail'})):
+        rc, _, err = run('cr_recent_append "$TEST_ROOT/legacy.json" blocked fallback "$TEST_IDENTITY"\n', TEST_IDENTITY=identity)
+        assert rc == 0, err
+        r = rows()[-1]
+        assert all(r[k] is None for k in fields - {'result','finishedAt'}), r
+    assert len(rows()) <= 50
+    print('PASS: attempt identity survives reuse/cleanup; nested IDs, early gates, harness, legacy/null and secret exclusions')
+    print('PASS: same-second exclusive transcripts preserve bytes; spaced paths, unsafe IDs and allocation failures')
+    # Consumed by the desktop regression: actual worker-produced status, no logs.
+    print('STATUS_FIXTURE=' + json.dumps(status))
+PY
+}
+if [[ "${1:-}" == --recent-identity ]]; then
+  recent_identity_cases
+  exit $?
+fi
+
+# Existing M3-05a-3 update case, selectable without starting workers/services.
+# This is file-copy coverage, NOT native app/updater or LaunchAgent acceptance.
+installer_update_case() {
+  python3 - "$REPO_DIR" <<'PY'
+import hashlib, json, os, pathlib, subprocess, sys, tempfile
+repo = pathlib.Path(sys.argv[1])
+pin = next(d for d in json.loads((repo/'config/agent-guides.json').read_text())['documents']
+           if d['path'] == 'lib/render-debug.md')
+assert hashlib.sha256((repo/pin['path']).read_bytes()).hexdigest() == pin['sha256']
+with tempfile.TemporaryDirectory(prefix='cfw-update-test-') as tmp:
+    root = pathlib.Path(tmp)
+    guards = root/'guards'; guards.mkdir()
+    # Defense in depth: even a regressed skip flag must not touch real services.
+    for name in ('launchctl', 'curl', 'claude', 'codex'):
+        stub = guards/name
+        stub.write_text('#!/bin/bash\nprintf "%s\\n" "$0" >> "$HOME/unexpected-command"\nexit 97\n')
+        stub.chmod(0o700)
+    for guide_state in ('missing', 'stale'):
+        home = root/guide_state; home.mkdir()
+        prefix = home/'CFW Render/app'
+        (prefix/'bin').mkdir(parents=True)
+        (prefix/'lib').mkdir()
+        (prefix/'config').mkdir()
+        for name in ('cfw-render.sh', 'cfw-render-lib.sh'):
+            (prefix/'bin'/name).write_text('old worker\n')
+        if guide_state == 'stale':
+            (prefix/'lib/render-debug.md').write_text('old guide\n')
+        # Only synthetic settings/evidence, all confined to this test directory.
+        preserved = {
+            'CFW Render/app/config/local-only.json': b'{"local":true}\n',
+            '.cfw-render/app-settings.json': b'{"autoUpdate":false,"workerSyncedVersion":"old"}\n',
+            '.cfw-render/cfw-render.env': b'CFW_RENDER_WORKER_KEY=synthetic-only\n',
+            '.cfw-render/worker-id': b'synthetic-worker\n',
+            '.cfw-render/recent.ndjson': b'{"attemptId":"attempt-A"}\n',
+            '.cfw-render/status.json': b'{"schema":1,"recent":[]}\n',
+            '.cfw-render/scratch/brand/order/order.json': b'{"id":"order"}\n',
+            'CFW Render/logs/runs/order-123-old.out': b'synthetic prior evidence\n',
+            'CFW Render/outputs/brand/output.txt': b'synthetic output\n',
+            'Library/LaunchAgents/com.cfw.render.plist': b'synthetic plist, never loaded\n',
+        }
+        for name, data in preserved.items():
+            path = home/name; path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data); path.chmod(0o600)
+        env = {'HOME': str(home), 'PATH': str(guards)+os.pathsep+os.environ['PATH'],
+               'CFW_RENDER_SKIP_LAUNCHCTL': '1', 'CFW_RENDER_INSTALL_NO_LAUNCHCTL': '1'}
+        with (home/'stdin').open('w+b') as stdin:
+            stdin.write(b'KEEP-THIS-LINE\n'); stdin.seek(0)
+            result = subprocess.run(['bash', str(repo/'install/install.sh'), '--mode', 'byoa',
+                '--non-interactive', '--from-app', '--update'], env=env, cwd=home,
+                stdin=stdin, capture_output=True, timeout=60)
+            assert result.returncode == 0, (guide_state, result.returncode, result.stderr.decode())
+            assert stdin.read() == b'KEEP-THIS-LINE\n', 'update consumed stdin'
+        assert [json.loads(line) for line in result.stdout.splitlines()] == [
+            {'step': 'ready', 'state': 'done', 'message': 'Updated'}]
+        for name in ('bin/cfw-render.sh', 'bin/cfw-render-lib.sh', 'VERSION',
+                     'lib/render-debug.md', 'config/agent-guides.json'):
+            assert (prefix/name).read_bytes() == (repo/name).read_bytes(), name
+        assert hashlib.sha256((prefix/pin['path']).read_bytes()).hexdigest() == pin['sha256']
+        for name, data in preserved.items():
+            assert (home/name).read_bytes() == data, name
+            assert (home/name).stat().st_mode & 0o777 == 0o600, name
+        assert not (home/'unexpected-command').exists(), 'external command attempted'
+        print('PASS: update from '+guide_state+' guide restores pinned guide and worker; settings/state/evidence preserved; stdin untouched; no services')
+PY
+}
+if [[ "${1:-}" == --installer-update ]]; then
+  installer_update_case
+  exit $?
+fi
+
 FAKE_BIN="$(mktemp -d)"
 cp "$TEST_DIR/fake-claude.sh" "$FAKE_BIN/claude"
 chmod +x "$FAKE_BIN/claude"
@@ -112,12 +1123,19 @@ start_mock() {
   local seed_file="$1" state_dir="$2" port="$3"
   python3 "$TEST_DIR/mock-server.py" "$port" "$state_dir" "$seed_file" \
     > "$state_dir/../mock-server.log" 2>&1 &
-  local pid=$!
+  local pid=$! ready
   for _ in $(seq 1 50); do
-    curl -sS --max-time 1 "http://127.0.0.1:$port/api/v1/mcp" >/dev/null 2>&1 && break
+    ready="$(curl -sS --max-time 1 "http://127.0.0.1:$port/__test_ready" 2>/dev/null)"
+    if [[ "$ready" == "$pid" ]]; then echo "$pid"; return 0; fi
+    # An occupied port must not hand this fixture another mock's queue.
+    [[ -n "$ready" ]] && break
+    kill -0 "$pid" 2>/dev/null || break
     sleep 0.1
   done
-  echo "$pid"
+  if kill -0 "$pid" 2>/dev/null; then kill "$pid" 2>/dev/null; fi
+  wait "$pid" 2>/dev/null
+  printf 'Mock server did not become ready on port %s\n' "$port" >&2
+  return 1
 }
 
 # owner_layout <home> — undo run_case's test pins (logs in the state dir, no
@@ -201,6 +1219,17 @@ dry_pid="$(start_mock "$case_dir_dry/queue.json" "$case_dir_dry/mockstate" "$dry
   "$REPO_DIR/bin/cfw-render.sh" --dry
 )
 dry_exit=$?
+# Readiness must belong to the process just spawned, not an older mock that
+# happens to own this port (otherwise fixtures silently hit another queue).
+mkdir -p "$case_dir_dry/duplicate/mockstate"
+duplicate_pid="$(start_mock "$case_dir_dry/queue.json" "$case_dir_dry/duplicate/mockstate" "$dry_port" 2> "$case_dir_dry/duplicate/error")"
+duplicate_rc=$?
+if [[ "$duplicate_rc" != 0 && -z "$duplicate_pid" ]] && kill -0 "$dry_pid" 2>/dev/null; then
+  pass "mock readiness: occupied port is refused, original server is untouched"
+else
+  fail "mock readiness: occupied port" "rc=$duplicate_rc; accepted another server's response"
+fi
+if [[ "$duplicate_pid" =~ ^[0-9]+$ ]]; then kill "$duplicate_pid" 2>/dev/null; fi
 kill "$dry_pid" 2>/dev/null; wait "$dry_pid" 2>/dev/null
 if [[ "$dry_exit" == "0" ]]; then pass "--dry exits 0 against a reachable mock"; else fail "--dry exit code" "expected 0, got $dry_exit"; fi
 if [[ -f "$case_dir_dry/mockstate/calls.jsonl" ]]; then
@@ -634,7 +1663,7 @@ else
 fi
 if ! pgrep -f "cfw-render" >/dev/null 2>&1 || true; then :; fi
 
-echo "=== Case 4e: block carries `needs` (CFW-146) ==="
+echo '=== Case 4e: block carries `needs` (CFW-146) ==='
 run_case "needs-ingredient" "needs-ingredient" "order_fixture order-needs-1 brand-1 video" true
 needs_check="$(python3 -c '
 import json, sys
@@ -1442,8 +2471,10 @@ chmod 644 "$q6b_env"
   "$REPO_DIR/install/install.sh" --mode byoa >"$q6b_home/install.log" 2>&1
 )
 q6b_app="$q6b_home/CFW Render/app"
-if [[ -x "$q6b_app/bin/cfw-render.sh" && -f "$q6b_app/skills/index.json" && -f "$q6b_app/AGENTS.md" ]]; then
-  pass "install.sh --mode byoa: default prefix is '\$HOME/CFW Render/app' (bin, skills, AGENTS.md)"
+if [[ -x "$q6b_app/bin/cfw-render.sh" && -f "$q6b_app/skills/index.json" && -f "$q6b_app/AGENTS.md" ]] &&
+   cmp -s "$REPO_DIR/bin/cfw-render-checkpoint.py" "$q6b_app/bin/cfw-render-checkpoint.py" &&
+   cmp -s "$REPO_DIR/bin/cfw-render-checks.py" "$q6b_app/bin/cfw-render-checks.py"; then
+  pass "install.sh --mode byoa: default prefix includes shell worker, Python checkpoint/check helpers, skills and guide"
 else
   fail "install.sh: default byoa prefix" "missing under $q6b_app — install.log tail: $(tail -15 "$q6b_home/install.log" 2>/dev/null)"
 fi
@@ -1733,9 +2764,9 @@ import json, sys
 m = json.load(open(sys.argv[1]))
 print(m["recipeVersion"], ",".join(s["id"] for s in m["steps"]), ",".join(i["id"] for i in m["inputs"]), sum(s["weight"] for s in m["steps"]))
 ' "$c16_spot" 2>/dev/null)"
-c16_want="2026.10.2 research,script,prepare_footage,transcribe,plan_edit,plan_broll,render_scenes,assemble,final_checks talking_head,broll,cta 100"
+c16_want="2026.10.4 research,script,prepare_footage,transcribe,plan_edit,plan_broll,render_scenes,assemble,final_checks talking_head,broll,cta 100"
 if [[ "$c16_shape" == "$c16_want" ]]; then
-  pass "Spotlight manifest: recipeVersion 2026.10.2 (M1-09), 9 steps in contract order, 3 inputs, computer weights sum to 100"
+  pass "Spotlight manifest: recipeVersion 2026.10.4 (M1-09), 9 steps in contract order, 3 inputs, computer weights sum to 100"
 else
   fail "Spotlight manifest shape" "expected '$c16_want', got '$c16_shape'"
 fi
@@ -1778,7 +2809,7 @@ for c16_r in $c16_batch; do
     p-ai-image|p-ai-character) c16_prov_want="kie" ;;
     p-reels-faceless)     c16_prov_want="elevenlabs" ;;
     p-clone-reel)         c16_prov_want="elevenlabs,heygen" ;;
-    p-longform)           c16_prov_want="elevenlabs,heygen,kie" ;;
+    p-longform)           c16_prov_want="elevenlabs,heygen" ;;
     *)                    c16_prov_want="" ;;
   esac
   if [[ "$c16_prov" == "$c16_prov_want" ]]; then
@@ -1787,6 +2818,18 @@ for c16_r in $c16_batch; do
     fail "$c16_r manifest: needs.providers" "expected '$c16_prov_want', got '$c16_prov'"
   fi
 done
+# Kie is an optional visual source, not a prerequisite for running Longform.
+if python3 -c '
+import json, sys
+m = json.load(open(sys.argv[1]))
+visuals = next(s for s in m["steps"] if s["id"] == "build_visuals")
+assert visuals["uses"]["optionalProviders"] == ["kie"]
+assert "kie" not in m["needs"]["providers"]
+' "$REPO_DIR/skills/p-longform/manifest.json"; then
+  pass "p-longform manifest: Kie remains optional on build_visuals, never a required key"
+else
+  fail "p-longform manifest: optional visual provider" "expected optional Kie on build_visuals only"
+fi
 if ! grep -q 'c-composio' <<< "$c16_out"; then
   pass "validate-manifests.py: no c-composio line (component, not a recipe manifest)"
 else
@@ -1918,6 +2961,89 @@ else
   fail "validate-manifests.py: no-jsonschema mode" "expected RC=1 and 'FAIL — 4 of 5' in: $c16d_nojs"
 fi
 
+echo "=== Case 16e: validate-manifests.py — per-stage uses (providers, optional providers, tools) ==="
+# Each stage says which provider keys it needs (groups: any ONE of a group is enough),
+# which it uses only when present, and which local tools it runs. The validator ties
+# them to needs.* so a recipe can't ask for a key no stage uses, or a stage run a tool
+# the computer was never checked for.
+c16e_ok="$(python3 "$c16_validator" "$c16_fixtures/uses-ok/manifest.json" 2>&1)"
+c16e_ok_rc=$?
+if [[ "$c16e_ok_rc" == "0" ]]; then
+  pass "validate-manifests.py: uses with an any-one-of group + an optional provider is valid"
+else
+  fail "validate-manifests.py: uses-ok" "expected exit 0, got $c16e_ok_rc: $c16e_ok"
+fi
+c16e_check() {
+  # c16e_check <fixture> <expected error substring> <description>
+  local out rc
+  out="$(python3 "$c16_validator" "$c16_fixtures/$1/manifest.json" 2>&1)"
+  rc=$?
+  if [[ "$rc" == "1" ]] && grep -qF "$2" <<< "$out"; then
+    pass "validate-manifests.py: $3"
+  else
+    fail "validate-manifests.py: $1" "expected exit 1 + '$2', got rc=$rc: $out"
+  fi
+}
+c16e_check bad-uses-unknown-tool "steps[prepare].uses.tools: 'yt-dlp' is not listed in needs.tools" \
+  "a stage tool missing from needs.tools is refused, naming the stage and tool"
+c16e_check bad-uses-orphan-provider "needs.providers: 'kie' is not required by any stage" \
+  "a provider key no stage requires is refused (optional keys never go in needs.providers)"
+c16e_check bad-uses-half-annotated "steps[finish].uses: required once any computer step declares uses" \
+  "a half-annotated recipe is refused, naming the stage without uses"
+c16e_check bad-uses-required-and-optional "steps[prepare].uses.optionalProviders: 'heygen' is also required by this stage" \
+  "a provider both required and optional on one stage is refused"
+c16e_nojs="$(python3 - "$c16_validator" "$c16_fixtures" <<'PY' 2>&1
+import runpy, sys
+validator, fixtures = sys.argv[1], sys.argv[2]
+sys.modules["jsonschema"] = None
+bad = ["bad-uses-unknown-tool", "bad-uses-orphan-provider", "bad-uses-half-annotated", "bad-uses-required-and-optional"]
+sys.argv = [validator] + [f"{fixtures}/{b}/manifest.json" for b in bad] + [f"{fixtures}/uses-ok/manifest.json"]
+try:
+    runpy.run_path(validator, run_name="__main__")
+except SystemExit as e:
+    print(f"RC={e.code}")
+PY
+)"
+if grep -q '^RC=1$' <<< "$c16e_nojs" && grep -q 'FAIL — 4 of 5' <<< "$c16e_nojs"; then
+  pass "validate-manifests.py: without jsonschema, the uses rules fail exactly the 4 bad fixtures"
+else
+  fail "validate-manifests.py: uses no-jsonschema mode" "expected RC=1 and 'FAIL — 4 of 5' in: $c16e_nojs"
+fi
+
+echo "=== Case 16f: final delivery references — schema and hand validator ==="
+if python3 - "$c16_validator" "$REPO_DIR" <<'PY'
+import copy, json, pathlib, runpy, sys
+v = runpy.run_path(sys.argv[1])
+repo = pathlib.Path(sys.argv[2])
+p = repo / 'skills/p-reels-spotlight/manifest.json'
+m = json.loads(p.read_text())
+schema = json.loads((repo / 'schemas/recipe-manifest.v1.schema.json').read_text())
+def errors(value):
+    e = v['Errors'](p)
+    v['validate_structure'](e, value, p.parent)
+    v['validate_with_jsonschema'](e, value, schema)
+    return e.items
+assert not errors(m), errors(m)
+legacy = copy.deepcopy(m); del legacy['finalOutputs']
+assert not errors(legacy)
+refs = m['finalOutputs']
+for invalid in ([], refs * 2, [{**refs[0], 'saveId':'missing'}],
+                [{**refs[0], 'role':'captions'}], [refs[-1]],
+                [{**refs[0], 'stepId':'research'}], [{**refs[0], 'extra':True}]):
+    bad = copy.deepcopy(m); bad['finalOutputs'] = invalid
+    assert errors(bad), invalid
+    e = v['Errors'](p); v['validate_structure'](e, bad, p.parent)
+    assert e.items, ('hand validator accepted', invalid)
+bad = copy.deepcopy(m)
+next(s for s in bad['steps'] if s['id'] == refs[0]['stepId'])['when'] = {'inputPresent':m['inputs'][0]['id']}
+assert errors(bad), 'conditional final output accepted'
+PY
+then
+  pass "finalOutputs: explicit valid refs and legacy accepted; invalid refs rejected without jsonschema"
+else
+  fail "finalOutputs validator" "schema/hand validation regression"
+fi
+
 echo "=== Case 18: step harness mock — capability-gated claim, report_render_step, control files (M1-08 b) ==="
 c18_dir="$(mktemp -d)"
 c18_port=$((MOCK_PORT_BASE + 900))
@@ -1927,7 +3053,7 @@ c18_manifest="$REPO_DIR/skills/p-reels-spotlight/manifest.json"
 python3 -c '
 import json, sys
 print(json.dumps([{"id": "order-m1", "brandId": "brand-1", "workspaceId": "ws-1", "kind": "video",
-  "recipe": "p-reels-spotlight", "recipeVersion": "2026.10.2", "manifest": sys.argv[1],
+  "recipe": "p-reels-spotlight", "recipeVersion": "2026.10.4", "manifest": sys.argv[1],
   "status": "queued", "taskOrder": {"version": 1, "orderId": "order-m1"}, "priority": 0, "attempts": 1}]))
 ' "$c18_manifest" > "$c18_dir/queue.json"
 c18_pid="$(CFW_MOCK_CONTROL_DIR="$c18_ctl" start_mock "$c18_dir/queue.json" "$c18_state" "$c18_port")"
@@ -1936,7 +3062,7 @@ c18_run() {
   CFW_API_BASE="http://127.0.0.1:$c18_port" CFW_RENDER_WORKER_KEY="cfw_render_test0000000000000000" \
     bash -c 'set -uo pipefail; source "$1"; shift; eval "$*"' _ "$REPO_DIR/bin/cfw-render-lib.sh" "$1"
 }
-c18_caps='{"engine":"codex","os":"macos","manifests":[{"recipe":"p-reels-spotlight","recipeVersion":"2026.10.2"}]}'
+c18_caps='{"engine":"codex","os":"macos","manifests":[{"recipe":"p-reels-spotlight","recipeVersion":"2026.10.4"}]}'
 
 echo "--- 18a: claim without capabilities → order null"
 c18a_out="$(c18_run 'cr_mcp_call_soft claim_render_order "{\"workerId\":\"w1\"}"')"
@@ -1953,10 +3079,10 @@ import json, sys
 o = json.load(sys.stdin)["order"]
 print(o["attempt"]["id"], o["attempt"]["number"], o["manifest"]["recipeVersion"], o["resumeFromStepId"], o["savedOutputs"], o["inputs"], o["answers"])
 ' <<< "$c18b_out" 2>/dev/null)"
-if [[ "$c18b_shape" == "att_1 1 2026.10.2 prepare_footage [] {} {}" ]]; then
+if [[ "$c18b_shape" == "att_1 1 2026.10.4 prepare_footage [] {} {}" ]]; then
   pass "claim: capability match returns attempt att_1/1, manifest, resumeFromStepId=prepare_footage, empty savedOutputs/inputs/answers"
 else
-  fail "claim: capabilities match" "expected 'att_1 1 2026.10.2 prepare_footage [] {} {}', got '$c18b_shape' from: $c18b_out"
+  fail "claim: capabilities match" "expected 'att_1 1 2026.10.4 prepare_footage [] {} {}', got '$c18b_shape' from: $c18b_out"
 fi
 
 echo "--- 18c: report seq 1,1,2 → reports.ndjson has 2 lines, 2nd reply duplicate:true"
@@ -2005,6 +3131,12 @@ else
 fi
 kill "$c18_pid" 2>/dev/null; wait "$c18_pid" 2>/dev/null
 rm -rf "$c18_dir"
+
+if c19_local_checkpoints; then
+  pass "harness: local checkpoint persistence and report recovery"
+else
+  fail "harness: local checkpoint persistence and report recovery" "see assertions above"
+fi
 
 echo "=== Case 19: step harness end-to-end — cfw-render.sh claim branch + cr_harness_run + fake engine (M1-08 c) ==="
 c19_manifest="$REPO_DIR/test/fixtures/manifests/harness-3step/manifest.json"
@@ -2222,6 +3354,106 @@ print(" ".join(x for x in (one(s) for s in m["steps"]) if x) + " attempt_complet
   fi
   rm -rf "$c19i"; c19i_port=$((c19i_port + 1))
 done
+
+echo "--- 19k: each stage gets only the provider keys its uses lists (names the step files read); values never leak"
+c19k="$(mktemp -d)"; c19k_port=$((MOCK_PORT_BASE + 935))
+c19k_m="$c19k/manifest.json"
+python3 - "$c19_manifest" "$c19k_m" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+uses = {"a": {"tools": ["ffmpeg"], "providers": [["heygen", "elevenlabs"]], "optionalProviders": ["gemini"]},
+        "c": {"tools": ["ffmpeg"]}}
+for s in m["steps"]:
+    if s["id"] in uses:
+        s["uses"] = uses[s["id"]]
+json.dump(m, open(sys.argv[2], "w"))
+PY
+c19_manifest_saved="$c19_manifest"; c19_manifest="$c19k_m"
+c19_setup "$c19k" "$c19k_port"
+c19_manifest="$c19_manifest_saved"
+kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
+python3 - "$c19k/queue.json" <<'PY'
+import json, sys
+q = json.load(open(sys.argv[1]))
+q[0]["providerKeys"] = [{"provider": "heygen", "value": "hg-PLANTED-c19k"},
+                        {"provider": "elevenlabs", "value": "el-PLANTED-c19k"},
+                        {"provider": "kie", "value": "kie-PLANTED-c19k"},
+                        {"provider": "gemini", "value": "gm-PLANTED-c19k"}]
+json.dump(q, open(sys.argv[1], "w"))
+PY
+c19_pid="$(CFW_MOCK_CONTROL_DIR="$c19_ctl" start_mock "$c19k/queue.json" "$c19_state" "$c19k_port")"
+c19_worker "$c19k" "$c19k_port" "FAKE_ENGINE_KEYS_DIR=$c19k/keys"
+kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
+c19k_a="$(tr '\n' ' ' < "$c19k/keys/a.keys" 2>/dev/null)"
+c19k_c="$(tr '\n' ' ' < "$c19k/keys/c.keys" 2>/dev/null)"
+c19k_leak="$(grep -rl 'PLANTED-c19k' "$c19k/worker.out" "$c19_ctl/reports.ndjson" "$c19k/cr-state" "$c19k/keys" 2>/dev/null | tr '\n' ' ')"
+if [[ "$c19k_a" == "ELEVENLABS_API_KEY GEMINI_API_KEY HEYGEN_API_KEY " && -z "$c19k_c" && -z "$c19k_leak" && "$(c19_completed "$c19k")" == "1" ]]; then
+  pass "harness: stage a got HeyGen + ElevenLabs + optional Gemini (not Kie); stage c got no key; no value in logs, reports or state"
+else
+  fail "harness: per-stage keys" "a='$c19k_a' c='$c19k_c' leak='$c19k_leak' completed=$(c19_completed "$c19k"); worker.out: $(tail -5 "$c19k/worker.out")"
+fi
+rm -rf "$c19k"
+
+echo "--- 19l: a manifest without uses → every stage still gets every delivered key (older recipes keep working)"
+c19l="$(mktemp -d)"; c19l_port=$((MOCK_PORT_BASE + 936))
+c19_setup "$c19l" "$c19l_port"
+kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
+python3 - "$c19l/queue.json" <<'PY'
+import json, sys
+q = json.load(open(sys.argv[1]))
+q[0]["providerKeys"] = [{"provider": "heygen", "value": "hg-PLANTED-c19l"}, {"provider": "kie", "value": "kie-PLANTED-c19l"}]
+json.dump(q, open(sys.argv[1], "w"))
+PY
+c19_pid="$(CFW_MOCK_CONTROL_DIR="$c19_ctl" start_mock "$c19l/queue.json" "$c19_state" "$c19l_port")"
+c19_worker "$c19l" "$c19l_port" "FAKE_ENGINE_KEYS_DIR=$c19l/keys"
+kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
+c19l_a="$(tr '\n' ' ' < "$c19l/keys/a.keys" 2>/dev/null)"
+c19l_c="$(tr '\n' ' ' < "$c19l/keys/c.keys" 2>/dev/null)"
+if [[ "$c19l_a" == "HEYGEN_API_KEY KIE_AI_API_KEY " && "$c19l_c" == "HEYGEN_API_KEY KIE_AI_API_KEY " && "$(c19_completed "$c19l")" == "1" ]]; then
+  pass "harness: no uses → both stages got every delivered key under the step files' names"
+else
+  fail "harness: no-uses keys" "a='$c19l_a' c='$c19l_c' completed=$(c19_completed "$c19l"); worker.out: $(tail -5 "$c19l/worker.out")"
+fi
+rm -rf "$c19l"
+
+echo "=== Case 19j: harness reads the claim's owner files in CFW's array shape (and the old dict shape) ==="
+# CFW sends CONTRACTS §7 arrays: inputs [{inputId, items:[{kind,url}]}]. The
+# harness used to read only a dict, so a talking-head video or B-roll the
+# owner attached never reached inputs/<id>/ and `when: inputPresent` skipped.
+c19j="$(mktemp -d)"
+printf 'talking head bytes' > "$c19j/take.mp4"
+printf 'broll one' > "$c19j/b1.mp4"
+printf 'broll two' > "$c19j/b2.mp4"
+python3 -c '
+import json, sys
+d = sys.argv[1]
+json.dump({"inputs": [
+  {"inputId": "talking_head", "items": [{"kind": "video", "url": d + "/take.mp4"}]},
+  {"inputId": "broll", "items": [{"kind": "video", "url": d + "/b1.mp4"}, {"kind": "video", "url": d + "/b2.mp4"}]}],
+  "answers": [{"inputId": "cta", "text": "Follow for more"}]}, open(d + "/arr.json", "w"))
+json.dump({"inputs": {"talking_head": [{"url": d + "/take.mp4"}]}, "answers": {}}, open(d + "/dict.json", "w"))
+json.dump({"inputs": [], "answers": []}, open(d + "/empty.json", "w"))
+' "$c19j"
+c19j_out="$(
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/bin/cfw-render-lib.sh" >/dev/null 2>&1
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/bin/cfw-render-harness.sh"
+  mkdir -p "$c19j/wa/inputs" "$c19j/wd/inputs"
+  cr_h_stage_inputs "$c19j/wa" "$c19j/arr.json"
+  cr_h_stage_inputs "$c19j/wd" "$c19j/dict.json"
+  printf '%s %s %s %s ' \
+    "$(cr_h_input_present "$c19j/arr.json" broll)" "$(cr_h_input_present "$c19j/arr.json" cta)" \
+    "$(cr_h_input_present "$c19j/dict.json" talking_head)" "$(cr_h_input_present "$c19j/empty.json" broll)"
+  (cd "$c19j" && find wa wd -type f | sort | tr '\n' ' ')
+)"
+c19j_want="1 0 1 0 wa/inputs/broll/b1.mp4 wa/inputs/broll/b2.mp4 wa/inputs/talking_head/take.mp4 wd/inputs/talking_head/take.mp4 "
+if [[ "$c19j_out" == "$c19j_want" ]]; then
+  pass "harness: array-shape claim inputs staged per input id (talking_head + 2 B-roll clips); dict shape still works; inputPresent follows them"
+else
+  fail "harness: claim inputs array shape" "got '$c19j_out' want '$c19j_want'"
+fi
+rm -rf "$c19j"
 
 echo "=== Case 20a: check-step-files.py green — ok fixture PASSes, exit 0 (M1-09) ==="
 c20_checker="$REPO_DIR/scripts/check-step-files.py"
@@ -3480,13 +4712,20 @@ c21_setup "$mc3" $((MOCK_PORT_BASE + 962)) harness-3step '[{"id":"o1"}]' 'CFW_MO
 c21_worker "$mc3" $((MOCK_PORT_BASE + 962)) --once
 c21_worker "$mc3" $((MOCK_PORT_BASE + 962)) --once
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
-mc3_r="$(m3_status "$mc3" 'sorted(d["recent"][0]) == ["brand","finishedAt","result","shortCode"] and (d["recent"][0]["shortCode"], d["recent"][0]["brand"], d["recent"][0]["result"]) == ("R-TEST","Brand A","done") and d["recent"][0]["finishedAt"].endswith("Z")')"
+mc3_r="$(m3_status "$mc3" 'sorted(d["recent"][0]) == ["attemptId","brand","brandSlug","directorLog","finishedAt","orderId","recipe","result","shortCode","startedAt"] and (d["recent"][0]["shortCode"], d["recent"][0]["brand"], d["recent"][0]["result"]) == ("R-TEST","Brand A","done") and d["recent"][0]["finishedAt"].endswith("Z") and d["recent"][0]["orderId"] == "o1" and d["recent"][0]["attemptId"] == "att_1" and d["recent"][0]["brandSlug"] == "test-brand" and d["recent"][0]["recipe"] == "harness-3step" and d["recent"][0]["startedAt"].endswith("Z") and d["recent"][0]["directorLog"] is None')"
 if [[ "$mc3_r" == "True" ]]; then
   pass "status recent: R-TEST / Brand A / done"
 else
   fail "status recent" "status=$(head -c 600 "$mc3/cr-state/status.json" 2>/dev/null) ndjson=$(cat "$mc3/cr-state/recent.ndjson" 2>/dev/null)"
 fi
 rm -rf "$mc3"
+
+echo "=== Case M3-01c identity: exact attempts across cleanup ==="
+if recent_identity_cases; then
+  pass "recent identity: real producer and sanitized boundary"
+else
+  fail "recent identity" "isolated fake-worker regression failed"
+fi
 
 echo "=== Case M3-01c-4: status.json never holds the worker key or the word token ==="
 mc4="$(mktemp -d)"
@@ -4001,24 +5240,12 @@ else
 fi
 rm -rf "$r5a"
 
-echo "=== Case M3-05a-3: install.sh --from-app --update refreshes CFW Render/app, prints Updated, reads no stdin ==="
-r5c="$(mktemp -d)"
-mkdir -p "$r5c/home/CFW Render/app/bin" "$r5c/home/CFW Render/app/config"
-printf 'stale\n' > "$r5c/home/CFW Render/app/bin/cfw-render.sh"
-printf 'local\n' > "$r5c/home/CFW Render/app/config/local-only.json"
-printf 'KEEP-THIS-LINE\n' > "$r5c/stdin"
-( export HOME="$r5c/home" CFW_RENDER_SKIP_LAUNCHCTL=1
-  { "$REPO_DIR/install/install.sh" --mode byoa --non-interactive --from-app --update > "$r5c/out.jsonl" 2> "$r5c/err.log"
-    echo "rc=$?" > "$r5c/rc"; cat > "$r5c/rest"; } < "$r5c/stdin" )
-if [[ "$(cat "$r5c/rc")" == "rc=0" && "$(cat "$r5c/out.jsonl")" == '{"step": "ready", "state": "done", "message": "Updated"}' ]] \
-   && cmp -s "$REPO_DIR/bin/cfw-render.sh" "$r5c/home/CFW Render/app/bin/cfw-render.sh" \
-   && cmp -s "$REPO_DIR/VERSION" "$r5c/home/CFW Render/app/VERSION" \
-   && [[ -f "$r5c/home/CFW Render/app/config/local-only.json" && "$(cat "$r5c/rest")" == "KEEP-THIS-LINE" ]]; then
-  pass "install.sh --update: changed file refreshed, local config kept, one Updated line, stdin untouched"
+echo "=== Case M3-05a-3: install.sh --from-app --update refreshes worker/guide and preserves local state ==="
+if installer_update_case; then
+  pass "install.sh --update: pinned guide + worker refreshed, settings/state/evidence kept, one Updated line, stdin untouched"
 else
-  fail "install.sh --update" "$(cat "$r5c/rc") out=$(cat "$r5c/out.jsonl") rest=$(cat "$r5c/rest") $(head -c 400 "$r5c/err.log")"
+  fail "install.sh --update" "isolated installer assertions failed (see above)"
 fi
-rm -rf "$r5c"
 
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"

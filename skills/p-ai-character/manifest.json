@@ -72,6 +72,7 @@
       "label": "Lock the character and write the story arc",
       "weight": 15,
       "runsOn": "computer",
+      "uses": { "tools": ["python3"] },
       "when": "always",
       "instructions": "steps/01-character-lock.md",
       "saves": [
@@ -90,6 +91,7 @@
       "label": "Generate the character reference",
       "weight": 20,
       "runsOn": "computer",
+      "uses": { "tools": ["curl", "ffmpeg", "python3"], "providers": [["kie"]] },
       "when": "always",
       "instructions": "steps/02-character-ref.md",
       "saves": [
@@ -108,6 +110,7 @@
       "label": "Generate the scene images",
       "weight": 40,
       "runsOn": "computer",
+      "uses": { "tools": ["curl", "ffmpeg", "python3"], "providers": [["kie"]] },
       "when": "always",
       "instructions": "steps/03-scene-images.md",
       "saves": [
@@ -127,6 +130,7 @@
       "label": "Vision QA and final checks",
       "weight": 25,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "imagemagick", "python3"] },
       "when": "always",
       "instructions": "steps/04-qa-gate.md",
       "saves": [

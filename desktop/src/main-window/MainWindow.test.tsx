@@ -16,6 +16,8 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: () => Promise.resolve("0.1.0") }));
 
 import { MainWindow } from "./MainWindow";
+import { Renders } from "./Renders";
+import { renderDebugInstructions, RENDER_DEBUG_GUIDE_URL } from "./render-debug";
 import { NOW, payload, workingStatus } from "../panel/fixtures";
 
 const BRANDS = { signedIn: true, brands: [{ name: "Lumen Coffee", slug: "lumen-coffee", isCurrent: true }, { name: "Atlas Bikes", slug: "atlas-bikes", isCurrent: false }] };
@@ -37,12 +39,51 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   h.invoke.mockReset();
+  vi.unstubAllGlobals();
 });
 
 const current = () => screen.getByRole("main").getAttribute("data-section");
 const location = (url: string) => act(async () => h.listeners["web-location"]({ payload: url }));
 
 describe("main window", () => {
+  it("copies only the selected attempt identity and uses the public guide with offline fallback", async () => {
+    const row = { shortCode: "R-FAIL", orderId: "order-1", attemptId: "attempt-old", brand: "Brand A", brandSlug: "brand-a", recipe: "reel", result: "failed", startedAt: "2026-10-11T10:00:00Z", finishedAt: "2026-10-11T10:05:00Z", directorLog: "order-1-123.out", reason: "private failure detail", extra: "not copied" };
+    let finish!: () => void;
+    const writeText = vi.fn((_text: string) => new Promise<void>((resolve) => { finish = resolve; }));
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const actions = { openMain: vi.fn(), startWorker: vi.fn(), setPaused: vi.fn(), allowBattery: vi.fn(), runNow: vi.fn(), openLogs: vi.fn() };
+    render(<Renders payload={payload({ ...workingStatus, recent: [{ ...row, attemptId: "attempt-new", result: "done", finishedAt: "2026-10-11T11:00:00Z" }, row] })} actions={actions} clock={() => NOW} />);
+    const button = screen.getByRole("button", { name: "Copy debug instructions" });
+    fireEvent.click(button);
+    expect(button.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(button);
+    expect(writeText).toHaveBeenCalledTimes(1);
+    const text = writeText.mock.calls[0][0];
+    expect(text).toContain(RENDER_DEBUG_GUIDE_URL);
+    expect(text).toContain("$HOME/CFW Render/app/lib/render-debug.md");
+    expect(text).toContain("Ask before fixes, paid calls or retries");
+    expect(text).not.toContain(row.reason);
+    expect(text).not.toContain("not copied");
+    const identity = JSON.parse(text.split("Render identity (JSON):\n")[1]);
+    expect(identity).toEqual({ orderId: "order-1", attemptId: "attempt-old", shortCode: "R-FAIL", brand: "Brand A", brandSlug: "brand-a", recipe: "reel", result: "failed", startedAt: row.startedAt, finishedAt: row.finishedAt, directorLog: row.directorLog });
+    await act(async () => finish());
+    expect(screen.getByRole("status").textContent).toBe("Copied");
+    expect(actions.runNow).not.toHaveBeenCalled();
+    expect(actions.startWorker).not.toHaveBeenCalled();
+  });
+
+  it("offers selectable instructions when clipboard access fails and leaves unknown identity null", async () => {
+    vi.stubGlobal("navigator", { clipboard: { writeText: vi.fn().mockRejectedValue(new Error("denied")) } });
+    const actions = { openMain: vi.fn(), startWorker: vi.fn(), setPaused: vi.fn(), allowBattery: vi.fn(), runNow: vi.fn(), openLogs: vi.fn() };
+    render(<Renders payload={payload({ ...workingStatus, recent: [{ result: "stopped", finishedAt: "2026-10-11T11:00:00Z" }] })} actions={actions} clock={() => NOW} />);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy debug instructions" })));
+    const textarea = screen.getByRole("textbox", { name: "Copy debug instructions" }) as HTMLTextAreaElement;
+    expect(textarea.readOnly).toBe(true);
+    expect(textarea.value).toContain('"orderId": null');
+    expect(textarea.value).toContain('"attemptId": null');
+    expect(renderDebugInstructions({})).toContain('"startedAt": null');
+    expect(screen.getByRole("status").textContent).toContain("Couldn't copy");
+  });
   it("opens on Home showing the website, and Mac pages hide it", async () => {
     render(<MainWindow clock={() => NOW} />);
     expect(current()).toBe("home");

@@ -15,9 +15,11 @@ previous steps, not something to deliver.
 
 ## You must produce
 
-- `saves/final.png` — the delivered image (card 1 for a single; the strongest passing card
-  for a set, unless the order is a multi-image set — then card 1, and the set is read from
-  `contact_sheet`), exact canvas.
+- `saves/final.png` — a selected preview, exact canvas. For a single card it is card 1.
+  It is not delivery of a multi-image set. The current manifest lacks ordered
+  individual-image final outputs: tracked delivery is blocked, not satisfied by
+  this preview or `contact_sheet`. Standalone delivery retains every passing
+  full-resolution card in plan order.
 - `saves/qa_report.json` — `{ "final_n": 1, "images": [ { "n", "verdict": "PASS",
   "scores": { "no_clipped_text": "PASS", "legible_contrast": "PASS", "consistent_margins":
   "PASS", "on_brand_palette": "PASS", "premium_hierarchy": "PASS" }, "notes": [] } ] }`.

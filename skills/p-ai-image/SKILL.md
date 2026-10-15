@@ -16,6 +16,19 @@ dependsOn: [c-ai-media, c-kie-ai, c-replicate, c-ffmpeg, c-thumbnail, c-eval-run
 
 # p-ai-image-posts — AI Image Post(s)
 
+## Execution and reporting
+
+Read [Recipe stage reporting](../../docs/RECIPE-STAGE-REPORTING.md) before a tracked
+run. Managed work uses the installed worker/harness and the exact claimed manifest;
+its stage IDs select `steps/_shared.md` plus the referenced step file. The harness
+alone reports stages; step assistants must not call `complete_render_order` or
+emit competing MCP events. Standalone use does not report to CFW Social.
+
+Catalog presence and declared checks do not prove validator coverage or readiness.
+Missing validators/evidence block gates. See
+[reporting coverage](../../docs/RECIPE-REPORTING-COVERAGE.md) before claiming tracked
+execution is ready; local checkpoint eligibility is independently restricted.
+
 **SCAFFOLD — NOT YET AUTHORED.** Will be authored in the per-recipe review pass.
 
 ## Inputs (intake)
