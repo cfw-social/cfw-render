@@ -55,6 +55,21 @@
       "type": "array",
       "items": { "$ref": "#/$defs/input" }
     },
+    "finalOutputs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stepId", "saveId", "role"],
+        "properties": {
+          "stepId": { "$ref": "#/$defs/snakeId" },
+          "saveId": { "$ref": "#/$defs/snakeId" },
+          "role": { "type": "string", "enum": ["deliverable", "poster", "captions"] }
+        }
+      }
+    },
     "steps": {
       "type": "array",
       "minItems": 1,

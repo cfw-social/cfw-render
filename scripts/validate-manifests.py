@@ -63,7 +63,7 @@ ORIENTATIONS = {"portrait", "landscape", "square", "any"}
 RUNS_ON = {"computer", "server"}
 
 TOP_REQUIRED = ["manifestFormat", "recipe", "recipeVersion", "label", "deliverable", "needs", "inputs", "steps"]
-TOP_ALLOWED = set(TOP_REQUIRED)
+TOP_ALLOWED = set(TOP_REQUIRED) | {"finalOutputs"}
 DELIVERABLE_ALLOWED = {"kind", "aspect", "width", "height", "durationSec"}
 NEEDS_REQUIRED = ["os", "engines", "tools", "providers"]
 INPUT_REQUIRED = ["id", "label", "kinds", "required", "count", "neededAt"]
@@ -420,6 +420,44 @@ def validate_structure(err: Errors, m: object, skill_dir: Path) -> None:
         if "uses" in st:
             _check_uses(err, st["uses"], f"{where}.uses", needs_tools, needs_providers, used_providers)
     _check_uses_coverage(err, steps, needs_providers, used_providers)
+    if "finalOutputs" in m:
+        _check_final_outputs(err, m["finalOutputs"], steps)
+
+
+def _check_final_outputs(err: Errors, refs: object, steps: object) -> None:
+    """Explicit delivery boundary; preview/extension never imply a final asset."""
+    if not isinstance(refs, list) or not 1 <= len(refs) <= 30:
+        err.add("finalOutputs: must contain 1 to 30 references")
+        return
+    if not isinstance(refs[0], dict) or refs[0].get("role") != "deliverable":
+        err.add("finalOutputs: first reference must be the primary deliverable")
+    by_id = {s["id"]: s for s in (steps or []) if isinstance(s, dict) and isinstance(s.get("id"), str)}
+    seen: set[tuple[str, str]] = set()
+    roles: set[str] = set()
+    for i, ref in enumerate(refs):
+        where = f"finalOutputs[{i}]"
+        if not isinstance(ref, dict):
+            err.add(f"{where}: must be an object")
+            continue
+        _check_keys(err, ref, where, ["stepId", "saveId", "role"], {"stepId", "saveId", "role"})
+        if not all(isinstance(ref.get(k), str) and SNAKE.fullmatch(ref[k]) for k in ("stepId", "saveId")):
+            err.add(f"{where}: stepId and saveId must be snake_case ids")
+            continue
+        role = ref.get("role")
+        if role not in ("deliverable", "poster", "captions"):
+            err.add(f"{where}: unknown delivery role")
+            continue
+        key = (ref["stepId"], ref["saveId"])
+        if key in seen or (role != "deliverable" and role in roles):
+            err.add(f"{where}: duplicate reference or auxiliary role")
+        seen.add(key)
+        roles.add(role)
+        step = by_id.get(ref["stepId"], {})
+        saves = step.get("saves")
+        save = next((s for s in saves if isinstance(s, dict) and s.get("id") == ref["saveId"]), {}) if isinstance(saves, list) else {}
+        kinds = {"json"} if role == "captions" else {"image"} if role == "poster" else {"video", "image", "audio"}
+        if step.get("runsOn") != "computer" or step.get("when") != "always" or save.get("kind") not in kinds:
+            err.add(f"{where}: must reference an unconditional computer save with a matching kind")
 
 
 def _check_uses(err: Errors, u: object, where: str, needs_tools: set[str], needs_providers: set[str],

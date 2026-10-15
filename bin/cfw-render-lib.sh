@@ -1377,33 +1377,48 @@ cr_computer_name() {
   printf '%s' "$CR_COMPUTER_NAME_CACHE"
 }
 
-# [M3-01c] cr_recent_append <order_json_file_or_empty> <outcome> [orderId] —
+# [M3-01c] cr_recent_append <order_json_file_or_empty> <outcome> [orderId] [identity_json] —
 # one finished request into recent.ndjson (24 h, max 50 lines, atomic).
+# Explicit identity is authoritative, even if empty/invalid: never read reused
+# scratch in that case. Three-argument callers retain the legacy file fallback.
 cr_recent_append() {
   local dir="$CFW_RENDER_STATE_DIR"
   mkdir -p "$dir" 2>/dev/null || return 0
   ( umask 077
     python3 -c '
-import json, sys, os, datetime
-f, outcome, oid, path = sys.argv[1:5]
-o = {}
-if f and os.path.isfile(f):
-    try: o = json.load(open(f))
-    except Exception: o = {}
-if not isinstance(o, dict): o = {}
+import json, sys, os, datetime, re
+f, outcome, oid, path, explicit, identity = sys.argv[1:7]
 def obj(value): return value if isinstance(value, dict) else {}
 def text(value): return value if isinstance(value, str) else None
-attempt = obj(o.get("attempt"))
-brand = obj(obj(o.get("taskOrder")).get("brand"))
+o = {}
+if explicit:
+    try: o = obj(json.loads(identity))
+    except (ValueError, TypeError): pass
+else:
+    if f and os.path.isfile(f):
+        try: o = obj(json.load(open(f)))
+        except Exception: pass
+    attempt = obj(o.get("attempt"))
+    brand = obj(obj(o.get("taskOrder")).get("brand"))
+    o = {"orderId": text(o.get("id")) or oid or None,
+         "shortCode": o.get("shortCode"), "brand": o.get("brandName"),
+         "attemptId": text(attempt.get("id")) or text(o.get("attemptId")),
+         "brandSlug": text(brand.get("slug")) or text(o.get("brandSlug")), "recipe": o.get("recipe")}
+# Re-allowlist at the serialization boundary; no nested data or raw reasons.
+identity = {k: text(o.get(k)) for k in
+            ("orderId", "attemptId", "shortCode", "brand", "brandSlug", "recipe", "startedAt", "directorLog")}
+try:
+    start = identity["startedAt"]
+    if not start or not start.endswith("Z"): raise ValueError()
+    datetime.datetime.fromisoformat(start.replace("Z", "+00:00"))
+except (ValueError, TypeError): identity["startedAt"] = None
+log = identity["directorLog"]
+if log and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.out", log):
+    identity["directorLog"] = None
 m = {"complete": "done", "completed": "done"}
 for k in ("released", "revoked", "engine_limit", "cancelled"): m[k] = "stopped"
 nowdt = datetime.datetime.now(datetime.timezone.utc)
-row = {"shortCode": o.get("shortCode"), "brand": o.get("brandName"), "result": m.get(outcome, "failed"),
-       "finishedAt": nowdt.strftime("%Y-%m-%dT%H:%M:%SZ"), "orderId": o.get("id") or oid or None,
-       "attemptId": text(attempt.get("id")) or text(o.get("attemptId")),
-       "brandSlug": text(brand.get("slug")) or text(o.get("brandSlug")), "recipe": text(o.get("recipe")),
-       "startedAt": None, "directorLog": None}
-# This worker does not record attempt start/log identity here. Never guess from current scratch.
+row = dict(identity, result=m.get(outcome, "failed"), finishedAt=nowdt.strftime("%Y-%m-%dT%H:%M:%SZ"))
 rows = []
 try:
     for line in open(path):
@@ -1420,7 +1435,7 @@ tmp = path + ".tmp.%d" % os.getpid()
 with open(tmp, "w") as fh:
     for r in rows: fh.write(json.dumps(r) + "\n")
 os.replace(tmp, path)
-' "${1:-}" "${2:-}" "${3:-}" "$dir/recent.ndjson"
+' "${1:-}" "${2:-}" "${3:-}" "$dir/recent.ndjson" "${4+x}" "${4:-}"
   ) 2>/dev/null || true
 }
 

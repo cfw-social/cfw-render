@@ -23,9 +23,9 @@
 #   CFW_STEP_SAVES="<id>:<ext> <id>:<ext> ..."  and  CFW_STEP_ID=<stepId>
 # (the fake engine in tests relies on this; real engines read prompt.md).
 #
-# Checks: for each `checks[].id` the harness runs `<recipe-dir>/checks/<id>.sh
-# <workdir>` when that script exists. FALLBACK: when it doesn't, the check
-# passes iff every declared save for the step exists and is non-empty.
+# Checks: local mode validates every save and required check, failing closed
+# when a validator/evidence is unavailable. Legacy mode runs checks/<id>.sh
+# once, retaining its non-empty-save fallback for older installed recipes.
 #
 # Return codes of cr_harness_run: 0 completed, 20 cancelled, 21 released
 # (pause timeout), 22 revoked, 23 superseded, 24 released for an engine usage
@@ -42,7 +42,43 @@
 # Populated by cr_harness_run; read by the helpers below.
 CR_H_ORDER_ID=""; CR_H_ATTEMPT_ID=""; CR_H_ORDER_DIR=""; CR_H_RECIPE_DIR=""
 CR_H_HEARTBEAT_PID=""
+CR_H_LOCAL=0
 CR_H_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Local mode uses a durable write-ahead outbox, scoped to the claim's attempt.
+# Never replay a former attempt's events under a new attempt identity.
+cr_h_checkpoint() {
+  python3 "$CR_H_SELF_DIR/cfw-render-checkpoint.py" "$1" "$CR_H_ORDER_DIR" "$CFW_WORKER_ID" "${@:2}"
+}
+
+cr_h_local_replay() {
+  local pending line seq event extra reply rc
+  pending="$(cr_h_checkpoint pending)" || { printf report_blocked > "$CR_H_ORDER_DIR/directive"; return 31; }
+  while IFS=$'\x1f' read -r seq event extra; do
+    [[ -n "$seq" ]] || continue
+    rc=0
+    reply="$(cr_report_step "$CR_H_ORDER_ID" "$CFW_WORKER_ID" "$CR_H_ATTEMPT_ID" "$seq" "$event" "$extra")" || rc=$?
+    if (( rc != 0 )); then
+      printf report_blocked > "$CR_H_ORDER_DIR/directive"
+      return 31
+    fi
+    cr_h_handle_reply "$reply" "$event"
+    case "$(cr_h_directive)" in superseded) return 23 ;; stop_after_step) return 22 ;; cancel) return 20 ;; esac
+    if [[ "$(python3 -c 'import json,sys; print(1 if json.loads(sys.argv[1]).get("ok") else 0)' "$reply")" != 1 ]]; then
+      printf report_blocked > "$CR_H_ORDER_DIR/directive"
+      return 31
+    fi
+    cr_h_checkpoint ack "$seq" >/dev/null || { printf report_blocked > "$CR_H_ORDER_DIR/directive"; return 31; }
+  done < <(python3 -c 'import json,sys
+for r in json.loads(sys.argv[1]): print("\x1f".join([str(r["seq"]),r["event"],json.dumps(r["extra"])]))' "$pending")
+  return 0
+}
+
+cr_h_local_blocked() {
+  cr_log "harness: local checkpoint unavailable or invalid; full restart required"
+  cr_h_report attempt_failed '{"message":"Local checkpoint is missing, changed or incompatible. Restart the entire recipe to continue."}'
+  return 31
+}
 
 # cr_h_next_seq — increments $ORDER_DIR/seq under a mkdir lock (heartbeat
 # subshell + step loop share the counter).
@@ -152,6 +188,13 @@ cr_h_report() {
 
 cr_h_report_locked() {
   local event="$1" extra="${2:-{\}}" seq reply rc=0
+  if (( CR_H_LOCAL )); then
+    # Persist BEFORE sending: an uncertain acknowledgement is replayed at the
+    # same seq. A validated completion may be reported in a later attempt.
+    cr_h_checkpoint enqueue "$event" "$extra" >/dev/null || { printf report_blocked > "$CR_H_ORDER_DIR/directive"; return 31; }
+    cr_h_local_replay
+    return $?
+  fi
   # Replay the backlog FIRST so the server sees seqs in order.
   cr_h_replay_pending
   seq="$(cr_h_next_seq)"
@@ -223,6 +266,7 @@ cr_h_wait_pause() {
   while :; do
     d="$(cr_h_directive)"
     case "$d" in
+      report_blocked) return 31 ;;
       cancel) return 20 ;;
       stop_after_step) return 22 ;;
       superseded) return 23 ;;
@@ -239,7 +283,17 @@ cr_h_wait_pause() {
 cr_h_run_with_timeout() {
   local secs="$1"; shift
   "$@" & local pid=$!
-  ( sleep "$secs"; kill "$pid" 2>/dev/null ) & local killer=$!
+  # A shell wrapping `sleep` leaves the sleeper orphaned when killed. It also
+  # keeps captured output pipes open until the deadline after successful work.
+  # One Python process owns both the wait and signal; stopping it closes them.
+  python3 -c '
+import os, signal, sys, time
+time.sleep(float(sys.argv[1]))
+try:
+    os.kill(int(sys.argv[2]), signal.SIGTERM)
+except ProcessLookupError:
+    pass
+' "$secs" "$pid" & local killer=$!
   local rc=0
   wait "$pid" || rc=$?
   kill "$killer" 2>/dev/null || true
@@ -286,6 +340,9 @@ print("## You must produce\n")
 for sv in s.get("saves") or []:
     print(f"- saves/{sv['id']}.{ext.get(sv.get('kind'), 'bin')} ({sv.get('kind')})")
 PY
+  if (( CR_H_LOCAL )) && [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["manifest"]["recipe"])' "$order_file")" == p-reels-spotlight ]]; then
+    python3 "$CR_H_SELF_DIR/cfw-render-checks.py" instructions "$CR_H_RECIPE_DIR" "$step_id" >> "$prompt"
+  fi
 }
 
 # CR_H_CLAIM_PY — python prelude: `inputs_of(o)` / `answers_of(o)` read the
@@ -388,13 +445,26 @@ print(" ".join("%s.%s" % (v["id"], ext.get(v.get("kind"), "bin")) for v in s.get
 # cr_h_run_checks <stepId> <workdir> <check-ids...> → prints checks JSON; rc 1 if any failed.
 cr_h_run_checks() {
   local step_id="$1" workdir="$2"; shift 2
+  if (( CR_H_LOCAL )); then
+    # Read declarations ourselves: an omitted caller argument cannot omit a check.
+    local result rc=0
+    result="$(python3 "$CR_H_SELF_DIR/cfw-render-checks.py" run \
+      "$CR_H_ORDER_DIR/order.json" "$CR_H_RECIPE_DIR" "$workdir" "$step_id" 2>/dev/null)" || rc=$?
+    if [[ -z "$result" ]]; then
+      printf '%s' '[{"id":"validation","passed":false,"detail":"Local validators are unavailable. Update the renderer before retrying."}]'
+      return 1
+    fi
+    printf '%s' "$result"
+    return "$rc"
+  fi
   local id script detail ok f failed=0 json="["
   for id in "$@"; do
     script="$CR_H_RECIPE_DIR/checks/$id.sh"
     detail=""; ok=1
     if [[ -f "$script" ]]; then
-      detail="$(bash "$script" "$workdir" 2>&1 | tail -c 400)" || true
-      bash "$script" "$workdir" >/dev/null 2>&1 || ok=0
+      # Capture status and output from ONE invocation (including without pipefail).
+      detail="$(bash "$script" "$workdir" 2>&1)" || ok=0
+      detail="${detail: -400}"
     else
       for f in $(cr_h_saves_for "$step_id"); do
         [[ -s "$workdir/saves/$f" ]] || { ok=0; detail="missing or empty save $f"; }
@@ -513,9 +583,28 @@ o = json.load(open(sys.argv[1]))
 print("\x1f".join([o.get("id") or "", (o.get("attempt") or {}).get("id") or "", o.get("resumeFromStepId") or ""]))' "$order_file")"
   IFS=$'\x1f' read -r CR_H_ORDER_ID CR_H_ATTEMPT_ID resume_from <<< "$meta"
   [[ -n "$CR_H_ORDER_ID" && -n "$CR_H_ATTEMPT_ID" ]] || { cr_log "harness: order/attempt id missing"; return 1; }
+  CR_H_LOCAL="$(python3 -c 'import json,sys; print(1 if (json.load(open(sys.argv[1])).get("checkpoint") or {}).get("mode") == "local-v1" else 0)' "$order_file")"
   engine="$(cr_engine_detect)"
-  rm -f "$order_dir/directive" "$order_dir/pending-reports.ndjson"
-  [[ -f "$order_dir/seq" ]] || printf '0' > "$order_dir/seq"
+  rm -f "$order_dir/directive"
+  if (( CR_H_LOCAL )); then
+    if [[ ! -r "$CR_H_SELF_DIR/cfw-render-checks.py" ]]; then
+      cr_mcp_call_soft block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"attemptId":sys.argv[3],"reason":"Local validators are unavailable. Update the renderer before retrying."}))' "$CR_H_ORDER_ID" "$CFW_WORKER_ID" "$CR_H_ATTEMPT_ID")" >/dev/null
+      return 31
+    fi
+    if ! cr_h_checkpoint init >/dev/null; then
+      # No valid checkpoint means no engine. Block through the held-order door
+      # when the checkpoint is too damaged to safely allocate a report seq.
+      cr_mcp_call_soft block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"attemptId":sys.argv[3],"reason":"Local checkpoint is missing, changed or incompatible. Restart the entire recipe to continue."}))' "$CR_H_ORDER_ID" "$CFW_WORKER_ID" "$CR_H_ATTEMPT_ID")" >/dev/null
+      return 31
+    fi
+    cr_h_local_replay || return $?
+    # Walk the recipe, reusing only its validated contiguous local prefix.
+    # This also reconciles completions whose server acknowledgement was lost.
+    resume_from=""
+  else
+    rm -f "$order_dir/pending-reports.ndjson"
+    [[ -f "$order_dir/seq" ]] || printf '0' > "$order_dir/seq"
+  fi
 
   # Step table: id, runsOn, maxCheckRetries, when-kind, when-arg, saves, checks
   local steps
@@ -541,7 +630,11 @@ for s in (o.get("manifest") or {}).get("steps", []):
   # step we run can fail with a reason the server can act on.
   local -a completed_saves=()
   local resume_missing=""
-  if [[ -n "$resume_from" ]]; then
+  if (( CR_H_LOCAL )); then
+    local restored
+    restored="$(cr_h_checkpoint restore)" || { cr_h_local_blocked; return 31; }
+    while IFS= read -r p; do [[ -n "$p" ]] && completed_saves+=("$p"); done < <(python3 -c 'import json,sys; print("\n".join(json.loads(sys.argv[1])))' "$restored")
+  elif [[ -n "$resume_from" ]]; then
     cr_h_restore_saved_outputs "$order_file" "$order_dir" || true
     while IFS= read -r p; do [[ -n "$p" ]] && completed_saves+=("$p"); done < "$order_dir/resume-restored.txt"
     resume_missing="$(cat "$order_dir/resume-missing.txt" 2>/dev/null || true)"
@@ -562,6 +655,17 @@ for s in (o.get("manifest") or {}).get("steps", []):
     (( rc == 21 )) && { cr_log "harness: pause timeout — releasing order $CR_H_ORDER_ID"; return 21; }
     (( rc == 22 )) && { cr_h_release_revoked "$step_id"; return 22; }
     (( rc == 23 )) && return 23
+    (( rc == 31 )) && return 31
+
+    if (( CR_H_LOCAL )); then
+      local cached cached_event cached_extra
+      cached="$(cr_h_checkpoint cached "$step_id")" || { cr_h_local_blocked; return 31; }
+      if [[ "$cached" != null ]]; then
+        IFS=$'\x1f' read -r cached_event cached_extra <<< "$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(d["event"]+"\x1f"+json.dumps(d["extra"]))' "$cached")"
+        cr_h_report "$cached_event" "$cached_extra" || return $?
+        continue
+      fi
+    fi
 
     if [[ -n "$resume_missing" ]]; then
       # The first step that runs is the first that needs the earlier saves.
@@ -584,6 +688,9 @@ import json, sys
 o = json.load(open(sys.argv[1])); print("1" if answers_of(o).get("alternative") == sys.argv[2] else "0")' "$order_file" "$when_arg")" ;;
     esac
     if [[ "$cond" != "1" ]]; then
+      if (( CR_H_LOCAL )); then
+        cr_h_checkpoint skip "$step_id" >/dev/null || { cr_h_local_blocked; return 31; }
+      fi
       cr_h_report step_skipped "{\"stepId\":\"$step_id\",\"message\":\"condition not met\"}"
       continue
     fi
@@ -599,8 +706,17 @@ o = json.load(open(sys.argv[1])); print("1" if answers_of(o).get("alternative") 
     local tried=" " limit_until next_engine log_from
     while :; do
       run=$((run + 1))
+      if (( CR_H_LOCAL )); then
+        cr_h_checkpoint prepare "$step_id" >/dev/null || { cr_h_local_blocked; return 31; }
+        for p in "${completed_saves[@]}"; do
+          cp "$p" "$workdir/prior/" || { cr_h_local_blocked; return 31; }
+        done
+      fi
       tried+="$engine "
-      cr_h_report step_started "{\"stepId\":\"$step_id\",\"engine\":\"$engine\"}"
+      cr_h_report step_started "{\"stepId\":\"$step_id\",\"engine\":\"$engine\"}" || return $?
+      # Local reports must be acknowledged before paid work. Legacy
+      # stop_after_step still finishes this announced stage before releasing.
+      if (( CR_H_LOCAL )); then cr_h_wait_pause || return $?; fi
       cr_h_write_current_step "$order_dir" "$step_id" "$engine"
       rm -f "$workdir/needs_input.json"
       cr_h_build_prompt "$step_id" "$workdir" "$order_file"
@@ -682,6 +798,16 @@ o = json.load(open(sys.argv[1])); print("1" if answers_of(o).get("alternative") 
     fi
 
     local outputs="[" sv sid ext url f
+    if (( CR_H_LOCAL )); then
+      local completion
+      completion="$(cr_h_checkpoint save "$step_id" "$checks_json")" || { cr_h_local_blocked; return 31; }
+      for sv in $saves; do
+        f="$workdir/saves/${sv%%:*}.${sv##*:}"
+        completed_saves+=("$f")
+      done
+      rm -f "$order_dir/current-step.json"
+      cr_h_report step_completed "$completion" || return $?
+    else
     for sv in $saves; do
       sid="${sv%%:*}"; ext="${sv##*:}"; f="$workdir/saves/$sid.$ext"
       [[ -f "$f" ]] || continue
@@ -698,6 +824,7 @@ o = json.load(open(sys.argv[1])); print("1" if answers_of(o).get("alternative") 
     outputs="${outputs%,}]"
     rm -f "$order_dir/current-step.json"
     cr_h_report step_completed "{\"stepId\":\"$step_id\",\"outputs\":$outputs,\"checks\":$checks_json}"
+    fi
     case "$(cr_h_directive)" in
       cancel) cr_h_report attempt_cancelled "{\"stepId\":\"$step_id\"}"; return 20 ;;
       # [M2-04] D76: the step finished and its saves are up; end the attempt
@@ -707,7 +834,11 @@ o = json.load(open(sys.argv[1])); print("1" if answers_of(o).get("alternative") 
     esac
   done <<< "$steps"
 
-  cr_h_report attempt_completed '{}'
+  if (( CR_H_LOCAL )); then
+    final_outputs="$(cr_h_checkpoint final)" || { cr_h_local_blocked; return 31; }
+  fi
+  cr_harness_heartbeat_stop
+  cr_h_report attempt_completed '{}' || return $?
   printf '%s\n' "$final_outputs"
   return 0
 }

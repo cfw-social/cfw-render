@@ -17,6 +17,7 @@
 #       video is tagged role "poster" (the still the Reviews bezel shows before
 #       tap-to-play; never a slide). CAPTIONS: if final/captions.json exists
 #       (or $CFW_CAPTIONS_FILE points at a JSON file) — `{ "<platform>": "<caption>" }`
+#       (also accepts caption/title/description/hashtags objects per platform)
 #       per target platform, brand voice — it is sent as `captions` so the dish
 #       lands in Reviews with per-platform copy instead of "No caption". A
 #       missing platform falls back server-side (order copy → intent); an
@@ -57,6 +58,90 @@ case "$VERB" in
       echo "cfw-render-report: usage: complete <file> [file2 ...]" >&2
       exit 2
     fi
+    # Normalize BEFORE uploading: declared local captions must not disappear at
+    # delivery. Social accepts only platform -> string (including legacy keys);
+    # missing platforms still use its copy/intent fallback, not an invented API.
+    captions_file="${CFW_CAPTIONS_FILE:-final/captions.json}"
+    captions_json="$(python3 - "$captions_file" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+
+def invalid(*_args: object) -> None:
+    raise ValueError("Invalid captions")
+
+
+def unique(pairs: list) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            invalid()
+        result[key] = value
+    return result
+
+
+def load(path: Path) -> object:
+    return json.loads(path.read_text(), object_pairs_hook=unique, parse_constant=invalid)
+
+
+def text(value: object) -> str:
+    if not isinstance(value, str):
+        invalid()
+    return value.strip()
+
+
+def caption(value: object) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if not isinstance(value, dict) or set(value) - {"title", "caption", "description", "hashtags"}:
+        invalid()
+    parts = [text(value[key]) for key in ("title", "caption", "description") if key in value]
+    if "hashtags" in value:
+        tags = value["hashtags"]
+        if isinstance(tags, list):
+            tags = " ".join(text(tag) for tag in tags)
+        parts.append(text(tags))
+    return "\n\n".join(part for part in parts if part)
+
+
+try:
+    order = load(Path("order.json")) if Path("order.json").exists() else {}
+    required = (order.get("checkpoint") or {}).get("mode") == "local-v1" and any(
+        ref.get("role") == "captions" for ref in (order.get("manifest") or {}).get("finalOutputs", [])
+    )
+except (OSError, ValueError, TypeError, AttributeError):
+    print("cfw-render-report: Cannot verify caption requirements. Local files are retained; retry with a valid order.", file=sys.stderr)
+    sys.exit(1)
+
+out = {}
+try:
+    data = load(Path(sys.argv[1]))
+    if not isinstance(data, dict):
+        invalid()
+    for key, value in data.items():
+        try:
+            key, value = text(key).lower(), caption(value)
+            # Match RenderCaptionsInput limits; never truncate recipe content.
+            if (not key or not value or len(key.encode("utf-16-le")) > 80
+                    or len(value.encode("utf-16-le")) > 12000 or (required and key in out)):
+                invalid()
+            out[key] = value
+        except (ValueError, TypeError):
+            if required:
+                raise
+    if not out or len(out) > 12:
+        invalid()
+except (OSError, ValueError, TypeError):
+    if required:
+        print("cfw-render-report: Required captions are missing, empty or malformed. Correct the captions and retry delivery; local files are retained. Nothing was uploaded.", file=sys.stderr)
+        sys.exit(1)
+    out = {}
+    print("cfw-render-report: WARNING — no usable captions; server will fall back to order copy/intent.", file=sys.stderr)
+print(json.dumps(out))
+PY
+)" || exit 1
+
     # Upload every file (local paths); a URL arg is passed through as-is.
     urls=()
     local_files=()
@@ -83,34 +168,6 @@ case "$VERB" in
     fanout_json="[]"
     if [[ -f work/.models-fanout ]]; then
       fanout_json="$(sort -u work/.models-fanout | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')"
-    fi
-
-    # CFW-136: per-platform captions written by the recipe (brand voice).
-    # final/captions.json = { "<platform>": "<caption>", ... }. Optional override
-    # via $CFW_CAPTIONS_FILE. Absent → WARN (the dish still mints; cfw-social
-    # falls back to the order's copy block, then its intent — never blank).
-    captions_file="${CFW_CAPTIONS_FILE:-final/captions.json}"
-    captions_json="{}"
-    if [[ -f "$captions_file" ]]; then
-      captions_json="$(python3 -c '
-import json, sys
-try:
-    d = json.load(open(sys.argv[1]))
-except Exception as e:
-    print("{}"); sys.exit(0)
-if not isinstance(d, dict):
-    print("{}"); sys.exit(0)
-out = {}
-for k, v in d.items():
-    if isinstance(k, str) and isinstance(v, str) and k.strip() and v.strip():
-        out[k.strip().lower()] = v.strip()
-print(json.dumps(out))
-' "$captions_file")"
-      if [[ "$captions_json" == "{}" ]]; then
-        echo "cfw-render-report: WARNING — $captions_file has no usable {platform: caption} entries; server will fall back to order copy/intent" >&2
-      fi
-    else
-      echo "cfw-render-report: WARNING — no $captions_file; the dish will use the order's copy/intent as its caption. Recipes should write final/captions.json (one entry per target platform)." >&2
     fi
 
     complete_args="$(python3 -c '
@@ -154,6 +211,8 @@ d = {
 # CFW-136: per-platform captions (brand voice) — only when the recipe wrote some.
 if captions:
     d["captions"] = captions
+if os.environ.get("CFW_ATTEMPT_ID"):
+    d["attemptId"] = os.environ["CFW_ATTEMPT_ID"]
 print(json.dumps(d))
 ' "$CFW_ORDER_ID" "$CFW_WORKER_ID" "$output_url" "$director_model" "$fanout_json" "$urls_json" "$captions_json")"
 

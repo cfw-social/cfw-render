@@ -1,7 +1,12 @@
 {
   "manifestFormat": 1,
   "recipe": "p-reels-spotlight",
-  "recipeVersion": "2026.10.2",
+  "recipeVersion": "2026.10.4",
+  "finalOutputs": [
+    { "stepId": "final_checks", "saveId": "final_video", "role": "deliverable" },
+    { "stepId": "final_checks", "saveId": "cover", "role": "poster" },
+    { "stepId": "final_checks", "saveId": "captions", "role": "captions" }
+  ],
   "label": "Spotlight reel",
   "deliverable": {
     "kind": "video",
