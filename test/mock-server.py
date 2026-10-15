@@ -509,9 +509,6 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"error": "mock down"}, 503)
 
     def do_GET(self):
-        if self.path == "/__test_ready":
-            self._send_json(os.getpid())
-            return
         if self.path.startswith("/mock-saved/"):
             token = self.path[len("/mock-saved/"):]
             if MOCK_RESUME_404 and token == MOCK_RESUME_404:

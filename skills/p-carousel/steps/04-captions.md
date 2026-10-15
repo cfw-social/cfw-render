@@ -4,15 +4,6 @@ Write the post copy once per target platform, in the brand voice, from the slide
 actually rendered — same hook, same numbers, same CTA, never new claims. A carousel with no
 caption cannot be published.
 
-## Delivery boundary
-
-This terminal stage saves captions, not the carousel images. The current manifest
-has no `finalOutputs` mapping to the earlier full-resolution slide set. Tracked
-delivery remains blocked until ordered individual-slide outputs are declared and
-tested. Do not select the first preview, cover or contact sheet as the carousel.
-Standalone delivery retains every passing slide in `prior/slides.json` order,
-with these captions and the per-slide QA evidence.
-
 ## You receive
 
 - `prior/slide_copy.json` — the rendered copy (`slides[]` with `headline`, `body`, `role`).

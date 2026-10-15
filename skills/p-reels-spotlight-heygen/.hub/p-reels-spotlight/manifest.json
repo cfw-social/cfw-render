@@ -82,7 +82,6 @@
       "label": "Prepare footage",
       "weight": 10,
       "runsOn": "computer",
-      "uses": { "tools": ["ffmpeg"] },
       "when": "always",
       "instructions": "steps/01-prepare-footage.md",
       "saves": [
@@ -100,7 +99,6 @@
       "label": "Transcribe",
       "weight": 10,
       "runsOn": "computer",
-      "uses": { "tools": ["ffmpeg", "python3"], "optionalProviders": ["gemini"] },
       "when": "always",
       "instructions": "steps/02-transcribe.md",
       "saves": [
@@ -116,7 +114,6 @@
       "label": "Plan the edit",
       "weight": 15,
       "runsOn": "computer",
-      "uses": { "tools": ["ffmpeg", "python3"] },
       "when": "always",
       "instructions": "steps/03-plan-edit.md",
       "saves": [
@@ -132,7 +129,6 @@
       "label": "Plan b-roll",
       "weight": 5,
       "runsOn": "computer",
-      "uses": { "tools": ["ffmpeg", "node>=22", "python3"] },
       "when": { "inputPresent": "broll" },
       "instructions": "steps/04-plan-broll.md",
       "saves": [
@@ -149,7 +145,6 @@
       "label": "Render scenes",
       "weight": 35,
       "runsOn": "computer",
-      "uses": { "tools": ["ffmpeg", "node>=22", "npx", "chromium"] },
       "when": "always",
       "instructions": "steps/05-render-scenes.md",
       "saves": [
@@ -165,7 +160,6 @@
       "label": "Assemble",
       "weight": 15,
       "runsOn": "computer",
-      "uses": { "tools": ["ffmpeg", "imagemagick", "node>=22", "npx", "chromium"] },
       "when": "always",
       "instructions": "steps/06-assemble.md",
       "saves": [
@@ -181,7 +175,6 @@
       "label": "Final checks and captions",
       "weight": 10,
       "runsOn": "computer",
-      "uses": { "tools": ["ffmpeg", "python3"] },
       "when": "always",
       "instructions": "steps/07-final-checks.md",
       "saves": [

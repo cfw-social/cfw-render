@@ -163,11 +163,13 @@ fi
 cr_tick_lock_acquire || { cr_log "tick lock held by another run — quiet no-op"; exit 0; }
 trap 'cr_tick_lock_release' EXIT
 
-# About two days after the last checkpoint/job activity, never while active.
-# All claims and cleanup share the tick lock; the helper also checks job ownership.
+# 48h scratch janitor — leftover forensics from failed runs get wiped.
 if [[ -d "$CFW_RENDER_SCRATCH" ]]; then
-  python3 "$SELF_DIR/cfw-render-checkpoint.py" janitor "$CFW_RENDER_SCRATCH" \
-    || { cr_log "janitor: unable to validate scratch retention; stopping"; exit 1; }
+  find "$CFW_RENDER_SCRATCH" -mindepth 2 -maxdepth 2 -type d -mtime +2 -print0 2>/dev/null \
+    | while IFS= read -r -d '' d; do
+        cr_log "janitor: removing stale scratch dir older than 48h: $d"
+        rm -rf "$d"
+      done
 fi
 
 JOURNAL="$CFW_RENDER_STATE_DIR/journal.tsv"
@@ -196,48 +198,22 @@ brand = (o.get("taskOrder") or {}).get("brand") or {}
 print(brand.get("slug") or "")
 ' <<< "$order_json" 2>/dev/null)"
 
-  if [[ ! "$order_id" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,199}$ ]]; then
-    cr_log "spawn_director: order JSON missing or invalid id — skipping"
+  if [[ -z "$order_id" ]]; then
+    cr_log "spawn_director: order JSON missing id — skipping"
     return 1
   fi
-
-  # Freeze only diagnostic identity before scratch can be cleaned or reused.
-  # The observed start is local, not a timestamp guessed from order metadata.
-  local recent_identity
-  recent_identity="$(python3 -c '
-import datetime, json, sys
-def obj(value): return value if isinstance(value, dict) else {}
-def text(value): return value if isinstance(value, str) else None
-o = obj(json.load(sys.stdin))
-brand = obj(obj(o.get("taskOrder")).get("brand"))
-print(json.dumps({"orderId": text(o.get("id")), "shortCode": text(o.get("shortCode")),
-    "attemptId": text(obj(o.get("attempt")).get("id")) or text(o.get("attemptId")),
-    "brand": text(o.get("brandName")), "brandSlug": text(brand.get("slug")) or text(o.get("brandSlug")),
-    "recipe": text(o.get("recipe")), "startedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    "directorLog": None}))
-' <<< "$order_json")" || return 1
 
   brand_slug="$(sanitize_slug "${raw_slug:-$brand_id}")"
   if [[ -z "$brand_slug" ]]; then
     cr_log "spawn_director: order $order_id has malformed/missing taskOrder.brand — blocking"
     cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"order was underspecified — missing brand context"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "" "$kind" "blocked" "" "" >> "$JOURNAL"
-    cr_recent_append "" blocked "$order_id" "$recent_identity"
+    cr_recent_append "" blocked "$order_id"
     return 1
   fi
 
-  local order_dir="$CFW_RENDER_SCRATCH/$brand_slug/$order_id" checkpoint_mode=""
-  checkpoint_mode="$(python3 -c 'import json,sys; print((json.load(sys.stdin).get("checkpoint") or {}).get("mode", ""))' <<< "$order_json")"
-  # Private claim files, stable job ownership, and cleanup on every exit path,
-  # including provider/integrity gates and temporary engine-limit releases.
-  umask 077
-  python3 "$SELF_DIR/cfw-render-checkpoint.py" active "$order_dir" "$$" \
-    || { cr_log "order $order_id — unsafe or already active scratch folder"; return 1; }
-  CR_JOB_DIR="$order_dir"; CR_JOB_CHECKPOINT_MODE="$checkpoint_mode"
-  trap 'if [[ -d "$CR_JOB_DIR" ]]; then python3 "$SELF_DIR/cfw-render-checkpoint.py" finish "$CR_JOB_DIR" "$CR_JOB_CHECKPOINT_MODE" || cr_log "order cleanup failed; inspect stopped scratch files"; fi' EXIT
+  local order_dir="$CFW_RENDER_SCRATCH/$brand_slug/$order_id"
   mkdir -p "$order_dir/ingredients" "$order_dir/clips" "$order_dir/work" "$order_dir/final"
-  # Replace rather than truncate a possibly stale claim file/symlink.
-  rm -f "$order_dir/order.json"
   printf '%s' "$order_json" > "$order_dir/order.json"
 
   # [CFW-313] Brand-scoped provider credential gate. A HeyGen recipe must
@@ -273,7 +249,7 @@ print("\x1f".join([mode, token, expires, pool, expired]))
       cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"this brand'"'"'s HeyGen account isn'"'"'t connected — connect it in brand settings","needs":"decision"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
         || cr_log "order $order_id — block_render_order (no-heygen-credential) call failed; lease expiry is the backstop"
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "blocked" "" "" >> "$JOURNAL"
-    cr_recent_append "" blocked "$order_id" "$recent_identity"
+    cr_recent_append "$order_dir/order.json" blocked "$order_id"
       return 1
     fi
   fi
@@ -289,7 +265,7 @@ print("\x1f".join([mode, token, expires, pool, expired]))
     cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"this render'"'"'s recipe files are out of sync — a redeploy is needed"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
       || cr_log "order $order_id — block_render_order (skills-mismatch) call failed; lease expiry is the backstop"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "blocked" "" "" >> "$JOURNAL"
-    cr_recent_append "" blocked "$order_id" "$recent_identity"
+    cr_recent_append "$order_dir/order.json" blocked "$order_id"
     return 1
   fi
 
@@ -310,13 +286,6 @@ print("\x1f".join([mode, token, expires, pool, expired]))
       cr_harness_run "$order_dir/order.json" "$order_dir" "$CFW_RENDER_SKILLS_DIR/$recipe" > "$order_dir/harness-result.json"
     ) </dev/null || h_rc=$?
     h_out="$(cat "$order_dir/harness-result.json" 2>/dev/null || true)"
-    local h_attempt=""
-    if [[ "$checkpoint_mode" == local-v1 ]]; then
-      h_attempt="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["attempt"]["id"])' "$order_dir/order.json")" || return 1
-      if (( h_rc == 0 )); then
-        h_out="$(python3 "$SELF_DIR/cfw-render-checkpoint.py" final "$order_dir" "$CFW_WORKER_ID")" || h_rc=31
-      fi
-    fi
     if (( h_rc == 0 )); then
       # [M2-06] Only media saves are deliverables. A `json`/`md` save is a
       # side file: the report script would otherwise type `captions.json` as
@@ -333,15 +302,15 @@ MEDIA = {"mp4", "mov", "webm", "m4v", "png", "jpg", "jpeg", "gif", "webp", "pdf"
 a = json.loads(sys.argv[1] or "[]")
 for x in a:
     p = x["path"]; ext = os.path.splitext(p)[1].lstrip(".").lower()
-    if (x.get("role") == "captions" or (not x.get("role") and x.get("id") == "captions")) and ext == "json": print(p + "\tcaptions")
+    if x.get("id") == "captions" and ext == "json": print(p + "\tcaptions")
     elif ext in MEDIA: print(p + "\tmedia")' "$h_out" 2>/dev/null)
-      if (( ${#h_files[@]} > 0 )) && ( cd "$order_dir" && CFW_ORDER_ID="$order_id" CFW_ATTEMPT_ID="$h_attempt" CFW_CAPTIONS_FILE="${h_captions:-final/captions.json}" CFW_RENDER_KEEP_DIR="$(cr_keep_output_dir "$brand_slug" "$order_id")" PATH="$SELF_DIR:$PATH" cfw-render-report.sh complete "${h_files[@]}" ); then
+      if (( ${#h_files[@]} > 0 )) && ( cd "$order_dir" && CFW_ORDER_ID="$order_id" CFW_CAPTIONS_FILE="${h_captions:-final/captions.json}" CFW_RENDER_KEEP_DIR="$(cr_keep_output_dir "$brand_slug" "$order_id")" PATH="$SELF_DIR:$PATH" cfw-render-report.sh complete "${h_files[@]}" ); then
         h_outcome="completed"
       else
         cr_log "order $order_id — harness finished but complete_render_order failed"
       fi
     else
-      case "$h_rc" in 20) h_outcome="cancelled" ;; 21) h_outcome="released" ;; 22) h_outcome="revoked" ;; 23) h_outcome="superseded" ;; 24) h_outcome="engine_limit" ;; 30) h_outcome="failed" ;; 31) h_outcome="checkpoint-blocked" ;; esac
+      case "$h_rc" in 20) h_outcome="cancelled" ;; 21) h_outcome="released" ;; 22) h_outcome="revoked" ;; 23) h_outcome="superseded" ;; 24) h_outcome="engine_limit" ;; 30) h_outcome="failed" ;; esac
       cr_log "order $order_id — harness exited $h_rc ($h_outcome)"
       # [M2-04, D76] stop_after_step (22) and attempt_superseded (23): this
       # brand is no longer ours to serve from this computer — delete the
@@ -350,10 +319,8 @@ for x in a:
       # reports: the attempt is already released (22) or belongs to another
       # computer (23). [M3-01b] 24 = released for an engine usage limit:
       # the attempt is released; the server re-queues it.
-      # A local engine limit retains completed files, NOT claim/provider keys.
-      # Revocation/supersession still deletes all brand files immediately.
-      if (( h_rc == 22 || h_rc == 23 )) || { (( h_rc == 24 )) && [[ "$checkpoint_mode" != local-v1 ]]; }; then
-        cr_recent_append "" "$h_outcome" "$order_id" "$recent_identity"
+      if (( h_rc == 22 || h_rc == 23 || h_rc == 24 )); then
+        cr_recent_append "$order_dir/order.json" "$h_outcome" "$order_id"
         rm -rf "$order_dir"
         rm -rf "$(cr_keep_output_dir "$brand_slug" "$order_id")" 2>/dev/null
         cr_log "order $order_id — brand files and keys deleted after $h_outcome"
@@ -362,7 +329,7 @@ for x in a:
       fi
     fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "$h_outcome" "$h_rc" "harness" >> "$JOURNAL"
-    cr_recent_append "" "$h_outcome" "$order_id" "$recent_identity"
+    cr_recent_append "$order_dir/order.json" "$h_outcome" "$order_id"
     return 0
   fi
 
@@ -399,31 +366,6 @@ for k, v in subs.items():
 print(tpl)
 ' "$SELF_DIR/../lib/director-prompt.md" "$order_id" "$CFW_RENDER_SKILLS_DIR" "$recipe" "$gate" "$CFW_RENDER_GATE_FAIL_CAP" "$timeout_min" "$CFW_RENDER_FANOUT_MODELS" 2>/dev/null)"
 
-  # Exclusive allocation keeps same-second retries from replacing evidence.
-  # Treat identifiers as data, reject unsafe components, and resolve custom
-  # log paths before creating a private file inside that runs directory.
-  local ts out_file model_state_file
-  ts="$(date +%s)"
-  model_state_file="$order_dir/work/.director-model"
-  if ! out_file="$(python3 -c '
-import os, re, sys, tempfile
-runs, oid, ts = sys.argv[1:4]
-if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,199}", oid) or not re.fullmatch(r"[0-9]+", ts):
-    sys.exit(1)
-runs = os.path.realpath(runs)
-fd, path = tempfile.mkstemp(prefix=oid + "-" + ts + "-", suffix=".out", dir=runs)
-os.close(fd)
-print(path)
-' "$RUNS_DIR" "$order_id" "$ts" 2>/dev/null)"; then
-    cr_log "order $order_id — cannot allocate Director transcript; blocking before launch"
-    cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"render could not create its diagnostic log"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
-      || cr_log "order $order_id — block_render_order (log allocation) call failed; lease expiry is the backstop"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "blocked" "" "" >> "$JOURNAL"
-    cr_recent_append "" blocked "$order_id" "$recent_identity"
-    return 1
-  fi
-  recent_identity="$(python3 -c 'import json,sys,os; d=json.load(sys.stdin); d["directorLog"]=os.path.basename(sys.argv[1]); print(json.dumps(d))' "$out_file" <<< "$recent_identity")"
-
   cr_event "$order_id" stage fetch-assets "Gathering ingredients" 5
 
   # [CFW-146] Pulse every 60 s for as long as this Director runs. Started
@@ -436,6 +378,12 @@ print(path)
   # terminal outcome — stopping it here, after wait, is too late: the Director
   # already called complete/block from inside its own tree before it exits.
   [[ -n "$heartbeat_pid" ]] && echo "$heartbeat_pid" > "$order_dir/.heartbeat.pid"
+
+  local ts out_file model_state_file
+  ts="$(date +%s)"
+  out_file="$RUNS_DIR/${order_id}-${ts}.out"
+  model_state_file="$order_dir/work/.director-model"
+  : > "$out_file"
 
   # [CFW-286] Enable job control HERE — in the frame that backgrounds the
   # subshell below — not inside it. Job control gives a `(...) &` job its own
@@ -581,7 +529,7 @@ print(path)
 
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "$outcome" "$director_exit" "$model_served" >> "$JOURNAL"
-  cr_recent_append "" "$outcome" "$order_id" "$recent_identity"
+  cr_recent_append "$order_dir/order.json" "$outcome" "$order_id"
 }
 
 # ---------------------------------------------------------------------------

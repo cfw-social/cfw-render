@@ -64,7 +64,6 @@
       "label": "Plan the cards",
       "weight": 15,
       "runsOn": "computer",
-      "uses": { "tools": ["python3"] },
       "when": "always",
       "instructions": "steps/01-plan-cards.md",
       "saves": [
@@ -81,7 +80,6 @@
       "label": "Author the HTML compositions",
       "weight": 25,
       "runsOn": "computer",
-      "uses": { "tools": ["python3"] },
       "when": "always",
       "instructions": "steps/02-author-html.md",
       "saves": [
@@ -97,7 +95,6 @@
       "label": "Render to PNG",
       "weight": 30,
       "runsOn": "computer",
-      "uses": { "tools": ["ffmpeg", "node>=22", "npx", "chromium"] },
       "when": "always",
       "instructions": "steps/03-render.md",
       "saves": [
@@ -116,7 +113,6 @@
       "label": "Vision QA and final checks",
       "weight": 30,
       "runsOn": "computer",
-      "uses": { "tools": ["ffmpeg", "imagemagick", "python3"] },
       "when": "always",
       "instructions": "steps/04-qa-gate.md",
       "saves": [

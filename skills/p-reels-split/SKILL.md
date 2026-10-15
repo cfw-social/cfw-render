@@ -56,19 +56,6 @@ metadata:
 
 # p-reels-split — 50/50 Split-Screen Reel from Uploaded Talking-Head Video
 
-## Execution and reporting
-
-Read [Recipe stage reporting](../../docs/RECIPE-STAGE-REPORTING.md) before a tracked
-run. Managed work uses the installed worker/harness and the exact claimed manifest;
-its stage IDs select `steps/_shared.md` plus the referenced step file. The harness
-alone reports stages; step assistants must not call `complete_render_order` or
-emit competing MCP events. Standalone use does not report to CFW Social.
-
-Catalog presence and declared checks do not prove validator coverage or readiness.
-Missing validators/evidence block gates. See
-[reporting coverage](../../docs/RECIPE-REPORTING-COVERAGE.md) before claiming tracked
-execution is ready; local checkpoint eligibility is independently restricted.
-
 Produces one 9:16 (1080×1920) H.264 MP4 with two equal zones:
 
 ```

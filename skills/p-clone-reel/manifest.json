@@ -13,7 +13,7 @@
   "needs": {
     "os": ["macos"],
     "engines": ["codex", "claude-code"],
-    "tools": ["ffmpeg", "imagemagick", "node>=22", "npx", "chromium", "python3", "yt-dlp", "curl"],
+    "tools": ["ffmpeg", "imagemagick", "node>=22", "npx", "chromium", "python3", "yt-dlp"],
     "providers": ["heygen", "elevenlabs"]
   },
   "inputs": [
@@ -89,7 +89,6 @@
       "label": "Fetch and transcribe the reference",
       "weight": 15,
       "runsOn": "computer",
-      "uses": { "tools": ["yt-dlp", "ffmpeg", "python3"] },
       "when": "always",
       "instructions": "steps/01-ingest-reference.md",
       "saves": [
@@ -109,7 +108,6 @@
       "label": "Adapt the script to the brand",
       "weight": 15,
       "runsOn": "computer",
-      "uses": { "tools": ["python3"] },
       "when": "always",
       "instructions": "steps/02-adapt-script.md",
       "saves": [{ "id": "adapted_script", "kind": "text", "preview": true }],
@@ -121,7 +119,6 @@
       "label": "Generate the narration",
       "weight": 25,
       "runsOn": "computer",
-      "uses": { "tools": ["curl", "ffmpeg", "python3"], "providers": [["heygen", "elevenlabs"]] },
       "when": "always",
       "instructions": "steps/03-generate-narration.md",
       "saves": [{ "id": "narration", "kind": "video", "preview": false }],
@@ -137,7 +134,6 @@
       "label": "Composite in the reference format",
       "weight": 25,
       "runsOn": "computer",
-      "uses": { "tools": ["ffmpeg", "imagemagick", "node>=22", "npx", "chromium", "python3"] },
       "when": "always",
       "instructions": "steps/04-composite.md",
       "saves": [{ "id": "composite_video", "kind": "video", "preview": false }],
@@ -153,7 +149,6 @@
       "label": "Final checks and captions",
       "weight": 20,
       "runsOn": "computer",
-      "uses": { "tools": ["ffmpeg", "python3"] },
       "when": "always",
       "instructions": "steps/05-final-checks.md",
       "saves": [

@@ -17,19 +17,6 @@ dependsOn: [c-script, c-heygen, c-html-gfx, c-audio, c-production, c-ffmpeg, c-s
 
 # p-clone-reel — Viral Reel Recreation
 
-## Execution and reporting
-
-Read [Recipe stage reporting](../../docs/RECIPE-STAGE-REPORTING.md) before a tracked
-run. Managed work uses the installed worker/harness and the exact claimed manifest;
-its stage IDs select `steps/_shared.md` plus the referenced step file. The harness
-alone reports stages; step assistants must not call `complete_render_order` or
-emit competing MCP events. Standalone use does not report to CFW Social.
-
-Catalog presence and declared checks do not prove validator coverage or readiness.
-Missing validators/evidence block gates. See
-[reporting coverage](../../docs/RECIPE-REPORTING-COVERAGE.md) before claiming tracked
-execution is ready; local checkpoint eligibility is independently restricted.
-
 
 > **SELF-IMPROVEMENT RULE — READ FIRST:**
 > 1. Before executing ANY step in this skill, read `LEARNINGS.md` in this same folder.

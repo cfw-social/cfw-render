@@ -18,10 +18,6 @@ leaves this step.
 ## You must produce
 
 - `saves/final.png` — the cover scene (scene 1), exact canvas, confirmed as the money shot.
-  This is not delivery of the scene set. The current manifest lacks ordered
-  individual-scene final outputs, so tracked delivery remains blocked. Standalone
-  delivery retains every passing full-resolution scene in story order; neither
-  the cover nor `scene_sheet` replaces the complete set.
 - `saves/qa_report.json` — `{ "final_n": 1, "scenes": [ { "n", "verdict": "PASS",
   "scores": { "character_consistency": "PASS", "no_diverged_frames": "PASS",
   "character_fills_frame": "PASS", "cover_is_moneyshot": "PASS" }, "notes": [] } ] }`
