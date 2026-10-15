@@ -113,6 +113,7 @@
       "label": "Outline the slides",
       "weight": 15,
       "runsOn": "computer",
+      "uses": { "tools": ["python3"] },
       "when": "always",
       "instructions": "steps/01-outline.md",
       "saves": [
@@ -138,6 +139,7 @@
       "label": "Write copy and author the HTML",
       "weight": 25,
       "runsOn": "computer",
+      "uses": { "tools": ["python3"] },
       "when": "always",
       "instructions": "steps/02-author-slides.md",
       "saves": [
@@ -169,6 +171,7 @@
       "label": "Render and vision-check every slide",
       "weight": 40,
       "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "imagemagick", "node>=22", "npx", "chromium"] },
       "when": "always",
       "instructions": "steps/03-render-slides.md",
       "saves": [
@@ -214,6 +217,7 @@
       "label": "Write the post captions",
       "weight": 20,
       "runsOn": "computer",
+      "uses": { "tools": ["python3"] },
       "when": "always",
       "instructions": "steps/04-captions.md",
       "saves": [
