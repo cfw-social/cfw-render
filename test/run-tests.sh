@@ -15,6 +15,163 @@ PASS_COUNT=0
 pass() { printf '  PASS  %s\n' "$1"; PASS_COUNT=$((PASS_COUNT+1)); }
 fail() { printf '  FAIL  %s — %s\n' "$1" "$2"; FAILURES=$((FAILURES+1)); }
 
+# CFW-316: disposable, offline regression coverage. The targeted selector exits
+# before the legacy runner's broad cleanup (removed before the full suite).
+if python3 - "$REPO_DIR" <<'PY'
+import json, os, pathlib, shutil, subprocess, sys, tempfile
+repo = pathlib.Path(sys.argv[1])
+lib = repo/'bin/cfw-render-lib.sh'
+def shell(code, root, extra=None):
+    env = {'PATH': os.environ['PATH'], 'HOME': str(root), 'REPO': str(repo),
+           'ROOT': str(root), 'CFW_API_BASE': 'http://127.0.0.1:1',
+           'CFW_RENDER_WORKER_KEY': 'cfw_render_test_only', 'CFW_WORKER_ID': 'test-worker',
+           'CFW_ORDER_ID': 'test-order', 'CFW_ATTEMPT_ID': 'test-attempt',
+           'CFW_RENDER_DIRECTOR_MODEL': 'sonnet', 'CFW_RENDER_STATE_DIR': str(root),
+           'CFW_RENDER_SCRATCH_DIR': str(root), 'CFW_RENDER_PROVIDER_BUDGET_HEYGEN': '4',
+           'CFW_RENDER_PROVIDER_WAIT_CAP': '2', 'CFW_RENDER_FINISH_GRACE_SECS': '3'}
+    env.update(extra or {})
+    return subprocess.run(['bash','-c',code], env=env, cwd=root, text=True,
+                          capture_output=True, timeout=20)
+with tempfile.TemporaryDirectory(prefix='cfw-budget-recovery-') as tmp:
+    root = pathlib.Path(tmp)
+    def run(code, extra=None):
+        p = shell('source "$REPO/bin/cfw-render-lib.sh"\n'+code, root, extra)
+        assert p.returncode == 0, (p.stdout, p.stderr)
+        return p.stdout.strip()
+    wait = root/'wait.tsv'
+    for content, expected in [('',0), ('start\theygen\t100\nend\theygen\t140\n',40),
+        ('start\theygen\t900\n',100),
+        ('start\theygen\t100\nstart\theygen\t110\nend\theygen\t140\n',40),
+        ('start\theygen\t1\nend\theygen\t2000\n',900),
+        ('start\tunknown\t100\nend\tunknown\t140\n',0),
+        ('start\theygen\t100\nend\theygen\t140\nstart\theygen\t120\nend\theygen\t160\n',60),
+        ('start\theygen\tnot-a-date\n',0)]:
+        wait.write_text(content)
+        assert run('cr_provider_wait_excluded "$ROOT/wait.tsv" 100 1000') == str(expected)
+    wait.unlink()
+    assert run('cr_provider_wait_excluded "$ROOT/wait.tsv" 100 1000') == '0'
+    wait.symlink_to(lib)
+    assert run('cr_provider_wait_excluded "$ROOT/wait.tsv" 100 1000') == '0'
+    wait.unlink()
+    assert run('cr_recipe_budget 3 p-reels-pip-heygen video') == '7'
+    assert run('cr_recipe_budget 3 p-reels-pip-heygen image') == '3'
+    assert run('cr_recipe_budget 3 unknown video') == '3'
+    print('  PASS  budgets: missing/malformed/overlapping waits, lifetime clamp and image exclusion')
+
+    # Run the actual watchdog against a virtual clock. No processes are killed.
+    watch = '''
+printf 100 > clock
+: > kills
+sleep() { local n; n=$(cat clock); printf '%s' "$((n + $1))" > clock; }
+date() { cat clock; }
+cr_kill_tree() { printf '%s %s %s\\n' "$1" "$2" "$(cat clock)" >> kills; }
+cr_budget_watchdog 999999 3 "$ROOT/wait.tsv" "$ROOT" "${DIRECTIVE:-}"
+cat kills
+'''
+    assert 'TERM 103' in run(watch)
+    wait.write_text('start\theygen\t100\n')
+    assert 'TERM 105' in run(watch)  # open wait hits the absolute outer cap
+    wait.write_text('start\theygen\t100\nend\theygen\t102\n')
+    assert 'TERM 105' in run(watch)
+    wait.write_text('')
+    (root/'final').mkdir()
+    (root/'final/cover.png').write_text('not a full carousel')
+    assert 'TERM 103' in run(watch)  # final files alone grant no grace
+    (root/'.delivery-started').mkdir()
+    assert 'TERM 106' in run(watch)
+    (root/'directive').write_text('cancel')
+    assert 'TERM 101' in run(watch, {'DIRECTIVE':str(root/'directive')})
+    (root/'.delivery-started').rmdir()
+    print('  PASS  watchdog: bounded open waits, explicit finish grace and cancellation priority')
+
+    # Real harness timeout: only this test-owned engine group is signalled.
+    (root/'order.json').write_text('{"recipe":"fixture","kind":"image"}')
+    (root/'directive').write_text('continue')
+    p = shell('''source "$REPO/bin/cfw-render-lib.sh"
+source "$REPO/bin/cfw-render-harness.sh"
+CR_H_ORDER_DIR="$ROOT"
+cr_h_run_with_timeout 1 bash -c 'sleep 8'
+rc=$?
+[[ "$rc" == 143 || "$rc" == 137 ]] && [[ -f .retain-artifacts ]]
+''', root)
+    assert p.returncode == 0, p.stderr
+    print('  PASS  manifest engine timeout retains artifacts and reaps its process group')
+
+    # Real report logic with file-only mock transport/upload. No network calls.
+    bins = root/'bin'; bins.mkdir()
+    shutil.copy(repo/'bin/cfw-render-report.sh', bins)
+    (bins/'cfw-render-lib.sh').write_text(lib.read_text()+'''\ncr_heartbeat_stop_if_pending() { :; }
+cr_mcp_call() {
+  printf '%s\\n' "$2" >> "$ROOT/calls"
+  if [[ "${LOST_REPLY:-0}" == 1 ]]; then return 1; fi
+  printf '{"ok":true}'
+}
+''')
+    upload = bins/'cfw-render-upload.sh'
+    upload.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$1" >> "$ROOT/uploads"\nprintf "https://media.cfw.social/%s" "$(basename "$1")"\n')
+    upload.chmod(0o755)
+    (root/'final/slide-2.png').write_text('slide two')
+    (root/'final/captions.json').write_text('{"instagram":"caption"}')
+    command = 'bash "$ROOT/bin/cfw-render-report.sh" complete final/slide-2.png final/cover.png final/captions.json'
+    p = shell(command, root, {'LOST_REPLY':'1'})
+    assert p.returncode != 0 and not (root/'.outcome').exists()
+    assert (root/'.delivery-started/files.json').exists()
+    p = shell(command, root)
+    assert p.returncode != 0
+    calls = (root/'calls').read_text().splitlines()
+    assert len(calls) == 1, calls
+    d = json.loads(calls[0])
+    assert d['attemptId'] == 'test-attempt'
+    assert [x['url'].split('/')[-1] for x in d['outputs']] == ['slide-2.png','cover.png']
+    assert d['captions']['instagram'] == 'caption'
+    assert len((root/'uploads').read_text().splitlines()) == 2
+    assert shell('bash "$ROOT/bin/cfw-render-report.sh" block timeout', root).returncode != 0
+    # Independent clean order: acknowledgement precedes optional local copy.
+    clean = root/'clean'; clean.mkdir()
+    p = shell('cd "$ROOT/clean"; bash "$ROOT/bin/cfw-render-report.sh" complete https://media.cfw.social/slide.png', root)
+    assert p.returncode == 0, p.stderr
+    assert (clean/'.outcome').read_text().strip() == 'complete'
+    print('  PASS  lost completion reply: no retry/upload/block; explicit ordered outputs and attempt identity preserved')
+
+    # The production transport must also avoid its ordinary curl retries for
+    # terminal completion, even if the connection dies after server commit.
+    run('''curl() { echo called >> curl-count; return 28; }
+cr_mcp_call complete_render_order '{}' >/dev/null 2>&1
+[[ "$(wc -l < curl-count | tr -d ' ')" == 1 ]]
+''')
+    # Provider event path containment and strict provider name validation.
+    wait.write_text('')
+    p = shell('bash "$ROOT/bin/cfw-render-report.sh" provider-wait-start heygen', root,
+              {'CFW_RENDER_WAIT_FILE':str(wait)})
+    assert p.returncode == 0 and 'start\theygen\t' in wait.read_text(), p.stderr
+    p = shell('bash "$ROOT/bin/cfw-render-report.sh" provider-wait-start unknown', root,
+              {'CFW_RENDER_WAIT_FILE':str(wait)})
+    assert p.returncode == 2
+    p = shell('bash "$ROOT/bin/cfw-render-report.sh" provider-wait-start heygen', root,
+              {'CFW_RENDER_WAIT_FILE':str(lib)})
+    assert p.returncode == 2
+    source = (repo/'bin/cfw-render.sh').read_text()
+    assert 'complete final/*' not in source
+    identity_code = source.split('CFW_ATTEMPT_ID="$(python3 -c \'', 1)[1].split("' <<<", 1)[0]
+    for order, expected in [({'attempt':{'id':'a'}}, 'a'),
+        ({'attempt':{'id':'a'},'manifest':{'steps':[]}}, ''),
+        ({'attempt':{'id':'a'},'manifest':{'steps':[]},'taskOrder':{'stageRange':{'fromStepId':'one'}}}, 'a')]:
+        p = subprocess.run([sys.executable, '-c', identity_code], input=json.dumps(order), capture_output=True, text=True)
+        assert p.returncode == 0 and p.stdout.strip() == expected, p.stderr
+    assert '[[ -e "$d/.delivery-started" || -e "$d/.retain-artifacts" ]] && continue' in source
+    assert source.index('previous delivery needs reconciliation') < source.index('printf \'%s\' "$order_json" > "$order_dir/order.json"')
+    print('  PASS  completion transport is single-shot; wait writes contained; uncertain artifacts protected')
+PY
+then
+  pass "bounded timeouts and fail-closed delivery recovery"
+else
+  fail "bounded timeouts and fail-closed delivery recovery" "offline regression failed"
+fi
+if [[ "${1:-}" == --timeout-recovery ]]; then
+  (( FAILURES == 0 ))
+  exit $?
+fi
+
 # Exercise the real pause gate + soft-call parser without starting workers,
 # hitting a network, or running the legacy suite's broad process cleanup.
 # --pause-retry-only runs just this regression block.

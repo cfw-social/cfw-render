@@ -57,7 +57,15 @@ case "$VERB" in
       echo "cfw-render-report: usage: complete <file> [file2 ...]" >&2
       exit 2
     fi
-    # Upload every file (local paths); a URL arg is passed through as-is.
+    # One explicit ordered delivery only. Keep this marker on ALL failures:
+    # the server may have committed before its response reached this computer.
+    # A later invocation must not re-upload or re-complete automatically.
+    if [[ -e .outcome ]] || ! mkdir .delivery-started 2>/dev/null; then
+      echo 'cfw-render-report: delivery already started; retain artifacts and reconcile with CFW before retrying' >&2
+      exit 1
+    fi
+    python3 -c 'import json,sys; json.dump(sys.argv[1:], open(".delivery-started/files.json", "x"))' "$@" || exit 1
+    # Upload in caller order. Side files must never become carousel slides.
     urls=()
     local_files=()
     for f in "$@"; do
@@ -65,11 +73,25 @@ case "$VERB" in
         urls+=("$f")
       else
         [[ -f "$f" ]] || { echo "cfw-render-report: complete — file not found: $f" >&2; exit 1; }
+        f_base="$(basename "$f" | tr '[:upper:]' '[:lower:]')"
+        case "$f_base" in
+          *.mp4|*.mov|*.webm|*.m4v|*.png|*.jpg|*.jpeg|*.gif|*.webp|*.pdf|*.mp3|*.wav|*.m4a) ;;
+          *)
+            if [[ "$f_base" == captions.json && -z "${CFW_CAPTIONS_FILE:-}" ]]; then
+              CFW_CAPTIONS_FILE="$f"
+            fi
+            echo 'cfw-render-report: side file omitted from deliverables' >&2
+            continue ;;
+        esac
         u="$("$SELF_DIR/cfw-render-upload.sh" "$f")" || { echo "cfw-render-report: upload failed for $f" >&2; exit 1; }
         urls+=("$u")
         local_files+=("$f")
       fi
     done
+    if [[ ${#urls[@]} -eq 0 ]]; then
+      echo 'cfw-render-report: no media deliverables in explicit output list' >&2
+      exit 2
+    fi
     output_url="${urls[0]}"
     # CFW-135: every URL, arg order, as one JSON array (consumed below).
     urls_json="$(printf '%s\n' "${urls[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')"
@@ -151,6 +173,10 @@ d = {
     "outputs": outputs,
     "models": {"director": director_model, "fanout": json.loads(fanout_json), "escalated": director_model != "sonnet"},
 }
+# Bind delivery to the claimed attempt when present. Legacy servers already
+# support this optional guard; no new recovery protocol is implied.
+if os.environ.get("CFW_ATTEMPT_ID"):
+    d["attemptId"] = os.environ["CFW_ATTEMPT_ID"]
 # CFW-136: per-platform captions (brand voice) — only when the recipe wrote some.
 if captions:
     d["captions"] = captions
@@ -164,6 +190,10 @@ print(json.dumps(d))
       echo "cfw-render-report: complete_render_order returned ok:false — treating as fatal: $resp" >&2
       exit 1
     fi
+
+    # Acknowledge immediately, before optional local copying. The remaining
+    # crash window is covered by .delivery-started, never by a rescue retry.
+    printf 'complete\n' > .outcome.tmp && mv .outcome.tmp .outcome || exit 1
 
     # Keep a local copy of every finished file on the owner's computer
     # ("$HOME/CFW Render/outputs/<brand>/<date>_<order>/") — only now, after
@@ -181,11 +211,14 @@ print(json.dumps(d))
     # complete_render_order and the server rejects further events ("Order not
     # claimed by this worker"). Every deliverable already went in the call above.
 
-    echo "complete" > .outcome
     echo "$resp"
     ;;
 
   block)
+    if [[ -e .delivery-started ]]; then
+      echo 'cfw-render-report: delivery may already have completed; refusing conflicting block' >&2
+      exit 1
+    fi
     reason="${1:-}"; needs="${2:-}"
     if [[ -z "$reason" ]]; then
       echo "cfw-render-report: usage: block <reason> [ingredient|decision|capacity]" >&2
@@ -208,8 +241,29 @@ print(json.dumps(d))
     echo "$resp"
     ;;
 
+  provider-wait-start|provider-wait-end)
+    # Only a worker-issued per-invocation file is writable. No arbitrary path,
+    # provider strings, cross-attempt logs or legacy shared scratch fallback.
+    python3 - "$VERB" "${1:-}" "${CFW_RENDER_WAIT_FILE:-}" "${CFW_RENDER_SCRATCH_DIR:-}" <<'PY'
+import os, pathlib, sys, time
+verb, provider, name, root = sys.argv[1:]
+try:
+    if provider != "heygen" or not name or not root:
+        raise ValueError("missing wait scope")
+    path = pathlib.Path(name)
+    path.resolve().relative_to(pathlib.Path(root).resolve())
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW)
+    with os.fdopen(fd, "a") as f:
+        f.write(f'{"start" if verb.endswith("start") else "end"}\theygen\t{int(time.time())}\n')
+except (OSError, ValueError):
+    print("cfw-render-report: invalid provider wait scope", file=sys.stderr)
+    sys.exit(2)
+PY
+    exit $?
+    ;;
+
   *)
-    echo "cfw-render-report: usage: {stage|complete|block} ..." >&2
+    echo "cfw-render-report: usage: {stage|complete|block|provider-wait-start|provider-wait-end} ..." >&2
     exit 2
     ;;
 esac

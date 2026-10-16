@@ -157,6 +157,104 @@ cr_recipe_needs_heygen() {
   return 1
 }
 
+# CFW-316: bounded provider-aware budgets. Metadata only affects scheduling,
+# never provider credentials. Dedicated HeyGen recipes predate providers[].
+cr_recipe_budget() {
+  local base="$1" recipe="$2" kind="$3" uplift=0
+  if [[ "$kind" != image ]] && { cr_recipe_needs_heygen "$recipe" || python3 -c '
+import json, sys
+try:
+    p = json.load(open(sys.argv[1]))["recipes"][sys.argv[2]].get("providers", [])
+    sys.exit(0 if isinstance(p, list) and "heygen" in p else 1)
+except (OSError, ValueError, KeyError, TypeError):
+    sys.exit(1)
+' "${CFW_RENDER_SKILLS_DIR:-}/index.json" "$recipe"; }; then
+    uplift="${CFW_RENDER_PROVIDER_BUDGET_HEYGEN:-900}"
+  fi
+  printf '%s' "$(( base + uplift ))"
+}
+
+# File is unique to this engine invocation; clamp to its lifetime and merge
+# intervals. Duplicate/malformed edges cannot multiply elapsed wait time.
+cr_provider_wait_excluded() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import os, sys
+path, start, now = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+opened = None
+windows = []
+try:
+    if os.path.islink(path) or os.path.getsize(path) > 1048576:
+        raise ValueError("invalid wait log")
+    with open(path) as f:
+        for line in f:
+            parts = line.strip().split("\t")
+            if len(parts) != 3 or parts[1] != "heygen":
+                continue
+            edge, _, stamp = parts
+            if not stamp.isdecimal():
+                continue
+            stamp = max(start, min(now, int(stamp)))
+            if edge == "start" and opened is None:
+                opened = stamp
+            elif edge == "end" and opened is not None:
+                if stamp > opened:
+                    windows.append((opened, stamp))
+                opened = None
+    if opened is not None and now > opened:
+        windows.append((opened, now))
+except (OSError, ValueError):
+    windows = []
+end = start
+total = 0
+for a, b in sorted(windows):
+    total += max(0, b - max(a, end))
+    end = max(end, b)
+print(total)
+PY
+}
+
+cr_provider_wait_note() {
+  cat <<'NOTE'
+
+## Bounded provider waits
+For a HeyGen poll loop only, call `cfw-render-report.sh provider-wait-start heygen`
+right before waiting and `cfw-render-report.sh provider-wait-end heygen` when it
+resolves. The watchdog excludes these windows, up to a fixed outer ceiling.
+This does not extend a lease or override cancellation, checks or tool restrictions.
+Missing brackets use the ordinary work budget. Never call complete from a step:
+the harness owns ordered delivery. A legacy Director calls complete once with
+all deliverables in explicit order, never a final/* glob. If delivery fails or
+its reply is lost, retain artifacts; do not retry complete automatically.
+NOTE
+}
+
+# Shared watchdog for Director and step engines. Finish grace is only for an
+# explicit delivery invocation, not a guessed file set. No rescue upload here.
+cr_budget_watchdog() {
+  local pid="$1" budget="$2" wait_file="$3" root="$4" directive="${5:-}"
+  local started now excluded wall grace=0
+  started="$(date +%s)"
+  while :; do
+    sleep 1
+    if [[ -n "$directive" && -f "$directive" ]]; then
+      case "$(cat "$directive")" in cancel|superseded) break ;; esac
+    fi
+    now="$(date +%s)"; wall=$((now - started))
+    excluded="$(cr_provider_wait_excluded "$wait_file" "$started" "$now")"
+    [[ "$excluded" =~ ^[0-9]+$ ]] || excluded=0
+    if (( wall - excluded >= budget || wall >= budget + ${CFW_RENDER_PROVIDER_WAIT_CAP:-2700} )); then
+      if [[ -z "$directive" && -d "$root/.delivery-started" && ! -f "$root/.outcome" ]]; then
+        grace="${CFW_RENDER_FINISH_GRACE_SECS:-90}"
+      fi
+      (( grace == 0 )) || sleep "$grace"
+      break
+    fi
+  done
+  cr_kill_tree "$pid" TERM
+  sleep 1
+  cr_kill_tree "$pid" KILL
+}
+
 # ---------------------------------------------------------------------------
 # cr_default_env_file — where the settings file lives when CFW_RENDER_ENV is
 # not set: ~/.cfw-render/cfw-render.env. An install from before the folder
@@ -205,6 +303,7 @@ cr_load_config() {
     CFW_RENDER_MODE CFW_RENDER_WORKER_ID_FILE
     CFW_RENDER_HEARTBEAT_SECS CFW_RENDER_RENDERER_KIND CFW_RENDER_ORPHAN_GRACE_SECS
     CFW_RENDER_HOME CFW_RENDER_LOG_DIR CFW_RENDER_OUTPUTS CFW_RENDER_KEEP_OUTPUTS
+    CFW_RENDER_FINISH_GRACE_SECS CFW_RENDER_PROVIDER_BUDGET_HEYGEN CFW_RENDER_PROVIDER_WAIT_CAP
     CFW_RENDER_MEDIA_BASE_URL CFW_RENDER_TEST_MEDIA_BASE_URL
   )
   local _cr_preset=() _v
@@ -262,6 +361,16 @@ cr_load_config() {
   # render orphaned — absorbs a background write that lands a few hundred ms
   # after the Director's own turn ended, without masking a real failure.
   : "${CFW_RENDER_ORPHAN_GRACE_SECS:=5}"
+  : "${CFW_RENDER_FINISH_GRACE_SECS:=90}"
+  : "${CFW_RENDER_PROVIDER_BUDGET_HEYGEN:=900}"
+  : "${CFW_RENDER_PROVIDER_WAIT_CAP:=2700}"
+  # Bound arithmetic inputs before launching an engine (including env overrides).
+  for _v in CFW_RENDER_FINISH_GRACE_SECS CFW_RENDER_PROVIDER_BUDGET_HEYGEN CFW_RENDER_PROVIDER_WAIT_CAP CFW_RENDER_TIMEOUT_VIDEO CFW_RENDER_TIMEOUT_IMAGE; do
+    if [[ ! "${!_v}" =~ ^(0|[1-9][0-9]{0,4})$ ]] || (( ${!_v} > 86400 )); then
+      printf 'cfw-render: invalid bounded seconds: %s\n' "$_v" >&2
+      return 1
+    fi
+  done
   # [CFW-146] Renderer identity shown to the owner ("Working on your Mac" /
   # "on your computer"). Derived from the platform unless set:
   #   Darwin        → mac   (the owner's laptop)
@@ -280,6 +389,7 @@ cr_load_config() {
     CFW_RENDER_MODE CFW_RENDER_WORKER_ID_FILE \
     CFW_RENDER_HEARTBEAT_SECS CFW_RENDER_RENDERER_KIND CFW_RENDER_ORPHAN_GRACE_SECS \
     CFW_RENDER_HOME CFW_RENDER_LOG_DIR CFW_RENDER_OUTPUTS CFW_RENDER_KEEP_OUTPUTS \
+    CFW_RENDER_FINISH_GRACE_SECS CFW_RENDER_PROVIDER_BUDGET_HEYGEN CFW_RENDER_PROVIDER_WAIT_CAP \
     CFW_RENDER_MEDIA_BASE_URL CFW_RENDER_TEST_MEDIA_BASE_URL
 
   local missing=()
@@ -413,8 +523,11 @@ args = json.loads(sys.argv[2]) if sys.argv[2] else {}
 print(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}}))
 ' "$tool" "$args_json" 2>/dev/null)" || { printf 'cfw-render: cr_mcp_call could not build request JSON for %s\n' "$tool" >&2; return 1; }
 
-  local attempt resp rc
-  for attempt in 1 2 3; do
+  local attempt resp rc max_attempts=3
+  # Completion has no retry acknowledgement contract: a lost response may mean
+  # the dish already exists. Do not repeat this terminal write automatically.
+  [[ "$tool" == complete_render_order ]] && max_attempts=1
+  for (( attempt=1; attempt<=max_attempts; attempt++ )); do
     resp="$(curl -sS --max-time 30 -X POST "$url" \
       -H "cfw-render-key: $CFW_RENDER_WORKER_KEY" \
       -H "content-type: application/json" \
@@ -424,7 +537,7 @@ print(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
     if (( rc == 0 )) && [[ -n "$resp" ]]; then
       break
     fi
-    (( attempt < 3 )) && sleep $(( attempt * 2 ))
+    (( attempt < max_attempts )) && sleep $(( attempt * 2 ))
   done
   if (( rc != 0 )) || [[ -z "${resp:-}" ]]; then
     printf 'cfw-render: cr_mcp_call %s — curl failed after retries (rc=%s)\n' "$tool" "$rc" >&2

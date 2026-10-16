@@ -167,6 +167,8 @@ trap 'cr_tick_lock_release' EXIT
 if [[ -d "$CFW_RENDER_SCRATCH" ]]; then
   find "$CFW_RENDER_SCRATCH" -mindepth 2 -maxdepth 2 -type d -mtime +2 -print0 2>/dev/null \
     | while IFS= read -r -d '' d; do
+        # Uncertain delivery/timeout artifacts need explicit reconciliation.
+        [[ -e "$d/.delivery-started" || -e "$d/.retain-artifacts" ]] && continue
         cr_log "janitor: removing stale scratch dir older than 48h: $d"
         rm -rf "$d"
       done
@@ -229,8 +231,25 @@ print(json.dumps({"orderId": text(o.get("id")), "shortCode": text(o.get("shortCo
   fi
 
   local order_dir="$CFW_RENDER_SCRATCH/$brand_slug/$order_id"
+  if [[ -e "$order_dir/.delivery-started" ]]; then
+    cr_log "order $order_id — previous delivery needs reconciliation; refusing automatic rerun"
+    cr_recent_append "" failed "$order_id" "$recent_identity" "previous delivery needs reconciliation in CFW"
+    return 1
+  fi
   mkdir -p "$order_dir/ingredients" "$order_dir/clips" "$order_dir/work" "$order_dir/final"
   printf '%s' "$order_json" > "$order_dir/order.json"
+  local CFW_ATTEMPT_ID
+  # Current Social accepts completed attempts only for negotiated stage ranges.
+  # Ordinary manifests report attempt_completed before legacy delivery, so keep
+  # their existing no-attemptId contract until that server gate is extended.
+  CFW_ATTEMPT_ID="$(python3 -c '
+import json,sys
+o=json.load(sys.stdin)
+ranged = bool(o.get("stageRange") or (o.get("taskOrder") or {}).get("stageRange"))
+aid = (o.get("attempt") or {}).get("id") or o.get("attemptId") or ""
+print("" if o.get("manifest") and not ranged else aid)
+' <<< "$order_json")"
+  export CFW_ATTEMPT_ID
 
   # [CFW-313] Brand-scoped provider credential gate. A HeyGen recipe must
   # carry taskOrder.credentials.heygen — a brand-scoped OAuth credential
@@ -366,8 +385,11 @@ if not gate:
 print(gate)
 ' <<< "$order_json" 2>/dev/null)"
 
-  local timeout_secs
+  local timeout_secs wait_file provider_note
   if [[ "$kind" == "image" ]]; then timeout_secs="$CFW_RENDER_TIMEOUT_IMAGE"; else timeout_secs="$CFW_RENDER_TIMEOUT_VIDEO"; fi
+  timeout_secs="$(cr_recipe_budget "$timeout_secs" "$recipe" "$kind")"
+  wait_file="$(mktemp "$order_dir/work/provider-wait.XXXXXX")" || return 1
+  provider_note="$(cr_provider_wait_note)"
   local timeout_min=$(( (timeout_secs + 59) / 60 ))
 
   local prompt
@@ -382,11 +404,12 @@ subs = {
     "{{failCap}}": sys.argv[6],
     "{{timeoutMin}}": sys.argv[7],
     "{{fanoutModels}}": sys.argv[8],
+    "{{providerNote}}": sys.argv[9],
 }
 for k, v in subs.items():
     tpl = tpl.replace(k, v)
 print(tpl)
-' "$SELF_DIR/../lib/director-prompt.md" "$order_id" "$CFW_RENDER_SKILLS_DIR" "$recipe" "$gate" "$CFW_RENDER_GATE_FAIL_CAP" "$timeout_min" "$CFW_RENDER_FANOUT_MODELS" 2>/dev/null)"
+' "$SELF_DIR/../lib/director-prompt.md" "$order_id" "$CFW_RENDER_SKILLS_DIR" "$recipe" "$gate" "$CFW_RENDER_GATE_FAIL_CAP" "$timeout_min" "$CFW_RENDER_FANOUT_MODELS" "$provider_note" 2>/dev/null)"
 
   # Allocate exclusively before heartbeat/engine start. Same-second retries
   # must not overwrite earlier attempt evidence; IDs cannot escape runs/.
@@ -439,6 +462,7 @@ print(path)
   (
     cd "$order_dir" || exit 1
     export CFW_ORDER_ID="$order_id"
+    export CFW_RENDER_WAIT_FILE="$wait_file"
     export CFW_WORKER_ID
     export CFW_API_BASE
     export CFW_RENDER_WORKER_KEY
@@ -494,14 +518,16 @@ print(path)
     director_kill_target="$director_pid"
   fi
 
-  # Watchdog kills the whole tree (CFW-292). Redirected so the orphaned `sleep`
-  # it leaves behind cannot hold the caller's stdout open — that was the
-  # test-gate hang and the stray `sleep 3600`s found on the Mac (CFW-286).
-  ( sleep "$timeout_secs"; cr_kill_tree "$director_pid" TERM; sleep 30; cr_kill_tree "$director_pid" KILL ) >/dev/null 2>&1 &
+  # CFW-316: bounded provider waits and explicit-delivery finish grace.
+  # Never infer finished/ordered outputs by enumerating final/.
+  cr_budget_watchdog "$director_pid" "$timeout_secs" "$wait_file" "$order_dir" >/dev/null 2>&1 &
   local watchdog_pid=$!
 
   wait "$director_pid"
   local director_exit=$?
+  if (( director_exit == 143 || director_exit == 137 )); then
+    kill -KILL "$director_kill_target" 2>/dev/null
+  fi
   cr_kill_tree "$watchdog_pid" TERM; wait "$watchdog_pid" 2>/dev/null
   # Stop the pulse before ANY outcome is reported — a heartbeat after
   # complete/block would be rejected ("order not claimed by this worker").
@@ -535,7 +561,15 @@ print(path)
     else
       cr_log "order $order_id ended with outcome=$outcome — scratch kept for 48h janitor"
     fi
+  elif [[ -e "$order_dir/.delivery-started" ]]; then
+    # Server success may precede the local .outcome write. Neither repeat
+    # delivery nor send a conflicting block; preserve the ordered intent.
+    outcome="failed"
+    fail_reason="delivery result is uncertain — check CFW before retrying"
+    cr_log "order $order_id — delivery result uncertain; artifacts retained, no automatic retry"
+    kill -TERM "$director_kill_target" 2>/dev/null
   elif (( director_exit == 143 || director_exit == 137 )); then
+    : > "$order_dir/.retain-artifacts"
     outcome="timeout"
     fail_reason="render exceeded the time budget"
     cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"render exceeded the time budget","needs":"capacity"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \

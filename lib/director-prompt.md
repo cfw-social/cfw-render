@@ -123,6 +123,8 @@ You have **{{timeoutMin}} minutes** total (watchdog-enforced). Pace your
 stage reporting so a mid-run crash doesn't look silent — and report at least
 every 20 minutes so the 30-minute claim lease never lapses mid-render.
 
+{{providerNote}}
+
 ## Reused media (avatars, outros, b-roll)
 
 Every ingredient URL in `order.json` is already on CFW Media; fetch it into

@@ -242,12 +242,26 @@ cr_h_wait_pause() {
 # cr_h_run_with_timeout <secs> <cmd...> — background+wait with a killer.
 cr_h_run_with_timeout() {
   local secs="$1"; shift
-  "$@" & local pid=$!
-  ( sleep "$secs"; kill "$pid" 2>/dev/null ) & local killer=$!
+  local wait_file recipe kind
+  [[ "$secs" =~ ^[1-9][0-9]{0,4}$ ]] && (( secs <= 86400 )) || return 1
+  IFS=$'\t' read -r recipe kind <<< "$(python3 -c 'import json,sys; o=json.load(open(sys.argv[1])); print(str(o.get("recipe") or "") + "\t" + str(o.get("kind") or "video"))' "$CR_H_ORDER_DIR/order.json")"
+  secs="$(cr_recipe_budget "$secs" "$recipe" "$kind")"
+  wait_file="$(mktemp "$CR_H_ORDER_DIR/provider-wait.XXXXXX")" || return 1
+  local monitor=0
+  [[ "$-" == *m* ]] && monitor=1
+  set -m
+  CFW_RENDER_WAIT_FILE="$wait_file" CFW_RENDER_SCRATCH_DIR="$CR_H_ORDER_DIR" "$@" & local pid=$!
+  (( monitor )) || set +m
+  cr_budget_watchdog "$pid" "$secs" "$wait_file" "$CR_H_ORDER_DIR" "$CR_H_ORDER_DIR/directive" >/dev/null 2>&1 & local killer=$!
   local rc=0
   wait "$pid" || rc=$?
-  kill "$killer" 2>/dev/null || true
+  # The recorded, testable engine process group owns any surviving children.
+  # Do this before stopping the watchdog, whose delayed KILL may not run.
+  kill -KILL -- "-$pid" 2>/dev/null || true
+  cr_kill_tree "$killer" TERM || true
   wait "$killer" 2>/dev/null || true
+  case "$(cr_h_directive)" in cancel) return 20 ;; superseded) return 23 ;; esac
+  if (( rc == 137 || rc == 143 )); then : > "$CR_H_ORDER_DIR/.retain-artifacts"; fi
   return "$rc"
 }
 
@@ -287,6 +301,8 @@ print("## You must produce\n")
 for sv in s.get("saves") or []:
     print(f"- saves/{sv['id']}.{ext.get(sv.get('kind'), 'bin')} ({sv.get('kind')})")
 PY
+  # Standalone prompt inspections can source the harness without the worker lib.
+  if declare -F cr_provider_wait_note >/dev/null; then cr_provider_wait_note >> "$prompt"; fi
 }
 
 # cr_h_stage_inputs <workdir> <order-file> — copy/download claim inputs.
@@ -538,6 +554,14 @@ o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alt
         cr_h_run_with_timeout "$CFW_RENDER_STEP_TIMEOUT_SEC" cr_engine_run "$engine" "$workdir/prompt.md" "$workdir" "$log" \
         || { rc=$?; cr_log "harness: step $step_id engine exited nonzero (run $run)"; }
 
+      # Cancellation/supersession always wins over timeout/check retry policy.
+      case "$rc" in
+        20) cr_h_report attempt_cancelled "{\"stepId\":\"$step_id\"}"; return 20 ;;
+        23) return 23 ;;
+        137|143)
+          cr_h_report attempt_failed "{\"stepId\":\"$step_id\",\"message\":\"step exceeded its bounded budget; artifacts retained\"}"
+          return 30 ;;
+      esac
       if limit_until="$(cr_engine_limit_detect "$engine" "$log" "$rc" "$log_from")"; then
         cr_engine_limit_set "$engine" "$limit_until"
         cr_log "harness: $engine hit its limit (resets $limit_until) — trying next engine"
