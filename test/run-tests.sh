@@ -15,6 +15,81 @@ PASS_COUNT=0
 pass() { printf '  PASS  %s\n' "$1"; PASS_COUNT=$((PASS_COUNT+1)); }
 fail() { printf '  FAIL  %s — %s\n' "$1" "$2"; FAILURES=$((FAILURES+1)); }
 
+# Exercise the real pause gate + soft-call parser without starting workers,
+# hitting a network, or running the legacy suite's broad process cleanup.
+# --pause-retry-only runs just this regression block.
+if python3 - "$REPO_DIR" <<'PY'
+import json, os, pathlib, subprocess, sys, tempfile
+repo = pathlib.Path(sys.argv[1])
+source = (repo/'bin/cfw-render.sh').read_text()
+assert source.count('LAST_PAUSE_STATE="__unset__"') == 1
+gate = source.split('LAST_PAUSE_STATE="__unset__"', 1)[1].split('\nif (( ! LOOP ));', 1)[0]
+gate = 'LAST_PAUSE_STATE="__unset__"' + gate
+success = json.dumps({'result': {'content': [{'text': '{"ok":true}'}]}})
+def tool_error(text):
+    return json.dumps({'result': {'isError': True, 'content': [{'text': text}]}})
+cases = [
+    ('database error', tool_error('{"ok":false,"error":"update_failed"}'), '200', 1, 3, 1),
+    ('server error', json.dumps({'error': {'code': -32603, 'message': 'Temporary failure'}}), '200', 1, 3, 1),
+    ('malformed reply', 'not-json', '200', 1, 3, 1),
+    ('HTTP failure', '{}', '503', 3, 5, 1),
+    ('old server', json.dumps({'error': {'code': -32601, 'message': 'Unknown tool: set_computer_paused'}}), '200', 1, 1, 0),
+    ('SDK missing tool', tool_error('MCP error -32602: Tool set_computer_paused not found'), '200', 1, 1, 0),
+    ('RPC missing tool', json.dumps({'error': {'code': -32602, 'message': 'Tool set_computer_paused not found'}}), '200', 1, 1, 0),
+    ('unrelated error', json.dumps({'error': {'code': -32603, 'message': 'Unknown tool: set_computer_paused'}}), '200', 1, 3, 1),
+]
+harness = '''source "$REPO/bin/cfw-render-lib.sh"
+curl() {
+  local n
+  n=$(cat "$COUNT_FILE"); n=$((n+1)); printf '%s' "$n" > "$COUNT_FILE"
+  if (( n <= FAIL_CALLS )); then printf '%s\\n%s' "$FIRST_REPLY" "$HTTP_CODE"
+  else printf '%s\\n200' "$SUCCESS_REPLY"; fi
+}
+sleep() { :; }
+cr_pause_state() { printf '%s' "$PAUSE_REASON"; }
+cr_on_battery() { [[ "$PAUSE_REASON" == battery ]]; }
+cr_log() { :; }
+cr_reach_set() { REACH="$1"; }
+prune_running() { RUNNING=0; }
+claim_round() { echo 'Unexpected claim' >&2; exit 99; }
+cr_status_write() { printf '%s %s %s %s\\n' "$PING_SUPPORTED" "$REACH" "$CR_STATUS_LAST_ERROR" "$(cat "$COUNT_FILE")"; }
+CLAIM_MAX=1
+CR_STATUS_LAST_ERROR=keep-existing-error
+''' + gate + '''
+gated_claim_round
+gated_claim_round
+gated_claim_round
+'''
+for reason in ('owner', 'battery'):
+    for name, reply, http, failures, calls, supported in cases:
+        with tempfile.TemporaryDirectory(prefix='cfw-pause-retry-') as tmp:
+            counter = pathlib.Path(tmp)/'calls'
+            counter.write_text('0')
+            env = {'PATH': os.environ['PATH'], 'HOME': tmp, 'REPO': str(repo),
+                   'CFW_RENDER_STATE_DIR': tmp, 'CFW_API_BASE': 'http://127.0.0.1:1',
+                   'CFW_RENDER_WORKER_KEY': 'test-only', 'COUNT_FILE': str(counter),
+                   'FIRST_REPLY': reply, 'SUCCESS_REPLY': success, 'HTTP_CODE': http,
+                   'FAIL_CALLS': str(failures), 'PAUSE_REASON': reason}
+            result = subprocess.run(['bash', '-s'], input=harness, env=env,
+                                    capture_output=True, text=True, timeout=20)
+            assert result.returncode == 0, (name, reason, result.stderr)
+            rows = result.stdout.splitlines()
+            assert len(rows) == 3, (name, rows)
+            assert rows[-1] == f'{supported} ok keep-existing-error {calls}', (name, reason, rows)
+            assert rows[0].split()[1] == ('unreachable' if http == '503' else 'ok'), (name, rows)
+            assert int(counter.read_text()) == calls
+            print(f'  PASS  pause retry: {reason}, {name}')
+PY
+then
+  pass "pause retries recover; only explicit missing-tool replies disable check-ins"
+else
+  fail "pause retry" "retry, old-server or reachability contract failed"
+fi
+if [[ "${1:-}" == --pause-retry-only ]]; then
+  (( FAILURES == 0 ))
+  exit $?
+fi
+
 # Reporting instructions are tested independently of the deferred checkpoint runtime.
 if python3 - "$REPO_DIR" <<'PY'
 import json, os, pathlib, subprocess, sys, tempfile

@@ -730,11 +730,11 @@ claim_round() {
 # needs a fresh report); resuming sends {"paused":false} once. Writes
 # status.json after every round/skip.
 LAST_PAUSE_STATE="__unset__"
-# PING_SUPPORTED drops to 0 when the server answers the check-in with an error
-# (an older server without the tool): logged once, then no more calls.
+# Disable check-ins only when the server explicitly says the tool is missing.
+# Temporary tool/database errors must retry on the next paused round.
 PING_SUPPORTED=1
 gated_claim_round() {
-  local state rc=0 args prc
+  local state rc=0 args prc reply
   # lastCheckAt = the loop is alive, paused or not (the app shows "not
   # running" when it goes stale).
   CR_STATUS_LAST_CHECK_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -762,13 +762,34 @@ gated_claim_round() {
     prune_running; STARTED=0
     if (( PING_SUPPORTED )); then
       args="$(python3 -c 'import json,sys; print(json.dumps({"paused": True, "reason": sys.argv[1]}))' "$state")"
-      cr_mcp_call_soft set_computer_paused "$args" >/dev/null 2>&1 && prc=0 || prc=$?
+      reply="$(cr_mcp_call_soft set_computer_paused "$args" 2>/dev/null)" && prc=0 || prc=$?
       case "$prc" in
         0) cr_reach_set ok ;;
         75) cr_reach_set unreachable ;;
-        *) # the server answered, without the tool (or refused it)
-          cr_reach_set ok; PING_SUPPORTED=0
-          cr_log "set_computer_paused call failed (server may not have the tool yet) — carrying on" ;;
+        *)
+          cr_reach_set ok
+          # Match only known missing-tool replies, never arbitrary error text.
+          # Do not log the response: it can contain private server details.
+          if (( prc == 70 )) && python3 -c '
+import json, sys
+raw = sys.stdin.read().strip()
+missing = raw == "MCP error -32602: Tool set_computer_paused not found"
+try:
+    error = json.loads(raw)
+except ValueError:
+    error = None
+if isinstance(error, dict):
+    missing = (error.get("code"), error.get("message")) in (
+        (-32601, "Unknown tool: set_computer_paused"),
+        (-32602, "Tool set_computer_paused not found"),
+    )
+sys.exit(0 if missing else 1)
+' <<< "$reply"; then
+            PING_SUPPORTED=0
+            cr_log "set_computer_paused unavailable on this server — carrying on"
+          else
+            cr_log "set_computer_paused call failed — retrying next round"
+          fi ;;
       esac
     fi
   fi
