@@ -350,6 +350,9 @@ cr_engine_capabilities_json() {
   manifests="$(cr_engine_manifests_json "$skills_dir")"
   python3 -c '
 import json, sys
+# Checkpoints remain unadvertised until the Social protocol/schema counterpart
+# is integrated. Explicit opted-in synthetic local claims exercise the worker;
+# neither a combined stage/checkpoint protocol nor deployed recovery is claimed.
 print(json.dumps({"engine": sys.argv[1], "os": sys.argv[2], "manifests": json.loads(sys.argv[3]), "engines": json.loads(sys.argv[4]), "features": ["stage-range-v1"]}))
 ' "$engine" "$(cr_engine_os)" "$manifests" "$(cr_engines_json)"
 }

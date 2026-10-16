@@ -15,6 +15,202 @@ PASS_COUNT=0
 pass() { printf '  PASS  %s\n' "$1"; PASS_COUNT=$((PASS_COUNT+1)); }
 fail() { printf '  FAIL  %s — %s\n' "$1" "$2"; FAILURES=$((FAILURES+1)); }
 
+# Negotiated checkpoint fixtures only: no production manifest/version changes.
+local_checkpoint_cases() {
+  python3 - "$REPO_DIR" <<'PY'
+import copy, importlib.util, json, os, pathlib, shutil, subprocess, sys, tempfile, time
+repo = pathlib.Path(sys.argv[1])
+helper = repo/'bin/cfw-render-checkpoint.py'
+spec = importlib.util.spec_from_file_location('checkpoint', helper)
+cp = importlib.util.module_from_spec(spec); spec.loader.exec_module(cp)
+script = r'''
+set -uo pipefail
+source "$REPO/bin/cfw-render-lib.sh"
+source "$REPO/bin/cfw-render-engine.sh"
+source "$REPO/bin/cfw-render-harness.sh"
+cr_engine_detect() { echo codex; }
+cr_engine_limit_detect() { return 1; }
+cr_engine_limit_until() { echo ''; }
+cr_harness_heartbeat_start() { :; }
+cr_harness_heartbeat_stop() { :; }
+cr_h_run_with_timeout() { shift; "$@"; }
+cr_report_step() {
+  python3 -c 'import json,sys; print(json.dumps({"attempt":sys.argv[1],"seq":sys.argv[2],"event":sys.argv[3],"extra":json.loads(sys.argv[4])}))' "$3" "$4" "$5" "$6" >> "$ROOT/reports"
+  if [[ "${LOSE_ACK:-}" == "$5" && ! -e "$ROOT/.lost-ack" ]]; then touch "$ROOT/.lost-ack"; return 75; fi
+  if [[ "${REVOKE:-0}" == 1 && "$5" == step_started ]]; then printf '{"ok":true,"directive":"stop_after_step"}'; return; fi
+  printf '{"ok":true,"directive":"continue"}'
+}
+cr_h_upload_with_retry() { echo unexpected-upload >> "$ROOT/network"; return 1; }
+cr_h_restore_saved_outputs() { echo unexpected-download >> "$ROOT/network"; return 1; }
+cr_harness_run "$JOB/order.json" "$JOB" "$RECIPE"
+'''
+with tempfile.TemporaryDirectory(prefix='cfw-local-checkpoints-') as tmp:
+    root = pathlib.Path(tmp).resolve()
+    recipe = root/'recipe'; (recipe/'steps').mkdir(parents=True); (recipe/'checks').mkdir()
+    for sid in ('a','b','c'): (recipe/'steps'/f'{sid}.md').write_text('Synthetic offline test.')
+    (recipe/'checks/valid.sh').write_text('[[ -s "$1/saves/image.png" ]]\n')
+    image = root/'fixture.png'
+    subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','color=white:s=16x16','-frames:v','1',str(image)],check=True)
+    engine = root/'engine'
+    engine.write_text('''#!/usr/bin/env bash
+set -eu
+printf '%s\\n' "$CFW_STEP_ID" >> "$ROOT/engines"
+for save in $CFW_STEP_SAVES; do
+  name="${save/:/.}"
+  case "$name" in
+    *.png) cp "$ROOT/fixture.png" "saves/$name" ;;
+    *) printf '{"instagram":{"caption":"Synthetic caption","hashtags":["#test"]}}' > "saves/$name" ;;
+  esac
+done
+if [[ "${FAIL_STEP:-}" == "$CFW_STEP_ID" ]]; then printf invalid > saves/image.png; fi
+'''); engine.chmod(0o700)
+    manifest = {'recipe':'fixture','recipeVersion':'1.0.0','steps':[
+        {'id':'a','runsOn':'computer','instructions':'steps/a.md','saves':[{'id':'x','kind':'json'}]},
+        {'id':'b','runsOn':'computer','instructions':'steps/b.md','when':{'inputPresent':'unused'},'saves':[]},
+        {'id':'c','runsOn':'computer','instructions':'steps/c.md','saves':[{'id':'image','kind':'image'},{'id':'copy','kind':'json'}],
+         'checks':[{'id':'valid'}]}],
+        'finalOutputs':[{'stepId':'c','saveId':'image','role':'deliverable'},{'stepId':'c','saveId':'copy','role':'captions'}]}
+    env = {'PATH':os.environ['PATH'],'HOME':str(root),'REPO':str(repo),'ROOT':str(root),'RECIPE':str(recipe),
+           'CFW_WORKER_ID':'install-A','CFW_RENDER_LOCAL_CHECKPOINTS':'1','CFW_RENDER_ENGINE_CMD':str(engine),
+           'CFW_RENDER_STATE_DIR':str(root/'state'),'CFW_RENDER_LOG_DIR':str(root/'logs')}
+    def claim(name, attempt='att1', action='start', generation=0, resume='a'):
+        d = root/name; d.mkdir(exist_ok=True)
+        o = {'id':name,'brandId':'brand1','recipeVersion':'1.0.0','manifest':copy.deepcopy(manifest),
+             'attempt':{'id':attempt},'checkpoint':{'mode':'local-v1','action':action,'generation':generation},
+             'resumeFromStepId':resume,'taskOrder':{}}
+        (d/'order.json').write_text(json.dumps(o)); return d, o
+    def put(d, o): (d/'order.json').write_text(json.dumps(o))
+    def run(d, expected=0, **extra):
+        p = subprocess.run(['bash','-c',script],env={**env,'JOB':str(d),**extra},capture_output=True,text=True,timeout=60)
+        assert p.returncode == expected, (p.returncode,expected,p.stdout,p.stderr[-4000:])
+        return json.loads(p.stdout) if expected == 0 else None
+    def command(d, cmd, *args, worker='install-A', expected=0):
+        p = subprocess.run([sys.executable,str(helper),cmd,str(d),worker,*args],capture_output=True,text=True)
+        assert p.returncode == expected, (cmd,p.stderr)
+        return json.loads(p.stdout) if not expected else None
+    d,o = claim('job')
+    run(d,30,FAIL_STEP='c')
+    assert (root/'engines').read_text().splitlines() == ['a','c']
+    d,o = claim('job','att2','resume',resume='c'); outputs=run(d)
+    assert (root/'engines').read_text().splitlines() == ['a','c','c']
+    assert [x['id'] for x in outputs] == ['image','copy']
+    d,o = claim('job','att3','finalize-only',resume=''); assert run(d) == outputs
+    assert (root/'engines').read_text().splitlines() == ['a','c','c']
+    assert not (root/'network').exists()
+    state = json.loads((d/'checkpoint.json').read_text())
+    assert state['identity']['workerId']=='install-A' and state['stages']['b']['event']=='step_skipped'
+    reports = [json.loads(x) for x in (root/'reports').read_text().splitlines()]
+    for att in ('att1','att2','att3'):
+        seqs=[int(x['seq']) for x in reports if x['attempt']==att]; assert seqs==sorted(set(seqs))
+    command(d,'init',worker='install-B',expected=31)
+    saved=d/'steps/a/saves/x.json'; original=saved.read_bytes()
+    for bad in (b'',b'changed'):
+        saved.write_bytes(bad); run(d,31)
+    saved.unlink(); saved.symlink_to(image); run(d,31); saved.unlink(); run(d,31); saved.write_bytes(original)
+    bad_version=copy.deepcopy(o); bad_version['manifest']['recipeVersion']='2'; put(d,bad_version); run(d,31); put(d,o)
+    # Every range form rejects before engine, even an apparently full range or null.
+    before=(root/'engines').read_bytes()
+    for field,value in [('stageRange',{'fromStepId':'a','toStepId':'c'}),('stageRange',None),
+                        ('stopAfterStepId','a'),('stageRangeCompleted',True),
+                        ('taskOrder',{'stageRange':{'fromStepId':'a','toStepId':'a'}})]:
+        bounded=copy.deepcopy(o); bounded[field]=value; put(d,bounded); run(d,31)
+        command(d,'init',expected=31)
+    put(d,o); run(d,31,CFW_RENDER_LOCAL_CHECKPOINTS='0')
+    unknown=copy.deepcopy(o); unknown['checkpoint']['mode']='unknown'; put(d,unknown); run(d,31); put(d,o)
+    assert before==(root/'engines').read_bytes()
+    for refs in ([],[{'stepId':'a','saveId':'x','role':'deliverable'}],
+                 [{'stepId':'c','saveId':'missing','role':'deliverable'}]):
+        f,bad=claim('mapping'+str(len(json.dumps(refs)))); bad['manifest']['finalOutputs']=refs; put(f,bad); run(f,31)
+    # Lost acknowledgement is replayed at the same seq; new attempts never reuse it.
+    lost,lo=claim('lost'); run(lost,31,LOSE_ACK='step_completed')
+    pending=command(lost,'pending'); run(lost)
+    assert pending[0]['event']=='step_completed' and command(lost,'pending')==[]
+    old,oo=claim('old'); (root/'.lost-ack').unlink(); run(old,31,LOSE_ACK='step_completed')
+    pending=command(old,'pending'); old,oo=claim('old','att2','resume'); run(old)
+    st=json.loads((old/'checkpoint.json').read_text())
+    assert st['attempts']['att1']['pending']==pending and st['stages']['a']['acknowledgedAttempts']==['att2']
+    rev,ro=claim('revision','att1','resume',resume='c')
+    ro['taskOrder']['resume']={'fromOrderId':'old','fromGeneration':0,'fromStepId':'c'}; put(rev,ro); run(rev)
+    revoked,ro=claim('revoked'); before=(root/'engines').read_bytes(); run(revoked,22,REVOKE='1')
+    assert before==(root/'engines').read_bytes()
+    print('PASS: gated local resume/finalize-only, identity, corruption, range rejection, outbox replay and revocation')
+    # Restore terminal acknowledgement after deliberate failed recovery probes.
+    run(d)
+    # Real final report with only offline upload/HTTP boundaries replaced.
+    report_bin=root/'report-bin'; report_bin.mkdir()
+    for name in ('cfw-render-report.sh','cfw-render-checkpoint.py'): shutil.copy2(repo/'bin'/name,report_bin/name)
+    (report_bin/'cfw-render-lib.sh').write_text('''
+CFW_RENDER_DIRECTOR_MODEL=sonnet
+cr_log() { :; }
+cr_heartbeat_stop_if_pending() { :; }
+cr_mcp_call() { printf '%s\\n' "$2" >> "$ROOT/completions"; [[ "${LOSE_COMPLETE:-0}" == 1 ]] && return 75; printf '{"ok":true}'; }
+''')
+    uploader=report_bin/'cfw-render-upload.sh'
+    uploader.write_text('#!/usr/bin/env bash\nprintf upload >> "$ROOT/uploads"\nprintf "https://media.cfw.social/image.png"\n'); uploader.chmod(0o700)
+    report_env={**env,'CFW_ORDER_ID':'job','CFW_ATTEMPT_ID':'att3','CFW_API_BASE':'http://127.0.0.1:1',
+                'CFW_RENDER_WORKER_KEY':'test-only','CFW_CAPTIONS_FILE':outputs[1]['path']}
+    def deliver(expected, files=None, **extra):
+        p=subprocess.run(['bash',str(report_bin/'cfw-render-report.sh'),'complete',*(files or [outputs[0]['path']])],
+                         cwd=d,env={**report_env,**extra},capture_output=True,text=True)
+        assert p.returncode==expected,(p.returncode,p.stderr)
+    deliver(1,files=[str(image)])
+    assert not (root/'uploads').exists()
+    captions=pathlib.Path(outputs[1]['path']); original_captions=captions.read_bytes()
+    captions.write_text('{}'); deliver(1); assert not (root/'uploads').exists(); captions.write_bytes(original_captions)
+    deliver(1,LOSE_COMPLETE='1'); attempts=(root/'completions').read_bytes()
+    deliver(1); assert (root/'completions').read_bytes()==attempts
+    assert json.loads(attempts)['captions']=={'instagram':'Synthetic caption\n\n#test'}
+    run(d,31)  # even finalize-only cannot repeat uncertain terminal delivery
+    # Cleanup must retain the uncertainty marker as well as paid outputs.
+    def life(cmd, path, *args, expected=0):
+        p=subprocess.run([sys.executable,str(helper),cmd,str(path),*args],capture_output=True,text=True)
+        assert p.returncode==expected,(cmd,p.stderr)
+    life('active',d,str(os.getpid())); life('active',d,str(os.getpid()),expected=31)
+    life('finish',d,'local-v1',str(os.getpid()+100000),expected=31)
+    life('finish',d,'local-v1',str(os.getpid()))
+    assert not (d/'order.json').exists() and not (d/'.active.json').exists()
+    assert (d/'.delivery-started').exists() and pathlib.Path(outputs[0]['path']).exists()
+    scratch=root/'scratch'; brand=scratch/'brand'; brand.mkdir(parents=True)
+    for name in ('stale','active','recent','uncertain'):
+        p=brand/name; p.mkdir(); age=time.time()-3*86400
+        (p/'.activity.json').write_text(json.dumps({'at':time.time() if name=='recent' else age}))
+        if name=='active': (p/'.active.json').write_text(json.dumps({'pid':os.getpid()}))
+        if name=='uncertain': (p/'.delivery-started').mkdir()
+        os.utime(p,(age,age))
+    life('janitor',scratch)
+    assert sorted(p.name for p in brand.iterdir())==['active','recent','uncertain']
+    link=brand/'link'; link.symlink_to(root/'outside'); (root/'outside').mkdir()
+    life('active',link/'job',str(os.getpid()),expected=31); assert not (root/'outside/job').exists()
+    print('PASS: ordered/caption delivery gate, lost completion is not retried, ownership/scrubbing and retained uncertainty')
+    # Missing validators and corrupt nonempty media fail; one script invocation.
+    check_work=root/'check-work'; (check_work/'saves').mkdir(parents=True)
+    (check_work/'saves/x.json').write_text('{"ok":true}')
+    decl={'recipe':'fixture','steps':[{'id':'a','saves':[{'id':'x','kind':'json'}],'checks':[{'id':'required'}]}]}
+    order=root/'checks.json'; order.write_text(json.dumps({'manifest':decl}))
+    def validate(expected):
+        p=subprocess.run([sys.executable,str(repo/'bin/cfw-render-checks.py'),'run',str(order),str(recipe),str(check_work),'a'],capture_output=True,text=True)
+        assert p.returncode==expected,(p.stdout,p.stderr)
+        assert str(root) not in p.stdout and 'private-log' not in p.stdout
+    validate(1)
+    validator=recipe/'checks/required.sh'; validator.write_text('printf run >> "$1/count"\necho private-log\nexit 1\n')
+    validate(1); assert (check_work/'count').read_text()=='run'
+    validator.write_text('printf run >> "$1/count"\n'); validate(0)
+    for kind,suffix in [('json','json'),('image','png'),('video','mp4')]:
+        decl['steps'][0]['saves']=[{'id':'bad','kind':kind}]
+        (check_work/f'saves/bad.{suffix}').write_text('corrupt but nonempty')
+        order.write_text(json.dumps({'manifest':decl})); validate(1)
+    for path in (repo/'skills').glob('p-*/manifest.json'):
+        real=json.loads(path.read_text()); assert 'finalOutputs' not in real
+    caps=subprocess.run(['bash','-c','source "$REPO/bin/cfw-render-engine.sh"; cr_engine_manifests_json() { echo "[]"; }; cr_engines_json() { echo "[]"; }; cr_engine_capabilities_json codex "$RECIPE"'],env=env,capture_output=True,text=True,check=True)
+    assert 'checkpointProtocols' not in json.loads(caps.stdout)
+    print('PASS: missing validator, corrupt saves, single invocation, unchanged recipes and no advertised checkpoint capability')
+PY
+}
+if [[ "${1:-}" == --local-checkpoints ]]; then
+  local_checkpoint_cases
+  exit $?
+fi
+
 # CFW-316: disposable, offline regression coverage. The targeted selector exits
 # before the legacy runner's broad cleanup (removed before the full suite).
 if python3 - "$REPO_DIR" <<'PY'
@@ -2912,6 +3108,12 @@ else
 fi
 kill "$c18_pid" 2>/dev/null; wait "$c18_pid" 2>/dev/null
 rm -rf "$c18_dir"
+
+if local_checkpoint_cases; then
+  pass "local checkpoint persistence and gated recovery"
+else
+  fail "local checkpoint persistence and gated recovery" "see offline assertions above"
+fi
 
 echo "=== Case 19: step harness end-to-end — cfw-render.sh claim branch + cr_harness_run + fake engine (M1-08 c) ==="
 c19_manifest="$REPO_DIR/test/fixtures/manifests/harness-3step/manifest.json"

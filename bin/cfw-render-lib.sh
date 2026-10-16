@@ -231,13 +231,16 @@ NOTE
 # Shared watchdog for Director and step engines. Finish grace is only for an
 # explicit delivery invocation, not a guessed file set. No rescue upload here.
 cr_budget_watchdog() {
-  local pid="$1" budget="$2" wait_file="$3" root="$4" directive="${5:-}"
+  local pid="$1" budget="$2" wait_file="$3" root="$4" directive="${5:-}" immediate_revoke="${6:-0}"
   local started now excluded wall grace=0
   started="$(date +%s)"
   while :; do
     sleep 1
     if [[ -n "$directive" && -f "$directive" ]]; then
-      case "$(cat "$directive")" in cancel|superseded) break ;; esac
+      case "$(cat "$directive")" in
+        cancel|superseded) break ;;
+        stop_after_step|report_blocked) if [[ "$immediate_revoke" == 1 ]]; then break; fi ;;
+      esac
     fi
     now="$(date +%s)"; wall=$((now - started))
     excluded="$(cr_provider_wait_excluded "$wait_file" "$started" "$now")"
@@ -304,7 +307,7 @@ cr_load_config() {
     CFW_RENDER_HEARTBEAT_SECS CFW_RENDER_RENDERER_KIND CFW_RENDER_ORPHAN_GRACE_SECS
     CFW_RENDER_HOME CFW_RENDER_LOG_DIR CFW_RENDER_OUTPUTS CFW_RENDER_KEEP_OUTPUTS
     CFW_RENDER_FINISH_GRACE_SECS CFW_RENDER_PROVIDER_BUDGET_HEYGEN CFW_RENDER_PROVIDER_WAIT_CAP
-    CFW_RENDER_MEDIA_BASE_URL CFW_RENDER_TEST_MEDIA_BASE_URL
+    CFW_RENDER_MEDIA_BASE_URL CFW_RENDER_TEST_MEDIA_BASE_URL CFW_RENDER_LOCAL_CHECKPOINTS
   )
   local _cr_preset=() _v
   for _v in "${_cr_vars[@]}"; do
@@ -390,7 +393,7 @@ cr_load_config() {
     CFW_RENDER_HEARTBEAT_SECS CFW_RENDER_RENDERER_KIND CFW_RENDER_ORPHAN_GRACE_SECS \
     CFW_RENDER_HOME CFW_RENDER_LOG_DIR CFW_RENDER_OUTPUTS CFW_RENDER_KEEP_OUTPUTS \
     CFW_RENDER_FINISH_GRACE_SECS CFW_RENDER_PROVIDER_BUDGET_HEYGEN CFW_RENDER_PROVIDER_WAIT_CAP \
-    CFW_RENDER_MEDIA_BASE_URL CFW_RENDER_TEST_MEDIA_BASE_URL
+    CFW_RENDER_MEDIA_BASE_URL CFW_RENDER_TEST_MEDIA_BASE_URL CFW_RENDER_LOCAL_CHECKPOINTS
 
   local missing=()
   [[ -z "${CFW_API_BASE:-}" ]] && missing+=("CFW_API_BASE")

@@ -163,15 +163,11 @@ fi
 cr_tick_lock_acquire || { cr_log "tick lock held by another run — quiet no-op"; exit 0; }
 trap 'cr_tick_lock_release' EXIT
 
-# 48h scratch janitor — leftover forensics from failed runs get wiped.
+# Stopped retention is based on last activity, with active-owner and uncertain
+# delivery protection. Claims and the sweep share this tick's admission lock.
 if [[ -d "$CFW_RENDER_SCRATCH" ]]; then
-  find "$CFW_RENDER_SCRATCH" -mindepth 2 -maxdepth 2 -type d -mtime +2 -print0 2>/dev/null \
-    | while IFS= read -r -d '' d; do
-        # Uncertain delivery/timeout artifacts need explicit reconciliation.
-        [[ -e "$d/.delivery-started" || -e "$d/.retain-artifacts" ]] && continue
-        cr_log "janitor: removing stale scratch dir older than 48h: $d"
-        rm -rf "$d"
-      done
+  python3 "$SELF_DIR/cfw-render-checkpoint.py" janitor "$CFW_RENDER_SCRATCH" \
+    || { cr_log "janitor: unable to validate scratch retention; stopping"; exit 1; }
 fi
 
 JOURNAL="$CFW_RENDER_STATE_DIR/journal.tsv"
@@ -230,13 +226,28 @@ print(json.dumps({"orderId": text(o.get("id")), "shortCode": text(o.get("shortCo
     return 1
   fi
 
-  local order_dir="$CFW_RENDER_SCRATCH/$brand_slug/$order_id"
+  local order_dir="$CFW_RENDER_SCRATCH/$brand_slug/$order_id" checkpoint_mode
+  checkpoint_mode="$(python3 -c 'import json,sys; o=json.load(sys.stdin); c=o.get("checkpoint"); print(c.get("mode", "invalid") if isinstance(c, dict) else "invalid" if "checkpoint" in o else "")' <<< "$order_json")" || return 1
+  if [[ -n "$checkpoint_mode" ]]; then
+    if [[ "$checkpoint_mode" != local-v1 || "${CFW_RENDER_LOCAL_CHECKPOINTS:-0}" != 1 ]] ||
+       [[ "$(python3 -c 'import json,sys; print(1 if json.load(sys.stdin).get("manifest") else 0)' <<< "$order_json")" != 1 ]]; then
+      cr_log "order $order_id — unsupported checkpoint claim; refusing Director fallback"
+      return 1
+    fi
+  fi
   if [[ -e "$order_dir/.delivery-started" ]]; then
     cr_log "order $order_id — previous delivery needs reconciliation; refusing automatic rerun"
     cr_recent_append "" failed "$order_id" "$recent_identity" "previous delivery needs reconciliation in CFW"
     return 1
   fi
+  umask 077
+  CR_JOB_PID="$BASHPID"
+  python3 "$SELF_DIR/cfw-render-checkpoint.py" active "$order_dir" "$CR_JOB_PID" \
+    || { cr_log "order $order_id — unsafe or already active scratch folder"; return 1; }
+  CR_JOB_DIR="$order_dir"; CR_JOB_CHECKPOINT_MODE="$checkpoint_mode"
+  trap 'if [[ -d "$CR_JOB_DIR" ]]; then python3 "$SELF_DIR/cfw-render-checkpoint.py" finish "$CR_JOB_DIR" "$CR_JOB_CHECKPOINT_MODE" "$CR_JOB_PID" || cr_log "order cleanup failed; inspect stopped scratch files"; fi' EXIT
   mkdir -p "$order_dir/ingredients" "$order_dir/clips" "$order_dir/work" "$order_dir/final"
+  rm -f "$order_dir/order.json"
   printf '%s' "$order_json" > "$order_dir/order.json"
   local CFW_ATTEMPT_ID
   # Current Social accepts completed attempts only for negotiated stage ranges.
@@ -247,7 +258,8 @@ import json,sys
 o=json.load(sys.stdin)
 ranged = bool(o.get("stageRange") or (o.get("taskOrder") or {}).get("stageRange"))
 aid = (o.get("attempt") or {}).get("id") or o.get("attemptId") or ""
-print("" if o.get("manifest") and not ranged else aid)
+local = (o.get("checkpoint") or {}).get("mode") == "local-v1"
+print("" if o.get("manifest") and not ranged and not local else aid)
 ' <<< "$order_json")"
   export CFW_ATTEMPT_ID
 
@@ -327,6 +339,9 @@ print("\x1f".join([mode, token, expires, pool, expired]))
       cr_harness_run "$order_dir/order.json" "$order_dir" "$CFW_RENDER_SKILLS_DIR/$recipe" > "$order_dir/harness-result.json"
     ) </dev/null || h_rc=$?
     h_out="$(cat "$order_dir/harness-result.json" 2>/dev/null || true)"
+    if (( h_rc == 0 )) && [[ "$checkpoint_mode" == local-v1 ]]; then
+      h_out="$(python3 "$SELF_DIR/cfw-render-checkpoint.py" final "$order_dir" "$CFW_WORKER_ID")" || h_rc=31
+    fi
     if (( h_rc == 0 )); then
       # [M2-06] Only media saves are deliverables. A `json`/`md` save is a
       # side file: the report script would otherwise type `captions.json` as
@@ -343,7 +358,7 @@ MEDIA = {"mp4", "mov", "webm", "m4v", "png", "jpg", "jpeg", "gif", "webp", "pdf"
 a = json.loads(sys.argv[1] or "[]")
 for x in a:
     p = x["path"]; ext = os.path.splitext(p)[1].lstrip(".").lower()
-    if x.get("id") == "captions" and ext == "json": print(p + "\tcaptions")
+    if (x.get("role") == "captions" or (not x.get("role") and x.get("id") == "captions")) and ext == "json": print(p + "\tcaptions")
     elif ext in MEDIA: print(p + "\tmedia")' "$h_out" 2>/dev/null)
       if (( ${#h_files[@]} > 0 )) && ( cd "$order_dir" && CFW_ORDER_ID="$order_id" CFW_CAPTIONS_FILE="${h_captions:-final/captions.json}" CFW_RENDER_KEEP_DIR="$(cr_keep_output_dir "$brand_slug" "$order_id")" PATH="$SELF_DIR:$PATH" cfw-render-report.sh complete "${h_files[@]}" ); then
         h_outcome="completed"
@@ -351,7 +366,7 @@ for x in a:
         cr_log "order $order_id — harness finished but complete_render_order failed"
       fi
     else
-      case "$h_rc" in 20) h_outcome="cancelled" ;; 21) h_outcome="released" ;; 22) h_outcome="revoked" ;; 23) h_outcome="superseded" ;; 24) h_outcome="engine_limit" ;; 25) h_outcome="stage-completed" ;; 30) h_outcome="failed" ;; esac
+      case "$h_rc" in 20) h_outcome="cancelled" ;; 21) h_outcome="released" ;; 22) h_outcome="revoked" ;; 23) h_outcome="superseded" ;; 24) h_outcome="engine_limit" ;; 25) h_outcome="stage-completed" ;; 30) h_outcome="failed" ;; 31) h_outcome="checkpoint-blocked" ;; esac
       cr_log "order $order_id — harness exited $h_rc ($h_outcome)"
       # [M2-04, D76] stop_after_step (22) and attempt_superseded (23): this
       # brand is no longer ours to serve from this computer — delete the
@@ -360,7 +375,7 @@ for x in a:
       # reports: the attempt is already released (22) or belongs to another
       # computer (23). [M3-01b] 24 = released for an engine usage limit:
       # the attempt is released; the server re-queues it.
-      if (( h_rc == 22 || h_rc == 23 || h_rc == 24 )); then
+      if (( h_rc == 22 || h_rc == 23 )) || { (( h_rc == 24 )) && [[ "$checkpoint_mode" != local-v1 ]]; }; then
         cr_recent_append "" "$h_outcome" "$order_id" "$recent_identity"
         rm -rf "$order_dir"
         rm -rf "$(cr_keep_output_dir "$brand_slug" "$order_id")" 2>/dev/null
