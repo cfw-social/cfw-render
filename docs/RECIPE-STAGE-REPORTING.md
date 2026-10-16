@@ -14,15 +14,19 @@ the shared and selected step files, **not the whole SKILL.md**. These instructio
 ship with the installed Render checkout; MCP discovery does not deliver them or
 grant access to a GitHub repository.
 
-The isolated UI/reporting release does not ship the separate local-checkpoint
-runtime, validator adapter or migration. Local-mode requirements below describe
-that deferred contract, not capabilities enabled in this release.
+The consolidated worker ships gated local-checkpoint and validator helpers, not a
+Social migration or recipe rollout. Local mode needs an explicit authorized
+`checkpoint.mode=local-v1` claim and `CFW_RENDER_LOCAL_CHECKPOINTS=1` (default off).
+No checkpoint capability is advertised; current Social lacks the counterpart.
+Combined local-checkpoint/stage-bound claims reject before engine launch.
 
 ## Three execution contexts
 
 1. **Managed order:** the installed worker claims an authorized order and invokes
    `bin/cfw-render-harness.sh`. One recipe remains one RenderOrder. Stages are
-   checkpoint/progress boundaries, never independently scheduled jobs.
+   progress boundaries. Negotiated `stageRange` claims may bound execution;
+   nonfinal range completion is not final delivery. The worker does not invent
+   scheduling policy or stage claims.
 2. **Assistant operating a tracked order:** use that same installed worker and
    harness, only for an explicitly authorized order. A direct worker tool session
    requires a supported, scoped claim with the exact order, attempt, worker and
@@ -77,16 +81,18 @@ Do not describe already queued legacy orders or reporting-map membership as proo
 that all acceptance checks ran. Use the coverage record for exact limitations;
 old installed workers are not changed by these documentation edits.
 
-The separate checkpoint branch implements a Spotlight validator adapter and
-contained recipe shell validators; neither is included in this isolated release.
-Prose checks and acceptance files alone are not runnable harness validators.
-Local recovery and its Spotlight policy are deferred; this guide enables no
-additional recipe.
+The gated local runtime includes a Spotlight validator adapter and contained
+recipe shell-validator dispatch. Missing implementations or evidence fail closed
+in that path. Prose checks and acceptance files alone are not runnable validators.
+Production manifests, Spotlight versions and server policy are unchanged; this
+guide enables no additional recipe or recovery deployment.
 
 Only declared `finalOutputs` may be delivered in local mode. Intermediate bytes
 stay on the assigned computer; web metadata is not a cloud backup. Resume needs
-the same computer identity and valid artifacts; final-upload retry must not rerun
-paid stages. Preserve draft-first activation and existing owner approval rules.
+the same computer identity and valid artifacts. Finalize-only must not rerun paid
+stages; an uncertain terminal upload/completion is retained and blocks automatic
+redelivery. Missing `.outcome` is not proof that the server did not accept delivery.
+Preserve draft-first activation and existing owner approval rules.
 
 Multi-image/carousel delivery must include every requested image in explicit
 order. A cover, strongest preview or contact sheet is not the batch. QA-only

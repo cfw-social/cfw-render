@@ -1,8 +1,11 @@
 # Releasing CFW Render (macOS)
 
-Everything is built; the only missing pieces are the owner's secrets (gate G0).
-Until step 3 is done, the updater stays off (`plugins.updater.pubkey` is the
+Signing configuration (gate G0) and candidate-specific native/distribution
+acceptance are separate release prerequisites. Source/unit checks do not establish
+that an installed app has the corrected worker, offline guide or working clipboard.
+Until G0 step 3 is done, the updater stays off (`plugins.updater.pubkey` is the
 placeholder `REPLACE_WITH_MINISIGN_PUBKEY`), so dev and unsigned builds never update.
+Do not move worker refresh outside that guard to make a tester build update.
 
 ## Tester builds without an Apple account
 
@@ -55,15 +58,97 @@ update themselves; send a new `.dmg` for each change.
    | `R2_DESKTOP_BUCKET` | the bucket cfw-social serves `/api/v1/desktop/*` from |
    | `DESKTOP_RELEASE_BASE_URL` | public base URL of that bucket (files live under `desktop/<version>/`) |
 
+## Candidate acceptance gate
+
+Follow `desktop/TESTERS.md` on a disposable Mac VM/test machine with separate
+state, credentials and launch agents, never just a temporary HOME on the owner's
+Mac. Installation, signed updates and assistant calls need the corresponding
+access/authorization. No production writes, paid render/retry, new signing keys
+or publication are authorized by the shared-instruction correction itself.
+
+Before advertising a candidate, record:
+
+- Candidate app version, source revisions/patch, archive SHA-256, macOS/architecture
+  and isolated machine. Inspect the actual artifact's signature/resources, not
+  just `release.sh`. Unsigned builds are ad-hoc signed and not notarized; production
+  candidates require the normal Developer ID, notarization and updater signatures.
+- Bundled and installed guide hashes matching `config/agent-guides.json` and the
+  approved canonical Social snapshot. Verify installed worker hashes and the
+  LaunchAgent/process path actually executed after both fresh install and upgrade.
+  Preserve existing settings, keys, IDs, scratch, logs, outputs and local config.
+- Native screenshot and redacted clipboard JSON for older failed A after newer
+  successful B; accessible success/failure feedback, pending-click protection and
+  selectable fallback. Label injected clipboard rejection separately from OS denial.
+- Installed offline fallback, both-guides-missing stop, and Claude/Codex acceptance
+  results from the synthetic scenarios in TESTERS. Record authorization/access
+  blockers separately; mock/browser evidence cannot fill these cells.
+- For an enabled, signed **new app version**, prove worker/guide refresh runs once,
+  an unchanged synced version does not repeat it, and an installer failure does
+  not mark `workerSyncedVersion` successful. Use disposable snapshots and a test
+  update feed; never modify the production feed to test. Confirm disabled-updater
+  builds make no update requests. Existing signing and once-per-version guards
+  must stay intact. An unsigned same-version replacement is not this evidence:
+  explicitly test the supported installer update and label automatic refresh untested.
+
+Local automated checks (from the Render root unless noted):
+
+- `bash test/run-tests.sh --recent-identity`: fake engines, isolated process
+  sessions; exact identity, cleanup, same-second allocation and secret exclusion.
+- `pnpm test src/main-window/MainWindow.test.tsx` from `desktop/`: consumes real
+  worker-produced status, but mocks clipboard and Tauri; not native acceptance.
+- `bash test/run-tests.sh --installer-update`: existing M3-05a-3 file-copy case,
+  synthetic temporary state, clean environment, launch/network commands disabled.
+  Checks missing/stale guide upgrades, pinned digest, exact worker copies and
+  state preservation. This does **not** run an app, LaunchAgent, fresh setup or
+  signed updater, and does not prove a candidate artifact's contents.
+
+These worker corrections change no database/server attempt contract. No migration
+or database test is required for them; broader unrelated release gates still apply.
+Keep prior passing results for unchanged Social/Rust paths as historical evidence,
+not new runs. Native/distribution and assistant rows stay blocked until observed.
+
+Use this evidence record for each candidate (attach only redacted synthetic data):
+
+| Check | Pass / fail / blocked | Evidence and limitations |
+|---|---|---|
+| Worker/status and desktop regression | | Command, exit status, source revision/patch |
+| Installer copy regression | | Command, exit status, guide/worker hashes |
+| Artifact signatures/resources | | Candidate digest, signing/notary results |
+| Fresh install / older-worker upgrade | | Separate snapshots, installed hashes, actual process path, state preservation |
+| Native clipboard/UI | | Screenshot, JSON, accessibility, rejection method |
+| Signed new-version refresh | | Once-only, unchanged version, failure, disabled requests |
+| Offline / missing guides | | Actual installed path, stop/fallback result |
+| Claude / Codex | | Host versions, skill loading, each synthetic scenario, access/cost limits |
+| Public guide prerequisite | | Deployment revision or fresh release-boundary URL/digest/alias evidence |
+
 ## Each release
 
+Only after separate release authorization and the candidate acceptance gate:
+
 1. Bump `version` in `desktop/src-tauri/tauri.conf.json` (and `Cargo.toml`), merge to `develop`.
-2. Tag and push: `git tag desktop-v<version> && git push origin desktop-v<version>`.
-3. The `release` job in `.github/workflows/desktop.yml` builds the universal
+2. Before distributing desktop consumers, confirm canonical public guides and
+   required legacy aliases resolve for this candidate. If guide content changed,
+   publish and verify Social guidance first, then its matching bundled snapshot.
+   If the unchanged previously verified deployment is still current, no Social
+   redeployment is needed. Do not publish consumers while this prerequisite or
+   native acceptance remains unresolved.
+3. Tag and push: `git tag desktop-v<version> && git push origin desktop-v<version>`.
+4. The `release` job in `.github/workflows/desktop.yml` builds the universal
    `.app`, signs (hardened runtime), notarizes and staples the app and the
    `.dmg`, signs the updater archive and uploads the dmg, archive, `.sig` and
    `latest.json` to R2 at `desktop/<version>/`, then `desktop/latest.json`.
-4. Check: `spctl -a -vv "/Applications/CFW Render.app"` says *Notarized Developer ID*.
+5. Check the actual candidate on the disposable Mac:
+   `spctl -a -vv "/Applications/CFW Render.app"` says *Notarized Developer ID*.
+
+## Rollback
+
+Withdraw a faulty Render candidate/update advertisement first. Keep the previous
+known-good app/worker artifacts and use the existing authorized recovery process;
+do not assume automatic updater downgrade or uninstall/reset the owner's Mac.
+Preserve settings, credentials, scratch and logs. Keep public guide URLs and legacy
+aliases serving already-issued prompts; a Social rollback must preserve them.
+A guide-only rollback must restore reviewed content with its recomputed manifest.
+Do not reverse unrelated migrations or promise recovery of already-deleted evidence.
 
 ## Running locally instead of CI
 

@@ -4,8 +4,9 @@ Every recipe can declare, in one machine-readable file, its ordered steps and
 the inputs it needs from the user. CFW uses it to show "step 3 of 7", to ask
 for missing inputs before a computer ever connects, and to resume a run at a
 step. This page is for recipe authors. The contract is
-`plans/m1/CONTRACTS.md` sections 2–3 and the additive local-checkpoint
-contract in `plans/m2/CONTRACTS.md` section 10 in the cfw-social repo.
+`plans/m1/CONTRACTS.md` sections 2–3 in the cfw-social repo. The local
+checkpoint proposal is a separate, gated worker contract, not a deployed Social
+protocol (see below).
 
 - **File:** `skills/<recipe>/manifest.json` (source of truth, one per recipe).
 - **Schema:** `schemas/recipe-manifest.v1.schema.json` (JSON Schema 2020-12).
@@ -92,12 +93,34 @@ Exit `0` means every manifest is valid; `1` lists each error as
 `jsonschema` package happens to be installed it is used as an extra layer, but
 every rule is also hand-checked so the result is the same without it.
 
-## Deferred local recovery
+## Gated local recovery (not deployed)
 
-The separate `local-checkpoints-v1` runtime, validator adapter, `finalOutputs`
-schema and Spotlight 2026.10.4 contract are not included in this isolated
-UI/reporting release. See the coverage record for the preserved broader-branch
-evidence and remaining execution/delivery blockers.
+The worker includes same-computer checkpoint and validator helpers, but accepts
+local execution only when `CFW_RENDER_LOCAL_CHECKPOINTS=1` and the authorized
+claim explicitly carries `checkpoint.mode=local-v1`. It advertises no checkpoint
+capability. Current Social does not generate this protocol; changing the local
+flag alone cannot activate it. Unsupported local claims fail before engine launch
+and never fall back to Director execution.
+
+Local checkpoints require installation/order/brand/generation/version identity,
+contained files with matching checksums, acknowledged per-attempt report
+sequences and explicit ordered `finalOutputs` references. Unknown validators fail
+closed. Resume cannot repeat an uncertain terminal delivery: artifacts are retained
+for investigation rather than automatically re-uploaded. Web metadata is not a
+backup of local media.
+
+The authoring schema, Social parser/claim/report/completion counterparts and
+Spotlight 2026.10.4 activation remain blocked. Bundled production versions are
+unchanged; they do not declare this final-output contract. Synthetic fixtures
+exercise the runtime without enabling recipes. See the coverage record.
+
+## Negotiated stage bounds
+
+A supported `stageRange` executes only its negotiated steps and validates restored
+save paths/checksums. Nonfinal completion does not deliver final media. Existing
+ordinary manifest and Director execution remain separate. Local-checkpoint claims
+combined with any stage bounds are rejected before starting an engine; the worker
+does not advertise combined support or silently run the whole recipe.
 
 ## Adding a manifest to another recipe
 

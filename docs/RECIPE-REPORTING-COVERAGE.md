@@ -5,14 +5,19 @@ This is a readiness record, **not an enablement or rollout declaration**. The
 and unknown catalog recipes remain explicitly undescribed. No live-map or local
 checkpoint eligibility was expanded by this work.
 
-## Isolated release scope
+## Consolidated worker scope
 
-The owner's later **isolate** decision limits develop to recipe UI/reporting and
-its stage-description prerequisites. The checkpoint runtime, migration, central
-validator, explicit local final-output schema and Spotlight 2026.10.4 are deferred.
-They remain preserved in the earlier integration branch and source worktrees.
-Historical checkpoint results below apply only to that broader branch, not this
-release. Spotlight here retains its earlier 2026.10.2 manifest.
+The prior isolated UI/reporting release remains the production recipe baseline.
+This consolidation adds bounded stage execution and a gated local checkpoint /
+validator runtime, not server schema, migration or recipe activation. Local mode
+requires explicit claims plus local opt-in; checkpoint capability is unadvertised.
+Local-checkpoint/stage-bound combinations reject before engines start. Spotlight
+retains its 2026.10.2 manifest, not the source branch's 2026.10.4 activation.
+
+Social still needs the manifest parser/schema, capability negotiation, installation-
+bound local claims, local-output report validation and terminal completion contract.
+No server changes or catalog enablement are part of this consolidation. Historical
+results below remain source-branch evidence, never current-candidate passes.
 
 ## Separate boundaries
 
@@ -23,16 +28,16 @@ release. Spotlight here retains its earlier 2026.10.2 manifest.
   prompt includes `steps/_shared.md` plus its selected instruction. The harness
   owns stage reports; the worker owns final delivery. Catalog assistants gain no
   worker privileges. Standalone work does not report into Social.
-- Validation: the separate checkpoint branch has a Spotlight adapter. This
-  isolated release has no central adapter; the recipes have no `checks/<id>.sh`
-  implementations. Prose and an eval runner's exit 0 do
-  not establish coverage. Server stages are not computer checks.
+- Validation: gated local mode includes the Spotlight adapter and contained
+  shell-validator dispatch; the bundled recipes have no `checks/<id>.sh`
+  implementations. Inclusion is not end-to-end certification. Prose and an eval
+  runner's exit 0 do not establish coverage. Server stages are not computer checks.
 - Legacy transport still has a nonempty-save fallback and can continue while
   reports are buffered. It is **blocked for an all-gates-verified readiness
   claim**, including already queued orders. This document does not change old
   workers or silently migrate queued requests to a new contract.
-- Local checkpoints and their Spotlight policy are deferred, not included here.
-  Historical synthetic tests do not certify provider quality or perceptual judgment.
+- Local checkpoint activation and Spotlight policy remain deferred. Synthetic
+  runtime tests do not certify provider quality or perceptual judgment.
 
 ## Per-recipe acceptance matrix
 
@@ -45,7 +50,7 @@ workspace's `.gg/evidence/recipe-workflows/inventory.md`.
 
 | Recipe / manifest | UI/report map | Computer checks | Required start inputs | Final output / readiness |
 |---|---|---:|---|---|
-| [p-reels-spotlight](../skills/p-reels-spotlight/manifest.json) | Live-map; **blocked** | 19; adapter deferred | talking_head | No finalOutputs in this release. Local validator/delivery integration deferred; legacy gating not certified. |
+| [p-reels-spotlight](../skills/p-reels-spotlight/manifest.json) | Live-map; **blocked** | 19; adapter gated | talking_head | No finalOutputs in production manifest. Local activation and recipe acceptance blocked; legacy gating not certified. |
 | [p-reels-spotlight-heygen](../skills/p-reels-spotlight-heygen/manifest.json) | Live-map; **blocked** | 21; no scripts | script | No finalOutputs; validators and final-delivery integration missing. |
 | [p-reels-pip](../skills/p-reels-pip/manifest.json) | Live-map; **blocked** | 16; no scripts | talking_head | No finalOutputs; validators and final-delivery integration missing. |
 | [p-reels-pip-heygen](../skills/p-reels-pip-heygen/manifest.json) | Live-map; **blocked** | 18; no scripts | script | No finalOutputs; validators and final-delivery integration missing. |
@@ -87,13 +92,23 @@ validators despite an omitted caller check list, and rejection of absent local
 final-output contracts. Those negative cases are **not successful recipe runs**
 and are not claimed as executable coverage in this isolated release.
 
-The preserved broader branch's Spotlight synthetic test runs its seven real computer stages through
+The preserved broader branch's Spotlight synthetic test (not rerun on this candidate) runs its seven real computer stages through
 the harness/checks/checkpoints/report boundary, with a synthetic reviewer, declared
 output mapping, failure/resume, lost acknowledgement, no intermediate transfers
 and final-upload retry without engines. It also rejects corrupt media/JSON,
 invalid timing/plans, stale/missing/failed/pending QA and unrelated review frames.
 The generic harness fixtures cover bounded retry, conditions, cancellation and
 single-owner event sequences; they are not recipe validator implementations.
+
+### Consolidation-specific evidence
+
+`bash test/run-tests.sh --local-checkpoints` passed on the implementation committed
+as `ca9fbb1` using disposable fixtures: identity/checksum/path guards, failure and
+resume, per-attempt report replay/acknowledgement, revocation, ordered delivery and
+caption checks, uncertain-completion retention, ownership/retention and rejection
+of combined bounds. These are protocol regressions, not successful production
+recipe runs. The complete assembled-candidate check record lives in the parent
+workspace `.gg/evidence/render-app-consolidation/handoff.md`.
 
 ### Historical broader-branch verification (2026-10-15)
 
@@ -127,8 +142,8 @@ fixtures do not establish current customer rows. No installed distribution or
 provider quality was verified. Earlier recovery evidence remains limited to its
 recorded revision and scope, not a byte-identity claim for these later edits.
 
-All-recipe completion remains blocked: all thirteen recipes in this isolated
-release lack complete runnable validators and explicit local delivery integration;
-legacy fail-closed reporting/validation is unresolved.
+All-recipe completion remains blocked: no bundled production recipe has a fully
+verified validator plus explicit local delivery contract and supported Social
+counterpart. Legacy fail-closed reporting/validation is unresolved.
 No paid provider invocation, deployment, publishing, shared-data operation or
 historical-migration certification is included.
