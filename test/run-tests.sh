@@ -17,7 +17,9 @@ fail() { printf '  FAIL  %s — %s\n' "$1" "$2"; FAILURES=$((FAILURES+1)); }
 
 # Only recorded children of this runner may be cleaned up. No command matching.
 stop_test_tree() {
-  python3 "$TEST_DIR/stop-owned-tree.py" "$1" "$BASHPID" || return 1
+  local owner
+  owner="$(exec python3 -c 'import os; print(os.getppid())')" || return 1
+  python3 "$TEST_DIR/stop-owned-tree.py" "$1" "$owner" || return 1
   # SIGKILL is the expected fixture shutdown, not a failed assertion.
   if wait "$1" 2>/dev/null; then :; fi
 }
@@ -399,7 +401,28 @@ cr_mcp_call complete_render_order '{}' >/dev/null 2>&1
         ({'attempt':{'id':'a'},'manifest':{'steps':[]},'taskOrder':{'stageRange':{'fromStepId':'one'}}}, 'a')]:
         p = subprocess.run([sys.executable, '-c', identity_code], input=json.dumps(order), capture_output=True, text=True)
         assert p.returncode == 0 and p.stdout.strip() == expected, p.stderr
-    assert '[[ -e "$d/.delivery-started" || -e "$d/.retain-artifacts" ]] && continue' in source
+    # Step 7 moved retention into the shared checkpoint lifecycle helper.
+    # Exercise that helper, rather than asserting the old inline implementation.
+    retained = root/'retention/brand/order'; retained.mkdir(parents=True)
+    (retained/'.delivery-started').mkdir()
+    os.utime(retained, (1, 1))
+    p = subprocess.run([sys.executable, str(repo/'bin/cfw-render-checkpoint.py'),
+                        'janitor', str(root/'retention')], capture_output=True, text=True)
+    assert p.returncode == 0 and (retained/'.delivery-started').is_dir(), p.stderr
+    # A known upload failure occurs before any terminal RPC. It may block, but
+    # its delivery lock still prevents re-upload or accidental duplicate delivery.
+    rejected = root/'rejected'; rejected.mkdir()
+    upload.write_text('#!/usr/bin/env bash\nexit 1\n')
+    failed_command = 'cd "$ROOT/rejected"; bash "$ROOT/bin/cfw-render-report.sh" complete "$ROOT/final/slide-2.png"'
+    before = (root/'calls').read_text()
+    assert shell(failed_command, root).returncode != 0
+    assert (rejected/'.delivery-started/upload-failed').is_file()
+    assert (root/'calls').read_text() == before
+    assert shell('cd "$ROOT/rejected"; bash "$ROOT/bin/cfw-render-report.sh" block "Upload failed"', root).returncode == 0
+    assert (rejected/'.outcome').read_text().strip() == 'block'
+    before = (root/'calls').read_text()
+    assert shell(failed_command, root).returncode != 0
+    assert (root/'calls').read_text() == before
     assert source.index('previous delivery needs reconciliation') < source.index('printf \'%s\' "$order_json" > "$order_dir/order.json"')
     print('  PASS  completion transport is single-shot; wait writes contained; uncertain artifacts protected')
 PY
@@ -589,6 +612,7 @@ class StageRangeTests(unittest.TestCase):
             functions = worker[worker.index("sanitize_slug() {"):worker.index("\nspawn_pids=()")]
             (root / "worker-functions.sh").write_text(functions)
             (root / "bin").mkdir()
+            (root / "bin/cfw-render-checkpoint.py").write_bytes((repo / "bin/cfw-render-checkpoint.py").read_bytes())
             report = root / "bin/cfw-render-report.sh"
             report.write_text('#!/bin/bash\nprintf "%s\\n" "$1" >> "$TEST_ROOT/final-calls"\n')
             report.chmod(0o755)
@@ -2481,7 +2505,7 @@ _q291_relocate_bin() {
 }
 
 echo "=== Case Q6: install.sh renders the resolved WORKER_PATH into the macOS plist ==="
-q6_real_home="$HOME"
+q6_browser_cache="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/Library/Caches/ms-playwright}"
 q6_home="$(mktemp -d)"
 q6_prefix="$(mktemp -d)"
 q6_custom="$(mktemp -d)"
@@ -2512,7 +2536,7 @@ q6_expected_worker_path="$(
   # chromium/fonts preflight rows still PASS on a dev box that has Playwright
   # installed under the real $HOME — this test is about WORKER_PATH
   # rendering, not about re-testing chromium discovery.
-  export PLAYWRIGHT_BROWSERS_PATH="$q6_real_home/Library/Caches/ms-playwright"
+  export PLAYWRIGHT_BROWSERS_PATH="$q6_browser_cache"
   # [M2-04] install.sh now bootout/bootstraps the LaunchAgent on re-run; never
   # load a real job from the test suite.
   export CFW_RENDER_INSTALL_NO_LAUNCHCTL=1
@@ -2583,7 +2607,7 @@ chmod 644 "$q6b_env"
 (
   export HOME="$q6b_home"
   export PATH="$q6_test_path"
-  export PLAYWRIGHT_BROWSERS_PATH="$q6_real_home/Library/Caches/ms-playwright"
+  export PLAYWRIGHT_BROWSERS_PATH="$q6_browser_cache"
   # [M2-04] install.sh now bootout/bootstraps the LaunchAgent on re-run; never
   # load a real job from the test suite.
   export CFW_RENDER_INSTALL_NO_LAUNCHCTL=1
@@ -2650,7 +2674,7 @@ printf 'CFW_API_BASE=http://127.0.0.1:1\nCFW_RENDER_WORKER_KEY=cfw_render_q6ckey
 (
   export HOME="$q6c_home"
   export PATH="$q6_test_path"
-  export PLAYWRIGHT_BROWSERS_PATH="$q6_real_home/Library/Caches/ms-playwright"
+  export PLAYWRIGHT_BROWSERS_PATH="$q6_browser_cache"
   # [M2-04] install.sh now bootout/bootstraps the LaunchAgent on re-run; never
   # load a real job from the test suite.
   export CFW_RENDER_INSTALL_NO_LAUNCHCTL=1
@@ -3866,7 +3890,7 @@ CFW_RENDER_STATE_DIR=$home/cfw-render-state
 CFW_RENDER_SCRATCH=$home/cfw-render-scratch
 EOF2
   (
-    export PLAYWRIGHT_BROWSERS_PATH="$HOME/Library/Caches/ms-playwright"
+    export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/Library/Caches/ms-playwright}"
     export HOME="$home"
     export PATH="$REPO_DIR/bin:$FAKE_BIN:$PATH"
     export CFW_RENDER_INSTALL_NO_LAUNCHCTL=1
@@ -4681,7 +4705,7 @@ fi
 rm -rf "$mc4"
 
 # ── M3-04a: install.sh --from-app (app-driven, no prompts, JSON steps) ──
-m4_real_home="$HOME"
+m4_browser_cache="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/Library/Caches/ms-playwright}"
 # m4_setup <dir> <port> [mock KEY=VALUE...] — temp HOME + mock server.
 m4_setup() {
   local dir="$1" port="$2"; shift 2
@@ -4698,7 +4722,7 @@ m4_run() {
   (
     export HOME="$dir/home"
     export PATH="$REPO_DIR/bin:$FAKE_BIN:$PATH"
-    export PLAYWRIGHT_BROWSERS_PATH="$m4_real_home/Library/Caches/ms-playwright"
+    export PLAYWRIGHT_BROWSERS_PATH="$m4_browser_cache"
     export CFW_RENDER_DIRECTOR_CMD="$TEST_DIR/fake-director.sh"
     export CFW_RENDER_API_BASE="http://127.0.0.1:$port"
     export CFW_RENDER_SKIP_LAUNCHCTL=1 CFW_RENDER_PROBE_POLL_SEC=0.1

@@ -140,8 +140,9 @@ except (OSError, ValueError, TypeError):
 print(json.dumps(out))
 PY
 )" || exit 1
-    # One explicit ordered delivery only. Keep this marker on ALL failures:
-    # the server may have committed before its response reached this computer.
+    # One explicit ordered delivery only. Keep this marker on ALL failures.
+    # Only a synchronous upload failure proves completion was never submitted;
+    # otherwise the server may have committed before its response reached us.
     # A later invocation must not re-upload or re-complete automatically.
     if [[ -e .outcome ]] || ! mkdir .delivery-started 2>/dev/null; then
       echo 'cfw-render-report: delivery already started; retain artifacts and reconcile with CFW before retrying' >&2
@@ -166,7 +167,13 @@ PY
             echo 'cfw-render-report: side file omitted from deliverables' >&2
             continue ;;
         esac
-        u="$("$SELF_DIR/cfw-render-upload.sh" "$f")" || { echo "cfw-render-report: upload failed for $f" >&2; exit 1; }
+        u="$("$SELF_DIR/cfw-render-upload.sh" "$f")" || {
+          # This invocation owns the delivery lock and has not called complete.
+          # Permit a block, never another upload/delivery, after this known failure.
+          (set -o noclobber; : > .delivery-started/upload-failed) || exit 1
+          echo "cfw-render-report: upload failed for $f" >&2
+          exit 1
+        }
         urls+=("$u")
         local_files+=("$f")
       fi
@@ -270,7 +277,7 @@ print(json.dumps(d))
     ;;
 
   block)
-    if [[ -e .delivery-started ]]; then
+    if [[ -e .delivery-started && ( ! -f .delivery-started/upload-failed || -L .delivery-started/upload-failed ) ]]; then
       echo 'cfw-render-report: delivery may already have completed; refusing conflicting block' >&2
       exit 1
     fi

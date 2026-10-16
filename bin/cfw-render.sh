@@ -241,7 +241,9 @@ print(json.dumps({"orderId": text(o.get("id")), "shortCode": text(o.get("shortCo
     return 1
   fi
   umask 077
-  CR_JOB_PID="$BASHPID"
+  # exec makes Python's parent the actual job shell, including Bash 3 on macOS
+  # (where BASHPID is unavailable and $$ still names the outer worker).
+  CR_JOB_PID="$(exec python3 -c 'import os; print(os.getppid())')" || return 1
   python3 "$SELF_DIR/cfw-render-checkpoint.py" active "$order_dir" "$CR_JOB_PID" \
     || { cr_log "order $order_id — unsafe or already active scratch folder"; return 1; }
   CR_JOB_DIR="$order_dir"; CR_JOB_CHECKPOINT_MODE="$checkpoint_mode"
