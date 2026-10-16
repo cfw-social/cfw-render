@@ -21,7 +21,7 @@ export interface Computer {
   pauseReason?: string | null;
   updateRequired?: boolean;
 }
-export interface Brand { id?: string; name?: string; serving?: boolean }
+export interface Brand { id?: string; name?: string; serving?: boolean; slug?: string | null }
 export interface NowItem {
   shortCode?: string | null;
   brand?: string | null;
@@ -32,7 +32,23 @@ export interface NowItem {
   pct?: number | null;
   startedAt?: string | null;
 }
-export interface NextItem { shortCode?: string | null; brand?: string | null; recipe?: string | null }
+export interface NextItem {
+  shortCode?: string | null;
+  brand?: string | null;
+  recipe?: string | null;
+  orderId?: string | null;
+  brandSlug?: string | null;
+  kind?: string | null;
+  status?: string | null;
+  needs?: string | null;
+  createdAt?: string | null;
+}
+export interface Connection {
+  scope?: "brand" | "user" | "subset" | null;
+  keyName?: string | null;
+  keyHint?: string | null;
+  connectedAt?: string | null;
+}
 export interface RecentItem {
   shortCode?: string | null;
   brand?: string | null;
@@ -54,6 +70,7 @@ export interface StatusFile {
   engines?: Engine[];
   activeEngine?: string | null;
   computer?: Computer;
+  connection?: Connection | null;
   brands?: Brand[];
   now?: NowItem[];
   next?: NextItem[];
@@ -74,4 +91,6 @@ export interface StatusPayload {
   iconState: IconState;
   tooltip: string;
   providerLine: string;
+  /** Owner control-file state; worker status may lag behind a click. */
+  ownerPaused?: boolean;
 }

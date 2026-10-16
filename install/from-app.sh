@@ -71,14 +71,32 @@ print(json.dumps(a))' "$FA_WORKER_ID" "$@")"
   cr_mcp_call_soft report_byoa_setup_step "$args"
 }
 
+# fa_reload_agent <plist> — bootout + bootstrap com.cfw.render. Right after a
+# bootout of a RUNNING job, launchd can still be tearing it down and refuses
+# the bootstrap ("Bootstrap failed: 5: Input/output error"); retry for a few
+# seconds. Returns non-zero if the job never loaded, so the caller reports it
+# instead of claiming success with no worker running.
+fa_reload_agent() {
+  local plist="$1" tries="${CFW_RENDER_BOOTSTRAP_TRIES:-10}" i
+  launchctl bootout "gui/$(id -u)/com.cfw.render" >/dev/null 2>&1 || true
+  for (( i = 1; i <= tries; i++ )); do
+    launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1 && return 0
+    (( i < tries )) && sleep "${CFW_RENDER_BOOTSTRAP_WAIT_SEC:-1}"
+  done
+  return 1
+}
+
 fa_connect_and_probe() {
   app_step installing "done" "CFW Render is installed"
   app_step connecting started "Connecting to CFW"
   local base code resp render_key
   base="$(fa_api_base)"
   FA_WORKER_ID="$(tr -d '[:space:]' < "$WORKER_ID_FILE")"
-  local device
+  local device old_key
   device="$(cr_computer_name 2>/dev/null || hostname)"; device="${device:0:100}"; device="${device:-This Mac}"
+  # A re-setup (e.g. switching to every brand) replaces this computer's key: the old one is turned
+  # off once the new one has passed the test render, so one Mac never holds two live keys.
+  old_key="$(env_value CFW_RENDER_WORKER_KEY)"
   # Exchange: the brand key goes in a header read from stdin (-H @-).
   resp="$(printf 'x-api-key: %s\n' "$BRAND_KEY" | curl -sS --max-time 30 -w '\n%{http_code}' -X POST \
     "${base%/}/api/v1/render-worker-keys/exchange" -H @- -H "content-type: application/json" \
@@ -97,14 +115,37 @@ try:
     print(json.loads(sys.stdin.read())["key"]["plain"])
 except Exception:
     pass' <<< "$resp")"
-  resp=""
   [[ "$render_key" =~ ^cfw_render_[A-Za-z0-9_-]+$ ]] || app_fail connecting 6 "CFW sent an unexpected reply" "Try again in a minute"
+  # Which key this is, for the app ("Connected for all your brands"): scope, name and a short
+  # prefix only — never the key. Kept in the private state dir beside worker-id.
+  ( umask 077
+    python3 -c '
+import json, sys, os, datetime
+try:
+    k = json.loads(sys.stdin.read()).get("key") or {}
+except Exception:
+    k = {}
+pre = (k.get("prefix") or "")[:17]
+c = {"scope": k.get("scope") if k.get("scope") in ("brand", "user", "subset") else None,
+     "keyName": (k.get("name") or k.get("deviceName") or None),
+     "keyHint": (pre + "…") if pre.startswith("cfw_render_") else None,
+     "connectedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+p = sys.argv[1]; tmp = p + ".tmp"
+json.dump(c, open(tmp, "w")); os.replace(tmp, p)' "$(dirname "$WORKER_ID_FILE")/connection.json" <<< "$resp"
+  ) 2>/dev/null || true
+  resp=""
   printf '%s\n' "$render_key" | fa_env_set CFW_RENDER_WORKER_KEY "$ENV_FILE"
   printf '%s\n' "$base" | fa_env_set CFW_API_BASE "$ENV_FILE"
   export CFW_API_BASE="$base" CFW_RENDER_WORKER_KEY="$render_key"
   render_key=""
 
-  local step out
+  local step out probe_brand=""
+  # Open (or resume) this computer's setup session first: CFW keeps progress per
+  # computer and refuses step reports without one. A key covering several brands
+  # names no brand here; CFW picks one to test, and the test unlocks them all.
+  out="$(cr_mcp_call_soft get_byoa_setup_instructions "$(python3 -c 'import json,sys;print(json.dumps({"workerId": sys.argv[1]}))' "$FA_WORKER_ID")")" \
+    || app_fail connecting 6 "CFW did not accept the set-up report" "Try again in a minute"
+  [[ "$(fa_json_get ok <<< "$out")" == "true" ]] || app_fail connecting 6 "CFW said: $(fa_json_get error <<< "$out")" "Try again in a minute"
   # provider_keys_needed is not reported here: telling which recipe needs a
   # missing provider key is not cheap from the installer (follow-up).
   for step in deps credential recipe_fetch; do
@@ -113,8 +154,7 @@ except Exception:
   done
 
   if [[ "${CFW_RENDER_SKIP_LAUNCHCTL:-0}" != "1" && "${CFW_RENDER_INSTALL_NO_LAUNCHCTL:-0}" != "1" ]] && command -v launchctl >/dev/null 2>&1; then
-    launchctl bootout "gui/$(id -u)/com.cfw.render" >/dev/null 2>&1 || true
-    launchctl bootstrap "gui/$(id -u)" "$PLIST_DST" >/dev/null 2>&1 \
+    fa_reload_agent "$PLIST_DST" \
       || app_fail connecting 6 "Could not start CFW Render in the background" "Restart your Mac and try again"
   fi
   app_step connecting "done" "Connected to CFW"
@@ -123,10 +163,14 @@ except Exception:
   out="$(cr_mcp_call_soft create_probe_render_order "$(python3 -c 'import json,sys;print(json.dumps({"workerId": sys.argv[1]}))' "$FA_WORKER_ID")")" \
     || app_fail test_render 6 "Could not start the test render" "Try again in a minute"
   [[ "$(fa_json_get ok <<< "$out")" == "true" ]] || app_fail test_render 7 "Could not start the test render: $(fa_json_get error <<< "$out")" "Try again in a minute"
+  # Report the test against the brand CFW tested (multi-brand keys); older servers send none.
+  probe_brand="$(fa_json_get brandId <<< "$out")"
+  [[ "$probe_brand" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || probe_brand=""
   local timeout="${CFW_RENDER_PROBE_TIMEOUT_SEC:-900}" poll="${CFW_RENDER_PROBE_POLL_SEC:-5}" start err
   start="$(date +%s)"
   while :; do
-    if out="$(fa_setup_report probe_render)" && [[ "$(fa_json_get ok <<< "$out")" == "true" ]]; then
+    if out="$(fa_setup_report probe_render "$(python3 -c 'import json,sys;print(json.dumps({"brandId": sys.argv[1]} if sys.argv[1] else {}))' "$probe_brand")")" \
+       && [[ "$(fa_json_get ok <<< "$out")" == "true" ]]; then
       break
     fi
     err="$(fa_json_get error <<< "${out:-}")"
@@ -140,6 +184,13 @@ except Exception:
     sleep "$poll"
   done
   app_step test_render "done" "The test render worked"
+  if [[ -n "$old_key" && "$old_key" =~ ^cfw_render_[A-Za-z0-9_-]+$ && "$old_key" != "$CFW_RENDER_WORKER_KEY" ]]; then
+    # revoke_this_computer turns off only the key it is called with.
+    if ! out="$(CFW_RENDER_WORKER_KEY="$old_key" cr_mcp_call_soft revoke_this_computer '{}' 2>/dev/null)" || [[ "$(fa_json_get ok <<< "$out")" != "true" ]]; then
+      echo "install.sh: WARNING — could not turn off this computer's previous key; turn it off in CFW Settings" >&2
+    fi
+  fi
+  old_key=""
   app_step ready "done" "This computer is ready"
 }
 
@@ -166,8 +217,8 @@ fa_update() {
   chmod +x "$PREFIX"/bin/*.sh "$PREFIX"/scripts/*.sh 2>/dev/null || true
   local plist="$HOME/Library/LaunchAgents/com.cfw.render.plist"
   if [[ -f "$plist" && "${CFW_RENDER_SKIP_LAUNCHCTL:-0}" != "1" && "${CFW_RENDER_INSTALL_NO_LAUNCHCTL:-0}" != "1" ]] && command -v launchctl >/dev/null 2>&1; then
-    launchctl bootout "gui/$(id -u)/com.cfw.render" >/dev/null 2>&1 || true
-    launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1 || true
+    fa_reload_agent "$plist" \
+      || app_fail ready 6 "Updated, but CFW Render could not restart in the background" "Restart your Mac"
   fi
   app_step ready "done" "Updated"
 }

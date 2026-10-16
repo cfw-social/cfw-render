@@ -222,16 +222,12 @@ pub fn parse_brands_reply(status: u16, body: &str) -> Result<WebBrands, String> 
     }
 }
 
-/// The brands of whoever is signed in to the embedded website. The session cookie is read from the
-/// web view and handed to curl on stdin (never on the command line). `async` so it runs off the
-/// main thread, which reading cookies needs.
-#[tauri::command]
-pub async fn web_brands(app: AppHandle) -> Result<WebBrands, String> {
+/// The website session as a `Cookie:` header for `url`, read from the embedded web view.
+/// `None` when the web view isn't loaded or nobody is signed in.
+fn session_cookie(app: &AppHandle, url: &Url) -> Result<Option<String>, String> {
     let Some(wv) = app.get_webview(LABEL) else {
-        return Ok(WebBrands { signed_in: false, brands: vec![] });
+        return Ok(None);
     };
-    let base = web_base();
-    let url = base.join("/api/v1/brands/mine").map_err(|e| e.to_string())?;
     let stored: Vec<StoredCookie> = wv
         .cookies()
         .map_err(|e| e.to_string())?
@@ -244,13 +240,20 @@ pub async fn web_brands(app: AppHandle) -> Result<WebBrands, String> {
             secure: c.secure().unwrap_or(false),
         })
         .collect();
-    let Some(header) = cookie_header(&url, &stored) else {
-        return Ok(WebBrands { signed_in: false, brands: vec![] });
-    };
-    let (Some(h), Some(u)) = (curl_quote(&format!("Cookie: {header}")), curl_quote(url.as_str())) else {
+    Ok(cookie_header(url, &stored))
+}
+
+/// One request through curl with every secret (cookie, body) on stdin via `-K -`, never on argv.
+/// Returns (status, body); status 0 means CFW couldn't be reached.
+fn curl_with_cookie(url: &Url, cookie: &str, json_body: Option<&str>) -> Result<(u16, String), String> {
+    let (Some(h), Some(u)) = (curl_quote(&format!("Cookie: {cookie}")), curl_quote(url.as_str())) else {
         return Err("Couldn't read the CFW sign-in".into());
     };
-    let config = format!("header = {h}\nurl = {u}\n");
+    let mut config = format!("header = {h}\nurl = {u}\n");
+    if let Some(b) = json_body {
+        let d = curl_quote(b).ok_or("Couldn't build the request")?;
+        config.push_str(&format!("header = \"content-type: application/json\"\nrequest = \"POST\"\ndata = {d}\n"));
+    }
     let mut child = Command::new(crate::support::curl_cmd())
         .args(["-sS", "--max-time", "15", "-w", "\n%{http_code}", "-K", "-"])
         .env_clear()
@@ -263,7 +266,84 @@ pub async fn web_brands(app: AppHandle) -> Result<WebBrands, String> {
     let out = child.wait_with_output().map_err(|e| e.to_string())?;
     let text = String::from_utf8_lossy(&out.stdout);
     let (body, code) = text.rsplit_once('\n').unwrap_or(("", text.as_ref()));
-    parse_brands_reply(code.trim().parse().unwrap_or(0), body)
+    Ok((code.trim().parse().unwrap_or(0), body.to_string()))
+}
+
+/// The brands of whoever is signed in to the embedded website. The session cookie is read from the
+/// web view and handed to curl on stdin (never on the command line). `async` so it runs off the
+/// main thread, which reading cookies needs.
+#[tauri::command]
+pub async fn web_brands(app: AppHandle) -> Result<WebBrands, String> {
+    let url = web_base().join("/api/v1/brands/mine").map_err(|e| e.to_string())?;
+    let Some(cookie) = session_cookie(&app, &url)? else {
+        return Ok(WebBrands { signed_in: false, brands: vec![] });
+    };
+    let (code, body) = curl_with_cookie(&url, &cookie, None)?;
+    parse_brands_reply(code, &body)
+}
+
+/// Body for the account-wide setup key. The server renames "Setup (pending)" to
+/// "Setup — <this Mac>" when the installer exchanges it, so it can be revoked alone.
+pub const ACCOUNT_KEY_REQUEST: &str = r#"{"name":"Setup (pending)","reach":"user"}"#;
+
+/// Pure: the `POST /api/v1/api-keys` reply → the new key. Never echoes the body (it holds the key).
+pub fn parse_mint_reply(status: u16, body: &str) -> Result<String, String> {
+    match status {
+        201 | 200 => {
+            let plain = serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|v| v.get("key")?.get("plain")?.as_str().map(str::to_string))
+                .ok_or("CFW sent an unexpected reply")?;
+            if crate::setup::valid_key(&plain) && !plain.starts_with("cfw_render_") {
+                Ok(plain)
+            } else {
+                Err("CFW sent an unexpected reply".into())
+            }
+        }
+        401 => Err("Sign in to CFW first (Home), then try again.".into()),
+        403 => Err("CFW wouldn't make an account-wide key for this sign-in.".into()),
+        0 => Err("Couldn't reach CFW".into()),
+        s => Err(format!("CFW replied with an error ({s})")),
+    }
+}
+
+/// Make an account-wide (every brand) setup key with the signed-in website session.
+pub async fn mint_account_key(app: &AppHandle) -> Result<String, String> {
+    let url = web_base().join("/api/v1/api-keys").map_err(|e| e.to_string())?;
+    let cookie = session_cookie(app, &url)?.ok_or("Sign in to CFW first (Home), then try again.")?;
+    let (code, body) = curl_with_cookie(&url, &cookie, Some(ACCOUNT_KEY_REQUEST))?;
+    parse_mint_reply(code, &body)
+}
+
+/// A render short code as the website prints it: groups of uppercase letters/digits joined
+/// by single dashes (`26B6`, `R-TEST`), at most 16 characters. Anything else is not used.
+fn valid_short_code(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 16
+        && s.split('-').all(|g| !g.is_empty() && g.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()))
+}
+
+/// Pure: the owner-facing CFW page for one render (validated slug + id; anything else refused).
+/// With a valid short code it is that run's own page; otherwise the renders list with
+/// `?order=`, which the website redirects to the same run page.
+pub fn render_page_url(base: &Url, brand_slug: &str, order_id: &str, short_code: Option<&str>) -> Result<Url, String> {
+    let id_ok = !order_id.is_empty() && order_id.len() <= 64 && order_id.bytes().all(|b| b.is_ascii_alphanumeric());
+    if !valid_slug(brand_slug) || !id_ok {
+        return Err("That render can't be opened.".into());
+    }
+    if let Some(code) = short_code.filter(|c| valid_short_code(c)) {
+        return base.join(&format!("/{brand_slug}/runs/{code}")).map_err(|e| e.to_string());
+    }
+    let mut u = base.join(&format!("/{brand_slug}/settings/renders")).map_err(|e| e.to_string())?;
+    u.set_query(Some(&format!("order={order_id}")));
+    Ok(u)
+}
+
+#[tauri::command]
+pub fn open_render_in_browser(brand_slug: String, order_id: String, short_code: Option<String>) -> Result<(), String> {
+    let url = render_page_url(&web_base(), &brand_slug, &order_id, short_code.as_deref())?;
+    open_external(&url);
+    Ok(())
 }
 
 #[tauri::command]
@@ -370,6 +450,63 @@ mod tests {
     fn curl_config_quoting() {
         assert_eq!(curl_quote("a\"b\\c").unwrap(), r#""a\"b\\c""#);
         assert!(curl_quote("x\nurl = http://evil").is_none());
+    }
+
+    #[test]
+    fn mint_reply_parsing() {
+        let ok = r#"{"key":{"id":"k1","name":"Setup (pending)","scope":"user","plain":"cfw_Ab-cd_1234567890xyz"}}"#;
+        assert_eq!(parse_mint_reply(201, ok).unwrap(), "cfw_Ab-cd_1234567890xyz");
+        // never a render key, never junk, and the body is never echoed into the error
+        assert!(parse_mint_reply(201, r#"{"key":{"plain":"cfw_render_abcdefghijk"}}"#).is_err());
+        assert!(parse_mint_reply(201, r#"{"key":{"plain":"nope"}}"#).is_err());
+        let e = parse_mint_reply(500, "cfw_SECRET_in_body_123").unwrap_err();
+        assert!(!e.contains("SECRET"));
+        assert!(parse_mint_reply(401, "").unwrap_err().contains("Sign in"));
+        assert!(parse_mint_reply(0, "").unwrap_err().contains("reach"));
+        assert!(ACCOUNT_KEY_REQUEST.contains(r#""reach":"user""#));
+    }
+
+    #[test]
+    fn render_page_urls() {
+        // A short code opens that run's own page.
+        let u = render_page_url(&base(), "mr-growth", "cmv7arie5000006l3hzx6dtr3", Some("26B6")).unwrap();
+        assert_eq!(u.as_str(), "https://app.cfw.social/mr-growth/runs/26B6");
+        let u = render_page_url(&base(), "mr-growth", "cmv7arie5000006l3hzx6dtr3", Some("R-TEST")).unwrap();
+        assert_eq!(u.as_str(), "https://app.cfw.social/mr-growth/runs/R-TEST");
+        // No or odd short code: the renders list with ?order= (the website redirects it).
+        let list = "https://app.cfw.social/mr-growth/settings/renders?order=cmv7arie5000006l3hzx6dtr3";
+        for code in [None, Some(""), Some("26b6"), Some("26B6/../x"), Some("-26B6"), Some("A--B"), Some("26B6?x=1"), Some("ABCDEFGHIJKLMNOPQ")] {
+            let u = render_page_url(&base(), "mr-growth", "cmv7arie5000006l3hzx6dtr3", code).unwrap();
+            assert_eq!(u.as_str(), list, "short code {code:?}");
+        }
+        // Bad slug / id are still refused, short code or not.
+        assert!(render_page_url(&base(), "../evil", "abc", Some("26B6")).is_err());
+        assert!(render_page_url(&base(), "brand", "a&b=c", None).is_err());
+        assert!(render_page_url(&base(), "brand", "", Some("26B6")).is_err());
+    }
+
+    #[test]
+    fn main_window_is_looked_up_as_a_window() {
+        // `main` hosts the `web` child webview, and Tauri's get_webview_window
+        // returns None for a window holding a webview with another label. Any
+        // such lookup of `main` silently does nothing once the website loaded
+        // (the app reopened with no window). Use get_window("main") instead.
+        let bad = concat!("get_webview_window(", "\"main\")");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut hits = Vec::new();
+        for e in std::fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.extension().and_then(|x| x.to_str()) != Some("rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&p).unwrap();
+            for (i, line) in src.lines().enumerate() {
+                if line.contains(bad) {
+                    hits.push(format!("{}:{}", p.display(), i + 1));
+                }
+            }
+        }
+        assert!(hits.is_empty(), "main must be fetched with get_window: {hits:?}");
     }
 
     #[test]

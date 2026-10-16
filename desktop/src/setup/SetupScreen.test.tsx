@@ -96,6 +96,17 @@ describe("SetupScreen", () => {
     expect(h.invoke).toHaveBeenLastCalledWith("setup_run", { brandKey: KEY, installTools: false });
   });
 
+  it("follows a setup the main window started (Use all my brands) straight into step 3", async () => {
+    render(<SetupScreen />);
+    expect(screen.getByLabelText("Brand key")).toBeTruthy();
+    await act(async () => h.listeners["setup-external-run"]({ payload: null }));
+    expect(await screen.findByRole("heading", { name: "Getting this Mac ready" })).toBeTruthy();
+    await step({ step: "connecting", state: "started", message: "Connecting to CFW" });
+    expect(screen.getByText("Connecting to CFW")).toBeTruthy();
+    // It never asks for a pasted key or re-runs the installer itself.
+    expect(h.invoke).not.toHaveBeenCalledWith("setup_run", expect.anything());
+  });
+
   it("adopts an existing install straight into step 3", async () => {
     h.invoke.mockImplementation((cmd: string) => Promise.resolve(cmd === "get_setup_status" ? { installed: false, adoptable: true } : undefined));
     render(<SetupScreen />);

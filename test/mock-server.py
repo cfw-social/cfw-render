@@ -420,15 +420,35 @@ def handle_tool_call(name, args):
         log_call(name, args, True)
         return rpc_result({"ok": True}), None
 
+    if name == "list_render_queue":
+        # The app's "Up next". CFW_MOCK_QUEUE=<json list> = what is waiting; unset = an older server.
+        if os.environ.get("CFW_MOCK_QUEUE") is None:
+            log_call(name, args, False)
+            return None, {"code": -32601, "message": f"Unknown tool: {name}"}
+        q = json.loads(os.environ["CFW_MOCK_QUEUE"])
+        log_call(name, args, True)
+        return rpc_result({"orders": q, "total": len(q)}), None
     # M3-04a: the app-driven installer's setup reports + probe order.
     if name == "revoke_this_computer":
         # M3-06a: deactivate THIS computer's render key.
         log_call(name, args, True)
         return rpc_result({"ok": True}), None
+    if name == "get_byoa_setup_instructions":
+        with LOCK:
+            MOCK_FLAGS["setup_session"] = True
+        log_call(name, args, True)
+        return rpc_result({"ok": True, "state": "not_installed"}), None
     if name == "create_probe_render_order":
         log_call(name, args, True)
-        return rpc_result({"ok": True, "orderId": "probe_1"}), None
+        reply = {"ok": True, "orderId": "probe_1"}
+        if os.environ.get("CFW_MOCK_PROBE_BRAND"):
+            reply["brandId"] = os.environ["CFW_MOCK_PROBE_BRAND"]
+        return rpc_result(reply), None
     if name == "report_byoa_setup_step":
+        # The real server refuses reports before a setup session exists.
+        if os.environ.get("CFW_MOCK_REQUIRE_SETUP_SESSION") == "1" and not MOCK_FLAGS.get("setup_session"):
+            log_call(name, args, False)
+            return rpc_result({"ok": False, "error": "No setup session — call get_byoa_setup_instructions first."}), None
         if args.get("step") == "probe_render":
             with LOCK:
                 MOCK_FLAGS["probe_polls"] = MOCK_FLAGS.get("probe_polls", 0) + 1
@@ -574,7 +594,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": "bad_request"}, 400)
                 return
             CALLS_LOG.write(json.dumps({"tool": "exchange", "args": {"deviceName": dn}, "ok": True}) + "\n")
-            self._send_json({"key": {"plain": "cfw_render_mock-brand_xchg-0Ab9_Zq1", "id": "rk_1"}}, 201)
+            self._send_json({"key": {"plain": "cfw_render_mock-brand_xchg-0Ab9_Zq1", "id": "rk_1",
+                                     "scope": os.environ.get("CFW_MOCK_EXCHANGE_SCOPE", "brand"),
+                                     "name": dn, "prefix": "cfw_render_mock-brand_x"}}, 201)
             return
 
         if self.path == "/api/v1/mcp":
@@ -596,6 +618,9 @@ class Handler(BaseHTTPRequestHandler):
                 params = req.get("params", {})
                 name = params.get("name")
                 args = params.get("arguments", {})
+                if name == "revoke_this_computer":
+                    # which key asked (tail only): the installer must revoke the OLD key, never the new one
+                    CALLS_LOG.write(json.dumps({"tool": "revoke_key_used", "args": {"keyTail": key[-6:]}, "ok": True}) + "\n")
                 result, error = handle_tool_call(name, args)
                 if error and error.get("http"):
                     status = error.pop("http")

@@ -25,10 +25,20 @@ pub struct StatusFile {
     pub recent: Vec<RecentItem>,
     pub last_check_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
+    pub connection: Option<Connection>,
     /// "ok" | "unreachable": did the worker's last server call reach CFW.
     /// The only source of "Can't reach CFW"; `last_error` never is.
     pub cfw_reach: Option<String>,
     pub cfw_reach_since: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Connection {
+    pub scope: Option<String>,
+    pub key_name: Option<String>,
+    pub key_hint: Option<String>,
+    pub connected_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -82,6 +92,7 @@ pub struct Brand {
     pub id: String,
     pub name: String,
     pub serving: bool,
+    pub slug: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -103,6 +114,12 @@ pub struct NextItem {
     pub short_code: Option<String>,
     pub brand: Option<String>,
     pub recipe: Option<String>,
+    pub order_id: Option<String>,
+    pub brand_slug: Option<String>,
+    pub kind: Option<String>,
+    pub status: Option<String>,
+    pub needs: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -308,6 +325,35 @@ mod tests {
         assert_eq!(value["recent"][0]["directorLog"], "order-1-123.out");
         assert!(value["recent"][1]["orderId"].is_null());
         assert!(value["recent"][1]["attemptId"].is_null());
+    }
+
+    #[test]
+    fn passes_through_connection_queue_and_reasons() {
+        let s = parse_status(r#"{ "schema": 1,
+          "connection": { "scope": "user", "keyName": "Setup — Mac", "keyHint": "cfw_render_vasant…", "connectedAt": "2026-10-11T10:00:00Z" },
+          "brands": [{ "id": "b_1", "name": "Brand A", "serving": true, "slug": "brand-a" }],
+          "next": [{ "orderId": "o1", "shortCode": "R-AB12", "brand": "Brand A", "brandSlug": "brand-a", "kind": "video",
+                     "recipe": "p-reels", "status": "needs_input", "needs": "a voiceover", "createdAt": "2026-10-11T11:00:00Z" }],
+          "recent": [{ "orderId": "o2", "attemptId": "a2", "directorLog": "o2-1791718200-unique.out", "shortCode": "49WR", "brand": "Brand A", "brandSlug": "brand-a", "recipe": "p-reels-faceless",
+                       "kind": "video", "result": "failed", "reason": "the voiceover step needs a text-to-speech credential",
+                       "startedAt": "2026-10-11T11:30:00Z", "finishedAt": "2026-10-11T11:31:00Z" }] }"#)
+        .unwrap();
+        let c = s.connection.as_ref().unwrap();
+        assert_eq!((c.scope.as_deref(), c.key_name.as_deref()), (Some("user"), Some("Setup — Mac")));
+        assert_eq!(s.brands[0].slug.as_deref(), Some("brand-a"));
+        assert_eq!(s.next[0].status.as_deref(), Some("needs_input"));
+        assert_eq!(s.next[0].needs.as_deref(), Some("a voiceover"));
+        assert_eq!(s.recent[0].reason.as_deref(), Some("the voiceover step needs a text-to-speech credential"));
+        assert_eq!(s.recent[0].order_id.as_deref(), Some("o2"));
+        // The payload the webview gets keeps the same camelCase names.
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["recent"][0]["reason"], "the voiceover step needs a text-to-speech credential");
+        assert_eq!(v["recent"][0]["attemptId"], "a2");
+        assert_eq!(v["recent"][0]["directorLog"], "o2-1791718200-unique.out");
+        assert_eq!(v["recent"][0]["startedAt"], "2026-10-11T11:30:00Z");
+        assert_eq!(v["recent"][0]["finishedAt"], "2026-10-11T11:31:00Z");
+        assert_eq!(v["next"][0]["brandSlug"], "brand-a");
+        assert_eq!(v["connection"]["scope"], "user");
     }
 
     #[test]

@@ -5,6 +5,8 @@ import { useEffect, useState } from "react";
 import { copy } from "../copy";
 import { Button, Card, SectionLabel } from "../ui/kit";
 import { Toggle } from "../ui/Toggle";
+import type { ConnectionSummary } from "../panel/model";
+import { Connection } from "./Connection";
 
 export interface SettingsState { allowBattery: boolean; startAtLogin: boolean }
 export interface SupportSettings { shareCrashReports: boolean }
@@ -22,7 +24,7 @@ type LogsUi =
 const fmtSize = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 const why = (e: unknown) => (typeof e === "string" ? e : e instanceof Error ? e.message : String(e));
 
-export function Settings({ workerVersion }: { workerVersion: string | null }) {
+export function Settings({ workerVersion, connection = null }: { workerVersion: string | null; connection?: ConnectionSummary | null }) {
   const [s, setS] = useState<SettingsState | null>(null);
   const [support, setSupport] = useState<SupportSettings | null>(null);
   const [upd, setUpd] = useState<UpdateSettings | null>(null);
@@ -96,6 +98,15 @@ export function Settings({ workerVersion }: { workerVersion: string | null }) {
   return (
     <div className="mx-auto flex w-full max-w-[640px] flex-col gap-6 px-8 pt-4 pb-10">
       <h1 className="text-xl font-bold">{S.title}</h1>
+
+      {connection && (
+        <section className="flex flex-col gap-2">
+          <SectionLabel>{copy.connection.title}</SectionLabel>
+          <Card className="px-4 py-3">
+            <Connection summary={connection} />
+          </Card>
+        </section>
+      )}
 
       <section className="flex flex-col gap-2">
         <SectionLabel>{S.groupMac}</SectionLabel>

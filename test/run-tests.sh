@@ -4203,7 +4203,7 @@ c21_setup "$mc1" $((MOCK_PORT_BASE + 960)) harness-3step '[]'
 c21_worker "$mc1" $((MOCK_PORT_BASE + 960)) --once CFW_RENDER_ENGINE=none CFW_RENDER_COMPUTER_NAME="Test Mac"
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 mc1_keys="$(m3_status "$mc1" '",".join(sorted(d))')"
-mc1_want="$(python3 -c 'print(",".join(sorted("schema workerVersion engines activeEngine computer brands now next recent lastCheckAt lastError cfwReach cfwReachSince".split())))')"
+mc1_want="$(python3 -c 'print(",".join(sorted("schema workerVersion engines activeEngine computer brands now next recent lastCheckAt lastError cfwReach cfwReachSince connection".split())))')"
 mc1_eng="$(m3_status "$mc1" 'all("label" in e and e["auth"] == "signin" for e in d["engines"])')"
 mc1_rest="$(m3_status "$mc1" '(d["schema"], d["activeEngine"], d["computer"]["name"], d["next"])')"
 if [[ "$mc1_keys" == "$mc1_want" && "$mc1_eng" == "True" && "$mc1_rest" == "(1, None, 'Test Mac', [])" ]]; then
@@ -4218,7 +4218,7 @@ mc2="$(mktemp -d)"
 c21_setup "$mc2" $((MOCK_PORT_BASE + 961)) harness-3step '[]' 'CFW_MOCK_COMPUTER_BRANDS=[{"id":"b1","name":"Brand A"}]'
 c21_worker "$mc2" $((MOCK_PORT_BASE + 961)) --once
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
-mc2_b="$(m3_status "$mc2" 'd["brands"] == [{"id": "b1", "name": "Brand A", "serving": True}]')"
+mc2_b="$(m3_status "$mc2" 'd["brands"] == [{"id": "b1", "name": "Brand A", "serving": True, "slug": None}]')"
 if [[ "$mc2_b" == "True" ]]; then
   pass "status brands from computerBrands"
 else
@@ -4239,6 +4239,23 @@ else
   fail "status recent" "status=$(head -c 600 "$mc3/cr-state/status.json" 2>/dev/null) ndjson=$(cat "$mc3/cr-state/recent.ndjson" 2>/dev/null)"
 fi
 rm -rf "$mc3"
+
+st_py() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$CASE_STATE/status.json" "$1" 2>/dev/null; }
+echo "=== Case M3-01c-6: Up next comes from CFW's list_render_queue; an older server shows nothing stale ==="
+CFW_MOCK_QUEUE='[{"id":"q1","shortCode":"R-Q1","brandName":"Brand B","brandSlug":"brand-b","kind":"image","recipe":"p-gfx-image","status":"needs_input","needs":"Waiting for your input","createdAt":"2026-10-13T00:00:00Z","urgent":false}]' \
+  run_case "queue" "happy" "echo []" true
+q="$(st_py 'd["next"]')"
+if [[ "$q" == "[{'orderId': 'q1', 'shortCode': 'R-Q1', 'brand': 'Brand B', 'brandSlug': 'brand-b', 'kind': 'image', 'recipe': 'p-gfx-image', 'status': 'needs_input', 'needs': 'Waiting for your input', 'createdAt': '2026-10-13T00:00:00Z'}]" ]]; then
+  pass "status next: the waiting list across brands, with needs-you rows"
+else
+  fail "status next" "$q calls=$(grep list_render_queue "$CASE_MOCKSTATE/calls.jsonl" | head -2)"
+fi
+run_case "queue-old-server" "happy" "echo []" true
+if [[ "$(st_py 'd["next"]')" == "[]" && ! -e "$CASE_STATE/next.json" ]]; then
+  pass "status next: a server without list_render_queue → empty, no stale file"
+else
+  fail "status next old server" "$(st_py 'd["next"]')"
+fi
 
 echo "=== Case M3-01c-4: status.json never holds the worker key or the word token ==="
 mc4="$(mktemp -d)"
@@ -4333,7 +4350,71 @@ if ! grep -rqF "$m4a_key" "$m4a/out.jsonl" "$m4a/err.log" "$m4a/home" "$m4a/pref
 else
   fail "from-app brand key leak" "$(grep -rlF "$m4a_key" "$m4a" 2>/dev/null)"
 fi
+if cmp -s "$REPO_DIR/VERSION" "$m4a/prefix/VERSION" \
+   && cmp -s "$REPO_DIR/lib/render-debug.py" "$m4a/prefix/lib/render-debug.py" \
+   && cmp -s "$REPO_DIR/bin/cfw-render-stage.py" "$m4a/prefix/bin/cfw-render-stage.py"; then
+  pass "fresh app install preserves version, debug and bounded-stage helpers"
+else
+  fail "fresh app install bundle" "missing or stale VERSION/debug/stage helper"
+fi
+if python3 - "$m4a/home/.cfw-render/connection.json" <<'PY_CONNECTION'
+import json, sys
+c = json.load(open(sys.argv[1]))
+assert set(c) == {"scope", "keyName", "keyHint", "connectedAt"}
+assert c["scope"] == "brand" and c["connectedAt"].endswith("Z")
+assert c["keyHint"].startswith("cfw_render_") and len(c["keyHint"]) <= 18
+assert "xchg-0Ab9" not in json.dumps(c)
+PY_CONNECTION
+then
+  pass "connection metadata contains reach and short hint, not exchanged secret"
+else
+  fail "connection metadata" "wrong shape, reach or key hint"
+fi
 rm -rf "$m4a"
+
+echo "=== Case M3-04a-2c: a fresh computer opens its setup session first; the probe report names the tested brand ==="
+m4f="$(mktemp -d)"
+printf '%s\n' "cfw_m4-fresh$(python3 -c 'import secrets;print(secrets.token_hex(8))')" > "$m4f/stdin"
+m4_setup "$m4f" $((MOCK_PORT_BASE + 976)) CFW_MOCK_REQUIRE_SETUP_SESSION=1 CFW_MOCK_PROBE_BRAND=brand_tested_1 CFW_MOCK_EXCHANGE_SCOPE=user
+m4_run "$m4f" $((MOCK_PORT_BASE + 976)) "$m4f/stdin"
+kill "$m4_pid" 2>/dev/null; wait "$m4_pid" 2>/dev/null || true
+m4f_seq="$(python3 -c '
+import json, sys
+c = [json.loads(l) for l in open(sys.argv[1])]
+setup = [x for x in c if x["tool"] in ("get_byoa_setup_instructions", "report_byoa_setup_step")]
+first = setup[0]["tool"] if setup else None
+probe = [x["args"].get("brandId") for x in c if x["tool"] == "report_byoa_setup_step" and x["args"].get("step") == "probe_render"]
+# probe_render polls answer "not done" until the probe finishes; every other setup call must succeed.
+print(first, all(x["ok"] for x in setup if x["args"].get("step") != "probe_render"), sorted(set(probe)))' "$m4f/mockstate/calls.jsonl" 2>/dev/null)"
+if [[ "$m4_rc" == "0" && "$m4f_seq" == "get_byoa_setup_instructions True ['brand_tested_1']" ]]; then
+  pass "from-app: setup session opened before any report; probe_render reports carry the tested brandId"
+else
+  fail "from-app setup session" "rc=$m4_rc seq=$m4f_seq err=$(tail -5 "$m4f/err.log")"
+fi
+rm -rf "$m4f"
+
+echo "=== Case M3-04a-2b: switching keys (all brands) turns off this Mac's old key after the test render ==="
+m4s="$(mktemp -d)"
+m4s_old="cfw_render_oldkey_$(python3 -c 'import secrets;print(secrets.token_hex(4))')"
+m4s_key="cfw_m4-acct$(python3 -c 'import secrets;print(secrets.token_hex(8))')"
+printf '%s\n' "$m4s_key" > "$m4s/stdin"
+m4_setup "$m4s" $((MOCK_PORT_BASE + 975)) CFW_MOCK_EXCHANGE_SCOPE=user
+mkdir -p "$m4s/home/.cfw-render"
+( umask 077; printf 'CFW_API_BASE=http://127.0.0.1:%s\nCFW_RENDER_WORKER_KEY=%s\n' $((MOCK_PORT_BASE + 975)) "$m4s_old" > "$m4s/home/.cfw-render/cfw-render.env" )
+m4_run "$m4s" $((MOCK_PORT_BASE + 975)) "$m4s/stdin"
+kill "$m4_pid" 2>/dev/null; wait "$m4_pid" 2>/dev/null || true
+m4s_revoked="$(python3 -c '
+import json, sys
+print([json.loads(l)["args"]["keyTail"] for l in open(sys.argv[1]) if "revoke_key_used" in l])' "$m4s/mockstate/calls.jsonl" 2>/dev/null)"
+m4s_scope="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["scope"])' "$m4s/home/.cfw-render/connection.json" 2>/dev/null)"
+if [[ "$m4_rc" == "0" && "$m4s_revoked" == "['${m4s_old: -6}']" && "$m4s_scope" == "user" ]] \
+   && grep -q '^CFW_RENDER_WORKER_KEY=cfw_render_mock-brand_xchg' "$m4s/home/.cfw-render/cfw-render.env" \
+   && ! grep -qF "$m4s_old" "$m4s/home/.cfw-render/cfw-render.env" "$m4s/out.jsonl" "$m4s/err.log"; then
+  pass "from-app re-setup: new key saved, old key revoked with itself (once), connection says all brands"
+else
+  fail "from-app re-setup" "rc=$m4_rc revoked=$m4s_revoked scope=$m4s_scope err=$(tail -5 "$m4s/err.log")"
+fi
+rm -rf "$m4s"
 
 echo "=== Case M3-04a-3: bad key → connecting failed, exit 5, no key written ==="
 m4b="$(mktemp -d)"
@@ -4772,6 +4853,43 @@ else
   fail "install.sh --update" "$(cat "$r5c/rc") out=$(cat "$r5c/out.jsonl") rest=$(cat "$r5c/rest") $(head -c 400 "$r5c/err.log")"
 fi
 rm -rf "$r5c"
+
+echo "=== Case M3-05a-4: --update reloads the worker even when launchd refuses the first bootstrap; a worker that never loads is reported ==="
+r5d="$(mktemp -d)"
+mkdir -p "$r5d/home/CFW Render/app/bin" "$r5d/home/Library/LaunchAgents" "$r5d/bin"
+printf '<plist/>\n' > "$r5d/home/Library/LaunchAgents/com.cfw.render.plist"
+# Fake launchctl: logs every call; bootstrap fails while $r5d/fail-left > 0.
+cat > "$r5d/bin/launchctl" <<'EOF_LC'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")/.." && pwd)"
+echo "$*" >> "$d/launchctl.log"
+if [[ "$1" == "bootstrap" ]]; then
+  n="$(cat "$d/fail-left" 2>/dev/null || echo 0)"
+  if (( n > 0 )); then echo $((n - 1)) > "$d/fail-left"; echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; fi
+  touch "$d/loaded"
+fi
+exit 0
+EOF_LC
+chmod +x "$r5d/bin/launchctl"
+r5d_run() { ( export HOME="$r5d/home" PATH="$r5d/bin:$PATH" CFW_RENDER_BOOTSTRAP_WAIT_SEC=0 CFW_RENDER_BOOTSTRAP_TRIES=3
+  "$REPO_DIR/install/install.sh" --mode byoa --non-interactive --from-app --update > "$r5d/out.jsonl" 2> "$r5d/err.log" < /dev/null
+  echo "$?" > "$r5d/rc" ); }
+echo 1 > "$r5d/fail-left"; r5d_run
+r5d_a_rc="$(cat "$r5d/rc")"; r5d_a_out="$(cat "$r5d/out.jsonl")"
+r5d_a_boots="$(grep -c '^bootstrap' "$r5d/launchctl.log" 2>/dev/null)"; r5d_a_loaded=0; [[ -f "$r5d/loaded" ]] && r5d_a_loaded=1
+rm -f "$r5d/launchctl.log" "$r5d/loaded"; echo 99 > "$r5d/fail-left"; r5d_run
+r5d_b_rc="$(cat "$r5d/rc")"; r5d_b_out="$(cat "$r5d/out.jsonl")"; r5d_b_boots="$(grep -c '^bootstrap' "$r5d/launchctl.log" 2>/dev/null)"
+if [[ "$r5d_a_rc" == "0" && "$r5d_a_out" == '{"step": "ready", "state": "done", "message": "Updated"}' && "$r5d_a_boots" == "2" && "$r5d_a_loaded" == "1" ]]; then
+  pass "install.sh --update: first bootstrap refused (I/O error) → retried, worker loaded, Updated"
+else
+  fail "install.sh --update bootstrap retry" "rc=$r5d_a_rc boots=$r5d_a_boots loaded=$r5d_a_loaded out=$r5d_a_out"
+fi
+if [[ "$r5d_b_rc" == "6" && "$r5d_b_boots" == "3" ]] && grep -q '"state": "failed"' <<< "$r5d_b_out" && ! grep -q '"message": "Updated"' <<< "$r5d_b_out"; then
+  pass "install.sh --update: a worker that never loads is reported as failed (exit 6), never 'Updated'"
+else
+  fail "install.sh --update never-loads" "rc=$r5d_b_rc boots=$r5d_b_boots out=$r5d_b_out"
+fi
+rm -rf "$r5d"
 
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"

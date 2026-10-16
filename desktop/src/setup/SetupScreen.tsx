@@ -125,6 +125,13 @@ export function SetupScreen() {
           }
         } else setRunEvents((p) => [...p, ev]);
       }),
+      // "Use all my brands" starts the installer from the main window: show its progress here.
+      listen("setup-external-run", () => {
+        setError(null);
+        setRunEvents([]);
+        phase.current = "run";
+        setStage("finish");
+      }),
       listen<SigninEvent>("provider-signin", ({ payload: ev }) => {
         if (ev.state === "waiting") return setSigningIn(ev.engine);
         setSigningIn(null);

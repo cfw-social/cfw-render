@@ -68,6 +68,7 @@ describe("main window", () => {
     vi.stubGlobal("navigator", { clipboard: { writeText } });
     const actions = { openMain: vi.fn(), startWorker: vi.fn(), setPaused: vi.fn(), allowBattery: vi.fn(), runNow: vi.fn(), openLogs: vi.fn() };
     render(<Renders payload={payload({ ...status, recent: [newer, row] })} actions={actions} clock={() => Date.parse(newer.finishedAt!)} />);
+    fireEvent.click(screen.getByRole("button", { name: /R-FAIL.*Didn't finish/ }));
     const button = screen.getByRole("button", { name: "Copy debug instructions" });
     fireEvent.click(button);
     expect(button.hasAttribute("disabled")).toBe(true);
@@ -93,6 +94,7 @@ describe("main window", () => {
     vi.stubGlobal("navigator", { clipboard: { writeText: vi.fn().mockRejectedValue(new Error("denied")) } });
     const actions = { openMain: vi.fn(), startWorker: vi.fn(), setPaused: vi.fn(), allowBattery: vi.fn(), runNow: vi.fn(), openLogs: vi.fn() };
     render(<Renders payload={payload({ ...workingStatus, recent: [{ result: "stopped", finishedAt: "2026-10-11T11:00:00Z" }] })} actions={actions} clock={() => NOW} />);
+    fireEvent.click(screen.getByRole("button", { name: /Render.*Stopped/ }));
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy debug instructions" })));
     const textarea = screen.getByRole("textbox", { name: "Copy debug instructions" }) as HTMLTextAreaElement;
     expect(textarea.readOnly).toBe(true);

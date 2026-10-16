@@ -633,7 +633,7 @@ print(json.dumps(a))' "$CFW_WORKER_ID" "$CFW_RENDER_RENDERER_KIND" "$claim_label
 import json, sys, os
 b = json.loads(sys.stdin.read()).get("computerBrands")
 if not isinstance(b, list): sys.exit(0)
-out = [{"id": x.get("id"), "name": x.get("name")} for x in b if isinstance(x, dict) and x.get("id")]
+out = [{"id": x.get("id"), "name": x.get("name"), "slug": x.get("slug")} for x in b if isinstance(x, dict) and x.get("id")]
 p = sys.argv[1]; tmp = p + ".tmp.%d" % os.getpid()
 json.dump(out, open(tmp, "w")); os.replace(tmp, p)' "$CFW_RENDER_STATE_DIR/brands.json" <<< "$resp" ) 2>/dev/null || true
   # SERVER_KNOWS_CAPACITY flips once a reply carries `orders[]`: only an M2
@@ -722,6 +722,7 @@ claim_round() {
       CR_STATUS_LAST_ERROR="AI limit reached; resumes $limit_earliest"
       cr_log "engine: every signed-in engine is at its usage limit — not claiming until $limit_earliest"
       prune_running; STARTED=0
+      cr_queue_refresh
       return 0
     fi
     # [M3-08b] Only out-of-credit limits (no reset time) remain.
@@ -729,6 +730,7 @@ claim_round() {
       CR_STATUS_LAST_ERROR="AI credit ran out; add credit or pick another AI"
       cr_log "engine: every signed-in engine is limited (out of credit) — not claiming"
       prune_running; STARTED=0
+      cr_queue_refresh
       return 0
     fi
   fi
@@ -763,6 +765,7 @@ claim_round() {
     fi
   fi
   rm -f "$tmp"
+  cr_queue_refresh
   STARTED=$started
   return $rc
 }

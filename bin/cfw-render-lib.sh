@@ -1461,6 +1461,34 @@ os.replace(tmp, path)
   ) 2>/dev/null || true
 }
 
+# Refresh the read-only waiting list. Unsupported/invalid replies clear stale data.
+cr_queue_refresh() {
+  local out p="$CFW_RENDER_STATE_DIR/next.json"
+  if ! out="$(cr_mcp_call_soft list_render_queue "$(python3 -c 'import json,sys; print(json.dumps({"workerId": sys.argv[1]}))' "${CFW_WORKER_ID:-}")" 2>/dev/null)"; then
+    rm -f "$p"
+    return 0
+  fi
+  ( umask 077
+    python3 -c '
+import json, sys, os
+d = json.loads(sys.stdin.read())
+orders = d.get("orders") if isinstance(d, dict) else None
+if not isinstance(orders, list): raise ValueError("missing queue")
+rows = []
+for x in orders[:20]:
+    if not isinstance(x, dict) or not isinstance(x.get("id"), str): continue
+    def text(k):
+        v = x.get(k)
+        return v[:400] if isinstance(v, str) else None
+    rows.append({"orderId": text("id"), "shortCode": text("shortCode"), "brand": text("brandName"),
+                 "brandSlug": text("brandSlug"), "kind": text("kind"), "recipe": text("recipe"),
+                 "status": text("status"), "needs": text("needs"), "createdAt": text("createdAt")})
+p = sys.argv[1]; tmp = p + ".tmp.%d" % os.getpid()
+with open(tmp, "w") as f: json.dump(rows, f)
+os.replace(tmp, p)' "$p" <<< "$out"
+  ) 2>/dev/null || rm -f "$p"
+}
+
 # cr_status_write — atomically writes $CFW_RENDER_STATE_DIR/status.json in the
 # frozen contract shape (CONTRACTS.md §1). [M3-01c] engines/activeEngine from
 # cfw-render-engine.sh; `now` from <orderDir>/current-step.json; `brands` from
@@ -1498,7 +1526,7 @@ sd = a[15]
 brands = []
 for x in load(os.path.join(sd, "brands.json"), []) or []:
     if isinstance(x, dict) and x.get("id"):
-        brands.append({"id": x.get("id"), "name": x.get("name"), "serving": True})
+        brands.append({"id": x.get("id"), "name": x.get("name"), "serving": True, "slug": x.get("slug")})
 now = []
 for p in sorted(glob.glob(os.path.join(a[16], "*", "*", "current-step.json"))):
     d = load(p, None)
@@ -1515,12 +1543,16 @@ for line in reversed(lines):
     except Exception: continue
     recent.append({k: r.get(k) for k in ("shortCode", "brand", "result", "finishedAt", "orderId", "attemptId", "brandSlug", "recipe", "kind", "reason", "startedAt", "directorLog")})
     if len(recent) >= 20: break
+nxt = load(os.path.join(sd, "next.json"), [])
+nxt = [x for x in nxt if isinstance(x, dict)][:20] if isinstance(nxt, list) else []
+conn = load(os.path.join(sd, "connection.json"), None)
+conn = {k: conn.get(k) for k in ("scope", "keyName", "keyHint", "connectedAt")} if isinstance(conn, dict) else None
 doc = {
   "schema": 1, "workerVersion": a[2], "engines": engines,
   "activeEngine": (a[14] if a[14] not in ("", "none") else None),
   "computer": {"name": a[1] or None, "max": n(a[11], 1), "running": n(a[10]), "onBattery": b(a[5]),
                "paused": b(a[3]), "pauseReason": a[4] or None, "updateRequired": b(a[7])},
-  "brands": brands, "now": now, "next": [], "recent": recent,
+  "brands": brands, "now": now, "next": nxt, "recent": recent, "connection": conn,
   "lastCheckAt": a[9] or None, "lastError": a[8] or None,
   "cfwReach": (a[17] if a[17] in ("ok", "unreachable") else None),
   "cfwReachSince": a[18] or None,

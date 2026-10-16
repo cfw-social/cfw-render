@@ -250,6 +250,13 @@ for guide in AGENTS.md CLAUDE.md; do
   fi
 done
 
+# Claims must report the bundled worker version, including on a fresh install.
+if [[ -f "$REPO_DIR/VERSION" ]]; then
+  cp -a "$REPO_DIR/VERSION" "$PREFIX/VERSION"
+else
+  echo "install.sh: WARNING — missing VERSION; CFW may refuse work until updated" >&2
+fi
+
 if (( FROM_APP )) && [[ ! -f "$ENV_FILE" ]]; then
   mkdir -p "$(dirname "$ENV_FILE")"
   ( umask 077; : > "$ENV_FILE" )

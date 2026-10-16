@@ -55,7 +55,9 @@ export function panelModel(payload: StatusPayload | null, now: number, opts: Mod
   const lastCheckMs = ms(s?.lastCheckAt);
   const running = payload ? payload.liveness === "Running" : false;
   const c = s?.computer ?? {};
-  const paused = !!c.paused;
+  const batteryPaused = !!c.paused && c.pauseReason === "battery";
+  const ownerPaused = typeof payload?.ownerPaused === "boolean" ? payload.ownerPaused : !!c.paused && c.pauseReason !== "battery";
+  const paused = ownerPaused || batteryPaused;
 
   let banner: Banner | null = null;
   let limitAt: string | null = null;
@@ -63,8 +65,8 @@ export function panelModel(payload: StatusPayload | null, now: number, opts: Mod
   // Only the worker's own reach signal: lastError carries update / AI limit /
   // credit text and never means "offline".
   else if (s.cfwReach === "unreachable") banner = { kind: "offline", text: copy.banner.offline };
-  else if (paused && c.pauseReason === "battery") banner = { kind: "battery", text: copy.banner.battery };
-  else if (paused) banner = { kind: "paused", text: copy.banner.paused };
+  else if (ownerPaused) banner = { kind: "paused", text: copy.banner.paused };
+  else if (batteryPaused) banner = { kind: "battery", text: copy.banner.battery };
   else if (c.updateRequired) banner = { kind: "update", text: copy.banner.update };
   else if (!noProvider && engines.every((e) => e.limit === "limited")) {
     const resets = engines.map((e) => ms(e.resetsAt)).filter((t): t is number => t != null);
@@ -115,6 +117,85 @@ export function panelModel(payload: StatusPayload | null, now: number, opts: Mod
 
 function fallbackProviderLine(engines: Engine[]) {
   return `AI: ${engines.map(label).join(", ")}`;
+}
+
+/** Which key this Mac uses and which brands it serves. Never contains a credential. */
+export interface ConnectionSummary {
+  line: string;
+  keyLine: string | null;
+  brands: string[];
+  allBrands: boolean;
+}
+
+export function connectionSummary(payload: StatusPayload | null): ConnectionSummary | null {
+  const s = payload?.status;
+  if (!s) return null;
+  const brands = (s.brands ?? []).filter((b) => b.serving && b.name).map((b) => b.name as string);
+  const c = s.connection;
+  const key = c?.keyName || c?.keyHint || null;
+  const line = c?.scope === "user" ? copy.connection.all(brands.length)
+    : brands.length === 1 ? copy.connection.one(brands[0])
+    : brands.length > 1 ? copy.connection.some(brands.length) : copy.connection.none;
+  return { line, keyLine: key ? copy.connection.key(key) : null, brands, allBrands: c?.scope === "user" };
+}
+
+export type ItemState = "done" | "failed" | "stopped" | "queued" | "needs_input";
+export interface RenderItem {
+  key: string;
+  list: "next" | "done";
+  state: ItemState;
+  title: string;
+  brand: string;
+  recipe: string;
+  code: string;
+  time: string;
+  reason: string | null;
+  needs: string | null;
+  orderId: string | null;
+  brandSlug: string | null;
+  attemptId: string | null;
+  directorLog: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  identity: RecentItem;
+}
+
+const itemTitle = (code?: string | null, recipe?: string | null) => code || recipe || copy.render;
+const at = (iso?: string | null) => {
+  const t = ms(iso);
+  return t == null ? "" : hhmm(t);
+};
+
+/** Keep the original recent identity separate from presentation fallbacks. */
+export function renderItems(payload: StatusPayload | null, now: number): { next: RenderItem[]; done: RenderItem[] } {
+  const s = payload?.status;
+  const next: RenderItem[] = (s?.next ?? []).map((n, i) => ({
+    key: `next-${n.orderId ?? n.shortCode ?? ""}-${i}`,
+    list: "next",
+    state: n.status === "needs_input" ? "needs_input" : "queued",
+    title: itemTitle(n.shortCode, n.recipe || n.kind),
+    brand: n.brand ?? "", recipe: n.recipe || n.kind || "", code: n.shortCode ?? "",
+    time: at(n.createdAt), reason: null, needs: n.needs ?? null,
+    orderId: n.orderId ?? null, brandSlug: n.brandSlug ?? null,
+    attemptId: null, directorLog: null, startedAt: null, finishedAt: null, identity: {},
+  }));
+  const done: RenderItem[] = [...(s?.recent ?? [])]
+    .map((r, i) => ({ r, i, t: ms(r.finishedAt) }))
+    .filter(({ t }) => t != null && now - t <= DAY_MS)
+    .sort((a, b) => (b.t ?? 0) - (a.t ?? 0) || a.i - b.i)
+    .map(({ r, i }) => {
+      const state: ItemState = r.result === "done" || r.result === "stopped" ? r.result : "failed";
+      return {
+        key: `done-${JSON.stringify([r.orderId, r.shortCode, r.attemptId, r.directorLog, r.startedAt, r.finishedAt])}-${i}`,
+        list: "done", state, title: itemTitle(r.shortCode, r.recipe || r.kind),
+        brand: r.brand ?? "", recipe: r.recipe || r.kind || "", code: r.shortCode ?? "",
+        time: at(r.finishedAt), reason: state === "done" ? null : r.reason || null, needs: null,
+        orderId: r.orderId ?? null, brandSlug: r.brandSlug ?? null,
+        attemptId: r.attemptId ?? null, directorLog: r.directorLog ?? null,
+        startedAt: r.startedAt ?? null, finishedAt: r.finishedAt ?? null, identity: r,
+      };
+    });
+  return { next, done };
 }
 
 /** One line of overall state for the menu bar, the rail footer and Renders. */
