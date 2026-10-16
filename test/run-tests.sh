@@ -15,6 +15,51 @@ PASS_COUNT=0
 pass() { printf '  PASS  %s\n' "$1"; PASS_COUNT=$((PASS_COUNT+1)); }
 fail() { printf '  FAIL  %s — %s\n' "$1" "$2"; FAILURES=$((FAILURES+1)); }
 
+# Only recorded children of this runner may be cleaned up. No command matching.
+stop_test_tree() {
+  python3 "$TEST_DIR/stop-owned-tree.py" "$1" "$BASHPID" || return 1
+  # SIGKILL is the expected fixture shutdown, not a failed assertion.
+  if wait "$1" 2>/dev/null; then :; fi
+}
+process_cleanup_case() {
+  python3 - "$TEST_DIR" <<'PY'
+import importlib.util, os, pathlib, subprocess, sys, tempfile, time
+spec = importlib.util.spec_from_file_location('cleanup', pathlib.Path(sys.argv[1])/'stop-owned-tree.py')
+cleanup = importlib.util.module_from_spec(spec); spec.loader.exec_module(cleanup)
+with tempfile.TemporaryDirectory() as tmp:
+    marker = pathlib.Path(tmp)/'child'
+    unrelated = subprocess.Popen(['sleep', '30'])
+    root = subprocess.Popen(['bash', '-c', 'sleep 30 & echo $! > "$1"; wait', '_', str(marker)])
+    try:
+        for _ in range(100):
+            if marker.exists() and marker.read_text().strip(): break
+            time.sleep(.01)
+        child = int(marker.read_text())
+        try:
+            cleanup.stop_owned_tree(unrelated.pid, os.getpid()+1)
+            raise AssertionError('accepted a non-owned process')
+        except ValueError:
+            pass
+        cleanup.stop_owned_tree(root.pid, os.getpid())
+        root.wait(timeout=5)
+        for _ in range(100):
+            if child not in cleanup.processes(): break
+            time.sleep(.01)
+        assert child not in cleanup.processes(), 'descendant survived cleanup'
+        assert unrelated.poll() is None, 'unrelated sleep 30 was stopped'
+    finally:
+        if root.poll() is None: cleanup.stop_owned_tree(root.pid, os.getpid())
+        root.wait(timeout=5)
+        unrelated.terminate(); unrelated.wait(timeout=5)
+print('PASS: exact owned tree stopped; unrelated matching command survives; foreign owner rejected')
+PY
+}
+if [[ "${1:-}" == --process-cleanup ]]; then
+  process_cleanup_case
+  exit $?
+fi
+if process_cleanup_case; then pass "test-owned process cleanup"; else fail "test cleanup" "unsafe cleanup"; exit 1; fi
+
 # Negotiated checkpoint fixtures only: no production manifest/version changes.
 local_checkpoint_cases() {
   python3 - "$REPO_DIR" <<'PY'
@@ -3655,8 +3700,7 @@ c23b_w=$!
 for _ in $(seq 1 100); do grep -q '"tool": "claim_render_order"' "$c23b/mockstate/calls.jsonl" 2>/dev/null && break; sleep 0.1; done
 printf '1000' > "$c23b_floor"
 sleep 3
-pkill -P "$c23b_w" 2>/dev/null; kill "$c23b_w" 2>/dev/null; wait "$c23b_w" 2>/dev/null
-pkill -f "$REPO_DIR/bin/cfw-render.sh --loop" 2>/dev/null || true  # scoped: never the owner's installed worker
+stop_test_tree "$c23b_w" || { fail "loop cleanup" "could not stop owned tree"; exit 1; }
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 c23b_claims="$(c21_claims "$c23b")"
 # Round 1 fills the computer one order per reply (0/2, 1/2, then the full
@@ -3756,8 +3800,7 @@ for _ in $(seq 1 60); do grep -q 'retrying every 0.5s' "$c28/cr-state/cfw-render
 c28_at_cap="$(grep -c '"tool": "claim_render_order"' "$c28/mockstate/calls.jsonl" 2>/dev/null || true)"
 for _ in $(seq 1 40); do [[ "$(grep -c '"tool": "claim_render_order"' "$c28/mockstate/calls.jsonl" 2>/dev/null || true)" -gt "$c28_at_cap" ]] && break; sleep 0.5; done
 # the loop runs cfw-render.sh under a subshell; stop the whole tree
-pkill -P "$c28_w" 2>/dev/null; kill "$c28_w" 2>/dev/null; wait "$c28_w" 2>/dev/null
-pkill -f "$REPO_DIR/bin/cfw-render.sh --loop" 2>/dev/null || true  # scoped: never the owner's installed worker
+stop_test_tree "$c28_w" || { fail "loop cleanup" "could not stop owned tree"; exit 1; }
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 c28_steps="$(grep 'claim back-off: claim_render_order keeps failing' "$c28/cr-state/cfw-render.log" | sed -E 's/.*retrying every ([0-9.]+)s.*/\1/' | tr '\n' ' ' | sed 's/ $//')"
 c28_tries="$(grep -c '"tool": "claim_render_order"' "$c28/mockstate/calls.jsonl" 2>/dev/null || true)"
@@ -3856,8 +3899,7 @@ c21_setup "$c32" $((MOCK_PORT_BASE + 930)) harness-3step '[]' CFW_MOCK_ORDERS_AR
 c21_worker "$c32" $((MOCK_PORT_BASE + 930)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=0.2 &
 c32_w=$!
 for _ in $(seq 1 60); do [[ "$(grep -c '"tool": "claim_render_order"' "$c32/mockstate/calls.jsonl" 2>/dev/null || true)" -ge 3 ]] && break; sleep 0.1; done
-pkill -P "$c32_w" 2>/dev/null; kill "$c32_w" 2>/dev/null; wait "$c32_w" 2>/dev/null
-pkill -f "$REPO_DIR/bin/cfw-render.sh --loop" 2>/dev/null || true  # scoped: never the owner's installed worker
+stop_test_tree "$c32_w" || { fail "loop cleanup" "could not stop owned tree"; exit 1; }
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 c32_n="$(grep -c '"tool": "claim_render_order"' "$c32/mockstate/calls.jsonl" 2>/dev/null || true)"
 if [[ "$c32_n" -ge 3 ]]; then
@@ -3911,7 +3953,16 @@ FAKE_CAFFEINATE_LOG="$(mktemp)"; export FAKE_CAFFEINATE_LOG
 cat > "$FAKE_BIN/caffeinate" <<'EOF2'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${FAKE_CAFFEINATE_LOG:-/dev/null}"
-exec sleep 30
+# Mirror caffeinate -w: exit when this specific worker exits, not after an
+# arbitrary sleep requiring a host-wide cleanup. Never invoke real caffeinate.
+exec python3 - "$3" <<'PY'
+import os, sys, time
+pid = int(sys.argv[1])
+for _ in range(300):
+    try: os.kill(pid, 0)
+    except ProcessLookupError: break
+    time.sleep(.1)
+PY
 EOF2
 chmod +x "$FAKE_BIN/caffeinate"
 # m3_tool_count <dir> <tool>
@@ -3967,8 +4018,7 @@ m3_after="$m3_before"
 for _ in $(seq 1 15); do m3_after="$(m3_tool_count "$m3" claim_render_order)"; [[ "$m3_after" -gt "$m3_before" ]] && break; sleep 0.1; done
 m3_flag=0; [[ -e "$m3/cr-state/run-now" ]] && m3_flag=1
 m3_last="$(m3_status "$m3" 'd["lastCheckAt"]')"
-pkill -P "$m3_w" 2>/dev/null; kill "$m3_w" 2>/dev/null; wait "$m3_w" 2>/dev/null
-pkill -f "$REPO_DIR/bin/cfw-render.sh --loop" 2>/dev/null || true  # scoped: never the owner's installed worker
+stop_test_tree "$m3_w" || { fail "loop cleanup" "could not stop owned tree"; exit 1; }
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 if [[ "$m3_after" -gt "$m3_before" && "$m3_flag" == "0" && -n "$m3_last" && "$m3_last" != "None" ]]; then
   pass "run-now: claims ${m3_before}→${m3_after} within 1.5s, flag consumed, lastCheckAt=$m3_last"
@@ -3998,7 +4048,7 @@ if grep -q -- '-i -w ' "$FAKE_CAFFEINATE_LOG"; then
 else
   fail "caffeinate" "log: $(cat "$FAKE_CAFFEINATE_LOG")"
 fi
-pkill -f 'sleep 30' 2>/dev/null || true
+# The fake caffeinate exits with its recorded worker; no host-wide cleanup.
 rm -rf "$m4"
 
 echo "=== Case M3-01a-5: updateRequired reply → no orders, status.json updateRequired + lastError ==="
@@ -4059,8 +4109,7 @@ m3_conn_is() { [[ "$(m3_status "$1" 'd.get("cfwReach")')" == "$2" ]]; }
 m3_err_set() { local e; e="$(m3_status "$1" 'd.get("lastError")')"; [[ -n "$e" && "$e" != "None" ]]; }
 # m3_stop_loop <worker pid> — stop the loop's whole tree and this case's mock
 m3_stop_loop() {
-  pkill -P "$1" 2>/dev/null; kill "$1" 2>/dev/null; wait "$1" 2>/dev/null
-  pkill -f "$REPO_DIR/bin/cfw-render.sh --loop" 2>/dev/null || true  # scoped: never the owner's installed worker
+  stop_test_tree "$1" || { fail "loop cleanup" "could not stop owned tree"; exit 1; }
   kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 }
 M3_PING_BATTERY='"tool": "set_computer_paused", "args": {"paused": true, "reason": "battery"}'
@@ -4494,8 +4543,7 @@ mb6_req=""
 for _ in $(seq 1 120); do mb6_req="$(m3_status "$mb6" '" ".join("%s/%s/%s" % (r["step"], r["steps"], r["stepLabel"]) for r in d["now"])')"; [[ -n "$mb6_req" ]] && break; sleep 0.1; done
 mb6_after="x"
 for _ in $(seq 1 200); do mb6_after="$(m3_status "$mb6" 'len(d["now"])')"; [[ "$mb6_after" == "0" ]] && grep -q '"event": "attempt_completed"' "$mb6/control/reports.ndjson" 2>/dev/null && break; sleep 0.1; done
-pkill -P "$mb6_w" 2>/dev/null; kill "$mb6_w" 2>/dev/null; wait "$mb6_w" 2>/dev/null
-pkill -f "$REPO_DIR/bin/cfw-render.sh --loop" 2>/dev/null || true  # scoped: never the owner's installed worker
+stop_test_tree "$mb6_w" || { fail "loop cleanup" "could not stop owned tree"; exit 1; }
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 mb6_want="$(python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); s=[x for x in m["steps"] if x.get("runsOn","computer")=="computer"]; print("1/%d/%s" % (len(s), s[0].get("label")))' "$REPO_DIR/test/fixtures/manifests/harness-3step/manifest.json")"
 if [[ "$mb6_req" == "$mb6_want"* && "$mb6_after" == "0" && "$(m3_status "$mb6" 'd["activeEngine"]')" == "codex" ]]; then
@@ -4670,10 +4718,11 @@ m4a="$(mktemp -d)"
 m4a_key="cfw_m4-brand$(python3 -c 'import secrets;print(secrets.token_hex(8))')"
 printf '%s\n' "$m4a_key" > "$m4a/stdin"
 m4_setup "$m4a" $((MOCK_PORT_BASE + 970))
-( for _ in $(seq 1 600); do ps -axo args 2>/dev/null; sleep 0.05; done ) > "$m4a/ps.log" 2>/dev/null &
+# Inspect only this test runner's descendants, never unrelated host argv.
+( for _ in $(seq 1 600); do python3 "$TEST_DIR/stop-owned-tree.py" --arguments "$$"; sleep 0.05; done ) > "$m4a/ps.log" 2>/dev/null &
 m4a_ps=$!
 m4_run "$m4a" $((MOCK_PORT_BASE + 970)) "$m4a/stdin"
-kill "$m4a_ps" 2>/dev/null; wait "$m4a_ps" 2>/dev/null || true
+stop_test_tree "$m4a_ps" || { fail "argv watcher cleanup" "could not stop owned tree"; exit 1; }
 kill "$m4_pid" 2>/dev/null; wait "$m4_pid" 2>/dev/null || true
 rm -f "$m4a/stdin"
 m4a_steps="$(m4_steps "$m4a")"
