@@ -84,6 +84,7 @@ function CheckRow({ state, title, sub, pct }: { state: StepState; title: string;
 /** First-run setup: brand key, then an AI sign-in (tools download meanwhile), then install + test render. */
 export function SetupScreen() {
   const [stage, setStage] = useState<Stage>("brand");
+  const [setupSource, setSetupSource] = useState<"manual" | "account" | "adopt">("manual");
   const [key, setKey] = useState("");
   const [keyError, setKeyError] = useState(false);
   const [signedIn, setSignedIn] = useState<Record<string, boolean>>({});
@@ -98,6 +99,8 @@ export function SetupScreen() {
 
   const tools = toolsModel(toolEvents);
   const run = setupModel(runEvents);
+  // setup_run resolves when the process starts, not when setup succeeds.
+  useEffect(() => { if (run.phase === "ready") setKey(""); }, [run.phase]);
 
   const checkSignedIn = () => {
     for (const engine of PLAN_ENGINES) {
@@ -127,6 +130,7 @@ export function SetupScreen() {
       }),
       // "Use all my brands" starts the installer from the main window: show its progress here.
       listen("setup-external-run", () => {
+        setSetupSource("account");
         setError(null);
         setRunEvents([]);
         phase.current = "run";
@@ -144,6 +148,7 @@ export function SetupScreen() {
     invoke<{ installed: boolean; adoptable: boolean }>("get_setup_status")
       .then((st) => {
         if (st?.adoptable) {
+          setSetupSource("adopt");
           phase.current = "run";
           setStage("finish");
           invoke("setup_adopt").catch((e: unknown) => setError(String(e)));
@@ -180,9 +185,10 @@ export function SetupScreen() {
     setRunEvents([]);
     phase.current = "run";
     setStage("finish");
-    invoke("setup_run", { brandKey: key.trim(), installTools: false })
-      .then(() => setKey(""))
-      .catch((e: unknown) => setError(String(e)));
+    const request = setupSource === "account" ? invoke("setup_with_account")
+      : setupSource === "adopt" ? invoke("setup_adopt")
+      : invoke("setup_run", { brandKey: key.trim(), installTools: false });
+    request.catch((e: unknown) => setError(String(e)));
   };
   const signIn = (engine: string) => {
     setAiNotice(null);
@@ -236,8 +242,10 @@ export function SetupScreen() {
         footer={
           failed ? (
             <>
-              <Button size="lg" variant="ghost" onClick={() => setStage(key ? "ai" : "brand")}>{S.back}</Button>
-              <Button size="lg" variant="primary" icon="refresh-cw" onClick={runSetup} disabled={!key.trim()}>{S.tryAgain}</Button>
+              <Button size="lg" variant="ghost" onClick={() => setupSource === "account"
+                ? void invoke("open_main", { section: "renders" }).catch((e: unknown) => setError(String(e)))
+                : setStage(key ? "ai" : "brand")}>{S.back}</Button>
+              <Button size="lg" variant="primary" icon="refresh-cw" onClick={runSetup} disabled={setupSource === "manual" && !key.trim()}>{S.tryAgain}</Button>
             </>
           ) : (
             <Button size="lg" variant="ghost" onClick={() => invoke("setup_cancel").catch(() => {})}>{S.cancel}</Button>

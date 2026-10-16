@@ -179,14 +179,18 @@ export function renderItems(payload: StatusPayload | null, now: number): { next:
     orderId: n.orderId ?? null, brandSlug: n.brandSlug ?? null,
     attemptId: null, directorLog: null, startedAt: null, finishedAt: null, identity: {},
   }));
+  const duplicateKeys = new Map<string, number>();
   const done: RenderItem[] = [...(s?.recent ?? [])]
     .map((r, i) => ({ r, i, t: ms(r.finishedAt) }))
     .filter(({ t }) => t != null && now - t <= DAY_MS)
     .sort((a, b) => (b.t ?? 0) - (a.t ?? 0) || a.i - b.i)
-    .map(({ r, i }) => {
+    .map(({ r }) => {
+      const identityKey = JSON.stringify([r.orderId, r.shortCode, r.attemptId, r.directorLog, r.startedAt, r.finishedAt]);
+      const occurrence = duplicateKeys.get(identityKey) ?? 0;
+      duplicateKeys.set(identityKey, occurrence + 1);
       const state: ItemState = r.result === "done" || r.result === "stopped" ? r.result : "failed";
       return {
-        key: `done-${JSON.stringify([r.orderId, r.shortCode, r.attemptId, r.directorLog, r.startedAt, r.finishedAt])}-${i}`,
+        key: `done-${identityKey}-${occurrence}`,
         list: "done", state, title: itemTitle(r.shortCode, r.recipe || r.kind),
         brand: r.brand ?? "", recipe: r.recipe || r.kind || "", code: r.shortCode ?? "",
         time: at(r.finishedAt), reason: state === "done" ? null : r.reason || null, needs: null,

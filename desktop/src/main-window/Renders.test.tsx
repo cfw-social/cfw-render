@@ -147,6 +147,24 @@ describe("Renders", () => {
     expect(screen.getByRole("textbox", { name: "Copy debug instructions" })).toBeTruthy();
   });
 
+  it("keeps the selected attempt across prepends and returns focus to the last selected row", () => {
+    const a = actions();
+    const status = { ...workingStatus, recent: [
+      { shortCode: "R-A", orderId: "order", attemptId: "A", result: "failed" as const, finishedAt: "2026-10-11T11:59:00Z" },
+      { shortCode: "R-B", orderId: "order", attemptId: "B", result: "failed" as const, finishedAt: "2026-10-11T11:58:00Z" },
+    ] };
+    const { rerender } = render(<Renders payload={payload(status)} actions={a} clock={() => NOW} />);
+    fireEvent.click(screen.getByRole("button", { name: /R-A/ }));
+    fireEvent.click(screen.getByRole("button", { name: /R-B/ }));
+    expect(screen.getByRole("complementary", { name: "R-B" })).toBeTruthy();
+    rerender(<Renders payload={payload({ ...status, recent: [
+      { shortCode: "R-C", orderId: "other", attemptId: "C", result: "done", finishedAt: "2026-10-11T12:00:00Z" }, ...status.recent,
+    ] })} actions={a} clock={() => NOW} />);
+    expect(screen.getByRole("complementary", { name: "R-B" })).toBeTruthy();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: /R-B/ }));
+  });
+
   it("successful and queued rows retain View logs, not debug instructions", () => {
     show(workingStatus);
     for (const name of [/R-OLD/, /R-C1/]) {

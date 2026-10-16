@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CopyRenderDebug } from "./CopyRenderDebug";
 import { copy } from "../copy";
 import { connectionSummary, health, renderItems, rendersModel, type ItemState, type RenderItem } from "../panel/model";
@@ -15,14 +15,14 @@ const STATE_ICON_TONE = { done: "text-emerald-600", failed: "text-red-600", stop
 const STATE_TONE: Record<ItemState, Tone> = { done: "ok", failed: "bad", stopped: "idle", queued: "idle", needs_input: "warn" };
 const why = (e: unknown) => (typeof e === "string" ? e : e instanceof Error ? e.message : String(e));
 
-function Row({ item, selected, onSelect }: { item: RenderItem; selected: boolean; onSelect: () => void }) {
+function Row({ item, selected, onSelect }: { item: RenderItem; selected: boolean; onSelect: (row: HTMLButtonElement) => void }) {
   const sub = item.state === "needs_input" ? item.needs : item.state === "failed" || item.state === "stopped" ? item.reason : null;
   return (
     <li>
       <button
         type="button"
         aria-pressed={selected}
-        onClick={onSelect}
+        onClick={(e) => onSelect(e.currentTarget)}
         className={`grid w-full grid-cols-[18px_minmax(0,1fr)_auto] sm:grid-cols-[18px_minmax(0,1.4fr)_minmax(0,1fr)_auto_auto] items-center gap-x-3 px-4 py-3 text-left text-[13px] hover:bg-secondary/60 focus-visible:outline-2 focus-visible:outline-primary ${selected ? "bg-secondary" : ""}`}
       >
         <Icon name={STATE_ICON[item.state]} size={15} className={STATE_ICON_TONE[item.state]} />
@@ -48,9 +48,7 @@ function Detail({ item, actions, onClose }: { item: RenderItem; actions: PanelAc
   const [error, setError] = useState<string | null>(null);
   const pane = useRef<HTMLElement>(null);
   useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
     pane.current?.focus();
-    return () => { if (previous?.isConnected) previous.focus(); };
   }, []);
   const field = (label: string, value: string) =>
     value ? (
@@ -132,6 +130,11 @@ export function Renders({
   const conn = connectionSummary(payload);
   const items = renderItems(payload, t);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const selectedRow = useRef<HTMLButtonElement | null>(null);
+  const closeDetail = useCallback(() => {
+    setSelectedKey(null);
+    if (selectedRow.current?.isConnected) selectedRow.current.focus();
+  }, []);
   const selected = [...items.next, ...items.done].find((i) => i.key === selectedKey) ?? null;
   const [refreshError, setRefreshError] = useState<string | null>(null);
   // Refresh stays "Checking…" until the worker has actually checked (its lastCheckAt moves on),
@@ -155,13 +158,16 @@ export function Renders({
   useEffect(() => {
     if (!selected) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setSelectedKey(null);
+      if (e.key === "Escape") closeDetail();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [selected]);
+  }, [selected, closeDetail]);
 
-  const toggle = (k: string) => setSelectedKey((cur) => (cur === k ? null : k));
+  const toggle = (k: string, row: HTMLButtonElement) => {
+    if (selectedKey === k) closeDetail();
+    else { selectedRow.current = row; setSelectedKey(k); }
+  };
   const now = h.kind === "notRunning" ? undefined : m.now[0];
   const paused = m.paused;
   const refresh = async () => {
@@ -251,7 +257,7 @@ export function Renders({
           <Card>
             <ul className="divide-y divide-border">
               {items.next.map((n) => (
-                <Row key={n.key} item={n} selected={n.key === selectedKey} onSelect={() => toggle(n.key)} />
+                <Row key={n.key} item={n} selected={n.key === selectedKey} onSelect={(row) => toggle(n.key, row)} />
               ))}
             </ul>
           </Card>
@@ -266,7 +272,7 @@ export function Renders({
           <Card>
             <ul className="divide-y divide-border">
               {items.done.map((d) => (
-                <Row key={d.key} item={d} selected={d.key === selectedKey} onSelect={() => toggle(d.key)} />
+                <Row key={d.key} item={d} selected={d.key === selectedKey} onSelect={(row) => toggle(d.key, row)} />
               ))}
             </ul>
           </Card>
@@ -281,7 +287,7 @@ export function Renders({
         <button type="button" className="rounded font-medium text-accent-foreground hover:underline" onClick={actions.openLogs}>{copy.action.viewLogs}</button>
       </div>
     </div>
-    {selected && <Detail key={selected.key} item={selected} actions={actions} onClose={() => setSelectedKey(null)} />}
+    {selected && <Detail key={selected.key} item={selected} actions={actions} onClose={closeDetail} />}
     </div>
   );
 }

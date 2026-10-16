@@ -92,7 +92,11 @@ describe("SetupScreen", () => {
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await step({ step: "connecting", state: "failed", message: "CFW didn't accept that key.", action: "Copy it again from CFW." });
     expect(screen.getByRole("alert").textContent).toContain("CFW didn't accept that key. Copy it again from CFW.");
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    const retry = screen.getByRole("button", { name: "Try again" }) as HTMLButtonElement;
+    expect(retry.disabled).toBe(false);
+    const before = h.invoke.mock.calls.filter(([cmd]) => cmd === "setup_run").length;
+    fireEvent.click(retry);
+    expect(h.invoke.mock.calls.filter(([cmd]) => cmd === "setup_run")).toHaveLength(before + 1);
     expect(h.invoke).toHaveBeenLastCalledWith("setup_run", { brandKey: KEY, installTools: false });
   });
 
@@ -105,6 +109,20 @@ describe("SetupScreen", () => {
     expect(screen.getByText("Connecting to CFW")).toBeTruthy();
     // It never asks for a pasted key or re-runs the installer itself.
     expect(h.invoke).not.toHaveBeenCalledWith("setup_run", expect.anything());
+  });
+
+  it.each(["failed", "cancelled"])("retries external account setup after %s without asking for a pasted key", async (state) => {
+    render(<SetupScreen />);
+    await act(async () => h.listeners["setup-external-run"]({ payload: null }));
+    await step({ step: "result", state: "failed", message: state });
+    const retry = screen.getByRole("button", { name: "Try again" }) as HTMLButtonElement;
+    expect(retry.disabled).toBe(false);
+    fireEvent.click(retry);
+    expect(h.invoke.mock.calls.filter(([cmd]) => cmd === "setup_with_account")).toHaveLength(1);
+    expect(h.invoke).not.toHaveBeenCalledWith("setup_run", expect.anything());
+    await step({ step: "result", state: "failed", message: "Still offline" });
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(h.invoke).toHaveBeenLastCalledWith("open_main", { section: "renders" });
   });
 
   it("adopts an existing install straight into step 3", async () => {
