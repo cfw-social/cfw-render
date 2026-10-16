@@ -436,6 +436,44 @@ pub fn run() {
 #[cfg(test)]
 mod settings_tests {
     #[test]
+    fn app_icons_have_detail_at_standard_and_retina_sizes() {
+        fn check_png(bytes: &[u8]) -> u32 {
+            let image = tauri::image::Image::from_bytes(bytes).unwrap();
+            assert_eq!(image.width(), image.height());
+            let colors: std::collections::HashSet<_> = image.rgba().chunks_exact(4)
+                .filter(|pixel| pixel[3] != 0)
+                .map(|pixel| [pixel[0], pixel[1], pixel[2]])
+                .collect();
+            assert!(colors.len() > 32, "app icon must contain artwork, not a flat placeholder");
+            assert!(image.rgba().chunks_exact(4).any(|pixel| pixel[3] == 0),
+                "app icon must retain its transparent outer margin");
+            image.width()
+        }
+        assert_eq!(check_png(include_bytes!("../icons/32x32.png")), 32);
+        assert_eq!(check_png(include_bytes!("../icons/128x128.png")), 128);
+
+        let icns = include_bytes!("../icons/icon.icns");
+        assert_eq!(&icns[..4], b"icns");
+        let length = u32::from_be_bytes(icns[4..8].try_into().unwrap()) as usize;
+        assert_eq!(length, icns.len());
+        let mut sizes = std::collections::HashSet::new();
+        let mut offset = 8;
+        while offset < icns.len() {
+            assert!(offset + 8 <= icns.len());
+            let length = u32::from_be_bytes(icns[offset + 4..offset + 8].try_into().unwrap()) as usize;
+            assert!(length >= 8 && length <= icns.len() - offset);
+            let payload = &icns[offset + 8..offset + length];
+            if payload.starts_with(b"\x89PNG\r\n\x1a\n") {
+                sizes.insert(check_png(payload));
+            }
+            offset += length;
+        }
+        for size in [32, 64, 128, 256, 512, 1024] {
+            assert!(sizes.contains(&size), "Mac icon is missing detailed {size}px artwork");
+        }
+    }
+
+    #[test]
     fn tray_template_and_payload_keep_platform_contract() {
         let img = tauri::image::Image::from_bytes(include_bytes!("../icons/tray-template.png")).unwrap();
         assert_eq!((img.width(), img.height()), (44, 44));
