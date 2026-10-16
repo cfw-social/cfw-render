@@ -144,6 +144,331 @@ else
   fail "recipe reporting instructions" "entry point, prompt ownership or optional-provider contract failed"
 fi
 
+# Run: bash test/run-tests.sh --stage-range
+# Hermetic stage-range regression group: fake engine/report/upload functions and
+# an in-memory HTTP opener. No services, credentials, installs or live network.
+stage_range_tests() {
+  python3 - "$REPO_DIR" <<'PY'
+import hashlib
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+from urllib.request import Request
+
+repo = Path(sys.argv[1])
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("stage", repo / "bin/cfw-render-stage.py")
+stage = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(stage)
+
+
+class StageRangeTests(unittest.TestCase):
+    def order(self, **changes):
+        manifest = json.loads((repo / "test/fixtures/manifests/harness-3step/manifest.json").read_text())
+        result = {"id": "order-test", "attempt": {"id": "attempt-test"},
+                  "recipe": "harness-3step", "kind": "video", "brandId": "brand-test",
+                  "manifest": manifest, "taskOrder": {"brand": {"slug": "brand-test"}}}
+        result.update(changes)
+        return result
+
+    def bounds(self, start="a", end="b"):
+        return {"fromStepId": start, "toStepId": end}
+
+    def harness(self, order, outer=False, missing="", reject="", directive=""):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "order.json").write_text(json.dumps(order))
+            (root / "reports").write_text("")
+            # Source only these existing function definitions, not the worker tick.
+            worker = (repo / "bin/cfw-render.sh").read_text()
+            functions = worker[worker.index("sanitize_slug() {"):worker.index("\nspawn_pids=()")]
+            (root / "worker-functions.sh").write_text(functions)
+            (root / "bin").mkdir()
+            report = root / "bin/cfw-render-report.sh"
+            report.write_text('#!/bin/bash\nprintf "%s\\n" "$1" >> "$TEST_ROOT/final-calls"\n')
+            report.chmod(0o755)
+            script = r'''
+set -euo pipefail
+source "$REPO/bin/cfw-render-harness.sh"
+cr_log() { :; }
+cr_engine_detect() { echo test; }
+cr_harness_heartbeat_start() { :; }
+cr_harness_heartbeat_stop() { :; }
+cr_h_run_with_timeout() { shift; "$@"; }
+cr_h_stage_inputs() { :; }
+cr_h_build_prompt() { : > "$2/prompt.md"; }
+cr_engine_limit_detect() { return 1; }
+cr_engine_limit_until() { :; }
+cr_engine_run() {
+  [[ "$CFW_STEP_ID" == "$MISSING" ]] && return 0
+  local save
+  for save in $CFW_STEP_SAVES; do
+    printf 'saved bytes' > "$3/saves/${save/:/.}"
+  done
+}
+cr_h_upload_with_retry() { echo https://media.cfw.social/result; }
+cr_report_step() {
+  python3 - "$4" "$5" "$6" "$TEST_ROOT/reports" <<'REPORT'
+import json,sys
+with open(sys.argv[4], "a") as f:
+    f.write(json.dumps({"seq": int(sys.argv[1]), "event": sys.argv[2], **json.loads(sys.argv[3])}) + "\n")
+REPORT
+  if [[ "$5" == attempt_completed && "$REJECT" == offline ]]; then return 75; fi
+  if [[ "$5" == attempt_completed && "$REJECT" == reject ]]; then
+    echo '{"ok":false,"code":"invalid_stage_range","directive":"continue"}'
+  elif [[ "$5" == attempt_completed && "$REJECT" == schema ]]; then
+    echo '{"ok":false,"code":"invalid_params","error":"Invalid report schema"}'
+  elif [[ "$5" == attempt_completed && "$REJECT" == malformed_ack ]]; then
+    echo '{"ok":"false","directive":"continue"}'
+  elif [[ "$5" == step_completed && -n "$DIRECTIVE" ]]; then
+    printf '{"ok":true,"directive":"%s"}' "$DIRECTIVE"
+  else echo '{"ok":true,"directive":"continue"}'; fi
+}
+if [[ "$OUTER" == 1 ]]; then
+  source "$TEST_ROOT/worker-functions.sh"
+  cr_recipe_needs_heygen() { return 1; }
+  cr_verify_skills_bundle() { return 0; }
+  cr_keep_output_dir() { echo "$TEST_ROOT/kept"; }
+  cr_recent_append() { :; }
+  SELF_DIR="$TEST_ROOT/bin"
+  JOURNAL="$TEST_ROOT/journal"
+  spawn_director "$(cat "$TEST_ROOT/order.json")"
+else
+  cr_harness_run "$TEST_ROOT/order.json" "$TEST_ROOT" "$TEST_ROOT/recipe"
+fi
+'''
+            env = {"PATH": str(Path(sys.executable).parent) + os.pathsep + os.defpath,
+                   "HOME": directory, "TEST_ROOT": directory, "REPO": str(repo),
+                   "OUTER": str(int(outer)), "MISSING": missing, "REJECT": reject,
+                   "DIRECTIVE": directive, "CFW_WORKER_ID": "test-worker", "CFW_API_BASE": "",
+                   "CFW_RENDER_WORKER_KEY": "", "CFW_RENDER_STATE_DIR": directory,
+                   "CFW_RENDER_LOG_DIR": directory, "CFW_RENDER_SCRATCH": str(root / "scratch"),
+                   "CFW_RENDER_SKILLS_DIR": str(root / "skills")}
+            result = subprocess.run(["bash", "--noprofile", "--norc", "-c", script],
+                                    env=env, text=True, capture_output=True, timeout=30)
+            events = [json.loads(line) for line in (root / "reports").read_text().splitlines()]
+            completed = (root / "final-calls").read_text() if (root / "final-calls").exists() else ""
+            return result, events, completed
+
+    def test_inclusive_range_and_stop(self):
+        for changes, expected in [
+            ({"stageRange": self.bounds("a", "a"), "stopAfterStepId": "a"}, ["a"]),
+            ({"stopAfterStepId": "a"}, ["a"]),
+            ({"stageRange": self.bounds("b", "b")}, []),
+        ]:
+            with self.subTest(changes=changes):
+                result, events, _ = self.harness(self.order(**changes))
+                self.assertEqual(result.returncode, 25, result.stderr)
+                self.assertEqual([e["stepId"] for e in events if e["event"] == "step_started"], expected)
+                self.assertEqual(events[-1]["event"], "attempt_completed")
+
+    def test_resume_clamp_and_final(self):
+        order = self.order(stageRange=self.bounds("b", "c"), resumeFromStepId="a")
+        result, events, _ = self.harness(order)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([e["stepId"] for e in events if e["event"] == "step_started"], ["c"])
+        self.assertEqual(events[0]["event"], "step_skipped")
+        self.assertEqual(json.loads(result.stdout)[0]["id"], "z")
+
+    def test_legacy_spotlight_resume_at_first_server_step(self):
+        manifest = json.loads((repo / "skills/p-reels-spotlight/manifest.json").read_text())
+        self.assertEqual((manifest["steps"][0]["id"], manifest["steps"][0]["runsOn"]),
+                         ("research", "server"))
+        order = self.order(manifest=manifest, resumeFromStepId="research",
+                           inputs={"broll": [{"url": "https://media.cfw.social/test-broll"}]})
+        expected = [s["id"] for s in manifest["steps"] if s["runsOn"] == "computer"]
+        self.assertEqual(stage.plan(order)["stepIds"], expected)
+        self.assertEqual(stage.plan(order)["resume"], "prepare_footage")
+        result, events, _ = self.harness(order)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([e["stepId"] for e in events if e["event"] == "step_started"], expected)
+        self.assertTrue(all(e.get("stepId") not in ("research", "script") for e in events))
+
+    def test_resume_at_server_step_after_range_never_reruns(self):
+        order = self.order(stageRange=self.bounds("a", "a"), resumeFromStepId="review")
+        order["manifest"]["steps"].insert(1, {"id": "review", "runsOn": "server"})
+        self.assertEqual(stage.plan(order)["stepIds"], [])
+        result, events, _ = self.harness(order)
+        self.assertEqual(result.returncode, 25, result.stderr)
+        self.assertEqual([e["event"] for e in events], ["attempt_completed"])
+
+    def test_completed_range_never_reruns_or_crosses_endpoint(self):
+        for changes in [{"resumeFromStepId": "c"},
+                        {"resumeFromStepId": "a", "stageRangeCompleted": True}]:
+            result, events, _ = self.harness(self.order(stageRange=self.bounds(), **changes))
+            self.assertEqual(result.returncode, 25, result.stderr)
+            self.assertEqual([e["event"] for e in events], ["attempt_completed"])
+        result, events, _ = self.harness(self.order(stageRange=self.bounds("c", "c"), stageRangeCompleted=True))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([e["event"] for e in events], ["attempt_completed"])
+
+    def test_invalid_bounds_fail_before_engine_or_reports(self):
+        cases = [{"stageRange": self.bounds("c", "a")}, {"stageRange": self.bounds("missing", "b")},
+                 {"stageRange": self.bounds(), "stopAfterStepId": "c"}, {"resumeFromStepId": "missing"}]
+        for changes in cases:
+            result, events, _ = self.harness(self.order(**changes))
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertEqual(events, [])
+
+    def test_endpoint_saves_required_even_without_checks(self):
+        result, events, _ = self.harness(self.order(stageRange=self.bounds("a", "a")), missing="a")
+        self.assertEqual(result.returncode, 30, result.stderr)
+        self.assertEqual(events[-1]["event"], "attempt_failed")
+        self.assertNotIn("attempt_completed", [e["event"] for e in events])
+
+    def test_terminal_ack_required(self):
+        for reject in ("reject", "offline", "schema", "malformed_ack"):
+            result, _, _ = self.harness(self.order(stageRange=self.bounds()), reject=reject)
+            self.assertEqual(result.returncode, 1, result.stderr)
+
+    def test_revocation_and_cancel_still_win(self):
+        for directive, code in [("cancel", 20), ("stop_after_step", 22), ("superseded", 23)]:
+            result, events, _ = self.harness(self.order(stageRange=self.bounds()), directive=directive)
+            self.assertEqual(result.returncode, code, result.stderr)
+            self.assertNotIn("attempt_completed", [e["event"] for e in events])
+
+    def test_nonfinal_skips_complete_and_final_calls_it(self):
+        for end, complete in [("a", ""), ("c", "complete\n")]:
+            result, _, completed = self.harness(self.order(stageRange=self.bounds("a", end)), outer=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(completed, complete)
+        order = self.order(stageRange=self.bounds())
+        del order["manifest"]
+        result, events, completed = self.harness(order, outer=True)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual((events, completed), ([], ""))
+
+    def test_new_output_checksum(self):
+        result, events, _ = self.harness(self.order(stageRange=self.bounds("a", "a")))
+        self.assertEqual(result.returncode, 25, result.stderr)
+        output = next(e["outputs"][0] for e in events if e["event"] == "step_completed")
+        self.assertEqual(output["checksum"], "sha256:" + hashlib.sha256(b"saved bytes").hexdigest())
+
+    def test_report_outputs_use_save_id_and_local_outputs_keep_id(self):
+        order = self.order()
+        result, events, _ = self.harness(order)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        completed = [e for e in events if e["event"] == "step_completed"]
+        self.assertEqual([e["stepId"] for e in completed], ["a", "c"])
+        # Validate the actual cr_report_step payload, not a constructed example.
+        for event in completed:
+            declared = next(s["saves"] for s in order["manifest"]["steps"] if s["id"] == event["stepId"])
+            self.assertEqual([o["saveId"] for o in event["outputs"]], [s["id"] for s in declared])
+            for output in event["outputs"]:
+                self.assertEqual(set(output), {"saveId", "url", "checksum"})
+                self.assertIsInstance(output["saveId"], str)
+                self.assertTrue(output["url"].startswith("https://media.cfw.social/"))
+                self.assertRegex(output["checksum"], r"^sha256:[0-9a-f]{64}$")
+        local_outputs = json.loads(result.stdout)
+        self.assertEqual([o["id"] for o in local_outputs], ["x", "z"])
+        self.assertTrue(all("saveId" not in o for o in local_outputs))
+
+    def saved_order(self):
+        return self.order(stageRange=self.bounds("c", "c"), savedOutputs=[
+            {"stepId": "a", "saveId": "x", "url": "https://media.cfw.social/a"},
+            {"stepId": "b", "saveId": "y", "url": "https://media.cfw.social/b"}])
+
+    def test_restore_all_prior_outputs_and_legacy_checksum(self):
+        order = self.saved_order()
+        order["savedOutputs"][1]["checksum"] = "sha256:" + hashlib.sha256(b"saved").hexdigest()
+        with tempfile.TemporaryDirectory() as directory, patch.object(stage.urllib.request.OpenerDirector, "open", side_effect=lambda *a, **k: io.BytesIO(b"saved")) as fetch:
+            restored = stage.restore(order, Path(directory))
+            self.assertEqual([o["id"] for o in restored], ["x", "y"])
+            self.assertEqual(fetch.call_count, 2)
+            self.assertTrue(all(Path(o["path"]).read_bytes() == b"saved" for o in restored))
+
+    def test_restore_excludes_stale_later_outputs(self):
+        order = self.saved_order()
+        order["stageRange"] = self.bounds("b", "c")
+        order["resumeFromStepId"] = "a"
+        order["savedOutputs"][1]["url"] = "https://not-approved.example/stale"
+        with tempfile.TemporaryDirectory() as directory, patch.object(stage.urllib.request.OpenerDirector, "open", side_effect=lambda *a, **k: io.BytesIO(b"saved")) as fetch:
+            self.assertEqual([o["id"] for o in stage.restore(order, Path(directory))], ["x"])
+            self.assertEqual(fetch.call_count, 1)
+
+    def test_invalid_restore_paths_known_ids_and_urls(self):
+        for field, value in [("stepId", "../outside"), ("saveId", "unknown"),
+                             ("url", "file:///tmp/local"), ("url", "https://unapproved.example/save"),
+                             ("url", "http://media.cfw.social/save"), ("checksum", "sha256:bad")]:
+            order = self.saved_order()
+            order["savedOutputs"][0][field] = value
+            with tempfile.TemporaryDirectory() as directory, patch.object(stage.urllib.request.OpenerDirector, "open") as fetch:
+                with self.assertRaises(ValueError):
+                    stage.restore(order, Path(directory))
+                fetch.assert_not_called()
+                self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_restore_symlink_and_checksum_failure_preserve_files(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
+            root = Path(directory)
+            (root / "steps").symlink_to(outside, target_is_directory=True)
+            with patch.object(stage.urllib.request.OpenerDirector, "open") as fetch:
+                with self.assertRaises(ValueError):
+                    stage.restore(self.saved_order(), root)
+                fetch.assert_not_called()
+            (root / "steps").unlink()
+            dest = root / "steps/a/saves/x.json"
+            dest.parent.mkdir(parents=True)
+            dest.write_bytes(b"previous")
+            order = self.saved_order()
+            order["savedOutputs"][0]["checksum"] = "sha256:" + "0" * 64
+            with patch.object(stage.urllib.request.OpenerDirector, "open", side_effect=lambda *a, **k: io.BytesIO(b"wrong")):
+                with self.assertRaises(ValueError):
+                    stage.restore(order, root)
+            self.assertEqual(dest.read_bytes(), b"previous")
+            self.assertEqual(list(dest.parent.iterdir()), [dest])
+
+    def test_redirect_policy_including_loopback_seam(self):
+        handler = stage.MediaRedirect("", "")
+        req = Request("https://media.cfw.social/first")
+        for url in ("http://media.cfw.social/next", "https://other.example/next", "file:///tmp/next",
+                    "https://user:pass@media.cfw.social/next", "https://media.cfw.social:444/next"):
+            with self.assertRaises(ValueError):
+                handler.redirect_request(req, None, 302, "", {}, url)
+        self.assertEqual(handler.redirect_request(req, None, 302, "", {}, "https://media.cfw.social/next").full_url,
+                         "https://media.cfw.social/next")
+        self.assertTrue(stage.approved_url("https://custom.example/save", "https://custom.example"))
+        self.assertFalse(stage.approved_url("http://127.0.0.1:1234/save"))
+        handler = stage.MediaRedirect("", "http://127.0.0.1:1234")
+        self.assertIsNotNone(handler.redirect_request(req, None, 302, "", {}, "http://127.0.0.1:1234/save"))
+        with self.assertRaises(ValueError):
+            handler.redirect_request(req, None, 302, "", {}, "http://127.0.0.1:1235/save")
+
+    def test_capabilities_and_version(self):
+        result = subprocess.run(["bash", "--noprofile", "--norc", "-c", '''
+source "$1/bin/cfw-render-engine.sh"
+cr_engine_manifests_json() { echo '[]'; }
+cr_engines_json() { echo '[]'; }
+cr_engine_capabilities_json codex "$1/skills"
+''', "test", str(repo)], text=True, capture_output=True, check=True,
+            env={"PATH": str(Path(sys.executable).parent) + os.pathsep + os.defpath})
+        self.assertEqual(json.loads(result.stdout)["features"], ["stage-range-v1"])
+        self.assertEqual((repo / "VERSION").read_text().strip(), "1.1.0")
+        # Packaging assertion only: never execute an installer in this group.
+        self.assertIn('"$REPO_DIR/bin/cfw-render-stage.py" "$PREFIX/bin/"',
+                      (repo / "install/install.sh").read_text())
+
+
+unittest.main(argv=[sys.argv[0]], verbosity=2)
+PY
+}
+
+if stage_range_tests; then
+  pass "stage-range: hermetic regression group"
+else
+  fail "stage-range" "hermetic regression group failed"
+fi
+if [[ "${1:-}" == --stage-range ]]; then
+  (( FAILURES == 0 )); exit $?
+fi
+
 FAKE_BIN="$(mktemp -d)"
 cp "$TEST_DIR/fake-claude.sh" "$FAKE_BIN/claude"
 chmod +x "$FAKE_BIN/claude"
@@ -277,6 +602,7 @@ run_case() {
   (
     export PATH="$REPO_DIR/bin:$FAKE_BIN:$PATH"
     export CFW_API_BASE="http://127.0.0.1:$port"
+    export CFW_RENDER_TEST_MEDIA_BASE_URL="$CFW_API_BASE"
     export CFW_RENDER_WORKER_KEY="cfw_render_test0000000000000000"
     export CFW_RENDER_ENV="/nonexistent-cfw-render-env-for-tests"
     export CFW_RENDER_STATE_DIR="$cr_state"
@@ -2159,6 +2485,7 @@ c19_worker() {
   (
     export PATH="$REPO_DIR/bin:$FAKE_BIN:$PATH"
     export CFW_API_BASE="http://127.0.0.1:$port"
+    export CFW_RENDER_TEST_MEDIA_BASE_URL="$CFW_API_BASE"
     export CFW_RENDER_WORKER_KEY="cfw_render_test0000000000000000"
     export CFW_RENDER_ENV="/nonexistent-cfw-render-env-for-tests"
     export CFW_RENDER_STATE_DIR="$dir/cr-state"
@@ -2564,6 +2891,7 @@ c21_worker() {
   (
     export PATH="$REPO_DIR/bin:$FAKE_BIN:$PATH"
     export CFW_API_BASE="http://127.0.0.1:$port"
+    export CFW_RENDER_TEST_MEDIA_BASE_URL="$CFW_API_BASE"
     export CFW_RENDER_WORKER_KEY="cfw_render_test0000000000000000"
     export CFW_RENDER_ENV="/nonexistent-cfw-render-env-for-tests"
     export CFW_RENDER_STATE_DIR="$dir/cr-state"
@@ -3006,8 +3334,8 @@ import json,sys
 for l in open(sys.argv[1]):
     d=json.loads(l)
     if d["tool"]=="claim_render_order": print(d["args"].get("capabilities",{}).get("workerVersion")); break' "$m4/mockstate/calls.jsonl" 2>/dev/null)"
-if [[ "$m4_ver" == "1.0.0" && "$(m3_status "$m4" 'd["workerVersion"]')" == "1.0.0" ]]; then
-  pass "version: claim capabilities.workerVersion=1.0.0, status.json version=1.0.0"
+if [[ "$m4_ver" == "1.1.0" && "$(m3_status "$m4" 'd["workerVersion"]')" == "1.1.0" ]]; then
+  pass "version: claim capabilities.workerVersion=1.1.0, status.json version=1.1.0"
 else
   fail "version" "workerVersion='$m4_ver' status=$(m3_status "$m4" 'd["workerVersion"]')"
 fi

@@ -350,7 +350,7 @@ cr_engine_capabilities_json() {
   manifests="$(cr_engine_manifests_json "$skills_dir")"
   python3 -c '
 import json, sys
-print(json.dumps({"engine": sys.argv[1], "os": sys.argv[2], "manifests": json.loads(sys.argv[3]), "engines": json.loads(sys.argv[4])}))
+print(json.dumps({"engine": sys.argv[1], "os": sys.argv[2], "manifests": json.loads(sys.argv[3]), "engines": json.loads(sys.argv[4]), "features": ["stage-range-v1"]}))
 ' "$engine" "$(cr_engine_os)" "$manifests" "$(cr_engines_json)"
 }
 

@@ -29,7 +29,8 @@
 #
 # Return codes of cr_harness_run: 0 completed, 20 cancelled, 21 released
 # (pause timeout), 22 revoked, 23 superseded, 24 released for an engine usage
-# limit [M3-01b], 30 step failed (attempt_failed reported), 1 bad input.
+# limit [M3-01b], 25 nonfinal stage completed (no Composition),
+# 30 step failed (attempt_failed reported), 1 bad input.
 # On rc 0 the final outputs JSON ([{id,url,path}]) is printed to stdout.
 #
 # Depends on cfw-render-lib.sh (cr_log, cr_report_step) and
@@ -69,7 +70,7 @@ try:
     d = json.loads(sys.argv[1])
 except Exception:
     d = {}
-print("\x1f".join([str(d.get("directive") or ""), "1" if d.get("ok") else "0", str(d.get("code") or ""), str(d.get("error") or "")]))
+print("\x1f".join([str(d.get("directive") or ""), "1" if d.get("ok") is True else "0", str(d.get("code") or ""), str(d.get("error") or "")]))
 ' "$reply" 2>/dev/null)" || parsed=""
   IFS=$'\x1f' read -r directive ok code err <<< "$parsed"
   if [[ "$ok" == "0" ]]; then
@@ -90,6 +91,9 @@ print("\x1f".join([str(d.get("directive") or ""), "1" if d.get("ok") else "0", s
         fi ;;
       *) cr_log "harness: order $CR_H_ORDER_ID — report $event rejected: $code $err" ;;
     esac
+  fi
+  if [[ "$event" == "attempt_completed" && "$ok" == "1" ]]; then
+    : > "$CR_H_ORDER_DIR/attempt-completed-ack"
   fi
   if [[ -n "$directive" ]]; then
     local cur; cur="$(cr_h_directive)"
@@ -360,39 +364,19 @@ cr_h_release_revoked() {
 #   <order-dir>/resume-restored.txt   one restored path per line
 #   <order-dir>/resume-missing.txt    "stepId/saveId" tokens, space-separated
 cr_h_restore_saved_outputs() {
-  local order_file="$1" order_dir="$2" line step_id save_id url checksum ext dest rc missing=""
+  local order_file="$1" order_dir="$2" restored rc=0
   : > "$order_dir/resume-restored.txt"; : > "$order_dir/resume-missing.txt"
-  while IFS=$'\x1f' read -r step_id save_id url checksum ext; do
-    [[ -n "$step_id" && -n "$save_id" ]] || continue
-    dest="$order_dir/steps/$step_id/saves/$save_id.$ext"
-    mkdir -p "$(dirname "$dest")"
-    rc=0
-    if [[ -z "$url" ]]; then
-      rc=1
-    else
-      curl -fsSL --retry 2 --retry-delay 1 --max-time 600 -o "$dest" "$url" 2>/dev/null || rc=$?
-    fi
-    if (( rc == 0 )) && [[ -s "$dest" ]] && cr_h_checksum_ok "$dest" "$checksum"; then
-      printf '%s\n' "$dest" >> "$order_dir/resume-restored.txt"
-    else
-      cr_log "harness: order $CR_H_ORDER_ID — saved output $step_id/$save_id unusable (download rc=$rc, empty or checksum mismatch): $url"
-      rm -f "$dest"
-      missing+="${missing:+ }$step_id/$save_id"
-    fi
-  done < <(python3 -c '
-import json, sys
-o = json.load(open(sys.argv[1]))
-ext = {"video": "mp4", "image": "png", "json": "json", "text": "md"}
-kinds = {}
-for s in (o.get("manifest") or {}).get("steps", []):
-    for v in s.get("saves") or []:
-        kinds[(s["id"], v["id"])] = ext.get(v.get("kind"), "bin")
-for so in o.get("savedOutputs") or []:
-    if not isinstance(so, dict): continue
-    sid, vid = so.get("stepId") or "", so.get("saveId") or ""
-    print("\x1f".join([sid, vid, so.get("url") or "", so.get("checksum") or "", kinds.get((sid, vid), "bin")]))' "$order_file")
-  printf '%s' "$missing" > "$order_dir/resume-missing.txt"
-  [[ -z "$missing" ]]
+  printf '[]' > "$order_dir/restored-outputs.json"
+  restored="$(python3 "$CR_H_SELF_DIR/cfw-render-stage.py" restore "$order_file" "$order_dir" \
+    "${CFW_RENDER_MEDIA_BASE_URL:-}" "${CFW_RENDER_TEST_MEDIA_BASE_URL:-}")" || rc=$?
+  if (( rc != 0 )); then
+    python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("missing", "invalid_output"))' \
+      "${restored:-{\}}" > "$order_dir/resume-missing.txt" || printf 'invalid_output' > "$order_dir/resume-missing.txt"
+    return 1
+  fi
+  printf '%s' "$restored" > "$order_dir/restored-outputs.json"
+  python3 -c 'import json,sys; print("\n".join(x["path"] for x in json.loads(sys.argv[1])))' \
+    "$restored" > "$order_dir/resume-restored.txt"
 }
 
 # cr_h_checksum_ok <file> <checksum> — empty checksum = nothing to verify.
@@ -439,7 +423,10 @@ cr_harness_run() {
   CR_H_STARTED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   mkdir -p "$order_dir/steps" "$order_dir/logs"
   [[ "$order_file" -ef "$order_dir/order.json" ]] || cp "$order_file" "$order_dir/order.json"
-  local meta engine resume_from
+  local meta engine resume_from range_plan nonfinal endpoint
+  range_plan="$(python3 "$CR_H_SELF_DIR/cfw-render-stage.py" plan "$order_file" "$order_dir")" || return 1
+  printf '%s' "$range_plan" > "$order_dir/range-plan.json"
+  IFS=$'\x1f' read -r nonfinal endpoint <<< "$(python3 -c 'import json,sys; p=json.loads(sys.argv[1]); print("\x1f".join(["1" if p["nonfinal"] else "0", p["endpoint"]]))' "$range_plan")"
   meta="$(python3 -c '
 import json, sys
 o = json.load(open(sys.argv[1]))
@@ -447,19 +434,17 @@ print("\x1f".join([o.get("id") or "", (o.get("attempt") or {}).get("id") or "", 
   IFS=$'\x1f' read -r CR_H_ORDER_ID CR_H_ATTEMPT_ID resume_from <<< "$meta"
   [[ -n "$CR_H_ORDER_ID" && -n "$CR_H_ATTEMPT_ID" ]] || { cr_log "harness: order/attempt id missing"; return 1; }
   engine="$(cr_engine_detect)"
-  rm -f "$order_dir/directive" "$order_dir/pending-reports.ndjson"
+  rm -f "$order_dir/directive" "$order_dir/pending-reports.ndjson" "$order_dir/attempt-completed-ack"
   [[ -f "$order_dir/seq" ]] || printf '0' > "$order_dir/seq"
 
   # Step table: id, runsOn, maxCheckRetries, when-kind, when-arg, saves, checks
   local steps
   steps="$(python3 -c '
 import json, sys
-o = json.load(open(sys.argv[1])); resume = sys.argv[2]
+o = json.load(open(sys.argv[1])); selected = json.loads(sys.argv[2])["stepIds"]
 ext = {"video": "mp4", "image": "png", "json": "json", "text": "md"}
-started = not resume
 for s in (o.get("manifest") or {}).get("steps", []):
-    if s.get("id") == resume: started = True
-    if not started: continue
+    if s["id"] not in selected: continue
     w = s.get("when", "always")
     wk, wa = "always", ""
     if isinstance(w, dict):
@@ -467,17 +452,17 @@ for s in (o.get("manifest") or {}).get("steps", []):
         elif "alternative" in w: wk, wa = "alternative", w["alternative"]
     saves = " ".join("%s:%s" % (v["id"], ext.get(v.get("kind"), "bin")) for v in s.get("saves") or [])
     checks = " ".join(c["id"] for c in s.get("checks") or [])
-    print("\x1f".join([s["id"], s.get("runsOn", "computer"), str(s.get("maxCheckRetries", 0)), wk, wa, saves, checks]))' "$order_file" "$resume_from")"
+    print("\x1f".join([s["id"], s.get("runsOn", "computer"), str(s.get("maxCheckRetries", 0)), wk, wa, saves, checks]))' "$order_file" "$range_plan")" || return 1
 
   # [M2-04] Resume (D30): pull every savedOutput into the path the step would
   # have written it to, verify it, and remember what is missing so the first
   # step we run can fail with a reason the server can act on.
   local -a completed_saves=()
   local resume_missing=""
+  cr_h_restore_saved_outputs "$order_file" "$order_dir" || true
+  while IFS= read -r p; do [[ -n "$p" ]] && completed_saves+=("$p"); done < "$order_dir/resume-restored.txt"
+  resume_missing="$(cat "$order_dir/resume-missing.txt" 2>/dev/null || true)"
   if [[ -n "$resume_from" ]]; then
-    cr_h_restore_saved_outputs "$order_file" "$order_dir" || true
-    while IFS= read -r p; do [[ -n "$p" ]] && completed_saves+=("$p"); done < "$order_dir/resume-restored.txt"
-    resume_missing="$(cat "$order_dir/resume-missing.txt" 2>/dev/null || true)"
     cr_log "harness: order $CR_H_ORDER_ID resumes at $resume_from (${#completed_saves[@]} saved output(s) restored${resume_missing:+; missing: $resume_missing})"
   fi
 
@@ -486,7 +471,14 @@ for s in (o.get("manifest") or {}).get("steps", []):
   trap "cr_harness_heartbeat_stop; rm -f '$order_dir/current-step.json'" RETURN
 
   local step_id runs_on max_retries when_kind when_arg saves checks rc cond p
-  local final_outputs="[]"
+  local final_outputs
+  final_outputs="$(cat "$order_dir/restored-outputs.json")"
+  # An already completed range has no loop iterations. Missing restored files
+  # must still fail, rather than falsely acknowledging completion.
+  if [[ -n "$resume_missing" && -z "$steps" ]]; then
+    cr_h_report attempt_failed "{\"stepId\":\"$endpoint\",\"message\":\"Saved results are missing\"}"
+    return 30
+  fi
   while IFS=$'\x1f' read -r step_id runs_on max_retries when_kind when_arg saves checks; do
     [[ -n "$step_id" ]] || continue
     [[ "$runs_on" == "computer" ]] || continue
@@ -527,7 +519,7 @@ o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alt
     local workdir="$order_dir/steps/$step_id" log="$order_dir/logs/$step_id.log"
     mkdir -p "$workdir/inputs" "$workdir/prior" "$workdir/saves"
     cr_h_stage_inputs "$workdir" "$order_file"
-    for p in "${completed_saves[@]}"; do cp "$p" "$workdir/prior/" 2>/dev/null || true; done
+    for p in ${completed_saves[@]+"${completed_saves[@]}"}; do cp "$p" "$workdir/prior/" 2>/dev/null || true; done
 
     local run=0 checks_json="[]" passed=0 ask d waited
     # [M3-01b] Engine failover (D107/D109): each engine is tried at most once
@@ -617,14 +609,20 @@ o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alt
     local outputs="[" sv sid ext url f
     for sv in $saves; do
       sid="${sv%%:*}"; ext="${sv##*:}"; f="$workdir/saves/$sid.$ext"
-      [[ -f "$f" ]] || continue
+      if [[ ! -s "$f" || -L "$f" ]]; then
+        cr_h_report step_failed "{\"stepId\":\"$step_id\",\"message\":\"Declared save is missing or empty\"}"
+        cr_h_report attempt_failed "{\"stepId\":\"$step_id\",\"message\":\"Declared save is missing or empty\"}"
+        return 30
+      fi
       if ! url="$(cr_h_upload_with_retry "$f")"; then
         cr_log "harness: upload failed for $f"
         cr_h_report step_failed "{\"stepId\":\"$step_id\",\"checks\":[{\"id\":\"upload\",\"passed\":false,\"detail\":\"upload failed\"}]}"
         cr_h_report attempt_failed "{\"stepId\":\"$step_id\",\"message\":\"upload failed\"}"
         return 30
       fi
-      outputs+="$(python3 -c 'import json,sys; print(json.dumps({"id": sys.argv[1], "url": sys.argv[2]}))' "$sid" "$url"),"
+      outputs+="$(python3 -c 'import hashlib,json,sys; h=hashlib.sha256(); f=open(sys.argv[3], "rb");
+for chunk in iter(lambda: f.read(1048576), b""): h.update(chunk)
+print(json.dumps({"saveId": sys.argv[1], "url": sys.argv[2], "checksum": "sha256:" + h.hexdigest()}))' "$sid" "$url" "$f"),"
       completed_saves+=("$f")
       final_outputs="$(python3 -c 'import json,sys; a=[x for x in json.loads(sys.argv[1]) if x["id"]!=sys.argv[2]]; a.append({"id":sys.argv[2],"url":sys.argv[3],"path":sys.argv[4]}); print(json.dumps(a))' "$final_outputs" "$sid" "$url" "$f")"
     done
@@ -640,7 +638,14 @@ o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alt
     esac
   done <<< "$steps"
 
+  # Stop heartbeat before terminal completion; a nonfinal completion releases
+  # the lease and no later heartbeat should race that transition.
+  cr_harness_heartbeat_stop
   cr_h_report attempt_completed '{}'
+  if [[ "$nonfinal" == "1" ]]; then
+    [[ -f "$order_dir/attempt-completed-ack" ]] || return 1
+    return 25
+  fi
   printf '%s\n' "$final_outputs"
   return 0
 }

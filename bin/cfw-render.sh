@@ -269,6 +269,12 @@ print("\x1f".join([mode, token, expires, pool, expired]))
     return 1
   fi
 
+  # A range cannot fall back to the whole-recipe Director, even on a malformed claim.
+  if [[ "$(python3 -c 'import json,sys; o=json.load(sys.stdin); print("1" if not o.get("manifest") and ("stageRange" in o or "stopAfterStepId" in o or "stageRange" in (o.get("taskOrder") or {})) else "0")' <<< "$order_json")" == "1" ]]; then
+    cr_log "order $order_id — stage range requires a manifest; refusing Director fallback"
+    return 1
+  fi
+
   # [M1-08] Manifest-driven order → the step harness runs it instead of a
   # Director. Completion goes through cfw-render-report.sh complete with the
   # LAST completed step's saves, exactly like the Director path does.
@@ -310,7 +316,7 @@ for x in a:
         cr_log "order $order_id — harness finished but complete_render_order failed"
       fi
     else
-      case "$h_rc" in 20) h_outcome="cancelled" ;; 21) h_outcome="released" ;; 22) h_outcome="revoked" ;; 23) h_outcome="superseded" ;; 24) h_outcome="engine_limit" ;; 30) h_outcome="failed" ;; esac
+      case "$h_rc" in 20) h_outcome="cancelled" ;; 21) h_outcome="released" ;; 22) h_outcome="revoked" ;; 23) h_outcome="superseded" ;; 24) h_outcome="engine_limit" ;; 25) h_outcome="stage-completed" ;; 30) h_outcome="failed" ;; esac
       cr_log "order $order_id — harness exited $h_rc ($h_outcome)"
       # [M2-04, D76] stop_after_step (22) and attempt_superseded (23): this
       # brand is no longer ours to serve from this computer — delete the
