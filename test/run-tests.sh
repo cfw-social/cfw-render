@@ -60,7 +60,58 @@ if [[ "${1:-}" == --process-cleanup ]]; then
   process_cleanup_case
   exit $?
 fi
-if process_cleanup_case; then pass "test-owned process cleanup"; else fail "test cleanup" "unsafe cleanup"; exit 1; fi
+if [[ -z "${1:-}" ]]; then
+  if process_cleanup_case; then pass "test-owned process cleanup"; else fail "test cleanup" "unsafe cleanup"; exit 1; fi
+fi
+
+# Deterministic scheduling regression: run the real loop/backoff implementation
+# with only time, server replies and machine state replaced by local fixtures.
+short_tick_wake_case() {
+  python3 - "$REPO_DIR" <<'PY'
+import os, pathlib, subprocess, sys, tempfile
+source=(pathlib.Path(sys.argv[1])/'bin/cfw-render.sh').read_text()
+loop=source[source.index('loop_sleep() {'):]
+with tempfile.TemporaryDirectory() as tmp:
+    root=pathlib.Path(tmp)
+    script=r'''
+set -u
+CR_CAPACITY_IDLE_CLAIM_SECS=0.3
+CR_CLAIM_BACKOFF_BASE_SECS=0.3
+CR_CLAIM_BACKOFF_MAX_SECS=3
+CR_WAKE_GAP_SECS=30
+LAST_PAUSE_STATE=none
+STARTED=0
+CFW_RENDER_STATE_DIR="$ROOT"
+cr_tick_lock_touch() { :; }
+prune_running() { RUNNING=0; }
+cr_pause_state() { echo none; }
+cr_log() { printf '%s\n' "$*" >> "$ROOT/log"; }
+cr_now_epoch() { if [[ -f "$ROOT/jumped" ]]; then echo 131; else echo 100; fi; }
+sleep() {
+  if [[ "$backoff" == 3 && ! -f "$ROOT/jumped" ]]; then
+    [[ "$1" == 0.300 ]] || exit 8
+    : > "$ROOT/jumped"
+  fi
+}
+gated_claim_round() {
+  if [[ -f "$ROOT/jumped" ]]; then
+    [[ "$backoff" == 0 && "$CR_WOKE" == 1 ]] || exit 9
+    echo claim >> "$ROOT/claims"
+    exit 0
+  fi
+  return 2
+}
+'''
+    p=subprocess.run(['bash','-c',script+loop],env={**os.environ,'ROOT':str(root)},capture_output=True,text=True,timeout=10)
+    assert p.returncode==0,(p.returncode,p.stdout,p.stderr)
+    log=(root/'log').read_text()
+    assert 'retrying every 3s' in log and 'woke from sleep (31s gap)' in log
+    assert log.count('claim back-off: reset after sleep')==1
+    assert (root/'claims').read_text()=='claim\n'
+    print('PASS: real loop reaches 3s cap; tick 0.3 + 31s jump resets backoff before next claim')
+PY
+}
+if [[ "${1:-}" == --wake-short-tick ]]; then short_tick_wake_case; exit $?; fi
 
 # Negotiated checkpoint fixtures only: no production manifest/version changes.
 local_checkpoint_cases() {
@@ -218,11 +269,12 @@ cr_mcp_call() { printf '%s\\n' "$2" >> "$ROOT/completions"; [[ "${LOSE_COMPLETE:
     assert not (d/'order.json').exists() and not (d/'.active.json').exists()
     assert (d/'.delivery-started').exists() and pathlib.Path(outputs[0]['path']).exists()
     scratch=root/'scratch'; brand=scratch/'brand'; brand.mkdir(parents=True)
-    for name in ('stale','active','recent','uncertain'):
+    for name in ('stale','active','recent','uncertain','complete','blocked'):
         p=brand/name; p.mkdir(); age=time.time()-3*86400
         (p/'.activity.json').write_text(json.dumps({'at':time.time() if name=='recent' else age}))
         if name=='active': (p/'.active.json').write_text(json.dumps({'pid':os.getpid()}))
-        if name=='uncertain': (p/'.delivery-started').mkdir()
+        if name in ('uncertain','complete','blocked'): (p/'.delivery-started').mkdir()
+        if name in ('complete','blocked'): (p/'.outcome').write_text('complete' if name=='complete' else 'block')
         os.utime(p,(age,age))
     life('janitor',scratch)
     assert sorted(p.name for p in brand.iterdir())==['active','recent','uncertain']
@@ -257,9 +309,12 @@ if [[ "${1:-}" == --local-checkpoints ]]; then
   local_checkpoint_cases
   exit $?
 fi
+if [[ -z "${1:-}" ]]; then
+  if local_checkpoint_cases; then pass "negotiated local checkpoints"; else fail "local checkpoints" "regression failed"; fi
+fi
 
-# CFW-316: disposable, offline regression coverage. The targeted selector exits
-# before the legacy runner's broad cleanup (removed before the full suite).
+# CFW-316: disposable, offline regression coverage.
+if [[ -z "${1:-}" || "${1:-}" == --timeout-recovery ]]; then
 if python3 - "$REPO_DIR" <<'PY'
 import json, os, pathlib, shutil, subprocess, sys, tempfile
 repo = pathlib.Path(sys.argv[1])
@@ -423,6 +478,19 @@ cr_mcp_call complete_render_order '{}' >/dev/null 2>&1
     before = (root/'calls').read_text()
     assert shell(failed_command, root).returncode != 0
     assert (root/'calls').read_text() == before
+    # A genuinely new admitted attempt may replace a positively acknowledged
+    # block. Use the real report command, not a stub overwriting .outcome.
+    def life(command, folder, *args):
+        p = subprocess.run([sys.executable, str(repo/'bin/cfw-render-checkpoint.py'),
+                            command, str(folder), *args], capture_output=True, text=True)
+        assert p.returncode == 0, p.stderr
+    life('active', rejected, str(os.getpid()))
+    assert not (rejected/'.outcome').exists() and not (rejected/'.delivery-started').exists()
+    upload.write_text('#!/usr/bin/env bash\necho https://media.cfw.social/retry.png\n')
+    assert shell(failed_command, root).returncode == 0
+    assert (rejected/'.outcome').read_text().strip() == 'complete'
+    life('finish', rejected, '', str(os.getpid()))
+    assert not rejected.exists(), 'acknowledged nonlocal success leaked scratch'
     assert source.index('previous delivery needs reconciliation') < source.index('printf \'%s\' "$order_json" > "$order_dir/order.json"')
     print('  PASS  completion transport is single-shot; wait writes contained; uncertain artifacts protected')
 PY
@@ -434,6 +502,7 @@ fi
 if [[ "${1:-}" == --timeout-recovery ]]; then
   (( FAILURES == 0 ))
   exit $?
+fi
 fi
 
 # Exercise the real pause gate + soft-call parser without starting workers,
@@ -805,6 +874,14 @@ fi
             self.assertEqual([o["id"] for o in restored], ["x", "y"])
             self.assertEqual(fetch.call_count, 2)
             self.assertTrue(all(Path(o["path"]).read_bytes() == b"saved" for o in restored))
+
+    def test_restore_audio_uses_harness_media_extension(self):
+        order = self.saved_order()
+        order['manifest']['steps'][0]['saves'][0]['kind'] = 'audio'
+        with tempfile.TemporaryDirectory() as directory, patch.object(stage.urllib.request.OpenerDirector, 'open', side_effect=lambda *a, **k: io.BytesIO(b'saved')):
+            restored = stage.restore(order, Path(directory))
+            self.assertEqual(Path(restored[0]['path']).suffix, '.mp3')
+            self.assertEqual(Path(restored[0]['path']).read_bytes(), b'saved')
 
     def test_restore_excludes_stale_later_outputs(self):
         order = self.saved_order()
@@ -4306,29 +4383,15 @@ fi
 rm -rf "$p12"
 
 echo "=== Case M3-01a-12b: a 31 s clock jump exceeds a sub-two-second tick + wake gap ==="
-p12b="$(mktemp -d)"
-c21_setup "$p12b" $((MOCK_PORT_BASE + 966)) harness-3step '[]'
-echo 0 > "$p12b/date-offset"
-touch "$p12b/control/down"
-c21_worker "$p12b" $((MOCK_PORT_BASE + 966)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=0.3 \
-  CFW_RENDER_DATE_CMD="$FAKE_BIN/fake-date" FAKE_DATE_OFFSET_FILE="$p12b/date-offset" FAKE_DATE_TICK_FILE="$p12b/date-tick" &
-p12b_w=$!
-m3_until 150 0.1 grep -qs 'retrying every 3s' "$p12b/cr-state/cfw-render.log"; p12b_cap=$?
-# The cap log precedes loop_sleep's baseline. Wait for a clock sample before
-# jumping, otherwise the offset can become the baseline rather than a wake.
-rm -f "$p12b/date-tick"
-m3_until 20 0.05 test -s "$p12b/date-tick"; p12b_sample=$?
-rm -f "$p12b/control/down"
-printf '31\n' > "$p12b/date-offset.tmp" && mv "$p12b/date-offset.tmp" "$p12b/date-offset"
-m3_until 30 0.1 grep -qs 'claim back-off: reset after sleep' "$p12b/cr-state/cfw-render.log"; p12b_reset=$?
-m3_until 10 0.1 m3_count_ge "$p12b" "$M3_CLAIM" 1; p12b_claim=$?
-m3_stop_loop "$p12b_w"
-if [[ "$p12b_cap" == 0 && "$p12b_sample" == 0 && "$p12b_reset" == 0 && "$p12b_claim" == 0 ]]; then
+# The old 15s real-time wait measured how quickly Python/MCP fixtures reached
+# the cap, not the 31s wake boundary, and expired under parallel test load.
+# Keep every scheduling assertion against the real production loop, with a
+# deterministic clock. Cases 12 and 13 still exercise the real HTTP/loop path.
+if short_tick_wake_case; then
   pass "wake: a 31 s jump exceeds tick 0.3 s + gap 30 s; back-off reset and a new claim"
 else
-  fail "short-tick wake" "cap=$p12b_cap reset=$p12b_reset claim=$p12b_claim; $(tail -4 "$p12b/cr-state/cfw-render.log")"
+  fail "short-tick wake" "real loop failed exact cap/tick/reset/claim assertions"
 fi
-rm -rf "$p12b"
 
 echo "=== Case M3-01a-13: network back at the back-off cap → a claim within cap + one claim round ==="
 p13="$(mktemp -d)"
@@ -5014,12 +5077,12 @@ m6e_key="cfw_render_m6e$(python3 -c 'import secrets;print(secrets.token_hex(8))'
 m6_setup "$m6e" "$m6e_key"
 m6e_port=$((MOCK_PORT_BASE + 983))
 m6e_pid="$(start_mock "$m6e/queue.json" "$m6e/mockstate" "$m6e_port")"
-( for _ in $(seq 1 200); do ps -axo args 2>/dev/null; sleep 0.05; done ) > "$m6e/ps.log" 2>/dev/null &
+( for _ in $(seq 1 200); do python3 "$TEST_DIR/stop-owned-tree.py" --arguments "$$"; sleep 0.05; done ) > "$m6e/ps.log" 2>/dev/null &
 m6e_ps=$!
 ( export HOME="$m6e/home" CFW_RENDER_API_BASE="http://127.0.0.1:$m6e_port"
   "$REPO_DIR/bin/cfw-render-ctl.sh" send-logs --yes > "$m6e/out.log" 2> "$m6e/err.log" )
 m6e_rc=$?
-kill "$m6e_ps" 2>/dev/null; wait "$m6e_ps" 2>/dev/null || true
+stop_test_tree "$m6e_ps" || { fail "argv watcher cleanup" "could not stop owned tree"; exit 1; }
 kill "$m6e_pid" 2>/dev/null; wait "$m6e_pid" 2>/dev/null || true
 mkdir -p "$m6e/x"; tar -xzf "$m6e/mockstate/logs-upload.gz" -C "$m6e/x" 2>/dev/null
 if [[ "$m6e_rc" == "0" ]] && grep -q "Reference: LOG-TEST — quote it to CFW support." "$m6e/out.log" \

@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 
 
 def save_extension(kind: str) -> str:
-    return {"video": "mp4", "image": "png", "json": "json", "text": "md"}.get(kind, "bin")
+    return {"video": "mp4", "image": "png", "audio": "mp3", "json": "json", "text": "md"}.get(kind, "bin")
 
 
 def identifier(value: object) -> str:

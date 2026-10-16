@@ -283,10 +283,24 @@ def lifecycle(command, root, args):
             pid = int(args[0])
             require(pid > 1)
             os.kill(pid, 0)
+            # A fresh admitted claim may retry a previously acknowledged block.
+            # Never reset an uncertain delivery or a completed delivery here.
+            outcome = contained(root, ".outcome")
+            delivery = contained(root, ".delivery-started")
+            if outcome.is_file() and outcome.read_text().strip() == "block":
+                if delivery.exists():
+                    require(contained(root, ".delivery-started/upload-failed").is_file())
+                    remove_entry(delivery)
+                outcome.unlink()
             atomic_json(active, {"pid": pid})
         elif command == "finish":
             # Only the recorded owning job may remove its admission marker.
             require(read_json(active)["pid"] == int(args[1]))
+            outcome = contained(root, ".outcome")
+            if args[0] != "local-v1" and outcome.is_file() and outcome.read_text().strip() == "complete":
+                # Positive acknowledgement, not an absent marker, permits cleanup.
+                shutil.rmtree(root)
+                return
             if args[0] == "local-v1":
                 scrub_transients(root)
             if active.exists():
@@ -313,8 +327,11 @@ def janitor(scratch):
                 # Capture directory age BEFORE opening/creating the lock file.
                 last = root.stat().st_mtime
                 with locked(root):
-                    if live_job(root) or any((root / name).exists() for name in
-                                             (".delivery-started", ".retain-artifacts")):
+                    outcome = contained(root, ".outcome")
+                    acknowledged = outcome.is_file() and outcome.read_text().strip() in ("complete", "block")
+                    if live_job(root) or (root / ".retain-artifacts").exists():
+                        continue
+                    if (root / ".delivery-started").exists() and not acknowledged:
                         continue
                     for name, field in ((".activity.json", "at"), ("checkpoint.json", "activityAt")):
                         path = contained(root, name)

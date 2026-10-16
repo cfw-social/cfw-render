@@ -578,6 +578,14 @@ print(path)
     else
       cr_log "order $order_id ended with outcome=$outcome — scratch kept for 48h janitor"
     fi
+  elif [[ -f "$order_dir/.delivery-started/upload-failed" && ! -L "$order_dir/.delivery-started/upload-failed" ]]; then
+    # The report process owns the delivery lock and proved that no terminal
+    # completion was submitted. Reporting this known failure cannot duplicate it.
+    outcome="failed"
+    fail_reason="could not upload the finished files"
+    ( cd "$order_dir" && CFW_ORDER_ID="$order_id" CFW_WORKER_ID="$CFW_WORKER_ID" \
+      "$SELF_DIR/cfw-render-report.sh" block "$fail_reason" ) \
+      || cr_log "order $order_id — upload-failure block was not acknowledged; artifacts retained"
   elif [[ -e "$order_dir/.delivery-started" ]]; then
     # Server success may precede the local .outcome write. Neither repeat
     # delivery nor send a conflicting block; preserve the ordered intent.
