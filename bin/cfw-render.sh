@@ -198,17 +198,33 @@ brand = (o.get("taskOrder") or {}).get("brand") or {}
 print(brand.get("slug") or "")
 ' <<< "$order_json" 2>/dev/null)"
 
-  if [[ -z "$order_id" ]]; then
-    cr_log "spawn_director: order JSON missing id — skipping"
+  if [[ ! "$order_id" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,199}$ ]]; then
+    cr_log "spawn_director: order JSON missing or invalid id — skipping"
     return 1
   fi
+
+  # Freeze diagnostic identity now; never rediscover it from reused scratch.
+  local recent_identity
+  recent_identity="$(python3 -c '
+import datetime, json, sys
+def obj(value): return value if isinstance(value, dict) else {}
+def text(value): return value if isinstance(value, str) else None
+o = obj(json.load(sys.stdin))
+brand = obj(obj(o.get("taskOrder")).get("brand"))
+print(json.dumps({"orderId": text(o.get("id")), "shortCode": text(o.get("shortCode")),
+    "attemptId": text(obj(o.get("attempt")).get("id")) or text(o.get("attemptId")),
+    "brand": text(o.get("brandName")) or text(brand.get("name")), "brandSlug": text(brand.get("slug")) or text(o.get("brandSlug")),
+    "recipe": text(o.get("recipe")), "kind": text(o.get("kind")),
+    "startedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "directorLog": None}))
+' <<< "$order_json")" || return 1
 
   brand_slug="$(sanitize_slug "${raw_slug:-$brand_id}")"
   if [[ -z "$brand_slug" ]]; then
     cr_log "spawn_director: order $order_id has malformed/missing taskOrder.brand — blocking"
     cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"order was underspecified — missing brand context"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "" "$kind" "blocked" "" "" >> "$JOURNAL"
-    cr_recent_append "" blocked "$order_id"
+    cr_recent_append "" blocked "$order_id" "$recent_identity" "order was underspecified — missing brand context"
     return 1
   fi
 
@@ -249,7 +265,7 @@ print("\x1f".join([mode, token, expires, pool, expired]))
       cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"this brand'"'"'s HeyGen account isn'"'"'t connected — connect it in brand settings","needs":"decision"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
         || cr_log "order $order_id — block_render_order (no-heygen-credential) call failed; lease expiry is the backstop"
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "blocked" "" "" >> "$JOURNAL"
-    cr_recent_append "$order_dir/order.json" blocked "$order_id"
+      cr_recent_append "" blocked "$order_id" "$recent_identity" "this brand's HeyGen account isn't connected — connect it in brand settings"
       return 1
     fi
   fi
@@ -265,7 +281,7 @@ print("\x1f".join([mode, token, expires, pool, expired]))
     cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"this render'"'"'s recipe files are out of sync — a redeploy is needed"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
       || cr_log "order $order_id — block_render_order (skills-mismatch) call failed; lease expiry is the backstop"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "blocked" "" "" >> "$JOURNAL"
-    cr_recent_append "$order_dir/order.json" blocked "$order_id"
+    cr_recent_append "" blocked "$order_id" "$recent_identity" "this render's recipe files are out of sync — a redeploy is needed"
     return 1
   fi
 
@@ -326,7 +342,7 @@ for x in a:
       # computer (23). [M3-01b] 24 = released for an engine usage limit:
       # the attempt is released; the server re-queues it.
       if (( h_rc == 22 || h_rc == 23 || h_rc == 24 )); then
-        cr_recent_append "$order_dir/order.json" "$h_outcome" "$order_id"
+        cr_recent_append "" "$h_outcome" "$order_id" "$recent_identity"
         rm -rf "$order_dir"
         rm -rf "$(cr_keep_output_dir "$brand_slug" "$order_id")" 2>/dev/null
         cr_log "order $order_id — brand files and keys deleted after $h_outcome"
@@ -335,7 +351,7 @@ for x in a:
       fi
     fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "$h_outcome" "$h_rc" "harness" >> "$JOURNAL"
-    cr_recent_append "$order_dir/order.json" "$h_outcome" "$order_id"
+    cr_recent_append "" "$h_outcome" "$order_id" "$recent_identity"
     return 0
   fi
 
@@ -372,6 +388,30 @@ for k, v in subs.items():
 print(tpl)
 ' "$SELF_DIR/../lib/director-prompt.md" "$order_id" "$CFW_RENDER_SKILLS_DIR" "$recipe" "$gate" "$CFW_RENDER_GATE_FAIL_CAP" "$timeout_min" "$CFW_RENDER_FANOUT_MODELS" 2>/dev/null)"
 
+  # Allocate exclusively before heartbeat/engine start. Same-second retries
+  # must not overwrite earlier attempt evidence; IDs cannot escape runs/.
+  local ts out_file model_state_file
+  ts="$(date +%s)"
+  model_state_file="$order_dir/work/.director-model"
+  if ! out_file="$(python3 -c '
+import os, re, sys, tempfile
+runs, oid, ts = sys.argv[1:4]
+if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,199}", oid) or not re.fullmatch(r"[0-9]+", ts):
+    sys.exit(1)
+runs = os.path.realpath(runs)
+fd, path = tempfile.mkstemp(prefix=oid + "-" + ts + "-", suffix=".out", dir=runs)
+os.close(fd)
+print(path)
+' "$RUNS_DIR" "$order_id" "$ts" 2>/dev/null)"; then
+    cr_log "order $order_id — cannot allocate Director transcript; blocking before launch"
+    cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"render could not create its diagnostic log"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
+      || cr_log "order $order_id — block_render_order (log allocation) call failed; lease expiry is the backstop"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "blocked" "" "" >> "$JOURNAL"
+    cr_recent_append "" blocked "$order_id" "$recent_identity" "render could not create its diagnostic log"
+    return 1
+  fi
+  recent_identity="$(python3 -c 'import json,sys,os; d=json.load(sys.stdin); d["directorLog"]=os.path.basename(sys.argv[1]); print(json.dumps(d))' "$out_file" <<< "$recent_identity")" || return 1
+
   cr_event "$order_id" stage fetch-assets "Gathering ingredients" 5
 
   # [CFW-146] Pulse every 60 s for as long as this Director runs. Started
@@ -384,12 +424,6 @@ print(tpl)
   # terminal outcome — stopping it here, after wait, is too late: the Director
   # already called complete/block from inside its own tree before it exits.
   [[ -n "$heartbeat_pid" ]] && echo "$heartbeat_pid" > "$order_dir/.heartbeat.pid"
-
-  local ts out_file model_state_file
-  ts="$(date +%s)"
-  out_file="$RUNS_DIR/${order_id}-${ts}.out"
-  model_state_file="$order_dir/work/.director-model"
-  : > "$out_file"
 
   # [CFW-286] Enable job control HERE — in the frame that backgrounds the
   # subshell below — not inside it. Job control gives a `(...) &` job its own
@@ -473,7 +507,7 @@ print(tpl)
   # complete/block would be rejected ("order not claimed by this worker").
   cr_heartbeat_stop "$heartbeat_pid"
 
-  local outcome_file="$order_dir/.outcome" outcome model_served=""
+  local outcome_file="$order_dir/.outcome" outcome model_served="" fail_reason=""
   [[ -f "$model_state_file" ]] && model_served="$(cat "$model_state_file" 2>/dev/null)"
 
   # [CFW-286] The Director's turn ended (not a watchdog kill) but .outcome
@@ -503,6 +537,7 @@ print(tpl)
     fi
   elif (( director_exit == 143 || director_exit == 137 )); then
     outcome="timeout"
+    fail_reason="render exceeded the time budget"
     cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"render exceeded the time budget","needs":"capacity"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
       || cr_log "order $order_id — block_render_order (timeout) call failed; lease expiry is the backstop"
   else
@@ -520,6 +555,7 @@ print(tpl)
       # a step and ended its turn without waiting on it. This is the CFW-286
       # bug itself, made visible instead of hidden inside "crashed".
       outcome="orphaned"
+      fail_reason="render ended without finishing — a background step was still running"
       cr_log "order $order_id — Director exited cleanly (rc=0) with no complete/block after a ${grace_secs}s grace window; a background step was likely still running when its turn ended (CFW-286)"
       cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"render ended without finishing — a background step was still running when the Director'"'"'s turn ended"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
         || cr_log "order $order_id — block_render_order (orphaned) call failed; lease expiry is the backstop"
@@ -527,6 +563,7 @@ print(tpl)
       # Nonzero exit (bad exit code, uncaught exception, OOM, etc.) — a
       # genuine crash, distinct from the clean-exit orphaned case above.
       outcome="crashed"
+      fail_reason="render failed unexpectedly"
       cr_log "order $order_id — Director exited nonzero (exit=$director_exit) with no complete/block"
       cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"render failed unexpectedly"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
         || cr_log "order $order_id — block_render_order (crash) call failed; lease expiry is the backstop"
@@ -535,7 +572,7 @@ print(tpl)
 
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "$outcome" "$director_exit" "$model_served" >> "$JOURNAL"
-  cr_recent_append "$order_dir/order.json" "$outcome" "$order_id"
+  cr_recent_append "" "$outcome" "$order_id" "$recent_identity" "$fail_reason"
 }
 
 # ---------------------------------------------------------------------------

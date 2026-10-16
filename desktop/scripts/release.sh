@@ -99,6 +99,9 @@ else
 fi
 
 echo "== 1. bundle the worker into the app =="
+# Both install paths need the guide and read-only exact-attempt lookup.
+run test -s "$REPO_DIR/lib/render-debug.md"
+run test -s "$REPO_DIR/lib/render-debug.py"
 run mkdir -p "$WORKER_DST" "$DIST"
 for item in bin install config lib scripts skills AGENTS.md CLAUDE.md VERSION; do
   run rm -rf "${WORKER_DST:?}/$item"

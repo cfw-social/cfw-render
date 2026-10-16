@@ -451,9 +451,17 @@ cr_engine_capabilities_json codex "$1/skills"
             env={"PATH": str(Path(sys.executable).parent) + os.pathsep + os.defpath})
         self.assertEqual(json.loads(result.stdout)["features"], ["stage-range-v1"])
         self.assertEqual((repo / "VERSION").read_text().strip(), "1.1.0")
-        # Packaging assertion only: never execute an installer in this group.
-        self.assertIn('"$REPO_DIR/bin/cfw-render-stage.py" "$PREFIX/bin/"',
-                      (repo / "install/install.sh").read_text())
+        # Exercise only the bin copy line against a disposable destination;
+        # never execute installer setup, launchctl or provider calls here.
+        lines = (repo / "install/install.sh").read_text().splitlines()
+        copies = [line for line in lines if line.startswith('cp -a ') and line.endswith('"$PREFIX/bin/"')]
+        self.assertEqual(len(copies), 1)
+        with tempfile.TemporaryDirectory(prefix="cfw-stage-package-") as tmp:
+            (Path(tmp) / "bin").mkdir()
+            subprocess.run(["bash", "--noprofile", "--norc", "-c", copies[0]], check=True,
+                env={"PATH": os.defpath, "REPO_DIR": str(repo), "PREFIX": tmp})
+            for helper in ("cfw-render-stage.py", "cfw-render-redact.py"):
+                self.assertEqual((Path(tmp) / "bin" / helper).read_bytes(), (repo / "bin" / helper).read_bytes())
 
 
 unittest.main(argv=[sys.argv[0]], verbosity=2)
@@ -468,6 +476,293 @@ fi
 if [[ "${1:-}" == --stage-range ]]; then
   (( FAILURES == 0 )); exit $?
 fi
+
+recent_identity_cases() {
+  python3 - "$REPO_DIR" <<'PY'
+import datetime, json, os, pathlib, signal, subprocess, sys, tempfile
+repo = pathlib.Path(sys.argv[1])
+source = (repo/'bin/cfw-render.sh').read_text()
+functions = source[source.index('sanitize_slug() {'):source.index('# [M2-04] Claims with capacity')]
+with tempfile.TemporaryDirectory(prefix='cfw-recent-') as tmp:
+    root = pathlib.Path(tmp)
+    (root/'logs with spaces/runs').mkdir(parents=True)
+    (root/'state').mkdir()
+    director = root/'director'
+    director.write_text('''#!/bin/bash
+printf '%s' "$TEST_OUTCOME" > .outcome
+printf 'synthetic transcript %s\\n' "$TEST_ATTEMPT"
+# Completion must not rediscover identity from this now-reused claim file.
+printf '{"id":"wrong-order","attempt":{"id":"wrong-attempt"}}' > order.json
+''')
+    director.chmod(0o700)
+    env = {'PATH': os.environ['PATH'], 'HOME': str(root), 'REPO': str(repo),
+        'TEST_ROOT': str(root), 'CFW_RENDER_SCRATCH': str(root/'scratch'),
+        'CFW_RENDER_STATE_DIR': str(root/'state'), 'CFW_RENDER_LOG_DIR': str(root/'logs with spaces'),
+        'CFW_RENDER_SKILLS_DIR': str(root/'skills'), 'CFW_RENDER_COMPUTER_NAME': 'Synthetic Mac',
+        'CFW_WORKER_ID': 'synthetic-worker', 'CFW_API_BASE': 'http://unused.invalid',
+        'CFW_RENDER_WORKER_KEY': 'synthetic-key', 'CFW_RENDER_DIRECTOR_CMD': str(director),
+        'CFW_RENDER_TIMEOUT_IMAGE': '60', 'CFW_RENDER_TIMEOUT_VIDEO': '60',
+        'CFW_RENDER_GATE_FAIL_CAP': '1', 'CFW_RENDER_FANOUT_MODELS': '',
+        'CFW_RENDER_OLLAMA_KEYS_FILE': str(root/'absent'), 'CFW_RENDER_KEEP_OUTPUTS': '0',
+        'TEST_OUTCOME': 'blocked', 'TEST_ATTEMPT': 'attempt-A', 'TEST_GATE': '', 'TEST_HARNESS_RC': '30'}
+    setup = '''
+set -u
+SELF_DIR="$REPO/bin"
+source "$SELF_DIR/cfw-render-lib.sh"
+RUNS_DIR="$CFW_RENDER_LOG_DIR/runs"
+JOURNAL="$CFW_RENDER_STATE_DIR/journal.tsv"
+cr_recipe_needs_heygen() { [[ "$TEST_GATE" == provider ]]; }
+cr_verify_skills_bundle() { [[ "$TEST_GATE" != integrity ]]; }
+cr_mcp_call() { return 0; }
+cr_event() { :; }
+cr_heartbeat_start() { :; }
+cr_heartbeat_stop() { :; }
+cr_keep_output_dir() { echo "$TEST_ROOT/kept/$2"; }
+cr_harness_run() { return "$TEST_HARNESS_RC"; }
+# Force transcript allocations into one clock second, but leave observed UTC
+# starts/finishes real. No sleeps/timing assumptions in the collision test.
+date() { if [[ "${1:-}" == +%s ]]; then echo 1234567890; else command date "$@"; fi; }
+'''
+    def run(script, **extra):
+        p = subprocess.Popen(['bash', '-c', setup + script], env={**env, **extra},
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+        try:
+            out, err = p.communicate(timeout=30)
+            return p.returncode, out, err
+        finally:
+            # Only this test session, never a name-based kill of real workers.
+            try: os.killpg(p.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            p.wait()
+    claim = {'id': 'order-1', 'shortCode': 'R-FAIL', 'brandId': 'b1', 'brandName': 'Brand A',
+             'taskOrder': {'brand': {'slug': 'brand-a'}, 'credentials': {'test': 'synthetic-provider-secret'}},
+             'recipe': 'reel', 'kind': 'image', 'attempt': {'id': 'attempt-A'}, 'attemptId': 'wrong-flat-id',
+             'reason': 'private failure detail', 'providerKeys': ['synthetic-provider-secret'],
+             'unrelated': 'do-not-copy', 'startedAt': '1999-01-01T00:00:00Z', 'directorLog': 'invented.out'}
+    fields = set('shortCode brand result finishedAt orderId attemptId brandSlug recipe kind reason startedAt directorLog'.split())
+    def rows(): return [json.loads(s) for s in (root/'state/recent.ndjson').read_text().splitlines()]
+    def spawn(order, rc=0, **extra):
+        before = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+        result, out, err = run(functions + '\nspawn_director "$TEST_CLAIM"\nrc=$?\ncr_status_write\nexit "$rc"\n',
+                               TEST_CLAIM=json.dumps(order), **extra)
+        assert result == rc, (result, rc, err)
+        row = rows()[-1]
+        assert set(row) == fields, row
+        assert before <= datetime.datetime.fromisoformat(row['startedAt'].replace('Z', '+00:00')) <= datetime.datetime.now(datetime.timezone.utc)
+        assert row['attemptId'] == order.get('attempt', {}).get('id', order.get('attemptId'))
+        assert row['orderId'] == order['id'] and row['recipe'] == order['recipe']
+        for path in ('recent.ndjson', 'status.json'):
+            data = (root/'state'/path).read_text()
+            assert all(s not in data for s in ('synthetic-provider-secret', 'private failure detail', 'do-not-copy', 'wrong-order', 'wrong-attempt'))
+            assert (root/'state'/path).stat().st_mode & 0o777 == 0o600
+        return row
+    a = spawn(claim)
+    assert a['result'] == 'failed' and a['directorLog']
+    assert (root/'scratch/brand-a/order-1').is_dir()
+    first_log = root/'logs with spaces/runs'/a['directorLog']
+    first_bytes = first_log.read_bytes()
+    assert first_bytes == b'synthetic transcript attempt-A\n'
+    b = spawn({**claim, 'attempt': {'id': 'attempt-B'}}, TEST_OUTCOME='complete', TEST_ATTEMPT='attempt-B')
+    assert b['result'] == 'done' and b['brand'] == 'Brand A' and b['brandSlug'] == 'brand-a'
+    assert not (root/'scratch/brand-a/order-1').exists()
+    assert rows()[:2] == [a, b]
+    assert a['directorLog'] != b['directorLog']
+    assert all(r['directorLog'].startswith('order-1-1234567890-') and r['directorLog'].endswith('.out') for r in (a,b))
+    assert first_log.read_bytes() == first_bytes
+    assert (root/'logs with spaces/runs'/b['directorLog']).read_bytes() == b'synthetic transcript attempt-B\n'
+    assert first_log.stat().st_mode & 0o777 == 0o600
+    status = json.loads((root/'state/status.json').read_text())
+    assert status['recent'] == [b, a]
+    for gate in ('provider', 'integrity', 'brand'):
+        order = {**claim, 'id': 'gate-'+gate}
+        if gate == 'brand': order.update(brandId='', taskOrder={})
+        r = spawn(order, rc=1, TEST_GATE=gate)
+        assert r['result'] == 'failed' and r['directorLog'] is None
+    for code, outcome in ((20,'stopped'), (21,'stopped'), (22,'stopped'), (23,'failed'), (24,'stopped'), (25,'done'), (30,'failed'), (31,'failed')):
+        r = spawn({**claim, 'id': 'harness-'+str(code), 'manifest': {'steps': []}}, TEST_HARNESS_RC=str(code))
+        assert r['result'] == outcome and r['directorLog'] is None
+        if code in (22,23,24): assert not (root/'scratch/brand-a'/('harness-'+str(code))).exists()
+    # Bad identifiers are refused before either scratch or a transcript exists.
+    count = len(rows())
+    for oid in ('../escape', 'bad/name', 'bad\\name', 'bad id', '.hidden'):
+        rc, _, _ = run(functions + '\nspawn_director "$TEST_CLAIM"\n', TEST_CLAIM=json.dumps({**claim, 'id': oid}))
+        assert rc == 1 and len(rows()) == count
+    assert not (root/'escape').exists()
+    # No Director or heartbeat starts when exclusive allocation fails, and no
+    # shared-name fallback is created. Cover absent, non-directory and readonly.
+    (root/'not-directory').write_text('untouched')
+    (root/'readonly/runs').mkdir(parents=True)
+    (root/'readonly/runs').chmod(0o500)
+    try:
+        for folder in ('missing', 'not-directory', 'readonly'):
+            r = spawn({**claim, 'id': 'allocation-'+folder}, rc=1, CFW_RENDER_LOG_DIR=str(root/folder))
+            assert r['result'] == 'failed' and r['directorLog'] is None
+            assert not (root/'scratch/brand-a'/('allocation-'+folder)/'.outcome').exists()
+        assert (root/'not-directory').read_text() == 'untouched'
+        assert not list((root/'readonly/runs').iterdir())
+    finally:
+        (root/'readonly/runs').chmod(0o700)
+    # Old callers keep their file-derived identity but never guess start/log.
+    legacy = root/'legacy.json'
+    legacy.write_text(json.dumps(claim))
+    rc, _, err = run('cr_recent_append "$TEST_ROOT/legacy.json" complete fallback\n')
+    assert rc == 0, err
+    assert rows()[-1]['attemptId'] == 'attempt-A'
+    assert rows()[-1]['startedAt'] is None and rows()[-1]['directorLog'] is None
+    rc, _, err = run('cr_recent_append "" blocked legacy\n')
+    assert rc == 0, err
+    r = rows()[-1]
+    assert r['orderId'] == 'legacy' and all(r[k] is None for k in fields - {'orderId','result','finishedAt'})
+    # Explicit invalid/missing identity cannot fall back to stale scratch.
+    for identity in ('', '[]', '{', json.dumps({'orderId': {'secret': 'do-not-copy'}, 'brand': ['do-not-copy'],
+            'startedAt': 'not-a-date', 'directorLog': '../outside.out', 'reason': 'private failure detail'})):
+        rc, _, err = run('cr_recent_append "$TEST_ROOT/legacy.json" blocked fallback "$TEST_IDENTITY"\n', TEST_IDENTITY=identity)
+        assert rc == 0, err
+        r = rows()[-1]
+        assert all(r[k] is None for k in fields - {'result','finishedAt'}), r
+    # Fifth argument is a distinct owner-safe summary, never identity JSON.
+    identity = json.dumps({'orderId': 'reason-order', 'attemptId': 'reason-attempt'})
+    rc, _, err = run('cr_recent_append "" failed reason-order "$TEST_IDENTITY" "missing input cfw_render_synthetic_test_key"\n', TEST_IDENTITY=identity)
+    assert rc == 0, err
+    r = rows()[-1]
+    assert r['attemptId'] == 'reason-attempt' and r['reason'] == 'missing input cfw_render_[redacted]'
+    rc, _, err = run('cr_recent_append "" complete reason-order "$TEST_IDENTITY" "not a failure"\n', TEST_IDENTITY=identity)
+    assert rc == 0 and rows()[-1]['reason'] is None, err
+    assert len(rows()) <= 50
+    print('PASS: attempt identity survives reuse/cleanup; nested IDs, early gates, harness, legacy/null and secret exclusions')
+    print('PASS: same-second exclusive transcripts preserve bytes; spaced paths, unsafe IDs and allocation failures')
+    # Consumed by the desktop regression: actual worker-produced status, no logs.
+    print('STATUS_FIXTURE=' + json.dumps(status))
+PY
+}
+if [[ "${1:-}" == --recent-identity ]]; then
+  recent_identity_cases && (( FAILURES == 0 ))
+  exit $?
+fi
+
+# Existing M3-05a-3 update case, selectable without starting workers/services.
+# This is file-copy coverage, NOT native app/updater or LaunchAgent acceptance.
+installer_update_case() {
+  python3 - "$REPO_DIR" <<'PY'
+import hashlib, json, os, pathlib, subprocess, sys, tempfile
+repo = pathlib.Path(sys.argv[1])
+pin = next(d for d in json.loads((repo/'config/agent-guides.json').read_text())['documents']
+           if d['path'] == 'lib/render-debug.md')
+assert hashlib.sha256((repo/pin['path']).read_bytes()).hexdigest() == pin['sha256']
+with tempfile.TemporaryDirectory(prefix='cfw-update-test-') as tmp:
+    root = pathlib.Path(tmp)
+    guards = root/'guards'; guards.mkdir()
+    # Defense in depth: even a regressed skip flag must not touch real services.
+    for name in ('launchctl', 'curl', 'claude', 'codex'):
+        stub = guards/name
+        stub.write_text('#!/bin/bash\nprintf "%s\\n" "$0" >> "$HOME/unexpected-command"\nexit 97\n')
+        stub.chmod(0o700)
+    for guide_state in ('missing', 'stale'):
+        home = root/guide_state; home.mkdir()
+        prefix = home/'CFW Render/app'
+        (prefix/'bin').mkdir(parents=True)
+        (prefix/'lib').mkdir()
+        (prefix/'config').mkdir()
+        for name in ('cfw-render.sh', 'cfw-render-lib.sh'):
+            (prefix/'bin'/name).write_text('old worker\n')
+        if guide_state == 'stale':
+            (prefix/'lib/render-debug.md').write_text('old guide\n')
+        # Only synthetic settings/evidence, all confined to this test directory.
+        preserved = {
+            'CFW Render/app/config/local-only.json': b'{"local":true}\n',
+            '.cfw-render/app-settings.json': b'{"autoUpdate":false,"workerSyncedVersion":"old"}\n',
+            '.cfw-render/cfw-render.env': b'CFW_RENDER_WORKER_KEY=synthetic-only\n',
+            '.cfw-render/worker-id': b'synthetic-worker\n',
+            '.cfw-render/recent.ndjson': b'{"attemptId":"attempt-A"}\n',
+            '.cfw-render/status.json': b'{"schema":1,"recent":[]}\n',
+            '.cfw-render/scratch/brand/order/order.json': b'{"id":"order"}\n',
+            'CFW Render/logs/runs/order-123-old.out': b'synthetic prior evidence\n',
+            'CFW Render/outputs/brand/output.txt': b'synthetic output\n',
+            'Library/LaunchAgents/com.cfw.render.plist': b'synthetic plist, never loaded\n',
+        }
+        for name, data in preserved.items():
+            path = home/name; path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data); path.chmod(0o600)
+        env = {'HOME': str(home), 'PATH': str(guards)+os.pathsep+os.environ['PATH'],
+               'CFW_RENDER_SKIP_LAUNCHCTL': '1', 'CFW_RENDER_INSTALL_NO_LAUNCHCTL': '1'}
+        with (home/'stdin').open('w+b') as stdin:
+            stdin.write(b'KEEP-THIS-LINE\n'); stdin.seek(0)
+            result = subprocess.run(['bash', str(repo/'install/install.sh'), '--mode', 'byoa',
+                '--non-interactive', '--from-app', '--update'], env=env, cwd=home,
+                stdin=stdin, capture_output=True, timeout=60)
+            assert result.returncode == 0, (guide_state, result.returncode, result.stderr.decode())
+            assert stdin.read() == b'KEEP-THIS-LINE\n', 'update consumed stdin'
+        assert [json.loads(line) for line in result.stdout.splitlines()] == [
+            {'step': 'ready', 'state': 'done', 'message': 'Updated'}]
+        for name in ('bin/cfw-render.sh', 'bin/cfw-render-lib.sh', 'VERSION',
+                     'lib/render-debug.md', 'lib/render-debug.py', 'bin/cfw-render-redact.py',
+                     'bin/cfw-render-stage.py', 'config/agent-guides.json'):
+            assert (prefix/name).read_bytes() == (repo/name).read_bytes(), name
+        assert hashlib.sha256((prefix/pin['path']).read_bytes()).hexdigest() == pin['sha256']
+        for name, data in preserved.items():
+            assert (home/name).read_bytes() == data, name
+            assert (home/name).stat().st_mode & 0o777 == 0o600, name
+        assert not (home/'unexpected-command').exists(), 'external command attempted'
+        print('PASS: update from '+guide_state+' guide restores pinned guide and worker; settings/state/evidence preserved; stdin untouched; no services')
+PY
+}
+if [[ "${1:-}" == --installer-update ]]; then
+  installer_update_case && (( FAILURES == 0 ))
+  exit $?
+fi
+
+debug_lookup_case() {
+  python3 - "$REPO_DIR" <<'PY'
+import datetime, importlib.util, json, pathlib, subprocess, sys, tempfile
+repo = pathlib.Path(sys.argv[1])
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location('render_debug', repo/'lib/render-debug.py')
+mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+with tempfile.TemporaryDirectory(prefix='cfw-debug-lookup-') as tmp:
+    root = pathlib.Path(tmp); logs = root/'custom logs'; runs = logs/'runs'; runs.mkdir(parents=True)
+    scratch = root/'scratch'; folder = scratch/'brand-a/o1'; folder.mkdir(parents=True)
+    def iso(epoch): return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).isoformat()
+    identity = dict(orderId='o1', attemptId='a1', brandSlug='brand-a', startedAt=iso(100), finishedAt=iso(110))
+    def locate(**changes): return mod.locate({**identity, **changes}, logs, scratch)
+    for name in ('o1-105.out', 'o1-205.out', 'o10-105.out'):
+        (runs/name).write_text('synthetic evidence')
+    order = dict(id='o1', attempt=dict(id='a1'), taskOrder=dict(brand=dict(slug='brand-a'), credentials='DO-NOT-OUTPUT'))
+    (folder/'order.json').write_text(json.dumps(order))
+    found = locate()
+    assert found['directorLog'] == str(runs/'o1-105.out') and found['scratchDirectory'] == str(folder)
+    assert 'DO-NOT-OUTPUT' not in json.dumps(found)
+    for changes in ({'startedAt': None}, {'finishedAt': iso(99)}, {'orderId': '../o1'}):
+        assert locate(**changes)['directorLog'] is None
+    for changes in ({'brandSlug': '../brand-a'}, {'attemptId': 'a2'}, {'attemptId': None}):
+        assert locate(**changes)['scratchDirectory'] is None
+    (runs/'o1-105-second.out').write_text('same-second retry')
+    assert locate()['directorLog'] is None
+    for name in ('o1-105.out', 'o1-105-second.out'):
+        assert locate(directorLog=name)['directorLog'] == str(runs/name)
+    for name in ('o1-106-missing.out', '../o1-105.out', 'o10-105.out'):
+        assert locate(directorLog=name)['directorLog'] is None
+    (runs/'o1-107.out').symlink_to(runs/'o1-205.out')
+    assert locate(directorLog='o1-107.out')['directorLog'] is None
+    (root/'linked logs').mkdir(); (root/'linked logs/runs').symlink_to(runs)
+    assert mod.locate({**identity, 'directorLog': 'o1-105.out'}, root/'linked logs', scratch)['directorLog'] is None
+    order['attempt']['id'] = 'a2'; (folder/'order.json').write_text(json.dumps(order))
+    assert locate()['scratchDirectory'] is None
+    for invalid in ([], {'attempt': []}, {'taskOrder': []}):
+        (folder/'order.json').write_text(json.dumps(invalid))
+        assert locate()['scratchDirectory'] is None
+    cli = subprocess.run([sys.executable, str(repo/'lib/render-debug.py'), '--log-dir', str(logs), '--scratch-dir', str(scratch)],
+        input=json.dumps({**identity, 'directorLog': 'o1-105.out'}), text=True, capture_output=True, check=True)
+    assert json.loads(cli.stdout)['directorLog'] == str(runs/'o1-105.out')
+print('PASS: exact, legacy, ambiguous, missing, symlink, reused scratch and custom-path debug lookup')
+PY
+}
+if [[ "${1:-}" == --debug-lookup ]]; then
+  debug_lookup_case && (( FAILURES == 0 ))
+  exit $?
+fi
+if recent_identity_cases; then pass "frozen identity and owner-safe reason"; else fail "recent identity" "regression failed"; fi
+if installer_update_case; then pass "pinned helpers survive update"; else fail "installer update" "regression failed"; fi
+if debug_lookup_case; then pass "contained exact-attempt lookup"; else fail "debug lookup" "regression failed"; fi
 
 FAKE_BIN="$(mktemp -d)"
 cp "$TEST_DIR/fake-claude.sh" "$FAKE_BIN/claude"
@@ -3937,7 +4232,7 @@ c21_setup "$mc3" $((MOCK_PORT_BASE + 962)) harness-3step '[{"id":"o1"}]' 'CFW_MO
 c21_worker "$mc3" $((MOCK_PORT_BASE + 962)) --once
 c21_worker "$mc3" $((MOCK_PORT_BASE + 962)) --once
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
-mc3_r="$(m3_status "$mc3" 'sorted(d["recent"][0]) == ["brand","finishedAt","result","shortCode"] and (d["recent"][0]["shortCode"], d["recent"][0]["brand"], d["recent"][0]["result"]) == ("R-TEST","Brand A","done") and d["recent"][0]["finishedAt"].endswith("Z")')"
+mc3_r="$(m3_status "$mc3" 'sorted(d["recent"][0]) == ["attemptId","brand","brandSlug","directorLog","finishedAt","kind","orderId","reason","recipe","result","shortCode","startedAt"] and (d["recent"][0]["shortCode"], d["recent"][0]["brand"], d["recent"][0]["result"]) == ("R-TEST","Brand A","done") and d["recent"][0]["finishedAt"].endswith("Z") and d["recent"][0]["orderId"] == "o1" and d["recent"][0]["attemptId"] == "att_1" and d["recent"][0]["brandSlug"] == "test-brand" and d["recent"][0]["recipe"] == "harness-3step" and d["recent"][0]["startedAt"].endswith("Z") and d["recent"][0]["directorLog"] is None and d["recent"][0]["reason"] is None')"
 if [[ "$mc3_r" == "True" ]]; then
   pass "status recent: R-TEST / Brand A / done"
 else

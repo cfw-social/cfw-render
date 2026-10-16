@@ -1,4 +1,6 @@
+import type { ReactNode } from "react";
 import { copy } from "../copy";
+import { CopyRenderDebug } from "./CopyRenderDebug";
 import { health, rendersModel, type DoneRow } from "../panel/model";
 import type { StatusPayload } from "../status";
 import { Icon } from "../ui/Icon";
@@ -8,7 +10,7 @@ import type { PanelActions } from "../panel/Panel";
 const RESULT_ICON = { done: "circle-check", failed: "circle-x", stopped: "circle-pause" } as const;
 const RESULT_TONE = { done: "text-emerald-600", failed: "text-red-600", stopped: "text-zinc-500" } as const;
 
-function Row({ icon, iconClass, title, brand, detail, detailClass, right }: { icon: Parameters<typeof Icon>[0]["name"]; iconClass?: string; title: string; brand: string; detail?: string; detailClass?: string; right?: string }) {
+function Row({ icon, iconClass, title, brand, detail, detailClass, right, children }: { icon: Parameters<typeof Icon>[0]["name"]; iconClass?: string; title: string; brand: string; detail?: string; detailClass?: string; right?: string; children?: ReactNode }) {
   return (
     <li className="grid grid-cols-[18px_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 text-[13px]">
       <Icon name={icon} size={15} className={iconClass ?? "text-zinc-500"} />
@@ -16,6 +18,7 @@ function Row({ icon, iconClass, title, brand, detail, detailClass, right }: { ic
       <span className="truncate text-muted-foreground">{brand}</span>
       <span className={`truncate ${detailClass ?? "text-muted-foreground"}`}>{detail}</span>
       <span className="text-right tabular-nums text-subtle">{right}</span>
+      {children}
     </li>
   );
 }
@@ -107,7 +110,7 @@ export function Renders({ payload, actions, clock = Date.now }: { payload: Statu
             <ul className="divide-y divide-border">
               {m.done.map((d: DoneRow, i) => (
                 <Row
-                  key={`${d.code}-${i}`}
+                  key={`${d.identity.orderId ?? d.code}-${d.identity.attemptId ?? "unknown"}-${d.identity.finishedAt ?? i}`}
                   icon={RESULT_ICON[d.result]}
                   iconClass={RESULT_TONE[d.result]}
                   title={d.code || copy.render}
@@ -115,7 +118,9 @@ export function Renders({ payload, actions, clock = Date.now }: { payload: Statu
                   detail={copy.result[d.result]}
                   detailClass={d.result === "failed" ? "font-medium text-failed" : undefined}
                   right={d.time}
-                />
+                >
+                  {d.result !== "done" && <CopyRenderDebug item={d.identity} />}
+                </Row>
               ))}
             </ul>
           </Card>

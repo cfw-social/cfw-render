@@ -219,8 +219,9 @@ app_step checking "done" "This computer is ready to install"
 app_step installing started "Installing CFW Render"
 
 mkdir -p "$PREFIX/bin" "$PREFIX/lib" "$PREFIX/config" "$PREFIX/scripts"
-cp -a "$REPO_DIR"/bin/*.sh "$REPO_DIR/bin/cfw-render-stage.py" "$PREFIX/bin/"
-cp -a "$REPO_DIR"/lib/*.md "$PREFIX/lib/"
+cp -a "$REPO_DIR"/bin/*.sh "$REPO_DIR"/bin/*.py "$PREFIX/bin/"
+cp -a "$REPO_DIR"/lib/*.md "$REPO_DIR"/lib/*.py "$PREFIX/lib/"
+cp -a "$REPO_DIR/config/agent-guides.json" "$PREFIX/config/"
 # scripts/ (verify-skills-bundle.sh, gen-skills-manifest.sh) — the worker's
 # cr_verify_skills_bundle shells out to verify-skills-bundle.sh at $PREFIX/scripts.
 cp -a "$REPO_DIR"/scripts/*.sh "$PREFIX/scripts/" 2>/dev/null || true
