@@ -113,6 +113,14 @@ PY
 }
 if [[ "${1:-}" == --wake-short-tick ]]; then short_tick_wake_case; exit $?; fi
 
+if [[ "${1:-}" == --app-key-retry ]]; then
+  python3 "$TEST_DIR/app-key-retry.py"
+  exit $?
+fi
+if [[ -z "${1:-}" ]]; then
+  if python3 "$TEST_DIR/app-key-retry.py"; then pass "durable setup key replacement retries"; else fail "key replacement retry" "regression failed"; fi
+fi
+
 # Negotiated checkpoint fixtures only: no production manifest/version changes.
 local_checkpoint_cases() {
   python3 - "$REPO_DIR" <<'PY'

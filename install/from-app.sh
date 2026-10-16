@@ -86,6 +86,115 @@ fa_reload_agent() {
   return 1
 }
 
+# fa_pending_keys <add|list|remove> — private revocation outbox beside worker-id.
+# Keys travel on stdin/stdout (callers capture stdout), never process arguments.
+# Refuse unsafe/corrupt state rather than silently forgetting a live credential.
+fa_pending_keys() {
+  python3 -c '
+import json, os, re, secrets, stat, sys
+
+
+def valid_key(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"cfw_render_[A-Za-z0-9_-]{1,4096}", value) is not None
+
+
+def unique_object(pairs: list) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate field")
+        result[key] = value
+    return result
+
+
+def run() -> None:
+    action, worker = sys.argv[1:]
+    # Resolve ancestor aliases (macOS /var, /tmp), then walk by descriptor.
+    # The state directory itself and its files must not be symlinks.
+    parent = os.path.dirname(os.path.abspath(worker))
+    parent = os.path.join(os.path.realpath(os.path.dirname(parent)), os.path.basename(parent))
+    directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in parent.split("/"):
+            if not part:
+                continue
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        info = os.fstat(directory)
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise ValueError("state directory must be private")
+        name = "pending-key-revocations.json"
+        keys = []
+        try:
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        except FileNotFoundError:
+            pass
+        else:
+            with os.fdopen(fd, "r") as source:
+                info = os.fstat(source.fileno())
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                        or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+                    raise ValueError("unsafe pending file")
+                raw = source.read(1048577)
+                if len(raw) > 1048576:
+                    raise ValueError("pending file too large")
+                data = json.loads(raw, object_pairs_hook=unique_object)
+                if (not isinstance(data, dict) or set(data) != {"version", "keys"}
+                        or type(data["version"]) is not int or data["version"] != 1):
+                    raise ValueError("invalid pending schema")
+                keys = data["keys"]
+                if (not isinstance(keys, list) or len(keys) > 256
+                        or not all(valid_key(key) for key in keys) or len(set(keys)) != len(keys)):
+                    raise ValueError("invalid pending keys")
+        if action == "list":
+            for key in keys:
+                print(key)
+            return
+        incoming = sys.stdin.read(1048577).splitlines()
+        if not all(valid_key(key) for key in incoming):
+            raise ValueError("invalid key")
+        if action == "add":
+            keys = sorted(set(keys + incoming))
+        elif action == "remove":
+            keys = sorted(set(keys) - set(incoming))
+        else:
+            raise ValueError("invalid action")
+        payload = json.dumps({"version": 1, "keys": keys}) + "\n"
+        if len(keys) > 256 or len(payload) > 1048576:
+            raise ValueError("pending state full")
+        tmp = ".pending-key-revocations-" + secrets.token_hex(16)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        try:
+            with os.fdopen(fd, "w") as target:
+                os.fchmod(target.fileno(), 0o600)
+                target.write(payload)
+                target.flush()
+                os.fsync(target.fileno())
+            os.replace(tmp, name, src_dir_fd=directory, dst_dir_fd=directory)
+            os.fsync(directory)
+        finally:
+            try:
+                os.unlink(tmp, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+    finally:
+        os.close(directory)
+
+
+try:
+    run()
+except (OSError, ValueError, TypeError, UnicodeError):
+    # Never echo parser input, paths, keys, or exception text.
+    print("install.sh: pending key revocation state is unavailable or invalid", file=sys.stderr)
+    sys.exit(1)
+' "$1" "$WORKER_ID_FILE"
+}
+
+fa_pending_fail() {
+  app_fail connecting 6 "Could not preserve pending key revocations" "Keep the private state folder and retry; contact support if this continues"
+}
+
 fa_connect_and_probe() {
   app_step installing "done" "CFW Render is installed"
   app_step connecting started "Connecting to CFW"
@@ -94,9 +203,15 @@ fa_connect_and_probe() {
   FA_WORKER_ID="$(tr -d '[:space:]' < "$WORKER_ID_FILE")"
   local device old_key
   device="$(cr_computer_name 2>/dev/null || hostname)"; device="${device:0:100}"; device="${device:-This Mac}"
-  # A re-setup (e.g. switching to every brand) replaces this computer's key: the old one is turned
-  # off once the new one has passed the test render, so one Mac never holds two live keys.
+  # Journal BEFORE exchange/env replacement. A failed probe must not lose the
+  # previous parent-scoped key, even across multiple attempts or app restarts.
   old_key="$(env_value CFW_RENDER_WORKER_KEY)"
+  if [[ -n "$old_key" ]]; then
+    printf '%s\n' "$old_key" | fa_pending_keys add || fa_pending_fail
+  else
+    fa_pending_keys add < /dev/null || fa_pending_fail
+  fi
+  old_key=""
   # Exchange: the brand key goes in a header read from stdin (-H @-).
   resp="$(printf 'x-api-key: %s\n' "$BRAND_KEY" | curl -sS --max-time 30 -w '\n%{http_code}' -X POST \
     "${base%/}/api/v1/render-worker-keys/exchange" -H @- -H "content-type: application/json" \
@@ -134,6 +249,9 @@ p = sys.argv[1]; tmp = p + ".tmp"
 json.dump(c, open(tmp, "w")); os.replace(tmp, p)' "$(dirname "$WORKER_ID_FILE")/connection.json" <<< "$resp"
   ) 2>/dev/null || true
   resp=""
+  # Also journal the issued key before writing env: an interrupted/failed env
+  # write must not orphan it. The current key is never revoked when draining.
+  printf '%s\n' "$render_key" | fa_pending_keys add || fa_pending_fail
   printf '%s\n' "$render_key" | fa_env_set CFW_RENDER_WORKER_KEY "$ENV_FILE"
   printf '%s\n' "$base" | fa_env_set CFW_API_BASE "$ENV_FILE"
   export CFW_API_BASE="$base" CFW_RENDER_WORKER_KEY="$render_key"
@@ -184,13 +302,21 @@ json.dump(c, open(tmp, "w")); os.replace(tmp, p)' "$(dirname "$WORKER_ID_FILE")/
     sleep "$poll"
   done
   app_step test_render "done" "The test render worked"
-  if [[ -n "$old_key" && "$old_key" =~ ^cfw_render_[A-Za-z0-9_-]+$ && "$old_key" != "$CFW_RENDER_WORKER_KEY" ]]; then
-    # revoke_this_computer turns off only the key it is called with.
-    if ! out="$(CFW_RENDER_WORKER_KEY="$old_key" cr_mcp_call_soft revoke_this_computer '{}' 2>/dev/null)" || [[ "$(fa_json_get ok <<< "$out")" != "true" ]]; then
-      echo "install.sh: WARNING — could not turn off this computer's previous key; turn it off in CFW Settings" >&2
+  local pending
+  pending="$(fa_pending_keys list)" || fa_pending_fail
+  while IFS= read -r old_key; do
+    [[ -n "$old_key" ]] || continue
+    if [[ "$old_key" != "$CFW_RENDER_WORKER_KEY" && "$old_key" != "$(env_value CFW_RENDER_WORKER_KEY)" ]]; then
+      # Each old key authorizes only its own revocation, across parent scopes.
+      # Failure (including an ambiguous response) stays in the durable outbox.
+      if ! out="$(CFW_RENDER_WORKER_KEY="$old_key" cr_mcp_call_soft revoke_this_computer '{}' 2>/dev/null)" || [[ "$(fa_json_get ok <<< "$out")" != "true" ]]; then
+        echo "install.sh: WARNING — a previous key could not be turned off; retained for retry after the next successful setup" >&2
+        continue
+      fi
     fi
-  fi
-  old_key=""
+    printf '%s\n' "$old_key" | fa_pending_keys remove || fa_pending_fail
+  done <<< "$pending"
+  old_key=""; pending=""
   app_step ready "done" "This computer is ready"
 }
 
