@@ -43,7 +43,12 @@ implemented. Their historical source remains recoverable, not silently deleted.
   accepted response, before optional local copying. If that acknowledgement is
   lost, the marker protects the uncertainty window: no rescue, no conflicting
   block, no automatic new engine run over that scratch directory.
-- The janitor retains delivery markers and timed-out artifacts. A person must
+- A synchronous upload failure records that completion was never submitted.
+  That attempt may report a block, but cannot repeat delivery. A new admitted
+  claim can reset a positively acknowledged block; uncertainty is never reset.
+- Acknowledged nonlocal completion removes scratch. Local checkpoint success
+  keeps scrubbed saves for the normal two-day stopped-job retention window.
+  The janitor retains uncertain delivery markers and timed-out artifacts. A person must
   reconcile an uncertain result against CFW and explicitly choose recovery;
   this change does not implement a recovery UI or claim exactly-once delivery.
   The marker protects this local scratch directory, not a deleted/reinstalled

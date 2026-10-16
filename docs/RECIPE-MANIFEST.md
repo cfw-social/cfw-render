@@ -107,7 +107,10 @@ contained files with matching checksums, acknowledged per-attempt report
 sequences and explicit ordered `finalOutputs` references. Unknown validators fail
 closed. Resume cannot repeat an uncertain terminal delivery: artifacts are retained
 for investigation rather than automatically re-uploaded. Web metadata is not a
-backup of local media.
+backup of local media. Acknowledged local completions retain scrubbed saves for
+48 hours after the job stops, then become eligible for cleanup. Ordinary
+(nonlocal) acknowledged completions remove scratch immediately; uncertain
+terminal results remain protected rather than expiring automatically.
 
 The authoring schema, Social parser/claim/report/completion counterparts and
 Spotlight 2026.10.4 activation remain blocked. Bundled production versions are
