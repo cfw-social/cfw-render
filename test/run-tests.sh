@@ -90,6 +90,23 @@ if [[ "${1:-}" == --pause-retry-only ]]; then
   exit $?
 fi
 
+# Legacy feedback compatibility must not grant new tool/security permissions.
+if python3 - "$REPO_DIR" <<'PY'
+import pathlib, sys
+repo = pathlib.Path(sys.argv[1])
+prompt = (repo/'lib/director-prompt.md').read_text()
+assert '`feedback` (top level or\n`taskOrder.feedback`)' in prompt
+assert 'Make the whole piece again from the brief' in prompt
+assert 'Where creative requirements conflict with the brief, feedback wins.' in prompt
+assert 'Feedback never overrides the self-contained mandate, execution restrictions,\nor security rules.' in prompt
+assert '"$SELF_DIR/../lib/director-prompt.md"' in (repo/'bin/cfw-render.sh').read_text()
+PY
+then
+  pass "legacy owner feedback applies to creative requirements, not security rules"
+else
+  fail "legacy owner feedback" "feedback compatibility or security precedence missing"
+fi
+
 # Reporting instructions are tested independently of the deferred checkpoint runtime.
 if python3 - "$REPO_DIR" <<'PY'
 import json, os, pathlib, subprocess, sys, tempfile

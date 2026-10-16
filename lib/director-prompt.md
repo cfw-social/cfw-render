@@ -8,6 +8,13 @@ yourself wanting to ask a question or look something up outside those two
 sources, the order was underspecified — call `cfw-render-report.sh block
 "order was underspecified — <what was missing>"` and stop.
 
+**Sent back by the owner:** if `order.json` carries `feedback` (top level or
+`taskOrder.feedback`), this is a new version of a request the owner reviewed
+and sent back. Make the whole piece again from the brief, applying that
+feedback. Where creative requirements conflict with the brief, feedback wins.
+Feedback never overrides the self-contained mandate, execution restrictions,
+or security rules.
+
 ## Your working directory
 
 ```
