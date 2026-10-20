@@ -5,7 +5,7 @@
   "sourceRelease": null,
   "sourceSha": "8ab5d1fcdeacc6f8e6ec62e726d0a6ac65e8eea4",
   "recipeCount": 14,
-  "aggregateChecksum": "sha256:18e03bc62321795faf6548a642c97fd85a11cab3dfe10f3266259850cd546398",
+  "aggregateChecksum": "sha256:92113a8b4c65fc8a32de48cbec49f1226939aad50aa4dbe3c7606c115fc73a4b",
   "bundledAt": "2026-10-15T21:24:13Z",
   "bundleMethod": "scripts/sync-skills.sh (direct copy from private source repo; git-subtree retired)",
   "updateCommand": "CFW_SKILLS_SRC=<path-to-private-skills-repo> scripts/sync-skills.sh",
@@ -27,7 +27,7 @@
     },
     "p-carousel": {
       "version": "2026.10.3",
-      "checksum": "sha256:feb3c4cccfc0c48890df47bc75d803d48e50651b2ad25f757744d226aca83b50",
+      "checksum": "sha256:78da51ec04428a615d555cbf7cf1bff3809c49a241b4fdf994cd386e02d67782",
       "fileCount": 25
     },
     "p-clone-reel": {

@@ -6076,17 +6076,376 @@ else
   fail "carousel work fallback mismatch" "expected empty, got: $wi245_work_bad"
 fi
 
-# Finding 3: LEARNINGS records the upstream port text (sync rewrites skills/).
-wi245_learn=1
-grep -q 'Upstream source port' "$REPO_DIR/skills/p-carousel/LEARNINGS.md" || wi245_learn=0
-grep -q 'slide_1' "$REPO_DIR/skills/p-carousel/LEARNINGS.md" || wi245_learn=0
-grep -q '2026.10.3' "$REPO_DIR/skills/p-carousel/LEARNINGS.md" || wi245_learn=0
-grep -q 'sync-skills' "$REPO_DIR/skills/p-carousel/LEARNINGS.md" || wi245_learn=0
-if [[ "$wi245_learn" == "1" ]]; then
-  pass "carousel LEARNINGS: upstream port text for sync survival recorded"
+# Finding 3: sync-skills.py re-applies the p-carousel contract after copy_tree.
+# Plant an upstream-shaped p-carousel (no slide_N saves, old step wording) and
+# show the synced tree gains slide_1..slide_10, recipeVersion 2026.10.3, and the
+# render/captions delivery wording.
+wi245_src="$(mktemp -d)"
+wi245_sync="$(mktemp -d)"
+wi245_recipes="$wi245_src/recipes.json"
+mkdir -p "$wi245_src/p-carousel/steps"
+printf '%s\n' '{' \
+  '  "source": "test-wi245",' \
+  '  "recipes": [ { "name": "p-carousel", "version": "1.0.0", "providers": [] } ]' \
+  '}' > "$wi245_recipes"
+cat > "$wi245_src/p-carousel/SKILL.md" <<'EOF'
+---
+name: p-carousel
+dependsOn: []
+---
+# p-carousel (WI2.45 sync fixture — upstream shape)
+
+### Step 8 — Deliver ⛔ CHECKPOINT
+
+Deliver: slide PNGs (cover first, in order) + PDF last + `final/captions.json`
+**Gate: User approves caption before scheduling.**
+
+## Self-Improvement Feedback Loop
+
+After completing this skill's task:
+1. Ask the user for feedback.
+EOF
+python3 - "$wi245_src/p-carousel/manifest.json" <<'PY'
+import json, sys
+json.dump({
+  "manifestFormat": 1,
+  "recipe": "p-carousel",
+  "recipeVersion": "2026.10.2",
+  "label": "Carousel",
+  "deliverable": {"kind": "image", "aspect": "4:5", "width": 1080, "height": 1350},
+  "needs": {"os": ["macos"], "engines": ["codex"], "tools": ["python3"], "providers": []},
+  "inputs": [],
+  "steps": [
+    {"id": "outline", "label": "Outline", "weight": 15, "runsOn": "computer",
+     "when": "always", "instructions": "steps/01-outline.md",
+     "saves": [{"id": "outline", "kind": "json", "preview": False}]},
+    {"id": "author_slides", "label": "Author", "weight": 25, "runsOn": "computer",
+     "when": "always", "instructions": "steps/02-author-slides.md",
+     "saves": [{"id": "carousel_html", "kind": "text", "preview": False}]},
+    {"id": "render_slides", "label": "Render", "weight": 40, "runsOn": "computer",
+     "when": "always", "instructions": "steps/03-render-slides.md",
+     "saves": [
+       {"id": "cover", "kind": "image", "preview": True},
+       {"id": "slide_sheet", "kind": "image", "preview": True},
+       {"id": "slides", "kind": "json", "preview": False},
+       {"id": "qa_report", "kind": "json", "preview": False}
+     ]},
+    {"id": "captions", "label": "Captions", "weight": 20, "runsOn": "computer",
+     "when": "always", "instructions": "steps/04-captions.md",
+     "saves": [{"id": "captions", "kind": "json", "preview": False}]},
+  ],
+}, open(sys.argv[1], "w"), indent=2)
+open(sys.argv[1].replace("manifest.json", "steps/01-outline.md"), "w").write("# outline\n")
+open(sys.argv[1].replace("manifest.json", "steps/02-author-slides.md"), "w").write("# author\n")
+open(sys.argv[1].replace("manifest.json", "steps/03-render-slides.md"), "w").write(
+  "# Render\n\n## You must produce\n\n"
+  "- `saves/cover.png` — slide 1.\n"
+  "- `saves/slide_sheet.png` — contact sheet.\n"
+  "- `saves/slides.json` — metadata.\n"
+  "- `saves/qa_report.json` — QA.\n\n"
+  "## How\n\n```bash\nmkdir -p work saves\n```\n\n"
+  "### 4. Write the saves\n\n```bash\n"
+  "cp work/slides/slide-1.png saves/cover.png\n"
+  "```\n\n"
+  "Keep `work/qa_report.json` up to date.\n\n"
+  "## If you cannot proceed\n\nFail.\n"
+)
+open(sys.argv[1].replace("manifest.json", "steps/04-captions.md"), "w").write(
+  "# Write the post captions\n\n"
+  "Write captions.\n\n"
+  "## You receive\n\n- `prior/slides.json`\n\n"
+  "## You must produce\n\n- `saves/captions.json`\n"
+)
+PY
+wi245_sync_rc=0
+wi245_sync_log="$(
+  CFW_SKILLS_SRC="$wi245_src" "$REPO_DIR/scripts/sync-skills.sh" \
+    --recipes "$wi245_recipes" --out-dir "$wi245_sync" --skip-manifest 2>&1
+)" || wi245_sync_rc=$?
+wi245_sync_check="$(python3 - "$wi245_sync" <<'PY'
+import json, os, sys
+root = sys.argv[1]
+man = json.load(open(os.path.join(root, "p-carousel", "manifest.json")))
+bad = []
+if man.get("recipeVersion") != "2026.10.3":
+    bad.append("recipeVersion=%r" % man.get("recipeVersion"))
+step = next(s for s in man["steps"] if s["id"] == "render_slides")
+ids = [s["id"] for s in step["saves"]]
+want = ["slide_%d" % n for n in range(1, 11)]
+if ids[:10] != want:
+    bad.append("saves=%r" % ids)
+render = open(os.path.join(root, "p-carousel", "steps", "03-render-slides.md")).read()
+if "saves/slide_1.png" not in render or "pad any unused" not in render.lower():
+    bad.append("03-render-slides missing slide_1/pad wording")
+if "MAX_SLIDES = 10" not in render:
+    bad.append("03-render-slides missing pad-to-10 save writer")
+cap = open(os.path.join(root, "p-carousel", "steps", "04-captions.md")).read()
+if "## Delivery boundary" not in cap or "saves/slide_1.png" not in cap:
+    bad.append("04-captions missing Delivery boundary")
+skill = open(os.path.join(root, "p-carousel", "SKILL.md")).read()
+if "cover.png" not in skill or "Never" not in skill:
+    bad.append("SKILL.md missing never-cover delivery wording")
+idx = json.load(open(os.path.join(root, "index.json")))
+if idx["recipes"]["p-carousel"]["version"] != "2026.10.3":
+    bad.append("index.version=%r" % idx["recipes"]["p-carousel"]["version"])
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi245_sync_rc" == "0" && "$wi245_sync_check" == "ok" ]]; then
+  pass "sync-skills.py re-applies p-carousel slide saves and delivery wording after copy"
 else
-  fail "carousel LEARNINGS upstream port" "LEARNINGS.md missing WI2.45 upstream port section"
+  fail "sync-skills p-carousel contract" "rc=$wi245_sync_rc check=$wi245_sync_check log=${wi245_sync_log:0:500}"
 fi
+rm -rf "$wi245_src" "$wi245_sync"
+
+# Finding 2 (review): drive the real harness save-check / restore path with an
+# order.json built from the bundled p-carousel manifest — not grep alone.
+wi245h="$(mktemp -d)"
+mkdir -p "$wi245h/media" "$wi245h/order" "$wi245h/bin"
+python3 - "$REPO_DIR" "$wi245h" <<'PY'
+import hashlib, json, os, sys
+repo, root = sys.argv[1], sys.argv[2]
+man = json.load(open(os.path.join(repo, "skills", "p-carousel", "manifest.json")))
+assert man["recipeVersion"] == "2026.10.3"
+assert [s["id"] for s in next(s for s in man["steps"] if s["id"] == "render_slides")["saves"]][:10] == [
+    "slide_%d" % n for n in range(1, 11)
+]
+media = os.path.join(root, "media")
+bodies = {
+    "slide_1.png": b"slide-one",
+    "slide_2.png": b"slide-two",
+    "slide_3.png": b"slide-three",
+    "slide_4.png": b"pad-four",
+    "slide_5.png": b"pad-five",
+    "slide_6.png": b"pad-six",
+    "slide_7.png": b"pad-seven",
+    "slide_8.png": b"pad-eight",
+    "slide_9.png": b"pad-nine",
+    "slide_10.png": b"pad-ten",
+    "cover.png": b"preview-cover",
+    "slide_sheet.png": b"preview-sheet",
+    "slides.json": b"",
+    "qa_report.json": b'{"rounds":1,"slides":[{"n":1,"verdict":"PASS","notes":[]},{"n":2,"verdict":"PASS","notes":[]},{"n":3,"verdict":"PASS","notes":[]}]}',
+    "captions.json": b'{"instagram":"Harness caption","default":"Harness caption"}',
+    "outline.json": b'{"count":3}',
+    "slide_copy.json": b'{"aspect_ratio":"4:5","slides":[]}',
+    "carousel_html.md": b"<html></html>",
+}
+slides_meta = {
+    "width": 1080, "height": 1350, "count": 3,
+    "slides": [
+        {"n": 1, "sha256": hashlib.sha256(bodies["slide_1.png"]).hexdigest(), "bytes": len(bodies["slide_1.png"])},
+        {"n": 2, "sha256": hashlib.sha256(bodies["slide_2.png"]).hexdigest(), "bytes": len(bodies["slide_2.png"])},
+        {"n": 3, "sha256": hashlib.sha256(bodies["slide_3.png"]).hexdigest(), "bytes": len(bodies["slide_3.png"])},
+    ],
+}
+bodies["slides.json"] = json.dumps(slides_meta).encode()
+for name, body in bodies.items():
+    open(os.path.join(media, name), "wb").write(body)
+# savedOutputs for every declared save before captions (resume at captions).
+saved = []
+ext = {"image": "png", "json": "json", "text": "md"}
+for step in man["steps"]:
+    if step["id"] == "captions":
+        break
+    for sv in step.get("saves") or []:
+        e = ext.get(sv.get("kind"), "bin")
+        fname = "%s.%s" % (sv["id"], e)
+        path = os.path.join(media, fname)
+        if not os.path.isfile(path):
+            open(path, "wb").write(b"x")
+        digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+        saved.append({
+            "stepId": step["id"],
+            "saveId": sv["id"],
+            "url": "PLACEHOLDER/" + fname,
+            "checksum": "sha256:" + digest,
+        })
+order = {
+    "id": "order-wi245h",
+    "attempt": {"id": "attempt-wi245h", "number": 1},
+    "recipe": "p-carousel",
+    "recipeVersion": man["recipeVersion"],
+    "kind": "image",
+    "brandId": "brand-test",
+    "manifest": man,
+    "resumeFromStepId": "captions",
+    "savedOutputs": saved,
+    "taskOrder": {"brand": {"slug": "test-brand"}, "intent": "wi245 harness"},
+}
+open(os.path.join(root, "order", "order.json"), "w").write(json.dumps(order, indent=2))
+open(os.path.join(root, "saved.json"), "w").write(json.dumps(saved))
+PY
+
+# Drive harness helpers in a subshell so sourced functions do not leak.
+wi245h_port=$((MOCK_PORT_BASE + 1045))
+wi245h_result="$(
+  set -euo pipefail
+  python3 - "$wi245h/media" "$wi245h_port" <<'PY' &
+import sys
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+class H(SimpleHTTPRequestHandler):
+    def __init__(self, *a, **k):
+        super().__init__(*a, directory=sys.argv[1], **k)
+    def log_message(self, *a):
+        pass
+ThreadingHTTPServer(("127.0.0.1", int(sys.argv[2])), H).serve_forever()
+PY
+  http_pid=$!
+  trap 'kill "$http_pid" 2>/dev/null; wait "$http_pid" 2>/dev/null' EXIT
+  python3 - "$wi245h" "$wi245h_port" <<'PY'
+import json, sys
+root, port = sys.argv[1], sys.argv[2]
+base = "http://127.0.0.1:%s" % port
+path = root + "/order/order.json"
+order = json.load(open(path))
+for s in order["savedOutputs"]:
+    s["url"] = base + "/" + s["url"].split("/", 1)[-1]
+json.dump(order, open(path, "w"), indent=2)
+PY
+  sleep 0.2
+  # shellcheck disable=SC1091
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  # shellcheck disable=SC1091
+  source "$REPO_DIR/bin/cfw-render-harness.sh"
+  # Used by cr_h_saves_for (reads $CR_H_ORDER_DIR/order.json).
+  # shellcheck disable=SC2034
+  CR_H_ORDER_DIR="$wi245h/order"
+  export CFW_RENDER_TEST_MEDIA_BASE_URL="http://127.0.0.1:$wi245h_port"
+  export CFW_RENDER_MEDIA_BASE_URL=""
+
+  saves="$(cr_h_saves_for render_slides)"
+  saves_ok=1
+  for n in 1 2 3 4 5 6 7 8 9 10; do
+    [[ " $saves " == *" slide_${n}.png "* ]] || saves_ok=0
+  done
+  [[ " $saves " == *" cover.png "* ]] || saves_ok=0
+  [[ " $saves " == *" slide_sheet.png "* ]] || saves_ok=0
+  printf 'SAVES=%s\n' "$saves_ok"
+  printf 'SAVES_DETAIL=%s\n' "$saves"
+
+  rm -rf "$wi245h/order/steps"
+  mkdir -p "$wi245h/order"
+  cr_h_restore_saved_outputs "$wi245h/order/order.json" "$wi245h/order" || true
+  restored_check="$(python3 - "$wi245h/order" <<'PY'
+import os, sys
+root = sys.argv[1]
+restored = open(os.path.join(root, "resume-restored.txt")).read().splitlines()
+missing = open(os.path.join(root, "resume-missing.txt")).read().strip()
+bad = []
+if missing:
+    bad.append("missing=%r" % missing)
+want = ["slide_%d.png" % n for n in range(1, 11)] + ["cover.png", "slide_sheet.png", "slides.json"]
+paths = [os.path.basename(p) for p in restored if "/render_slides/saves/" in p.replace("\\", "/")]
+for name in want:
+    if name not in paths:
+        bad.append("not-restored:%s" % name)
+    else:
+        f = os.path.join(root, "steps", "render_slides", "saves", name)
+        if not os.path.isfile(f) or os.path.getsize(f) == 0:
+            bad.append("empty:%s" % name)
+if os.path.isdir(os.path.join(root, "steps", "render_slides", "work")):
+    bad.append("work-folder-present")
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+  printf 'RESTORE=%s\n' "$restored_check"
+
+  check_ok=1
+  check_detail=""
+  for f in $saves; do
+    if [[ ! -s "$wi245h/order/steps/render_slides/saves/$f" ]]; then
+      check_ok=0
+      check_detail="missing or empty save $f"
+      break
+    fi
+  done
+  printf 'CHECK=%s\n' "$check_ok"
+  printf 'CHECK_DETAIL=%s\n' "$check_detail"
+
+  mkdir -p "$wi245h/order/steps/captions/saves"
+  printf '{"instagram":"Harness caption","default":"Harness caption"}' \
+    > "$wi245h/order/steps/captions/saves/captions.json"
+  sel="$(cr_select_deliverables "$wi245h/order" '[]')"
+  : > "$wi245h/calls.jsonl"
+  cat > "$wi245h/bin/cfw-render-upload.sh" <<'EOF'
+#!/usr/bin/env bash
+printf "https://media.cfw.social/%s\n" "$(basename "$1")"
+EOF
+  chmod +x "$wi245h/bin/cfw-render-upload.sh"
+  cp "$REPO_DIR/bin/cfw-render-lib.sh" "$wi245h/bin/cfw-render-lib.sh"
+  cp "$REPO_DIR/bin/cfw-render-report.sh" "$wi245h/bin/cfw-render-report.sh"
+  cat >> "$wi245h/bin/cfw-render-lib.sh" <<EOF
+cr_mcp_call() {
+  printf '%s\n' "\$2" >> "$wi245h/calls.jsonl"
+  printf '{"ok":true}'
+}
+cr_heartbeat_stop_if_pending() { :; }
+EOF
+  files=()
+  captions=""
+  while IFS=$'\t' read -r f role; do
+    [[ -n "$f" ]] || continue
+    if [[ "$role" == "captions" ]]; then captions="$f"; else files+=("$f"); fi
+  done <<< "$sel"
+  (
+    cd "$wi245h/order" || exit 1
+    export CFW_ORDER_ID="order-wi245h" CFW_WORKER_ID="w-wi245h" CFW_ATTEMPT_ID="attempt-wi245h"
+    export CFW_API_BASE="http://127.0.0.1:9" CFW_RENDER_WORKER_KEY="cfw_render_wi245htestkey000"
+    export CFW_RENDER_DIRECTOR_MODEL="sonnet"
+    export CFW_CAPTIONS_FILE="${captions}"
+    PATH="$wi245h/bin:$PATH"
+    bash "$wi245h/bin/cfw-render-report.sh" complete "${files[@]}"
+  ) >"$wi245h/complete.out" 2>"$wi245h/complete.err"
+  payload="$(python3 -c '
+import json, pathlib, sys
+calls = pathlib.Path(sys.argv[1])
+err = pathlib.Path(sys.argv[2]).read_text(errors="replace")[-400:] if pathlib.Path(sys.argv[2]).is_file() else ""
+if not calls.is_file() or not calls.read_text().strip():
+    print("parse-error: empty calls; stderr=%r" % err.replace("\n", " | "))
+    raise SystemExit(0)
+rows = [json.loads(l) for l in calls.read_text().splitlines() if l.strip()]
+assert len(rows) == 1, rows
+d = rows[0]
+names = [u.split("/")[-1] for u in d.get("outputUrls", [])]
+bad = []
+if names != ["slide_1.png", "slide_2.png", "slide_3.png"]:
+  bad.append("names=%r" % names)
+if "cover.png" in names or "slide_sheet.png" in names:
+  bad.append("preview in outputUrls")
+if any(n.startswith("slide_") and n not in ("slide_1.png", "slide_2.png", "slide_3.png") for n in names):
+  bad.append("pad-slide leaked: %r" % names)
+print("ok" if not bad else "; ".join(bad))
+' "$wi245h/calls.jsonl" "$wi245h/complete.err" 2>/dev/null || echo "parse-error")"
+  printf 'COMPLETE=%s\n' "$payload"
+)"
+wi245h_saves_ok="$(printf '%s\n' "$wi245h_result" | sed -n 's/^SAVES=//p' | tail -1)"
+wi245h_saves_detail="$(printf '%s\n' "$wi245h_result" | sed -n 's/^SAVES_DETAIL=//p' | tail -1)"
+wi245h_restored="$(printf '%s\n' "$wi245h_result" | sed -n 's/^RESTORE=//p' | tail -1)"
+wi245h_check_ok="$(printf '%s\n' "$wi245h_result" | sed -n 's/^CHECK=//p' | tail -1)"
+wi245h_check_detail="$(printf '%s\n' "$wi245h_result" | sed -n 's/^CHECK_DETAIL=//p' | tail -1)"
+wi245h_payload="$(printf '%s\n' "$wi245h_result" | sed -n 's/^COMPLETE=//p' | tail -1)"
+if [[ "$wi245h_saves_ok" == "1" ]]; then
+  pass "harness cr_h_saves_for: bundled manifest lists slide_1..slide_10 (+ cover/sheet)"
+else
+  fail "harness cr_h_saves_for slides" "got: $wi245h_saves_detail"
+fi
+if [[ "$wi245h_restored" == "ok" ]]; then
+  pass "harness restore: slide_1..slide_10 checked into saves/ with clean work folder"
+else
+  fail "harness restore slides" "$wi245h_restored"
+fi
+if [[ "$wi245h_check_ok" == "1" ]]; then
+  pass "harness save-check: every declared render_slides save is present after restore"
+else
+  fail "harness save-check slides" "$wi245h_check_detail"
+fi
+if [[ "$wi245h_payload" == "ok" ]]; then
+  pass "harness completion: slide_1..slide_N in order, never cover or slide_sheet"
+else
+  fail "harness completion ordered slides" "$wi245h_payload"
+fi
+rm -rf "$wi245h"
 
 # Finding 5: skills-version / index version stay aligned with recipeVersion bump.
 wi245_ver="$(python3 - "$REPO_DIR" <<'PY'

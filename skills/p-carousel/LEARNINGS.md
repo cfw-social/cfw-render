@@ -16,13 +16,13 @@
 
 ---
 
-## Upstream source port (WI2.45 finding 3)
+## Upstream source port (WI2.45 / WI2.45 review rework)
 
 `scripts/sync-skills.py` rewrites `skills/` from the private source skills repo (`--src`,
-outside this repository). Bundled edits here are overwritten on the next sync. **Chosen
-approach for WI2.45:** do not patch `sync-skills.py` to preserve local diffs (fragile across
-a full tree rewrite). Instead, the source-repo owner must carry the text below into
-`p-carousel` before the next sync.
+outside this repository). Bundled hand-edits are overwritten on the next sync. **Mechanism
+(WI2.45 review):** `apply_p_carousel_contract()` in `scripts/sync-skills.py` re-applies the
+contract below after every `p-carousel` copy (same pattern as the Playwright work-folder
+loader rewrite). LEARNINGS keeps the contract text as history; sync-skills is what keeps it.
 
 ### `manifest.json` (render_slides.saves + recipeVersion)
 
@@ -61,11 +61,11 @@ Must say: the worker delivers ordered `saves/slide_1.png` … `saves/slide_N.png
 
 ## Feedback Log
 
-### 2026-10-20 — WI2.45 resume + sync survival
-- Manifest now declares `slide_1`…`slide_10` so per-slide PNGs are checked, uploaded and
+### 2026-10-20 — WI2.45 resume + sync survival (review rework)
+- Manifest declares `slide_1`…`slide_10` so per-slide PNGs are checked, uploaded and
   restored on resume. Recipe pads unused slots; selector still uses `slides.json.count`.
-- Recipe delivery wording lives in this LEARNINGS upstream-port section so the next
-  `sync-skills` does not silently drop WI2.43/WI2.45 contracts.
+- `scripts/sync-skills.py` `apply_p_carousel_contract()` re-applies those saves and the
+  render/captions delivery wording after every sync copy, so the contract survives.
 
 ### 2026-05-08 — Initial template
 - Skill created. No feedback yet.

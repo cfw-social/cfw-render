@@ -9,19 +9,27 @@ from the private source skills repo into <out-dir>/<recipe>/ (own files) and
 writes <out-dir>/index.json in the shape scripts/verify-skills-bundle.sh and
 scripts/gen-skills-manifest.sh expect.
 
-Mostly a plain copy — EXCEPT for one deliberate rewrite (CFW-312):
-rewrite_host_path_resolvers() patches the source's "locate my own dir / locate
-a sub-skill dir" bash idiom, which does a `find` over host install locations
-($HOME/.claude/skills or any other $HOME/.<tool>/ install root, the source
-library's own absolute path). That idiom is correct for the SOURCE library
-(where agent tools install skills as siblings under those host roots) but wrong for cfw-render's
-vendored, runtime-free bundle, where none of those host roots exist — it was
-silently resolving to "" or "/.hub/<dep>" on the render box. The rewrite
-anchors "my own dir" on $CFW_RENDER_SKILLS_DIR (already exported into the
-Director's env by cr_load_config) and "a sub-skill dir" on the bundle's own
-.hub/<dep>/, computed and baked in as literals at sync time — no runtime
-`find` needed. Runs after copy_tree, before list_files/hashing, so the hashes
-in index.json cover the rewritten bytes (what actually ships).
+Mostly a plain copy — EXCEPT for deliberate rewrites after copy_tree (before
+list_files/hashing, so index.json hashes cover the rewritten bytes):
+
+CFW-312 rewrite_host_path_resolvers() patches the source's "locate my own dir /
+locate a sub-skill dir" bash idiom, which does a `find` over host install
+locations ($HOME/.claude/skills or any other $HOME/.<tool>/ install root, the
+source library's own absolute path). That idiom is correct for the SOURCE
+library (where agent tools install skills as siblings under those host roots)
+but wrong for cfw-render's vendored, runtime-free bundle, where none of those
+host roots exist — it was silently resolving to "" or "/.hub/<dep>" on the
+render box. The rewrite anchors "my own dir" on $CFW_RENDER_SKILLS_DIR (already
+exported into the Director's env by cr_load_config) and "a sub-skill dir" on
+the bundle's own .hub/<dep>/, computed and baked in as literals at sync time —
+no runtime `find` needed.
+
+WI2.38 rewrite_playwright_work_resolvers() keeps the carousel render.mjs
+work-folder Playwright loader across sync.
+
+WI2.45 apply_p_carousel_contract() re-applies slide_1..slide_10 saves,
+recipeVersion 2026.10.3, and the render/captions delivery wording onto
+p-carousel after every copy (upstream still ships cover/slide_sheet only).
 
 Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
 and before list_files/hashing, same ordering guarantee:
@@ -279,6 +287,245 @@ def rewrite_playwright_work_resolvers(directory: Path) -> int:
     return changed
 
 
+# ---- WI2.45: re-apply p-carousel slide-save / delivery contract after copy ----
+#
+# copy_tree deletes and recopies skills/<recipe>/ from the private source. The
+# upstream p-carousel still declares only cover/slide_sheet image saves and
+# older step wording. After every copy of p-carousel, re-apply the Render-side
+# contract so slide_1..slide_10 saves, recipeVersion, and the render/captions
+# delivery wording survive sync (same pattern as rewrite_playwright_work_resolvers).
+P_CAROUSEL_RECIPE_VERSION = "2026.10.3"
+
+_P_CAROUSEL_MUST_PRODUCE = """## You must produce
+
+- `saves/slide_1.png`, `saves/slide_2.png`, `saves/slide_3.png`, `saves/slide_4.png`,
+  `saves/slide_5.png`, `saves/slide_6.png`, `saves/slide_7.png`, `saves/slide_8.png`,
+  `saves/slide_9.png`, `saves/slide_10.png` — the manifest declares all ten. Write the
+  real slides for N = `slides.json.count` at the exact canvas in order; pad any unused
+  slot (`slide_{N+1}`…`slide_10`) with a copy of the last real slide so harness
+  upload/resume has every declared save. Delivery still uses only `slides.json.count`.
+- `saves/cover.png` — slide 1 at the exact canvas (**preview only**; not a deliverable).
+- `saves/slide_sheet.png` — every slide stacked vertically in order (canvas width × N·height),
+  the owner's preview of the whole set (**preview only**; not a deliverable).
+- `saves/slides.json` — `{ "width", "height", "count", "slides": [ { "n", "sha256", "bytes" } ] }`
+  describing the final slide PNGs in order (the captions step and the delivery read it).
+- `saves/qa_report.json` — `{ "rounds": 2, "slides": [ { "n", "verdict": "PASS", "notes": [] } ] }`;
+  every verdict `PASS`.
+"""
+
+_P_CAROUSEL_WRITE_SAVES = """### 4. Write the saves
+
+```bash
+python3 - "$W" "$H" <<'PY'
+import glob, hashlib, json, os, re, shutil, sys
+W, H = int(sys.argv[1]), int(sys.argv[2])
+MAX_SLIDES = 10  # manifest declares slide_1..slide_10 (num_slides choices max)
+files = sorted(glob.glob('work/slides/slide-*.png'), key=lambda p: int(re.search(r'(\\d+)\\.png$', p).group(1)))
+assert files, "no slides rendered"
+assert 1 <= len(files) <= MAX_SLIDES, f"slide count {len(files)} outside 1..{MAX_SLIDES}"
+os.makedirs('saves', exist_ok=True)
+slides = []
+for i, src in enumerate(files):
+    n = i + 1
+    dest = f'saves/slide_{n}.png'
+    shutil.copy2(src, dest)
+    slides.append({"n": n, "sha256": hashlib.sha256(open(dest,'rb').read()).hexdigest(), "bytes": os.path.getsize(dest)})
+# Pad unused declared saves so the harness can upload/restore every slide_K.
+last = files[-1]
+for n in range(len(files) + 1, MAX_SLIDES + 1):
+    shutil.copy2(last, f'saves/slide_{n}.png')
+shutil.copy2(files[0], 'saves/cover.png')
+json.dump({"width": W, "height": H, "count": len(files), "slides": slides}, open('saves/slides.json','w'), indent=1)
+qa = json.load(open('work/qa_report.json'))
+assert all(s["verdict"] == "PASS" for s in qa["slides"]) and len(qa["slides"]) == len(files), "a slide did not pass"
+json.dump(qa, open('saves/qa_report.json','w'), indent=1)
+print(f"[carousel] {len(files)} slides {W}x{H}, QA rounds={qa['rounds']}")
+PY
+convert $(ls -v work/slides/slide-*.png) -append saves/slide_sheet.png
+```
+
+`saves/slide_1.png` … `saves/slide_N.png` are the deliverables (slide order; N from
+`slides.json.count`). Unused `slide_{N+1}`…`slide_10` pads exist only so the declared
+manifest saves upload and restore. `cover.png` and `slide_sheet.png` are previews only —
+the worker must not send them as the carousel.
+"""
+
+_P_CAROUSEL_CAPTIONS_BOUNDARY = """## Delivery boundary
+
+This terminal stage saves captions, not the carousel images. The worker delivers
+the ordered individual slides from `render_slides` (`saves/slide_1.png` …
+`saves/slide_N.png` in `prior/slides.json` order) plus these captions. Do not
+select the first preview, `cover.png` or `slide_sheet.png` as the carousel —
+those stay previews only. Standalone delivery keeps the same rule: every passing
+slide in order, then captions and the per-slide QA evidence.
+
+"""
+
+_P_CAROUSEL_SKILL_DELIVER = """### Step 8 — Deliver ⛔ CHECKPOINT
+
+Deliver: individual slide PNGs in slide order (`slide_1.png` … `slide_N.png`,
+cover first as slide 1) + PDF last (standalone) + `final/captions.json`. Never
+send `cover.png` or `slide_sheet.png` as a deliverable — those are previews
+only. Managed runs: the worker selects `steps/render_slides/saves/slide_N.png`
+from `slides.json` and passes them to `cfw-render-report.sh complete` with the
+captions file. Standalone:
+`cfw-render-report.sh complete final/slide-1.png … final/carousel-<slug>.pdf`
+(captions picked up automatically).
+**Gate: User approves caption before scheduling.**
+"""
+
+
+def apply_p_carousel_contract(directory: Path) -> int:
+    """Re-apply the p-carousel WI2.43/WI2.45 contract onto a just-copied recipe
+    tree. Idempotent. Returns the number of files changed."""
+    changed = 0
+
+    man_path = directory / "manifest.json"
+    if man_path.is_file():
+        try:
+            data = json.loads(man_path.read_text(encoding="utf-8"))
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+            data = None
+        if isinstance(data, dict):
+            mutated = False
+            if data.get("recipeVersion") != P_CAROUSEL_RECIPE_VERSION:
+                data["recipeVersion"] = P_CAROUSEL_RECIPE_VERSION
+                mutated = True
+            for step in data.get("steps") or []:
+                if not isinstance(step, dict) or step.get("id") != "render_slides":
+                    continue
+                saves = list(step.get("saves") or [])
+                ids = [s.get("id") for s in saves if isinstance(s, dict)]
+                want = [f"slide_{n}" for n in range(1, 11)]
+                if ids[:10] != want:
+                    rest = [
+                        s for s in saves
+                        if isinstance(s, dict) and not re.fullmatch(r"slide_\d+", str(s.get("id") or ""))
+                    ]
+                    step["saves"] = [
+                        {"id": f"slide_{n}", "kind": "image", "preview": False}
+                        for n in range(1, 11)
+                    ] + rest
+                    have = {s["id"] for s in step["saves"] if isinstance(s, dict)}
+                    for sid, kind, preview in (
+                        ("cover", "image", True),
+                        ("slide_sheet", "image", True),
+                        ("slides", "json", False),
+                        ("qa_report", "json", False),
+                    ):
+                        if sid not in have:
+                            step["saves"].append({"id": sid, "kind": kind, "preview": preview})
+                    mutated = True
+                break
+            if mutated:
+                man_path.write_text(
+                    json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8",
+                )
+                changed += 1
+
+    render_md = directory / "steps" / "03-render-slides.md"
+    if render_md.is_file():
+        try:
+            text = render_md.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, ValueError):
+            text = ""
+        if text:
+            new_text = text
+            if "saves/slide_1.png" not in new_text or "pad any unused" not in new_text.lower():
+                new_text, n = re.subn(
+                    r"## You must produce\n.*?(?=\n## How\n)",
+                    lambda _m: _P_CAROUSEL_MUST_PRODUCE,
+                    new_text,
+                    count=1,
+                    flags=re.DOTALL,
+                )
+                if not n:
+                    new_text = new_text.replace(
+                        "## How\n",
+                        _P_CAROUSEL_MUST_PRODUCE + "\n## How\n",
+                        1,
+                    )
+            if "MAX_SLIDES = 10" not in new_text or "Pad unused declared saves" not in new_text:
+                # Use a callable replacement: the write-saves body contains
+                # Python regex literals (\d) that re.sub would mis-parse as
+                # template escapes if passed as a plain string.
+                new_text, n = re.subn(
+                    r"### 4\. Write the saves\n.*?(?=\nKeep `work/qa_report\.json`|\n## If you cannot proceed\n)",
+                    lambda _m: _P_CAROUSEL_WRITE_SAVES + "\n",
+                    new_text,
+                    count=1,
+                    flags=re.DOTALL,
+                )
+                if not n and "### 4. Write the saves" not in new_text:
+                    anchor = "\n## If you cannot proceed\n"
+                    if anchor in new_text:
+                        new_text = new_text.replace(
+                            anchor,
+                            "\n" + _P_CAROUSEL_WRITE_SAVES + "\n" + anchor,
+                            1,
+                        )
+            if new_text != text:
+                render_md.write_text(new_text, encoding="utf-8")
+                changed += 1
+
+    captions_md = directory / "steps" / "04-captions.md"
+    if captions_md.is_file():
+        try:
+            text = captions_md.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, ValueError):
+            text = ""
+        if text and ("## Delivery boundary" not in text or "saves/slide_1.png" not in text):
+            new_text = text
+            if "## Delivery boundary" in new_text:
+                new_text, _ = re.subn(
+                    r"## Delivery boundary\n.*?(?=\n## You receive\n)",
+                    lambda _m: _P_CAROUSEL_CAPTIONS_BOUNDARY,
+                    new_text,
+                    count=1,
+                    flags=re.DOTALL,
+                )
+            elif "## You receive\n" in new_text:
+                new_text = new_text.replace(
+                    "## You receive\n",
+                    _P_CAROUSEL_CAPTIONS_BOUNDARY + "## You receive\n",
+                    1,
+                )
+            else:
+                # Insert after the opening paragraphs.
+                parts = new_text.split("\n\n", 1)
+                if len(parts) == 2:
+                    new_text = parts[0] + "\n\n" + _P_CAROUSEL_CAPTIONS_BOUNDARY + parts[1]
+                else:
+                    new_text = new_text.rstrip() + "\n\n" + _P_CAROUSEL_CAPTIONS_BOUNDARY
+            if new_text != text:
+                captions_md.write_text(new_text, encoding="utf-8")
+                changed += 1
+
+    skill_md = directory / "SKILL.md"
+    if skill_md.is_file():
+        try:
+            text = skill_md.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, ValueError):
+            text = ""
+        if text and (
+            "Never\nsend `cover.png`" not in text
+            and "Never send `cover.png`" not in text
+        ):
+            new_text, n = re.subn(
+                r"### Step 8 — Deliver ⛔ CHECKPOINT\n.*?(?=\n## Self-Improvement Feedback Loop\n)",
+                lambda _m: _P_CAROUSEL_SKILL_DELIVER + "\n",
+                text,
+                count=1,
+                flags=re.DOTALL,
+            )
+            if n and new_text != text:
+                skill_md.write_text(new_text, encoding="utf-8")
+                changed += 1
+
+    return changed
+
+
 # ---- CFW-318 Part 2: strip brand-overrides host-path fields ----
 #
 # brand-overrides/<slug>/brand.json is a live, documented mechanism
@@ -465,6 +712,10 @@ def main():
         rewrite_playwright_work_resolvers(recipe_dest)
         strip_brand_override_host_paths(recipe_dest)
         redact_literal_host_paths(recipe_dest)
+        # WI2.45: p-carousel contract must survive the delete+recopy. Apply after
+        # the generic rewrites so hashes cover the contracted bytes.
+        if recipe == "p-carousel":
+            apply_p_carousel_contract(recipe_dest)
 
         recipe_fm = read_frontmatter(recipe_src / "SKILL.md")
         start_deps = recipe_fm.get("dependsOn", []) or []
@@ -488,8 +739,15 @@ def main():
         checksum = "sha256:" + hashlib.sha256(agg_src.encode("utf-8")).hexdigest()
 
         entry = next((r for r in recipes_config["recipes"] if r["name"] == recipe), {})
+        # Keep the bundled p-carousel pin at the contracted recipeVersion so a
+        # full sync does not drop WI2.45's 2026.10.3 back to recipes.json 1.0.0.
+        version = (
+            P_CAROUSEL_RECIPE_VERSION
+            if recipe == "p-carousel"
+            else entry.get("version", "1.0.0")
+        )
         index["recipes"][recipe] = {
-            "version": entry.get("version", "1.0.0"),
+            "version": version,
             "checksum": checksum,
             "files": files,
             "fileHashes": file_hashes,

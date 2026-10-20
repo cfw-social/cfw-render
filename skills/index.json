@@ -458,7 +458,7 @@
     },
     "p-carousel": {
       "version": "2026.10.3",
-      "checksum": "sha256:feb3c4cccfc0c48890df47bc75d803d48e50651b2ad25f757744d226aca83b50",
+      "checksum": "sha256:78da51ec04428a615d555cbf7cf1bff3809c49a241b4fdf994cd386e02d67782",
       "files": [
         ".hub/c-eval-runner/LEARNINGS.md",
         ".hub/c-eval-runner/SKILL.md",
@@ -496,7 +496,7 @@
         ".hub/c-script/SKILL.md": "sha256:ba1d83d551ec02cd7ae634fe6b5fd9017f74433f54ada1a8b7b689d355efdf0c",
         ".hub/c-vision-qa/SKILL.md": "sha256:328c298e86f09327f3c6156218e32426b1653897d117e6b8057b50e15edeefc3",
         ".hub/c-vision-qa/scripts/precheck.sh": "sha256:fed240467d8c01c2b94893b272d539054fb9afad42a880f33b804e38d70a8fc8",
-        "LEARNINGS.md": "sha256:a3832d605cd8274ed9a6cd8e071f06b2c06999966c80827603ae9fd49aeb93ea",
+        "LEARNINGS.md": "sha256:c08dad82109e4d7e27585915a040b250918bd873ffd8d940e4ce5f88c4e44320",
         "SKILL.md": "sha256:744734dcb111d8fac0bf0d5d5914c97e5a70f0641c6660bc83a6bf815a391c37",
         "acceptance.json": "sha256:8c8750eaa27f126a24e1840c67f6b57413d6997d2ad613c41b37d94f726681dc",
         "brand-overrides/README.md": "sha256:ba96dcd60132107bfdb629031252b2b0a53c3f603b9ca3f87336dbec4a36c02c",
