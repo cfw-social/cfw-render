@@ -1184,10 +1184,32 @@ print(json.dumps({"saveId": sys.argv[1], "url": sys.argv[2], "checksum": "sha256
   # the lease and no later heartbeat should race that transition.
   cr_harness_heartbeat_stop
   if (( CR_H_LOCAL )); then final_outputs="$(cr_h_checkpoint final)" || return 31; fi
-  # Delivery order is this list. Do this before attempt_completed so a reel
-  # whose final video or cover is missing does not report success and then
-  # fall through with step videos (voice_track, assembled, scenes).
+  # Delivery order is this list. Do this before attempt_completed. A finished
+  # reel (not a partial stage) missing final_video or cover reports
+  # attempt_failed and names the missing file. It does not report success.
+  # Step videos (voice_track, assembled, scenes) stay out of the list.
+  # The filtered list drops both files when either is missing, so name the
+  # gap from the step outputs, before that filter runs.
+  local reel_raw="$final_outputs" reel_missing="" reel_fail=""
   final_outputs="$(cr_h_reel_delivery_outputs "$order_file" "$final_outputs" "$CR_H_RECIPE_DIR")" || return 1
+  if [[ "$nonfinal" != "1" ]]; then
+    reel_missing="$(cr_h_reel_missing_delivery "$order_file" "$reel_raw" "$CR_H_RECIPE_DIR")" || return 1
+    if [[ -n "$reel_missing" ]]; then
+      reel_fail="$(python3 -c 'import json,sys
+names = sys.argv[1].split()
+step = sys.argv[2]
+if len(names) == 1:
+    msg = names[0] + " is missing"
+else:
+    msg = " and ".join(names) + " are missing"
+body = {"message": msg}
+if step:
+    body["stepId"] = step
+print(json.dumps(body))' "$reel_missing" "$endpoint")" || return 1
+      cr_h_report attempt_failed "$reel_fail" || return $?
+      return 30
+    fi
+  fi
   cr_h_report attempt_completed '{}' || return $?
   if [[ "$nonfinal" == "1" ]]; then
     [[ -f "$order_dir/attempt-completed-ack" ]] || return 1
@@ -1197,6 +1219,66 @@ print(json.dumps({"saveId": sys.argv[1], "url": sys.argv[2], "checksum": "sha256
   return 0
 }
 
+# cr_h_reel_missing_delivery <order-file> <step-outputs-json> <recipe-dir>
+# For p-reels-spotlight and p-reels-pip, print the missing deliverable ids
+# (final_video, then cover) separated by a space. Read the step outputs from
+# before cr_h_reel_delivery_outputs: that filter drops both files when either
+# one is missing, so it cannot say which file was absent. Print nothing for
+# any other recipe, and nothing when both files are in the step outputs.
+# Keep this recipe pair the same as cr_h_reel_delivery_outputs.
+cr_h_reel_missing_delivery() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import json, os, sys
+order_path, raw, recipe_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+recipe = ""
+try:
+    order = json.load(open(order_path))
+except (OSError, ValueError):
+    order = {}
+if isinstance(order, dict):
+    manifest = order.get("manifest")
+    if isinstance(manifest, dict) and isinstance(manifest.get("recipe"), str):
+        recipe = manifest["recipe"]
+    elif isinstance(order.get("recipe"), str):
+        recipe = order["recipe"]
+if not recipe and recipe_dir:
+    recipe = os.path.basename(recipe_dir.rstrip("/"))
+if recipe not in ("p-reels-spotlight", "p-reels-pip"):
+    raise SystemExit(0)
+try:
+    items = json.loads(raw or "[]")
+except json.JSONDecodeError:
+    items = []
+if not isinstance(items, list):
+    items = []
+
+def ident(item):
+    sid = item.get("id") if isinstance(item.get("id"), str) else ""
+    if not sid and isinstance(item.get("saveId"), str):
+        sid = item["saveId"]
+    path = item.get("path") if isinstance(item.get("path"), str) else ""
+    return sid, os.path.basename(path)
+
+have_video = False
+have_cover = False
+for item in items:
+    if not isinstance(item, dict):
+        continue
+    sid, base = ident(item)
+    if sid == "final_video" or base == "final_video.mp4":
+        have_video = True
+    elif sid == "cover" or base == "cover.png":
+        have_cover = True
+missing = []
+if not have_video:
+    missing.append("final_video")
+if not have_cover:
+    missing.append("cover")
+if missing:
+    sys.stdout.write(" ".join(missing))
+PY
+}
+
 # cr_h_reel_delivery_outputs <order-file> <outputs-json> <recipe-dir>
 # p-reels-spotlight and p-reels-pip: Reviews must show saves/final_video.mp4.
 # The cover still is attached, second. Earlier videos (voice_track,
@@ -1204,7 +1286,9 @@ print(json.dumps({"saveId": sys.argv[1], "url": sys.argv[2], "checksum": "sha256
 # deliverables. Captions stay so the worker can send them beside the media.
 # Any other recipe is returned unchanged, in the same order the steps saved.
 # A reel missing final_video or cover contributes no media, so an intermediate
-# cannot become outputUrl.
+# cannot become outputUrl. This function still returns that filtered list.
+# cr_harness_run reports attempt_failed, naming the missing file, instead of
+# attempt_completed.
 cr_h_reel_delivery_outputs() {
   python3 -c '
 import json, os, sys

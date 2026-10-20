@@ -8612,6 +8612,167 @@ done <<EOF
 $wi268_out
 EOF
 
+echo "=== Case 47: WI2.66 — a reel missing final_video or cover fails the attempt ==="
+# A reel whose delivery list has no final_video, or no cover, used to report
+# attempt_completed with no media. The worker then blocked. The attempt must
+# fail and the reason must name the missing file. A reel with both still
+# completes, and step videos stay out of that list.
+wi266_run() {
+  local slug="$1" mode="$2" root rc=0 detail=""
+  root="$(mktemp -d)"
+  python3 - "$root/order.json" "$slug" "$mode" <<'PY'
+import json, sys
+dest, slug, mode = sys.argv[1:]
+saves = [{"id": "voice_track", "kind": "video"}]
+if mode != "missing-video":
+    saves.append({"id": "final_video", "kind": "video"})
+if mode != "missing-cover":
+    saves.append({"id": "cover", "kind": "image"})
+saves.append({"id": "captions", "kind": "json"})
+json.dump({
+    "id": "order-wi266",
+    "attempt": {"id": "att-wi266"},
+    "recipe": slug,
+    "kind": "video",
+    "taskOrder": {},
+    "inputs": {},
+    "manifest": {
+        "recipe": slug,
+        "recipeVersion": "2026.10.2",
+        "steps": [{
+            "id": "render",
+            "runsOn": "computer",
+            "when": "always",
+            "saves": saves,
+        }],
+    },
+}, open(dest, "w"))
+PY
+  python3 - "$root/engine.sh" <<'PY'
+import pathlib, sys
+pathlib.Path(sys.argv[1]).write_text("""#!/usr/bin/env bash
+set -eu
+cat >/dev/null
+mkdir -p saves
+for sv in ${CFW_STEP_SAVES:-}; do
+  sid="${sv%%:*}"
+  ext="${sv##*:}"
+  printf '%s\\n' "${sid}-bytes" > "saves/${sid}.${ext}"
+done
+""")
+PY
+  chmod +x "$root/engine.sh"
+  (
+    export CFW_RENDER_LOG_DIR="$root/logs"
+    export CFW_RENDER_STATE_DIR="$root/state"
+    export CFW_RENDER_ENGINE=codex
+    export CFW_RENDER_ENGINE_CMD="$root/engine.sh"
+    export CFW_WORKER_ID="w-wi266"
+    export CFW_ORDER_ID="order-wi266"
+    export CFW_API_BASE="http://127.0.0.1:9"
+    export CFW_RENDER_WORKER_KEY="cfw_render_wi266testkey0000"
+    export CFW_RENDER_HEARTBEAT_SEC=30
+    export CFW_RENDER_STEP_TIMEOUT_SEC=60
+    export WI266_REPORTS="$root/reports.ndjson"
+    unset CFW_RENDER_SKILLS_DIR
+    unset CFW_RENDER_LOCAL_CHECKPOINTS
+    mkdir -p "$root/logs" "$root/state"
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-lib.sh"
+    source "$REPO_DIR/bin/cfw-render-engine.sh"
+    source "$REPO_DIR/bin/cfw-render-harness.sh"
+    cr_harness_heartbeat_start() { :; }
+    cr_harness_heartbeat_stop() { :; }
+    cr_h_run_with_timeout() { shift; "$@"; }
+    cr_engine_limit_detect() { return 1; }
+    cr_h_upload_with_retry() { printf 'https://media.cfw.social/%s' "$(basename "$1")"; }
+    cr_report_step() {
+      python3 -c 'import json,sys
+open(sys.argv[1], "a").write(json.dumps({"event": sys.argv[2], "extra": json.loads(sys.argv[3])}) + "\n")' \
+        "$WI266_REPORTS" "$5" "$6" || return 1
+      printf '%s' '{"ok":true,"directive":"continue"}'
+    }
+    cr_harness_run "$root/order.json" "$root" "$root/recipe" >"$root/harness.out" 2>"$root/harness.err"
+  )
+  rc=$?
+  printf '%s\n' "$rc" > "$root/rc"
+  detail="$(python3 - "$root" "$mode" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+mode = sys.argv[2]
+rc = (root / "rc").read_text(encoding="utf-8").strip() if (root / "rc").is_file() else ""
+err = ""
+err_path = root / "harness.err"
+if err_path.is_file():
+    err = err_path.read_text(errors="replace")[-500:].replace("\n", " | ")
+events = []
+reports = root / "reports.ndjson"
+if reports.is_file():
+    for line in reports.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            events.append(json.loads(line))
+names = [e.get("event") for e in events]
+failed = [e for e in events if e.get("event") == "attempt_failed"]
+completed = [e for e in events if e.get("event") == "attempt_completed"]
+bad = []
+if mode == "complete":
+    if rc != "0":
+        bad.append("rc=%s err=%s" % (rc, err))
+    if names[-1:] != ["attempt_completed"]:
+        bad.append("events=%s err=%s" % (names, err))
+    if failed:
+        bad.append("attempt_failed=%r" % failed)
+    try:
+        items = json.loads((root / "harness.out").read_text(encoding="utf-8"))
+    except Exception as exc:
+        bad.append("stdout %s" % exc)
+        items = None
+    if isinstance(items, list):
+        ids = [i.get("id") for i in items if isinstance(i, dict)]
+        if ids != ["final_video", "cover", "captions"]:
+            bad.append("ids=%r" % ids)
+        if "voice_track" in json.dumps(items):
+            bad.append("leaked voice_track")
+else:
+    want = "final_video" if mode == "missing-video" else "cover"
+    if rc != "30":
+        bad.append("rc=%s err=%s events=%s" % (rc, err, names))
+    if "attempt_completed" in names:
+        bad.append("attempt_completed events=%s" % names)
+    if len(failed) != 1:
+        bad.append("attempt_failed count=%d events=%s err=%s" % (len(failed), names, err))
+    else:
+        msg = (failed[0].get("extra") or {}).get("message") or ""
+        if msg != want + " is missing":
+            bad.append("message=%r" % msg)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+  rm -rf "$root"
+  printf '%s\n' "$detail"
+}
+
+for wi266_slug in p-reels-spotlight p-reels-pip; do
+  wi266_detail="$(wi266_run "$wi266_slug" missing-video)"
+  if [[ "$wi266_detail" == "ok" ]]; then
+    pass "WI2.66 $wi266_slug missing final_video reports attempt_failed, not attempt_completed"
+  else
+    fail "WI2.66 $wi266_slug missing final_video" "$wi266_detail"
+  fi
+  wi266_detail="$(wi266_run "$wi266_slug" missing-cover)"
+  if [[ "$wi266_detail" == "ok" ]]; then
+    pass "WI2.66 $wi266_slug missing cover reports attempt_failed, not attempt_completed"
+  else
+    fail "WI2.66 $wi266_slug missing cover" "$wi266_detail"
+  fi
+  wi266_detail="$(wi266_run "$wi266_slug" complete)"
+  if [[ "$wi266_detail" == "ok" ]]; then
+    pass "WI2.66 $wi266_slug with final_video and cover reports attempt_completed"
+  else
+    fail "WI2.66 $wi266_slug complete reel" "$wi266_detail"
+  fi
+done
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
