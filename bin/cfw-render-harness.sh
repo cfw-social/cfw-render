@@ -10,6 +10,7 @@
 #   $ORDER_DIR/steps/<stepId>/inputs/<inputId>/   files from the claim's `inputs`
 #   $ORDER_DIR/steps/<stepId>/prior/<saveId>.<ext> earlier steps' saves (copied)
 #   $ORDER_DIR/steps/<stepId>/saves/<saveId>.<ext> what the step must write
+#   $ORDER_DIR/steps/<stepId>/brief.json           order brief (no secrets or provider keys)
 #   $ORDER_DIR/steps/<stepId>/needs_input.json     {inputId, reason, count?}
 #   $ORDER_DIR/steps/<stepId>/prompt.md            _shared.md + instructions + ## Order
 #   $ORDER_DIR/logs/<stepId>.log                   engine stdout+stderr
@@ -355,9 +356,106 @@ PY
   fi
 }
 
+# cr_h_write_brief <workdir> <order-file> — step workdir/brief.json.
+# Fields the recipe steps read: recipe, intent, targets, brand (slug, name,
+# palette/typography when present, brief text, optional imageStyle, and
+# heygen/elevenlabs ids when the brand has them) and options. Credentials
+# and provider keys are left in order.json; they are not copied here.
+cr_h_write_brief() {
+  python3 - "$2" "$1/brief.json" <<'PY'
+import json, sys
+
+def as_dict(value):
+    return value if isinstance(value, dict) else {}
+
+def text(value):
+    return value if isinstance(value, str) and value else None
+
+def secret_key(key):
+    folded = str(key).lower().replace("-", "").replace("_", "")
+    return any(part in folded for part in (
+        "token", "secret", "password", "credential", "apikey", "privatekey",
+        "authorization", "providerkey", "workerkey"))
+
+def scrub(value):
+    if isinstance(value, dict):
+        return {key: scrub(item) for key, item in value.items() if not secret_key(key)}
+    if isinstance(value, list):
+        return [scrub(item) for item in value]
+    return value
+
+def id_value(block, *names):
+    block = as_dict(block)
+    for name in names:
+        found = text(block.get(name))
+        if found:
+            return found
+    return None
+
+order = json.load(open(sys.argv[1]))
+task = as_dict(order.get("taskOrder"))
+manifest = as_dict(order.get("manifest"))
+brand_src = as_dict(task.get("brand")) or as_dict(order.get("brand"))
+recipe = text(task.get("recipe")) or text(order.get("recipe")) or text(manifest.get("recipe")) or ""
+intent = text(task.get("intent"))
+if intent is None:
+    intent = text(order.get("intent")) or ""
+raw_targets = task.get("targets")
+if not isinstance(raw_targets, list):
+    raw_targets = order.get("targets") if isinstance(order.get("targets"), list) else []
+fonts = brand_src.get("fonts") if isinstance(brand_src.get("fonts"), dict) else None
+typography = brand_src.get("typography") if isinstance(brand_src.get("typography"), dict) else fonts
+brand = {}
+slug = text(brand_src.get("slug")) or text(order.get("brandSlug"))
+name = text(brand_src.get("name")) or text(order.get("brandName"))
+brief_text = text(brand_src.get("brief"))
+image_style = text(brand_src.get("imageStyle"))
+if slug:
+    brand["slug"] = slug
+if name:
+    brand["name"] = name
+if brief_text:
+    brand["brief"] = brief_text
+if isinstance(brand_src.get("palette"), dict):
+    brand["palette"] = scrub(brand_src["palette"])
+if isinstance(typography, dict):
+    brand["typography"] = scrub(typography)
+if isinstance(fonts, dict):
+    brand["fonts"] = scrub(fonts)
+if image_style:
+    brand["imageStyle"] = image_style
+heygen = {}
+avatar = id_value(brand_src.get("heygen"), "avatarId", "avatar_id")
+voice = id_value(brand_src.get("heygen"), "voiceId", "voice_id")
+if avatar:
+    heygen["avatarId"] = avatar
+if voice:
+    heygen["voiceId"] = voice
+if heygen:
+    brand["heygen"] = heygen
+eleven_voice = id_value(brand_src.get("elevenlabs"), "voiceId", "voice_id")
+if eleven_voice:
+    brand["elevenlabs"] = {"voiceId": eleven_voice}
+options = task.get("options")
+if not isinstance(options, dict):
+    options = order.get("options") if isinstance(order.get("options"), dict) else {}
+brief = {
+    "recipe": recipe,
+    "intent": intent,
+    "targets": [item for item in raw_targets if isinstance(item, str)],
+    "brand": brand,
+    "options": scrub(options),
+}
+with open(sys.argv[2], "w") as handle:
+    json.dump(brief, handle, indent=2, ensure_ascii=False)
+    handle.write("\n")
+PY
+}
+
 # cr_h_stage_inputs <workdir> <order-file> — copy/download claim inputs.
 cr_h_stage_inputs() {
   local workdir="$1" order_file="$2" iid src dest
+  cr_h_write_brief "$workdir" "$order_file" || return 1
   while IFS=$'\x1f' read -r iid src; do
     [[ -n "$iid" && -n "$src" ]] || continue
     dest="$workdir/inputs/$iid"; mkdir -p "$dest"
@@ -641,7 +739,7 @@ o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alt
 
     local workdir="$order_dir/steps/$step_id" log="$order_dir/logs/$step_id.log"
     mkdir -p "$workdir/inputs" "$workdir/prior" "$workdir/saves"
-    cr_h_stage_inputs "$workdir" "$order_file"
+    cr_h_stage_inputs "$workdir" "$order_file" || return 1
     for p in ${completed_saves[@]+"${completed_saves[@]}"}; do cp "$p" "$workdir/prior/" 2>/dev/null || true; done
 
     local run=0 checks_json="[]" passed=0 ask d waited

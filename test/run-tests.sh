@@ -3474,6 +3474,113 @@ else
 fi
 rm -rf "$c19h"
 
+echo "--- 19j: render_slides workdir gets brief.json from the order, without secrets"
+c19j="$(mktemp -d)"
+mkdir -p "$c19j/skills/p-carousel/steps" "$c19j/mockstate" "$c19j/control" "$c19j/cr-scratch" "$c19j/cr-state"
+python3 -c '
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+manifest = {
+    "recipe": "p-carousel",
+    "recipeVersion": "9.9.9",
+    "steps": [
+        {"id": "outline", "runsOn": "computer", "weight": 20, "instructions": "steps/01-outline.md",
+         "saves": [{"id": "outline", "kind": "json"}]},
+        {"id": "render_slides", "runsOn": "computer", "weight": 80, "instructions": "steps/03-render-slides.md",
+         "saves": [{"id": "cover", "kind": "image"}], "maxCheckRetries": 0,
+         "checks": [{"id": "slide_dims"}]},
+    ],
+}
+recipe = root / "skills" / "p-carousel"
+(recipe / "manifest.json").write_text(json.dumps(manifest))
+(recipe / "steps" / "01-outline.md").write_text("outline\n")
+(recipe / "steps" / "03-render-slides.md").write_text("render\n")
+token = "brief-must-not-copy-token"
+brand_key = "brief-must-not-copy-brandkey"
+option_key = "brief-must-not-copy-optionkey"
+task = {
+    "version": 1, "orderId": "order-brief-1",
+    "brand": {
+        "id": "brand-1", "slug": "test-brand", "name": "Test Brand", "brief": "brand brief text",
+        "palette": {"bg": "#0F172A", "accent": "#F97316", "apiKey": brand_key},
+        "typography": {"body": "Inter", "display": "Oswald"},
+        "imageStyle": "editorial daylight", "apiKey": brand_key,
+        "heygen": {"avatarId": "avatar-ok", "voiceId": "voice-ok", "accessToken": token},
+        "elevenlabs": {"voiceId": "el-voice-ok", "apiKey": brand_key},
+    },
+    "kind": "image", "recipe": "p-carousel", "workspaceId": "ws-1",
+    "intent": "listing open house", "ingredients": [], "targets": ["instagram", "linkedin"],
+    "options": {"num_slides": 5, "apiKey": option_key},
+    "credentials": {"heygen": {"accessToken": token, "mode": "oauth"}},
+    "providerKeys": {"kie": brand_key},
+}
+order = {
+    "id": "order-brief-1", "brandId": "brand-1", "brandName": "Test Brand", "workspaceId": "ws-1",
+    "kind": "image", "recipe": "p-carousel", "recipeVersion": "9.9.9",
+    "manifest": str(recipe / "manifest.json"), "inputs": {}, "status": "queued",
+    "priority": 0, "attempts": 1, "taskOrder": task,
+}
+(root / "queue.json").write_text(json.dumps([order]))
+' "$c19j"
+c19_state="$c19j/mockstate"; c19_ctl="$c19j/control"
+c19j_port=$((MOCK_PORT_BASE + 930))
+c19_pid="$(CFW_MOCK_CONTROL_DIR="$c19_ctl" start_mock "$c19j/queue.json" "$c19_state" "$c19j_port")"
+c19_worker "$c19j" "$c19j_port" FAKE_ENGINE_FAIL_STEP=render_slides FAKE_ENGINE_FAIL_CHECK_TIMES=1
+kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
+c19j_ev="$(c19_events "$c19_ctl/reports.ndjson")"
+if python3 -c '
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+order_dir = root / "cr-scratch" / "test-brand" / "order-brief-1"
+needles = ("brief-must-not-copy-token", "brief-must-not-copy-brandkey", "brief-must-not-copy-optionkey")
+problems = []
+for step in ("outline", "render_slides"):
+    path = order_dir / "steps" / step / "brief.json"
+    if not path.is_file():
+        problems.append(step + " brief.json missing")
+        continue
+    raw = path.read_text()
+    if any(needle in raw for needle in needles):
+        problems.append(step + " brief.json contains a planted secret")
+    data = json.loads(raw)
+    brand = data.get("brand") if isinstance(data.get("brand"), dict) else {}
+    heygen = brand.get("heygen") if isinstance(brand.get("heygen"), dict) else {}
+    eleven = brand.get("elevenlabs") if isinstance(brand.get("elevenlabs"), dict) else {}
+    palette = brand.get("palette") if isinstance(brand.get("palette"), dict) else {}
+    typography = brand.get("typography") if isinstance(brand.get("typography"), dict) else {}
+    if data.get("recipe") != "p-carousel":
+        problems.append(step + " recipe")
+    if data.get("intent") != "listing open house":
+        problems.append(step + " intent")
+    if data.get("targets") != ["instagram", "linkedin"]:
+        problems.append(step + " targets")
+    if brand.get("slug") != "test-brand" or brand.get("name") != "Test Brand" or brand.get("brief") != "brand brief text":
+        problems.append(step + " brand text")
+    if palette.get("bg") != "#0F172A" or "apiKey" in palette:
+        problems.append(step + " palette")
+    if typography.get("body") != "Inter":
+        problems.append(step + " typography")
+    if brand.get("imageStyle") != "editorial daylight":
+        problems.append(step + " imageStyle")
+    if heygen.get("avatarId") != "avatar-ok" or heygen.get("voiceId") != "voice-ok" or "accessToken" in heygen:
+        problems.append(step + " heygen ids")
+    if eleven.get("voiceId") != "el-voice-ok" or "apiKey" in eleven:
+        problems.append(step + " elevenlabs id")
+    if data.get("options") != {"num_slides": 5}:
+        problems.append(step + " options")
+    for banned in ("credentials", "providerKeys", "apiKey", "accessToken"):
+        if banned in data or banned in brand:
+            problems.append(step + " banned " + banned)
+if problems:
+    sys.stderr.write("brief.json checks failed: " + ", ".join(problems) + "\n")
+    sys.exit(1)
+' "$c19j" && [[ "$c19j_ev" == *"step_started:render_slides"* ]]; then
+  pass "harness: render_slides workdir brief.json has recipe=p-carousel and intent, and no secrets"
+else
+  fail "harness: render_slides brief.json" "events=$c19j_ev; $(tail -n 5 "$c19j/worker.out" 2>/dev/null)"
+fi
+rm -rf "$c19j"
+
 echo "--- 19i: the five real batch-1 manifests (M2-06) — every computer step starts and completes against the mock"
 # c19i_setup <dir> <port> <recipe> — like c19_setup but on a real skills/<recipe> (manifest + steps copied in),
 # inputs {} (the fake engine writes every save; required-at-start inputs are not enforced by the harness),
