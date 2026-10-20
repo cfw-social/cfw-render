@@ -241,7 +241,13 @@ NOTE
 # selected. Captions still come from the harness result or
 # steps/captions/saves/captions.json.
 #
-# Otherwise keep every media path from the harness result, plus captions.
+# Otherwise (WI2.51) keep harness media, plus captions, but drop a save the
+# order manifest marks "preview": true when that save is a contact sheet
+# (id ends with _sheet) or the QA image id "final". Match the harness item
+# by save id, or by file basename stem when the item has no id.
+# Numbered graphics (image_1), cover, and video/audio stay even if the
+# manifest also flags them preview: the real file is the deliverable.
+# If every media path was one of those previews, print no media.
 # ---------------------------------------------------------------------------
 cr_select_deliverables() {
   local order_dir="$1" h_out="${2:-[]}"
@@ -273,6 +279,58 @@ def captions_path():
         return fallback
     return ""
 
+def order_manifest():
+    path = os.path.join(order_dir, "order.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        order = json.load(open(path))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(order, dict):
+        return None
+    manifest = order.get("manifest")
+    if isinstance(manifest, str) and manifest:
+        mpath = manifest if os.path.isabs(manifest) else os.path.join(order_dir, manifest)
+        try:
+            manifest = json.load(open(mpath))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+    return manifest if isinstance(manifest, dict) else None
+
+def preview_drop_ids(manifest):
+    # Sheets and the QA image "final" are not deliverables. Other preview
+    # flags (image_N, cover, final_video) name the file the customer gets.
+    drop = set()
+    if not isinstance(manifest, dict):
+        return drop
+    for step in manifest.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        for save in step.get("saves") or []:
+            if not isinstance(save, dict) or save.get("preview") is not True:
+                continue
+            sid = save.get("id")
+            kind = save.get("kind") if isinstance(save.get("kind"), str) else ""
+            if not isinstance(sid, str) or not sid:
+                continue
+            if kind in ("video", "audio", "text", "json"):
+                continue
+            if sid == "final" or sid.endswith("_sheet"):
+                drop.add(sid)
+    return drop
+
+PREVIEW_DROP = preview_drop_ids(order_manifest())
+
+def item_save_id(item, path):
+    sid = item.get("id")
+    if isinstance(sid, str) and sid:
+        return sid
+    sid = item.get("saveId")
+    if isinstance(sid, str) and sid:
+        return sid
+    return os.path.splitext(os.path.basename(path))[0]
+
 def emit_default():
     for item in items:
         path = item.get("path") or ""
@@ -282,6 +340,8 @@ def emit_default():
         if is_captions(item, path):
             print(path + "\tcaptions")
         elif ext in MEDIA:
+            if item_save_id(item, path) in PREVIEW_DROP:
+                continue
             print(path + "\tmedia")
 
 # Carousel: slides.json is the ordered set contract. Prefer saves/slide_N.png,

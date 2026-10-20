@@ -5988,6 +5988,91 @@ fi
 rm -rf "$wi243_reel"
 rm -rf "$wi243"
 
+echo "=== Case 39b: p-gfx-image select keeps image_1, drops preview sheet and final (WI2.51) ==="
+# Smoke 12 delivered image_1.png plus contact_sheet.png and final.png. The
+# recipe manifest marks contact_sheet and final preview:true. image_1 is the
+# graphic and must be the only media line. A result with only those previews
+# selects nothing (no fallback). contact_sheet is matched by basename stem
+# because that harness item has no id.
+wi251="$(mktemp -d)"
+mkdir -p "$wi251/steps/render/saves" "$wi251/steps/qa_gate/saves" "$wi251/steps/captions/saves"
+printf 'graphic' > "$wi251/steps/render/saves/image_1.png"
+printf 'sheet' > "$wi251/steps/render/saves/contact_sheet.png"
+printf 'qa-final' > "$wi251/steps/qa_gate/saves/final.png"
+printf '{"instagram":"Graphic caption","default":"Graphic caption"}' > "$wi251/steps/captions/saves/captions.json"
+python3 - "$wi251/order.json" "$REPO_DIR/skills/p-gfx-image/manifest.json" <<'PY'
+import json, sys
+dest, man_path = sys.argv[1], sys.argv[2]
+man = json.load(open(man_path))
+json.dump({
+    "id": "order-wi251",
+    "recipe": man.get("recipe"),
+    "recipeVersion": man.get("recipeVersion"),
+    "manifest": man,
+}, open(dest, "w"))
+PY
+wi251_h="$(python3 -c '
+import json, sys
+root = sys.argv[1]
+print(json.dumps([
+  {"id": "image_1", "path": root + "/steps/render/saves/image_1.png"},
+  {"path": root + "/steps/render/saves/contact_sheet.png"},
+  {"id": "final", "path": root + "/steps/qa_gate/saves/final.png"},
+  {"id": "captions", "path": root + "/steps/captions/saves/captions.json"},
+]))
+' "$wi251")"
+wi251_sel="$(
+  # shellcheck disable=SC1091
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_select_deliverables "$wi251" "$wi251_h"
+)"
+wi251_sel_check="$(python3 - "$wi251" "$wi251_sel" "$REPO_DIR/skills/p-gfx-image/manifest.json" <<'PY'
+import json, os, sys
+root, text, man_path = sys.argv[1], sys.argv[2], sys.argv[3]
+man = json.load(open(man_path))
+flags = {}
+for step in man.get("steps") or []:
+    for save in step.get("saves") or []:
+        flags[save.get("id")] = save.get("preview")
+lines = [l for l in text.splitlines() if l.strip()]
+want = [
+    root + "/steps/render/saves/image_1.png\tmedia",
+    root + "/steps/captions/saves/captions.json\tcaptions",
+]
+bad = []
+if flags.get("contact_sheet") is not True or flags.get("final") is not True:
+    bad.append("manifest preview flags changed: %r" % {k: flags.get(k) for k in ("image_1", "contact_sheet", "final")})
+if lines != want:
+    bad.append("selected=%r want=%r" % (lines, want))
+joined = "\n".join(lines)
+if "contact_sheet" in joined or "final.png" in joined:
+    bad.append("preview leaked into selection")
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi251_sel_check" == "ok" ]]; then
+  pass "gfx select: image_1.png + captions, no contact_sheet or final"
+else
+  fail "gfx select drops preview saves" "$wi251_sel_check"
+fi
+wi251_only_preview="$(
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_select_deliverables "$wi251" "$(python3 -c '
+import json, sys
+root = sys.argv[1]
+print(json.dumps([
+  {"path": root + "/steps/render/saves/contact_sheet.png"},
+  {"id": "final", "path": root + "/steps/qa_gate/saves/final.png"},
+]))
+' "$wi251")"
+)"
+if [[ -z "$wi251_only_preview" ]]; then
+  pass "gfx select: preview-only result selects nothing (no sheet/final fallback)"
+else
+  fail "gfx select preview-only" "expected empty, got: $wi251_only_preview"
+fi
+rm -rf "$wi251"
+
 echo "=== Case 40: WI2.45 — one selector, resume with clean work, slide saves, version ==="
 # Finding 1: worker must call the tested cr_select_deliverables (no inline copy).
 if grep -q 'cr_select_deliverables' "$REPO_DIR/bin/cfw-render.sh" \
