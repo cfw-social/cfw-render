@@ -513,6 +513,9 @@ PY
 # values stay on the copy/download path below. The text is taken from JSON;
 # it is never eval'd. An input name containing / or .. is refused so a staged
 # file cannot land outside inputs/.
+# Social sends inputs as a list: [{inputId, items:[{kind, url}]}]. inputId is
+# the input name. Each item is staged the same way as a dict value. The older
+# dict form {name: value} still works. An empty list stages nothing.
 cr_h_stage_inputs() {
   local workdir="$1" order_file="$2" iid src dest list err py_rc=0
   cr_h_write_brief "$workdir" "$order_file" || return 1
@@ -534,7 +537,26 @@ def write_text(key, text):
     with open(os.path.join(folder, str(key) + ".md"), "w", encoding="utf-8", newline="") as handle:
         handle.write(text)
 
-for key, value in (order.get("inputs") or {}).items():
+raw_inputs = order.get("inputs")
+if isinstance(raw_inputs, dict):
+    named_inputs = list(raw_inputs.items())
+elif isinstance(raw_inputs, list):
+    named_inputs = []
+    for entry in raw_inputs:
+        if not isinstance(entry, dict):
+            continue
+        key = entry.get("inputId")
+        if not isinstance(key, str) or key == "":
+            continue
+        if "items" not in entry:
+            continue
+        named_inputs.append((key, entry.get("items")))
+elif not raw_inputs:
+    named_inputs = []
+else:
+    named_inputs = raw_inputs.items()
+
+for key, value in named_inputs:
     if name_refused(key):
         print(key, file=sys.stderr)
         refused = True

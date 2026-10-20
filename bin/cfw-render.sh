@@ -328,7 +328,14 @@ print("\x1f".join([mode, token, expires, pool, expired]))
   # Director. Completion goes through cfw-render-report.sh complete with the
   # LAST completed step's saves, exactly like the Director path does.
   if [[ "$(python3 -c 'import json,sys; print("1" if json.load(sys.stdin).get("manifest") else "0")' <<< "$order_json" 2>/dev/null)" == "1" ]]; then
-    local h_rc=0 h_out="" h_outcome="harness-failed"
+    local h_rc=0 h_out="" h_outcome="harness-failed" h_fail_reason="" h_log_at=0
+    local h_log="${CFW_RENDER_LOG_DIR:-${CFW_RENDER_STATE_DIR:-$HOME/.cfw-render}}/cfw-render.log"
+    # Only harness lines written during this run name the failure. Older lines
+    # in the shared log belong to other orders.
+    if [[ -f "$h_log" ]]; then
+      h_log_at="$(wc -c < "$h_log" | tr -d '[:space:]')" || h_log_at=0
+    fi
+    case "$h_log_at" in ""|*[!0-9]*) h_log_at=0 ;; esac
     # The harness result goes through a file, not $(...): the harness forks a
     # heartbeat loop and the engine CLI, and any inherited stdout would hold a
     # command substitution open after the step loop has already returned.
@@ -375,6 +382,68 @@ print("\x1f".join([mode, token, expires, pool, expired]))
     else
       case "$h_rc" in 20) h_outcome="cancelled" ;; 21) h_outcome="released" ;; 22) h_outcome="revoked" ;; 23) h_outcome="superseded" ;; 24) h_outcome="engine_limit" ;; 25) h_outcome="stage-completed" ;; 30) h_outcome="failed" ;; 31) h_outcome="checkpoint-blocked" ;; esac
       cr_log "order $order_id — harness exited $h_rc ($h_outcome)"
+      # WI2.54: exit 1 means the harness stopped before it reported
+      # attempt_failed (input staging is the live case). Report it now so the
+      # order fails instead of staying claimed until the lease ends. Other
+      # exit codes already reported, released, or completed.
+      if (( h_rc == 1 )); then
+        local h_attempt_id="" h_detail="" h_fail_json="" h_seq="0"
+        h_attempt_id="$(python3 -c '
+import json, sys
+try:
+    order = json.load(open(sys.argv[1]))
+except Exception:
+    order = {}
+if not isinstance(order, dict):
+    order = {}
+attempt = order.get("attempt") if isinstance(order.get("attempt"), dict) else {}
+aid = attempt.get("id") if isinstance(attempt.get("id"), str) else ""
+if not aid and isinstance(order.get("attemptId"), str):
+    aid = order["attemptId"]
+print(aid)
+' "$order_dir/order.json" 2>/dev/null)" || h_attempt_id=""
+        h_detail="$(python3 -c '
+import sys
+path, start = sys.argv[1], sys.argv[2]
+try:
+    start = int(start)
+except ValueError:
+    start = 0
+try:
+    with open(path, "rb") as handle:
+        handle.seek(max(0, start))
+        data = handle.read().decode("utf-8", "replace")
+except Exception:
+    data = ""
+detail = ""
+for line in data.splitlines():
+    if "harness:" not in line:
+        continue
+    text = " ".join(line.split("harness:", 1)[1].split())
+    if text:
+        detail = text
+print(detail[:180])
+' "$h_log" "$h_log_at" 2>/dev/null)" || h_detail=""
+        if [[ -n "$h_detail" ]]; then
+          h_fail_reason="harness-failed: $h_detail"
+        else
+          h_fail_reason="harness-failed"
+        fi
+        if [[ -n "$h_attempt_id" ]]; then
+          if [[ -f "$order_dir/seq" ]]; then
+            h_seq="$(tr -d '[:space:]' < "$order_dir/seq" 2>/dev/null || true)"
+          fi
+          case "$h_seq" in
+            ""|*[!0-9]*) h_seq=0 ;;
+          esac
+          h_seq=$(( h_seq + 1 ))
+          h_fail_json="$(python3 -c 'import json,sys; print(json.dumps({"message": sys.argv[1]}))' "$h_fail_reason" 2>/dev/null)" || h_fail_json='{"message":"harness-failed"}'
+          cr_report_step "$order_id" "$CFW_WORKER_ID" "$h_attempt_id" "$h_seq" attempt_failed "$h_fail_json" >/dev/null \
+            || cr_log "order $order_id — attempt_failed report was not acknowledged; lease expiry is the backstop"
+        else
+          cr_log "order $order_id — harness exited 1 without an attempt id; lease expiry is the backstop"
+        fi
+      fi
       # [M2-04, D76] stop_after_step (22) and attempt_superseded (23): this
       # brand is no longer ours to serve from this computer — delete the
       # order folder (order.json carries the brand's credentials/providerKeys,

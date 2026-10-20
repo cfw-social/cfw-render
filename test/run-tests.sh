@@ -6937,6 +6937,239 @@ else
 fi
 rm -rf "$wi250b"
 
+# WI2.54: Social sends inputs as a list of {inputId, items:[{kind,url}]}.
+# A video item is staged under inputs/<inputId>/. The old dict form still
+# stages. A list inputId with / or .. is refused. An empty list stages nothing.
+wi254="$(mktemp -d)"
+wi254_detail="$(
+  dir="$wi254"
+  mkdir -p "$dir/list/work" "$dir/dict/work" "$dir/empty/work" "$dir/unsafe/work"
+  python3 - "$dir/list/order.json" "$dir/dict/order.json" "$dir/empty/order.json" "$dir/unsafe/order.json" <<'PY'
+import json, sys
+list_path, dict_path, empty_path, unsafe_path = sys.argv[1:]
+json.dump({
+    "id": "ord-wi254-list",
+    "inputs": [{
+        "inputId": "talking_head",
+        "items": [{"kind": "video", "url": "http://127.0.0.1:9/media/talking-head.mp4?sig=1"}],
+    }],
+}, open(list_path, "w"))
+json.dump({
+    "id": "ord-wi254-dict",
+    "inputs": {
+        "topic": "Three tips for first-time buyers",
+        "talking_head": [{"kind": "video", "url": "http://127.0.0.1:9/media/dict-head.mp4"}],
+    },
+}, open(dict_path, "w"))
+json.dump({"id": "ord-wi254-empty", "inputs": []}, open(empty_path, "w"))
+json.dump({
+    "id": "ord-wi254-unsafe",
+    "inputs": [
+        {"inputId": "../outside", "items": [{"kind": "video", "url": "http://127.0.0.1:9/bad.mp4"}]},
+        {"inputId": "nested/name", "items": [{"kind": "video", "url": "http://127.0.0.1:9/bad2.mp4"}]},
+    ],
+}, open(unsafe_path, "w"))
+PY
+  # shellcheck disable=SC1091
+  source "$REPO_DIR/bin/cfw-render-harness.sh"
+  cr_log() { printf '%s\n' "$*" >> "$dir/harness.log"; }
+  curl() {
+    local out="" prev="" arg
+    for arg in "$@"; do
+      if [[ "$prev" == "-o" ]]; then out="$arg"; fi
+      prev="$arg"
+    done
+    printf '%s\n' "$prev" >> "$dir/curl.urls"
+    if [[ -n "$out" ]]; then printf 'video-bytes\n' > "$out"; fi
+  }
+  list_rc=0
+  cr_h_stage_inputs "$dir/list/work" "$dir/list/order.json" || list_rc=$?
+  dict_rc=0
+  cr_h_stage_inputs "$dir/dict/work" "$dir/dict/order.json" || dict_rc=$?
+  empty_rc=0
+  cr_h_stage_inputs "$dir/empty/work" "$dir/empty/order.json" || empty_rc=$?
+  unsafe_rc=0
+  cr_h_stage_inputs "$dir/unsafe/work" "$dir/unsafe/order.json" || unsafe_rc=$?
+  python3 - "$dir" "$list_rc" "$dict_rc" "$empty_rc" "$unsafe_rc" <<'PY'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+list_rc, dict_rc, empty_rc, unsafe_rc = sys.argv[2:]
+problems = []
+if list_rc != "0":
+    problems.append("list rc=%s" % list_rc)
+video = root / "list/work/inputs/talking_head/talking-head.mp4"
+if not video.is_file() or video.read_text(encoding="utf-8") != "video-bytes\n":
+    problems.append("list video missing")
+if (root / "list/work/inputs/talking_head/talking_head.md").exists():
+    problems.append("list video written as text")
+if dict_rc != "0":
+    problems.append("dict rc=%s" % dict_rc)
+topic = root / "dict/work/inputs/topic/topic.md"
+if not topic.is_file() or topic.read_text(encoding="utf-8") != "Three tips for first-time buyers":
+    problems.append("dict topic=%r" % (topic.read_text(encoding="utf-8") if topic.is_file() else None))
+dict_video = root / "dict/work/inputs/talking_head/dict-head.mp4"
+if not dict_video.is_file() or dict_video.read_text(encoding="utf-8") != "video-bytes\n":
+    problems.append("dict video missing")
+if empty_rc != "0":
+    problems.append("empty rc=%s" % empty_rc)
+empty_inputs = root / "empty/work/inputs"
+if empty_inputs.exists() and any(empty_inputs.rglob("*")):
+    problems.append("empty list staged files")
+if unsafe_rc != "1":
+    problems.append("unsafe rc=%s" % unsafe_rc)
+unsafe = (root / "unsafe/work").resolve()
+for path in unsafe.rglob("*"):
+    if not path.is_file():
+        continue
+    rel = path.relative_to(unsafe).as_posix()
+    if rel != "brief.json" and not rel.startswith("inputs/"):
+        problems.append("escaped %s" % rel)
+outside = root / "unsafe/outside"
+nested = root / "unsafe/work/inputs/nested"
+if outside.exists() or nested.exists() or (root / "outside").exists():
+    problems.append("unsafe path was created")
+urls = (root / "curl.urls").read_text(encoding="utf-8") if (root / "curl.urls").is_file() else ""
+if "http://127.0.0.1:9/media/talking-head.mp4?sig=1" not in urls:
+    problems.append("list url not downloaded")
+if "http://127.0.0.1:9/media/dict-head.mp4" not in urls:
+    problems.append("dict url not downloaded")
+if "bad.mp4" in urls or "bad2.mp4" in urls:
+    problems.append("refused url was downloaded")
+print("ok" if not problems else "; ".join(problems))
+PY
+)"
+if [[ "$wi254_detail" == "ok" ]]; then
+  pass "harness stage inputs: list-form video is inputs/talking_head/; dict form still stages"
+else
+  fail "harness stage inputs list form" "$wi254_detail"
+fi
+rm -rf "$wi254"
+
+# WI2.54: a harness exit of 1 must report attempt_failed with a reason.
+# Exit 30 already reported inside the harness, so the worker must not send
+# another attempt_failed. An older harness line in the shared log is not
+# this run's reason.
+wi254w="$(mktemp -d)"
+wi254w_detail="$(
+  python3 - "$REPO_DIR" "$wi254w" <<'PY'
+import json, os, pathlib, subprocess, sys
+repo = pathlib.Path(sys.argv[1])
+root = pathlib.Path(sys.argv[2])
+source = (repo / "bin/cfw-render.sh").read_text()
+functions = source[source.index("sanitize_slug() {"):source.index("\nspawn_pids=()")]
+(root / "state").mkdir()
+(root / "logs").mkdir()
+(root / "scratch").mkdir()
+env = {
+    "PATH": os.environ["PATH"],
+    "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
+    "HOME": str(root),
+    "TEST_ROOT": str(root),
+    "SELF_DIR": str(repo / "bin"),
+    "CFW_RENDER_SCRATCH": str(root / "scratch"),
+    "CFW_RENDER_STATE_DIR": str(root / "state"),
+    "CFW_RENDER_LOG_DIR": str(root / "logs"),
+    "CFW_RENDER_SKILLS_DIR": str(root / "skills"),
+    "CFW_WORKER_ID": "worker-wi254",
+    "CFW_API_BASE": "http://127.0.0.1:9",
+    "CFW_RENDER_WORKER_KEY": "synthetic-key",
+    "CFW_RENDER_COMPUTER_NAME": "Synthetic Mac",
+    "CFW_RENDER_KEEP_OUTPUTS": "0",
+}
+setup = r'''
+set -u
+source "$SELF_DIR/cfw-render-lib.sh"
+JOURNAL="$CFW_RENDER_STATE_DIR/journal.tsv"
+RUNS_DIR="$CFW_RENDER_LOG_DIR/runs"
+mkdir -p "$RUNS_DIR"
+cr_recipe_needs_heygen() { return 1; }
+cr_verify_skills_bundle() { return 0; }
+cr_mcp_call() { return 0; }
+cr_event() { :; }
+cr_keep_output_dir() { echo "$TEST_ROOT/kept/$2"; }
+cr_harness_run() {
+  if [[ "$TEST_LOG_STAGING" == "1" ]]; then
+    cr_log "harness: input staging failed"
+  fi
+  return "$TEST_HARNESS_RC"
+}
+cr_report_step() {
+  python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"attemptId":sys.argv[3],"seq":int(sys.argv[4]),"event":sys.argv[5],"extra":json.loads(sys.argv[6])}))' "$@" >> "$TEST_ROOT/reports.jsonl"
+  printf '%s' '{"ok":true,"directive":"continue"}'
+}
+'''
+script = setup + functions + '\nspawn_director "$TEST_CLAIM"\nexit $?\n'
+
+def claim(order_id):
+    return {
+        "id": order_id,
+        "brandId": "b1",
+        "brandName": "Brand A",
+        "taskOrder": {"brand": {"slug": "brand-a"}},
+        "recipe": "p-reels-pip",
+        "kind": "video",
+        "attempt": {"id": "att-" + order_id},
+        "manifest": {"steps": [{"id": "prepare_footage", "runsOn": "computer"}]},
+    }
+
+def run(order_id, harness_rc, log_staging):
+    reports = root / "reports.jsonl"
+    if reports.exists():
+        reports.unlink()
+    proc = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-c", script],
+        env={**env, "TEST_CLAIM": json.dumps(claim(order_id)),
+             "TEST_HARNESS_RC": harness_rc, "TEST_LOG_STAGING": log_staging},
+        text=True, capture_output=True, timeout=30)
+    rows = []
+    if reports.is_file():
+        rows = [json.loads(line) for line in reports.read_text().splitlines() if line.strip()]
+    return proc, rows
+
+problems = []
+staged, staged_rows = run("order-wi254", "1", "1")
+if staged.returncode != 0:
+    problems.append("stage rc=%s %s" % (staged.returncode, staged.stderr[-400:]))
+if len(staged_rows) != 1:
+    problems.append("stage reports=%s" % staged_rows)
+else:
+    row = staged_rows[0]
+    if row.get("event") != "attempt_failed":
+        problems.append("event=%s" % row.get("event"))
+    if row.get("orderId") != "order-wi254" or row.get("attemptId") != "att-order-wi254":
+        problems.append("identity=%s" % row)
+    if row.get("workerId") != "worker-wi254" or row.get("seq") != 1:
+        problems.append("seq=%s worker=%s" % (row.get("seq"), row.get("workerId")))
+    if (row.get("extra") or {}).get("message") != "harness-failed: input staging failed":
+        problems.append("message=%r" % ((row.get("extra") or {}).get("message")))
+order_dir = root / "scratch/brand-a/order-wi254"
+if not order_dir.is_dir():
+    problems.append("order dir removed")
+journal = (root / "state/journal.tsv").read_text(encoding="utf-8") if (root / "state/journal.tsv").is_file() else ""
+if "order-wi254" not in journal or "harness-failed" not in journal:
+    problems.append("journal=%r" % journal)
+stale, stale_rows = run("order-wi254b", "1", "0")
+if stale.returncode != 0:
+    problems.append("stale rc=%s %s" % (stale.returncode, stale.stderr[-400:]))
+if len(stale_rows) != 1 or (stale_rows[0].get("extra") or {}).get("message") != "harness-failed":
+    problems.append("stale message=%s" % stale_rows)
+elif "input staging failed" in (stale_rows[0].get("extra") or {}).get("message", ""):
+    problems.append("stale reused an older harness line")
+other, other_rows = run("order-wi254c", "30", "1")
+if other.returncode != 0:
+    problems.append("rc30=%s %s" % (other.returncode, other.stderr[-400:]))
+if other_rows:
+    problems.append("rc30 reported %s" % other_rows)
+print("ok" if not problems else "; ".join(problems))
+PY
+)"
+if [[ "$wi254w_detail" == "ok" ]]; then
+  pass "worker: harness exit 1 reports attempt_failed with the harness reason"
+else
+  fail "worker harness exit 1 attempt_failed" "$wi254w_detail"
+fi
+rm -rf "$wi254w"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
