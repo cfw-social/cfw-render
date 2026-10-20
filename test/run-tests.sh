@@ -176,7 +176,7 @@ if [[ "${FAIL_STEP:-}" == "$CFW_STEP_ID" ]]; then printf invalid > saves/image.p
         {'id':'c','runsOn':'computer','instructions':'steps/c.md','saves':[{'id':'image','kind':'image'},{'id':'copy','kind':'json'}],
          'checks':[{'id':'valid'}]}],
         'finalOutputs':[{'stepId':'c','saveId':'image','role':'deliverable'},{'stepId':'c','saveId':'copy','role':'captions'}]}
-    env = {'PATH':os.environ['PATH'],'HOME':str(root),'REPO':str(repo),'ROOT':str(root),'RECIPE':str(recipe),
+    env = {'PATH':os.environ['PATH'],'TMPDIR':os.environ.get('TMPDIR','/tmp'),'HOME':str(root),'REPO':str(repo),'ROOT':str(root),'RECIPE':str(recipe),
            'CFW_WORKER_ID':'install-A','CFW_RENDER_LOCAL_CHECKPOINTS':'1','CFW_RENDER_ENGINE_CMD':str(engine),
            'CFW_RENDER_STATE_DIR':str(root/'state'),'CFW_RENDER_LOG_DIR':str(root/'logs')}
     def claim(name, attempt='att1', action='start', generation=0, resume='a'):
@@ -328,7 +328,9 @@ import json, os, pathlib, shutil, subprocess, sys, tempfile
 repo = pathlib.Path(sys.argv[1])
 lib = repo/'bin/cfw-render-lib.sh'
 def shell(code, root, extra=None):
-    env = {'PATH': os.environ['PATH'], 'HOME': str(root), 'REPO': str(repo),
+    # TMPDIR: bash writes here-documents to $TMPDIR (else /tmp, which the runner
+    # sandbox refuses); hand the runner's choice through to these minimal envs.
+    env = {'PATH': os.environ['PATH'], 'TMPDIR': os.environ.get('TMPDIR', '/tmp'), 'HOME': str(root), 'REPO': str(repo),
            'ROOT': str(root), 'CFW_API_BASE': 'http://127.0.0.1:1',
            'CFW_RENDER_WORKER_KEY': 'cfw_render_test_only', 'CFW_WORKER_ID': 'test-worker',
            'CFW_ORDER_ID': 'test-order', 'CFW_ATTEMPT_ID': 'test-attempt',
@@ -563,7 +565,7 @@ for reason in ('owner', 'battery'):
         with tempfile.TemporaryDirectory(prefix='cfw-pause-retry-') as tmp:
             counter = pathlib.Path(tmp)/'calls'
             counter.write_text('0')
-            env = {'PATH': os.environ['PATH'], 'HOME': tmp, 'REPO': str(repo),
+            env = {'PATH': os.environ['PATH'], 'TMPDIR': os.environ.get('TMPDIR', '/tmp'), 'HOME': tmp, 'REPO': str(repo),
                    'CFW_RENDER_STATE_DIR': tmp, 'CFW_API_BASE': 'http://127.0.0.1:1',
                    'CFW_RENDER_WORKER_KEY': 'test-only', 'COUNT_FILE': str(counter),
                    'FIRST_REPLY': reply, 'SUCCESS_REPLY': success, 'HTTP_CODE': http,
@@ -744,6 +746,7 @@ else
 fi
 '''
             env = {"PATH": str(Path(sys.executable).parent) + os.pathsep + os.defpath,
+                   "TMPDIR": os.environ.get("TMPDIR", "/tmp"),   # bash here-documents need it
                    "HOME": directory, "TEST_ROOT": directory, "REPO": str(repo),
                    "OUTER": str(int(outer)), "MISSING": missing, "REJECT": reject,
                    "DIRECTIVE": directive, "CFW_WORKER_ID": "test-worker", "CFW_API_BASE": "",
@@ -955,7 +958,8 @@ cr_engine_manifests_json() { echo '[]'; }
 cr_engines_json() { echo '[]'; }
 cr_engine_capabilities_json codex "$1/skills"
 ''', "test", str(repo)], text=True, capture_output=True, check=True,
-            env={"PATH": str(Path(sys.executable).parent) + os.pathsep + os.defpath})
+            env={"PATH": str(Path(sys.executable).parent) + os.pathsep + os.defpath,
+                 "TMPDIR": os.environ.get("TMPDIR", "/tmp")})
         self.assertEqual(json.loads(result.stdout)["features"], ["stage-range-v1"])
         self.assertEqual((repo / "VERSION").read_text().strip(), "1.1.0")
         # Exercise only the bin copy line against a disposable destination;
@@ -1002,7 +1006,9 @@ printf 'synthetic transcript %s\\n' "$TEST_ATTEMPT"
 printf '{"id":"wrong-order","attempt":{"id":"wrong-attempt"}}' > order.json
 ''')
     director.chmod(0o700)
-    env = {'PATH': os.environ['PATH'], 'HOME': str(root), 'REPO': str(repo),
+    # TMPDIR: bash writes here-documents to $TMPDIR (else /tmp, which the runner
+    # sandbox refuses); hand the runner's choice through to these minimal envs.
+    env = {'PATH': os.environ['PATH'], 'TMPDIR': os.environ.get('TMPDIR', '/tmp'), 'HOME': str(root), 'REPO': str(repo),
         'TEST_ROOT': str(root), 'CFW_RENDER_SCRATCH': str(root/'scratch'),
         'CFW_RENDER_STATE_DIR': str(root/'state'), 'CFW_RENDER_LOG_DIR': str(root/'logs with spaces'),
         'CFW_RENDER_SKILLS_DIR': str(root/'skills'), 'CFW_RENDER_COMPUTER_NAME': 'Synthetic Mac',
@@ -1191,6 +1197,7 @@ with tempfile.TemporaryDirectory(prefix='cfw-update-test-') as tmp:
             path = home/name; path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data); path.chmod(0o600)
         env = {'HOME': str(home), 'PATH': str(guards)+os.pathsep+os.environ['PATH'],
+               'TMPDIR': os.environ.get('TMPDIR', '/tmp'),
                'CFW_RENDER_SKIP_LAUNCHCTL': '1', 'CFW_RENDER_INSTALL_NO_LAUNCHCTL': '1'}
         with (home/'stdin').open('w+b') as stdin:
             stdin.write(b'KEEP-THIS-LINE\n'); stdin.seek(0)
@@ -1286,6 +1293,23 @@ if [[ -e "${FAKE_PMSET_BATTERY:-/nonexistent}" ]]; then echo "Now drawing from '
 EOF2
 chmod +x "$FAKE_BIN/pmset"
 export CFW_RENDER_PMSET_CMD="$FAKE_BIN/pmset"
+
+# cr_preflight_chromium looks for a Playwright browser under $HOME (or under
+# PLAYWRIGHT_BROWSERS_PATH). The runner sandbox hides the host's cache, so every
+# tick would refuse to claim ("no Playwright/Chromium browser found") although
+# no case renders with a real browser: engines and Directors are fakes. When
+# the inherited environment shows no browser, point the search at a fixture
+# layout. A box with a real cache keeps using it, so the preflight cases still
+# exercise the real discovery there.
+if ! ( source "$REPO_DIR/bin/cfw-render-lib.sh"; cr_preflight_chromium ) >/dev/null 2>&1; then
+  FAKE_PLAYWRIGHT="$(mktemp -d)"
+  mkdir -p "$FAKE_PLAYWRIGHT/chromium_headless_shell-fixture/chrome-mac"
+  printf '#!/usr/bin/env bash\n# test fixture standing in for a Playwright headless shell; never launched\nexit 0\n' \
+    > "$FAKE_PLAYWRIGHT/chromium_headless_shell-fixture/chrome-mac/chrome-headless-shell"
+  chmod +x "$FAKE_PLAYWRIGHT/chromium_headless_shell-fixture/chrome-mac/chrome-headless-shell"
+  export PLAYWRIGHT_BROWSERS_PATH="$FAKE_PLAYWRIGHT"
+  echo "note: no Playwright browser is visible to this run; preflight uses the fixture under PLAYWRIGHT_BROWSERS_PATH"
+fi
 
 # The worker skips normal claims while the 1-minute load average is above the
 # CPU count (cr_capacity_ok). On a busy dev Mac that made the capacity cases
@@ -1889,7 +1913,9 @@ if [[ "$(calls_count complete_render_order)" == "1" ]]; then
 else
   fail "heartbeat: complete" "expected 1 complete_render_order, got $(calls_count complete_render_order)"
 fi
-if ! pgrep -f "cfw-render" >/dev/null 2>&1 || true; then :; fi
+# No process-table lookups here: the suite never matches commands by name, and
+# the runner sandbox refuses setuid tools such as ps. Cleanup goes through
+# stop_test_tree / test/stop-owned-tree.py (libproc via ctypes) only.
 
 echo '=== Case 4e: block carries `needs` (CFW-146) ==='
 run_case "needs-ingredient" "needs-ingredient" "order_fixture order-needs-1 brand-1 video" true
@@ -4258,19 +4284,30 @@ m3_until 100 0.1 m3_conn_is "$p8" ok
 touch "$p8/control/down"
 m3_until 100 0.1 m3_conn_is "$p8" unreachable; p8_down_ok=$?
 p8_since="$(m3_status "$p8" 'd.get("cfwReachSince")')"
-sleep 3   # more failed check-ins: still one log line
+# More failed check-ins must add no log line. Wait for an observable later
+# round instead of a fixed sleep: lastCheckAt is stamped at the start of every
+# round (one-second resolution) and a failed check-in spends >2 s in its
+# retries, so the next status write after this one carries a later stamp.
+p8_check0="$(m3_status "$p8" 'd.get("lastCheckAt")')"
+m3_check_after() { local at; at="$(m3_status "$1" 'd.get("lastCheckAt")')"; [[ -n "$at" && "$at" > "$2" ]]; }
+m3_until 100 0.1 m3_check_after "$p8" "$p8_check0"; p8_more_ok=$?
+p8_still="$(m3_status "$p8" 'd.get("cfwReach")')"
 rm -f "$p8/control/down"
 p8_t0=$SECONDS
-m3_until 6 0.1 m3_conn_is "$p8" ok; p8_up_ok=$?
+# Recovery bound: the round in flight may still spend its remaining soft-call
+# retries (1 s apart) on 503s before the next round, 0.3 s later, reaches the
+# server. 100 x 0.1 s is the same bound the outage detection above uses; the
+# measured time is printed so a slow recovery stays visible.
+m3_until 100 0.1 m3_conn_is "$p8" ok; p8_up_ok=$?
 p8_secs=$(( SECONDS - p8_t0 ))
 m3_stop_loop "$p8_w"
 rm -f "$FAKE_PMSET_BATTERY"
 p8_lost="$(m3_log_count "$p8" "connection: can't reach CFW")"
 p8_back="$(m3_log_count "$p8" "connection: reached CFW again")"
-if [[ "$p8_down_ok" == 0 && "$p8_up_ok" == 0 && -n "$p8_since" && "$p8_since" != "None" && "$p8_lost" == 1 && "$p8_back" == 1 ]]; then
-  pass "paused offline: unreachable since $p8_since (1 line), ok again within ${p8_secs}s (1 line)"
+if [[ "$p8_down_ok" == 0 && "$p8_more_ok" == 0 && "$p8_still" == unreachable && "$p8_up_ok" == 0 && -n "$p8_since" && "$p8_since" != "None" && "$p8_lost" == 1 && "$p8_back" == 1 ]]; then
+  pass "paused offline: unreachable since $p8_since (1 line over repeated check-ins), ok again within ${p8_secs}s (1 line)"
 else
-  fail "paused offline" "down_ok=$p8_down_ok up_ok=$p8_up_ok since='$p8_since' lost_lines=$p8_lost back_lines=$p8_back; $(tail -4 "$p8/cr-state/cfw-render.log")"
+  fail "paused offline" "down_ok=$p8_down_ok more_ok=$p8_more_ok still=$p8_still up_ok=$p8_up_ok since='$p8_since' lost_lines=$p8_lost back_lines=$p8_back; $(tail -4 "$p8/cr-state/cfw-render.log")"
 fi
 rm -rf "$p8"
 
@@ -5072,11 +5109,16 @@ fi
 rm -rf "$m6g"
 
 echo "=== Case M3-06a-4: redactor fixture parity ==="
-if diff <(python3 "$REPO_DIR/bin/cfw-render-redact.py" < "$REPO_DIR/desktop/src-tauri/tests/fixtures/redact-input.txt") \
-     "$REPO_DIR/desktop/src-tauri/tests/fixtures/redact-expected.txt" >/dev/null; then
+# Plain files on both sides: the runner sandbox refuses the /dev/fd path that a
+# <( ) process substitution hands to diff.
+m6_redact_out="$(mktemp)"
+python3 "$REPO_DIR/bin/cfw-render-redact.py" < "$REPO_DIR/desktop/src-tauri/tests/fixtures/redact-input.txt" > "$m6_redact_out" 2>&1
+m6_redact_diff="$(diff "$m6_redact_out" "$REPO_DIR/desktop/src-tauri/tests/fixtures/redact-expected.txt" 2>&1)"; m6_redact_rc=$?
+rm -f "$m6_redact_out"
+if [[ "$m6_redact_rc" == 0 ]]; then
   pass "cfw-render-redact.py output == redact-expected.txt"
 else
-  fail "redactor parity" "diff vs redact-expected.txt"
+  fail "redactor parity" "diff vs redact-expected.txt (rc=$m6_redact_rc): $(printf '%s\n' "$m6_redact_diff" | head -6 | tr '\n' '|')"
 fi
 
 echo "=== Case M3-06a-5: send-logs uploads, LOG-TEST, render key never leaks ==="
