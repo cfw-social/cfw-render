@@ -628,7 +628,7 @@ print(" ".join("%s.%s" % (v["id"], ext.get(v.get("kind"), "bin")) for v in s.get
 # A placeholder save (not decodable audio) is skipped. A real media file
 # whose seal fails is logged and returned to the caller, which fails qa_gate.
 cr_h_seal_final_loudness() {
-  local step_id="$1" workdir="$2" recipe media detail audio
+  local step_id="$1" workdir="$2" recipe media detail audio errfile
   [[ "$step_id" == "final_checks" ]] || return 0
   if (( CR_H_LOCAL )); then
     return 0
@@ -648,10 +648,19 @@ cr_h_seal_final_loudness() {
   audio="$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 "$media" 2>/dev/null || true)"
   audio="${audio//$'\r'/}"
   [[ "$audio" == "audio" ]] || return 0
-  detail="$(python3 "$CR_H_SELF_DIR/cfw-render-checks.py" loudnorm "$media" "$CR_H_RECIPE_DIR" 2>&1)" || {
-    cr_log "harness: final loudness normalisation failed (${detail: -400})"
+  # Keep the tool's own error. A failing command substitution assigned to a
+  # local variable can discard that text, which hides the real failure.
+  errfile="$workdir/.cfw-loudnorm.err"
+  if ! python3 "$CR_H_SELF_DIR/cfw-render-checks.py" loudnorm "$media" "$CR_H_RECIPE_DIR" >"$errfile" 2>&1; then
+    detail="$(tr '\n' ' ' < "$errfile" 2>/dev/null || true)"
+    rm -f "$errfile"
+    if (( ${#detail} > 400 )); then
+      detail="${detail:$((${#detail}-400))}"
+    fi
+    cr_log "harness: final loudness normalisation failed (${detail})"
     return 1
-  }
+  fi
+  rm -f "$errfile"
 }
 
 # cr_h_run_checks <stepId> <workdir> <check-ids...> → prints checks JSON; rc 1 if any failed.

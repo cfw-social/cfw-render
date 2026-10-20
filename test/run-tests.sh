@@ -6,6 +6,10 @@
 # state. Exit 0 iff every case passes.
 set -u
 
+# The runner sandbox allows writes only under its TMPDIR and refuses /tmp.
+# Remember the directory now: a later step must not make tempfile fall back.
+SUITE_TMPDIR="${TMPDIR-}"
+
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$TEST_DIR/.." && pwd)"
 
@@ -7260,6 +7264,11 @@ else
 fi
 
 echo "=== Case 42: WI2.61 — spotlight run sees sealed evidence and does not re-encode ==="
+# Python falls back to /tmp when TMPDIR is missing. The sandbox refuses that.
+# Put this case back on the directory the suite started with.
+if [[ -n "${SUITE_TMPDIR}" && -d "${SUITE_TMPDIR}" && -w "${SUITE_TMPDIR}" ]]; then
+  export TMPDIR="${SUITE_TMPDIR}" TMP="${SUITE_TMPDIR}" TEMP="${SUITE_TMPDIR}"
+fi
 wi261b_detail="$(python3 - "$REPO_DIR" <<'PY'
 import hashlib, importlib.util, json, os, shutil, subprocess, sys, tempfile
 from pathlib import Path
@@ -7291,7 +7300,14 @@ def last_lufs(path):
         return None
     return float(values[-1])
 
-with tempfile.TemporaryDirectory() as tmp:
+suite_tmp = os.environ.get("TMPDIR") or ""
+if not os.path.isdir(suite_tmp) or not os.access(suite_tmp, os.W_OK):
+    problems.append("suite TMPDIR is not writable")
+    print("; ".join(problems))
+    raise SystemExit(1)
+os.environ["TMPDIR"] = os.environ["TEMP"] = os.environ["TMP"] = suite_tmp
+tempfile.tempdir = suite_tmp
+with tempfile.TemporaryDirectory(dir=suite_tmp) as tmp:
     root = Path(tmp)
     custom = root / "custom-recipe"
     custom.mkdir()
