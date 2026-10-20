@@ -94,6 +94,62 @@ def decode(path: Path, kind: str) -> None:
     command(["ffmpeg", "-v", "error", "-xerror", "-i", str(path), "-f", "null", "-"])
 
 
+# Recipes whose finished reel can leave assemble quieter than the gate.
+# The seal runs once, immediately before qa_gate reads saves/final_video.mp4.
+FINAL_LOUDNESS_RECIPES = ("p-reels-spotlight", "p-reels-pip")
+_LOUDNESS_NUMBER = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)")
+
+
+def _loudness_stat(stats: dict, key: str) -> str:
+    raw = stats.get(key)
+    require(not isinstance(raw, bool) and isinstance(raw, (int, float, str)), "Loudness measurement is incomplete.")
+    text = raw.strip() if isinstance(raw, str) else str(raw)
+    require(_LOUDNESS_NUMBER.fullmatch(text), "Loudness measurement is not finite.")
+    require(math.isfinite(float(text)), "Loudness measurement is not finite.")
+    return text
+
+
+def normalize_loudness(path: Path) -> None:
+    """Two-pass linear loudnorm to I=-14:TP=-1.5:LRA=11. Copy video; re-encode audio only."""
+    require(not path.is_symlink() and path.is_file() and path.stat().st_size > 0, "Loudness input is missing.")
+    streams = probe(path)["streams"]
+    has_video = any(s.get("codec_type") == "video" for s in streams)
+    require(any(s.get("codec_type") == "audio" for s in streams), "Loudness input has no audio.")
+    out, err = command(["ffmpeg", "-hide_banner", "-nostats", "-i", str(path), "-vn",
+                         "-af", "loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-"])
+    stats = None
+    for blob in re.findall(r"\{[^{}]*\}", err + "\n" + out.decode("utf-8", "replace")):
+        try:
+            parsed = json.loads(blob)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict) and "input_i" in parsed:
+            stats = parsed
+    require(isinstance(stats, dict), "Loudness measurement did not return stats.")
+    filt = (
+        "loudnorm=I=-14:TP=-1.5:LRA=11"
+        f":measured_I={_loudness_stat(stats, 'input_i')}"
+        f":measured_TP={_loudness_stat(stats, 'input_tp')}"
+        f":measured_LRA={_loudness_stat(stats, 'input_lra')}"
+        f":measured_thresh={_loudness_stat(stats, 'input_thresh')}"
+        f":offset={_loudness_stat(stats, 'target_offset')}"
+        ":linear=true"
+    )
+    dest = path.with_name(path.name + ".cfw-loudnorm.mp4")
+    args = ["ffmpeg", "-y", "-i", str(path), "-af", filt]
+    if has_video:
+        args += ["-c:v", "copy"]
+    else:
+        args += ["-vn"]
+    args += ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-movflags", "+faststart", str(dest)]
+    try:
+        command(args)
+        dest.replace(path)
+    finally:
+        if dest.exists():
+            dest.unlink()
+
+
 def frame(path: Path, t: float) -> bytes:
     out, _ = command(["ffmpeg", "-v", "error", "-ss", str(t), "-i", str(path),
                       "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"])
@@ -430,8 +486,11 @@ def run(order: Path, recipe: Path, work: Path, sid: str) -> int:
     ids = [c["id"] for c in step.get("checks", [])]
     require(len(ids) == len(set(ids)), "Required checks contain duplicate declarations.")
     for cid in ids:
-        def validate_check() -> None:
+        def validate_check(cid: str = cid) -> None:
             require(re.fullmatch(r"[a-z][a-z0-9_]{0,119}", cid), "Check declaration is invalid.")
+            # Two-pass seal before the unchanged gate measures this reel.
+            if cid == "qa_gate" and manifest.get("recipe") in FINAL_LOUDNESS_RECIPES:
+                normalize_loudness(local(work, "saves/final_video.mp4"))
             if spotlight:
                 spotlight.check(cid)
             else:
@@ -460,6 +519,13 @@ def main() -> int:
             Spotlight(Path(args[0]).resolve(), Path(args[1]).resolve(), args[2]).make_evidence()
         elif mode == "run":
             return run(Path(args[0]), Path(args[1]).resolve(), Path(args[2]).resolve(), args[3])
+        elif mode == "loudnorm":
+            require(len(args) == 1, "Unknown validation command.")
+            try:
+                normalize_loudness(Path(args[0]))
+            except Invalid as exc:
+                print(str(exc))
+                return 1
         else:
             raise Invalid("Unknown validation command.")
         return 0

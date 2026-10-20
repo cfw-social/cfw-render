@@ -7170,6 +7170,86 @@ else
 fi
 rm -rf "$wi254w"
 
+echo "=== Case 41: WI2.61 — quiet reel audio is sealed to -14 LUFS before the gate ==="
+wi261_detail="$(python3 - "$REPO_DIR" <<'PY'
+import re, subprocess, sys, tempfile
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+checks = (repo / "bin" / "cfw-render-checks.py").read_text()
+harness = (repo / "bin" / "cfw-render-harness.sh").read_text()
+problems = []
+if "-15.5 <= float(values[-1]) <= -12.5" not in checks or "Loudness must be minus 14 LUFS, within 1.5 LUFS." not in checks:
+    problems.append("gate target changed")
+if 'normalize_loudness(local(work, "saves/final_video.mp4"))' not in checks:
+    problems.append("seal is not wired before qa_gate")
+if 'FINAL_LOUDNESS_RECIPES = ("p-reels-spotlight", "p-reels-pip")' not in checks:
+    problems.append("pip is not sealed with spotlight")
+if "loudnorm=I=-14:TP=-1.5:LRA=11" not in checks or ":linear=true" not in checks or '"-c:v", "copy"' not in checks:
+    problems.append("two-pass copy seal is missing")
+if 'cr_h_seal_final_loudness "$step_id" "$workdir"' not in harness or "p-reels-spotlight|p-reels-pip" not in harness:
+    problems.append("harness does not seal both recipes before its checks")
+
+def last_lufs(path):
+    probe = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-i", str(path), "-af", "ebur128", "-f", "null", "-"],
+        capture_output=True, text=True)
+    values = re.findall(r"I:\s*(-?[0-9.]+) LUFS", probe.stderr)
+    if probe.returncode != 0 or not values:
+        return None
+    return float(values[-1])
+
+def one_frame(path):
+    frame = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+        capture_output=True)
+    return frame.returncode, frame.stdout
+
+with tempfile.TemporaryDirectory() as tmp:
+    src = Path(tmp) / "quiet.mp4"
+    gen = subprocess.run([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", "color=c=red:s=320x240:r=30:d=8",
+        "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:duration=8",
+        "-filter:a", "volume=-21dB",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+        "-shortest", str(src),
+    ], capture_output=True, text=True)
+    if gen.returncode != 0 or not src.is_file():
+        problems.append("could not generate a quiet sine")
+    else:
+        before_rc, before = one_frame(src)
+        quiet = last_lufs(src)
+        if before_rc != 0 or not before:
+            problems.append("could not read the input frame")
+        if quiet is None or quiet > -20:
+            problems.append("input measured %s LUFS, want about -24" % quiet)
+        seal = subprocess.run(
+            [sys.executable, str(repo / "bin" / "cfw-render-checks.py"), "loudnorm", str(src)],
+            capture_output=True, text=True)
+        if seal.returncode != 0:
+            problems.append("loudnorm failed: %s" % ((seal.stdout or seal.stderr)[-300:]))
+        else:
+            after_rc, after = one_frame(src)
+            if after_rc != 0 or after != before:
+                problems.append("video frame changed; stream copy did not hold")
+            measured = last_lufs(src)
+            if measured is None or not (-15.5 <= measured <= -12.5):
+                problems.append("sealed loudness %s is outside -14 +/- 1.5" % measured)
+            if list(Path(tmp).glob("*.cfw-loudnorm.mp4")):
+                problems.append("loudnorm left a temporary file")
+
+print("ok" if not problems else "; ".join(problems))
+raise SystemExit(0 if not problems else 1)
+PY
+)"
+wi261_rc=$?
+if [[ "$wi261_rc" == "0" && "$wi261_detail" == "ok" ]]; then
+  pass "WI2.61: quiet sine seals inside -14 LUFS +/- 1.5 and the gate target is unchanged"
+else
+  fail "WI2.61 final loudness seal" "$wi261_detail"
+fi
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then

@@ -618,6 +618,30 @@ s = next((s for s in (o.get("manifest") or {}).get("steps", []) if s.get("id") =
 print(" ".join("%s.%s" % (v["id"], ext.get(v.get("kind"), "bin")) for v in s.get("saves") or []))' "$CR_H_ORDER_DIR/order.json" "$1"
 }
 
+# cr_h_seal_final_loudness <stepId> <workdir>
+# Non-local runs do not enter cfw-render-checks.py. Seal the finished reel
+# here, before any check script reads it. Local runs seal inside that tool,
+# immediately before qa_gate, so this returns without a second pass.
+# Spotlight and PIP both deliver saves/final_video.mp4 and both can miss
+# I=-14 after assemble. Video is copied; only audio is re-encoded.
+cr_h_seal_final_loudness() {
+  local step_id="$1" workdir="$2" recipe media
+  [[ "$step_id" == "final_checks" ]] || return 0
+  if (( CR_H_LOCAL )); then
+    return 0
+  fi
+  media="$workdir/saves/final_video.mp4"
+  [[ -f "$media" && ! -L "$media" ]] || return 0
+  recipe="$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("manifest") or {}).get("recipe") or "")' "$CR_H_ORDER_DIR/order.json")" || return 1
+  case "$recipe" in
+    p-reels-spotlight|p-reels-pip) ;;
+    *) return 0 ;;
+  esac
+  # Placeholder saves in harness tests are not media. A failed seal leaves
+  # the file untouched so the existing checks still decide the step.
+  python3 "$CR_H_SELF_DIR/cfw-render-checks.py" loudnorm "$media" >/dev/null || return 0
+}
+
 # cr_h_run_checks <stepId> <workdir> <check-ids...> → prints checks JSON; rc 1 if any failed.
 cr_h_run_checks() {
   local step_id="$1" workdir="$2"; shift 2
@@ -631,6 +655,10 @@ cr_h_run_checks() {
     fi
     printf '%s' "$result"
     return "$rc"
+  fi
+  if ! cr_h_seal_final_loudness "$step_id" "$workdir"; then
+    printf '%s' '[{"id":"qa_gate","passed":false,"detail":"Final loudness normalisation failed."}]'
+    return 1
   fi
   local id script detail ok f failed=0 json="["
   for id in "$@"; do
