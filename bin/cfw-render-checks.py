@@ -554,10 +554,24 @@ def instructions(helper: Path, recipe: Path, step: str) -> None:
               "This supersedes the pinned step's I=-16 sample for local mode: "
               "the unchanged final gate requires -14 LUFS within 1.5 LUFS. "
               "Keep the complete narration and do not normalize again in later stages.\n")
+    if step == "final_checks":
+        # Agent-side seal must land before c-eval-runner / c-shorts-qa-gate.
+        # Harness seals again later only as a safety net for its own checks.
+        print(f"""\n## Seal final_video loudness before any scoring (WI2.62)
+After you write saves/final_video.mp4 (cover concat) and BEFORE you run
+c-eval-runner, c-shorts-qa-gate, the delivery gate, or any loudness measurement:
+python3 {json.dumps(str(helper))} loudnorm saves/final_video.mp4 {json.dumps(str(recipe))}
+This seals to the recipe target (default I=-14, true peak -1.5 dBTP, LRA 11).
+A file already inside +/- 1.5 LU of the target is left unchanged. Do not edit the
+vendored qa-gate. Do not lower the gate. Do not score the unsealed file.
+""")
     if step not in ("assemble", "final_checks"):
         return
+    # Spotlight local evidence path. PIP has no review-hash contract.
+    if recipe.name != "p-reels-spotlight":
+        return
     print(f"""\n## Required local QA evidence (supersedes prose-only QA)
-After ALL saves are complete, run:
+After ALL saves are complete, and after the loudness seal above on final_checks, run:
 python3 {json.dumps(str(helper))} evidence {json.dumps(str(recipe))} . {step}
 This writes qa/review.json and lossless frames. It NEVER passes review for you.
 Read every generated frame with your image-reading tool; listen to the output
@@ -572,11 +586,11 @@ after any artifact edit. Do not use the eval runner's exit 0 or NEEDS_VISION as
 approval. The harness independently decodes saves and runs objective checks.
 """)
     if step == "final_checks":
-        print("\nSeal order for final_checks: that evidence command normalises "
-              "saves/final_video.mp4 to the recipe loudness target (default I=-14, "
-              "true peak -1.5 dBTP, LRA 11) BEFORE it writes qa/review.json. "
-              "Run it after every save exists, including final_video, and before you "
-              "review frames. Do not replace or loudnorm final_video after it. "
+        print("\nSeal order for final_checks: loudnorm (above) runs first; the evidence "
+              "command also normalises saves/final_video.mp4 to the same target BEFORE "
+              "it writes qa/review.json when the file is still outside range. Run evidence "
+              "after every save exists, including the sealed final_video, and before you "
+              "review frames. Do not replace or loudnorm final_video after evidence. "
               "A file already inside the target is left unchanged, so a retry does not "
               "re-encode. The QA gate target stays minus 14 LUFS within 1.5 LUFS.\n")
 

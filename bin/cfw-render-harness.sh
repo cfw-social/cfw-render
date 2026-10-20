@@ -405,7 +405,16 @@ for sv in s.get("saves") or []:
 PY
   # Standalone prompt inspections can source the harness without the worker lib.
   if declare -F cr_provider_wait_note >/dev/null; then cr_provider_wait_note >> "$prompt"; fi
-  if (( CR_H_LOCAL )) && [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["manifest"]["recipe"])' "$order_file")" == p-reels-spotlight ]]; then
+  # Reel final_checks: seal loudness before the agent scores final_video (local and
+  # non-local). Spotlight also gets the local evidence instructions when opted in.
+  if [[ "$step_id" == "final_checks" ]]; then
+    case "$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("manifest") or {}).get("recipe") or "")' "$order_file")" in
+      p-reels-spotlight|p-reels-pip)
+        python3 "$CR_H_SELF_DIR/cfw-render-checks.py" instructions "$CR_H_RECIPE_DIR" "$step_id" >> "$prompt"
+        ;;
+    esac
+  elif (( CR_H_LOCAL )) && [[ "$step_id" == "assemble" || "$step_id" == "prepare_footage" ]] \
+    && [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["manifest"]["recipe"])' "$order_file")" == p-reels-spotlight ]]; then
     python3 "$CR_H_SELF_DIR/cfw-render-checks.py" instructions "$CR_H_RECIPE_DIR" "$step_id" >> "$prompt"
   fi
 }
@@ -619,12 +628,13 @@ print(" ".join("%s.%s" % (v["id"], ext.get(v.get("kind"), "bin")) for v in s.get
 }
 
 # cr_h_seal_final_loudness <stepId> <workdir>
-# Non-local runs do not enter cfw-render-checks.py run/evidence. Seal the
-# finished reel here, before any check script reads it. Local spotlight seals
-# inside evidence mode, before qa/review.json is hashed; local PIP seals
-# inside run. This returns without a second pass on local runs.
+# Safety net for non-local harness checks: seal before any check script reads
+# the file. The agent must already have sealed before its own qa gate (step
+# docs + prompt instructions). Local spotlight seals inside evidence mode,
+# before qa/review.json is hashed; local PIP seals inside run. This returns
+# without a second pass on local runs (checks.py owns that path).
 # Spotlight and PIP both deliver saves/final_video.mp4 and both can miss
-# I=-14 after assemble. Video is copied; only audio is re-encoded.
+# I=-14 after cover concat. Video is copied; only audio is re-encoded.
 # A placeholder save (not decodable audio) is skipped. A real media file
 # whose seal fails is logged and returned to the caller, which fails qa_gate.
 cr_h_seal_final_loudness() {

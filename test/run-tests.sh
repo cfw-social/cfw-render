@@ -7516,6 +7516,258 @@ else
   fail "WI2.61 spotlight run after loudness seal" "$wi261b_detail"
 fi
 
+echo "=== Case 43: WI2.62 — quiet final_video seals before qa_gate PASS (both reel recipes) ==="
+# Python falls back to /tmp when TMPDIR is missing. The sandbox refuses that.
+if [[ -n "${SUITE_TMPDIR}" && -d "${SUITE_TMPDIR}" && -w "${SUITE_TMPDIR}" ]]; then
+  export TMPDIR="${SUITE_TMPDIR}" TMP="${SUITE_TMPDIR}" TEMP="${SUITE_TMPDIR}"
+fi
+wi262_detail="$(python3 - "$REPO_DIR" <<'PY'
+import json, os, re, shutil, subprocess, sys, tempfile
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+checks_py = repo / "bin" / "cfw-render-checks.py"
+harness = (repo / "bin" / "cfw-render-harness.sh").read_text()
+checks_src = checks_py.read_text()
+problems = []
+
+# Gate target unchanged; WI2.61 guarantees kept.
+if "-15.5 <= float(values[-1]) <= -12.5" not in checks_src:
+    problems.append("gate target changed")
+if 'normalize_loudness(self.artifact(), self.recipe)' not in checks_src:
+    problems.append("evidence seal missing")
+if "final loudness normalisation failed" not in harness:
+    problems.append("harness no longer reports a real loudnorm failure")
+
+# Prompt injects seal-before-score for both reel recipes (step docs stay
+# checksum-pinned in index.json; the harness prompt is the live agent contract).
+prompt_fn = harness.split("cr_h_build_prompt()", 1)[-1].split("cr_h_write_brief()", 1)[0]
+if 'python3 "$CR_H_SELF_DIR/cfw-render-checks.py" instructions' not in prompt_fn:
+    problems.append("harness does not inject final_checks seal instructions")
+if "p-reels-spotlight|p-reels-pip" not in prompt_fn:
+    problems.append("harness prompt seal is not wired for both reel recipes")
+if "final_checks" not in prompt_fn or "Seal final_video loudness before any scoring" not in checks_src:
+    problems.append("checks.py instructions omit pre-score seal")
+if "loudnorm saves/final_video.mp4" not in checks_src and "loudnorm" not in checks_src.split("def instructions", 1)[-1]:
+    problems.append("instructions do not call loudnorm before scoring")
+
+def last_lufs(path):
+    probe = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-i", str(path), "-af", "ebur128", "-f", "null", "-"],
+        capture_output=True, text=True)
+    values = re.findall(r"I:\s*(-?[0-9.]+) LUFS", probe.stderr)
+    if probe.returncode != 0 or not values:
+        return None
+    return float(values[-1])
+
+suite_tmp = os.environ.get("TMPDIR") or ""
+if not os.path.isdir(suite_tmp) or not os.access(suite_tmp, os.W_OK):
+    problems.append("suite TMPDIR is not writable")
+    print("; ".join(problems))
+    raise SystemExit(1)
+os.environ["TMPDIR"] = os.environ["TEMP"] = os.environ["TMP"] = suite_tmp
+tempfile.tempdir = suite_tmp
+
+with tempfile.TemporaryDirectory(dir=suite_tmp) as tmp:
+    root = Path(tmp)
+    # Quiet reel near -16 LUFS (bed convention; outside the -14 +/- 1.5 gate).
+    src = root / "quiet-16.mp4"
+    gen = subprocess.run([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", "color=c=red:s=1080x1920:r=30:d=8",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=8",
+        "-af", "loudnorm=I=-16.5:TP=-1.5:LRA=11",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30",
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+        "-shortest", str(src),
+    ], capture_output=True, text=True)
+    if gen.returncode != 0 or not src.is_file():
+        problems.append("could not generate quiet -16 reel: %s" % (gen.stderr or gen.stdout)[-300:])
+        print("; ".join(problems))
+        raise SystemExit(1)
+    quiet = last_lufs(src)
+    # Must sit near -16 and outside the gate window (-14 +/- 1.5 => [-15.5, -12.5]).
+    if quiet is None or quiet > -15.5 or quiet < -18.0:
+        problems.append("input measured %s LUFS, want about -16 and outside the gate" % quiet)
+
+    for slug in ("p-reels-pip", "p-reels-spotlight"):
+        recipe_dir = repo / "skills" / slug
+        gate = recipe_dir / ".hub" / "c-shorts-qa-gate" / "scripts" / "qa-gate.sh"
+        if not gate.is_file():
+            problems.append("%s missing vendored qa-gate" % slug)
+            continue
+
+        # --- Agent / step order: quiet final_video -> seal -> first qa_gate ---
+        work = root / ("agent-" + slug)
+        (work / "saves").mkdir(parents=True)
+        video = work / "saves" / "final_video.mp4"
+        shutil.copy(src, video)
+        before = last_lufs(video)
+        seal = subprocess.run(
+            [sys.executable, str(checks_py), "loudnorm", str(video), str(recipe_dir)],
+            capture_output=True, text=True, timeout=120)
+        if seal.returncode != 0:
+            problems.append("%s agent seal failed: %s" % (slug, (seal.stdout or seal.stderr)[-300:]))
+            continue
+        sealed = last_lufs(video)
+        if sealed is None or not (-15.5 <= sealed <= -12.5):
+            problems.append("%s sealed loudness %s (from %s)" % (slug, sealed, before))
+        outdir = work / "qa-out"
+        outdir.mkdir()
+        gate_run = subprocess.run(
+            ["bash", str(gate), str(video), "--format", "reel", "--outdir", str(outdir)],
+            capture_output=True, text=True, timeout=180)
+        report = outdir / "qa-report.txt"
+        report_text = report.read_text() if report.is_file() else (gate_run.stdout + "\n" + gate_run.stderr)
+        loud_lines = [ln for ln in report_text.splitlines() if "loudness" in ln.lower()]
+        if not any("[PASS] loudness" in ln for ln in loud_lines):
+            problems.append("%s first qa_gate loudness not PASS: %s" % (slug, loud_lines or report_text[-400:]))
+        if any("[FAIL] loudness" in ln for ln in loud_lines):
+            problems.append("%s first qa_gate loudness FAIL: %s" % (slug, loud_lines))
+
+        # --- Non-local harness safety net on a fresh quiet copy ---
+        nl = root / ("nonlocal-" + slug)
+        (nl / "saves").mkdir(parents=True)
+        shutil.copy(src, nl / "saves" / "final_video.mp4")
+        order_dir = root / ("order-" + slug)
+        order_dir.mkdir()
+        (order_dir / "order.json").write_text(json.dumps({"manifest": {"recipe": slug}}))
+        log = root / ("h-%s.log" % slug)
+        script = r'''
+source "$REPO/bin/cfw-render-harness.sh"
+cr_log() { printf '%s\n' "$*" >> "$LOG"; }
+CR_H_ORDER_DIR="$ORDER_DIR"
+CR_H_RECIPE_DIR="$RECIPE"
+CR_H_LOCAL=0
+: > "$LOG"
+seal_rc=0
+cr_h_seal_final_loudness final_checks "$WD" || seal_rc=$?
+printf 'SEAL=%s\n' "$seal_rc"
+'''
+        env = os.environ.copy()
+        env.update({
+            "REPO": str(repo),
+            "ORDER_DIR": str(order_dir),
+            "RECIPE": str(recipe_dir),
+            "WD": str(nl),
+            "LOG": str(log),
+        })
+        h = subprocess.run(["bash", "--noprofile", "--norc", "-c", script],
+                           capture_output=True, text=True, env=env, timeout=120)
+        if h.returncode != 0 or "SEAL=0" not in h.stdout:
+            problems.append("%s non-local seal failed: %s" % (slug, (h.stdout + h.stderr)[-400:]))
+        else:
+            measured = last_lufs(nl / "saves" / "final_video.mp4")
+            if measured is None or not (-15.5 <= measured <= -12.5):
+                problems.append("%s non-local sealed loudness %s" % (slug, measured))
+            outdir2 = nl / "qa-out"
+            outdir2.mkdir()
+            gate2 = subprocess.run(
+                ["bash", str(gate), str(nl / "saves" / "final_video.mp4"),
+                 "--format", "reel", "--outdir", str(outdir2)],
+                capture_output=True, text=True, timeout=180)
+            report2 = outdir2 / "qa-report.txt"
+            text2 = report2.read_text() if report2.is_file() else (gate2.stdout + "\n" + gate2.stderr)
+            lines2 = [ln for ln in text2.splitlines() if "loudness" in ln.lower()]
+            if not any("[PASS] loudness" in ln for ln in lines2):
+                problems.append("%s non-local first qa_gate loudness not PASS: %s" % (slug, lines2 or text2[-400:]))
+
+        # --- Local checks.py run path (PIP seals in run; spotlight via missing evidence) ---
+        loc = root / ("local-" + slug)
+        (loc / "saves").mkdir(parents=True)
+        (loc / "prior").mkdir()
+        shutil.copy(src, loc / "saves" / "final_video.mp4")
+        shutil.copy(src, loc / "prior" / "assembled_video.mp4")
+        cover = subprocess.run(
+            ["ffmpeg", "-y", "-i", str(src), "-frames:v", "1", str(loc / "saves" / "cover.png")],
+            capture_output=True, text=True)
+        if cover.returncode != 0:
+            problems.append("%s cover failed" % slug)
+        (loc / "saves" / "captions.json").write_text(json.dumps({"default": {"caption": "x", "hashtags": []}}))
+        if slug == "p-reels-spotlight":
+            (loc / "prior" / "edit_plan.json").write_text(json.dumps({"takeovers": [], "cover_at": 1.0}))
+        order = root / ("order-local-" + slug + ".json")
+        order.write_text(json.dumps({
+            "manifest": {
+                "recipe": slug,
+                "steps": [{
+                    "id": "final_checks",
+                    "saves": [
+                        {"id": "final_video", "kind": "video"},
+                        {"id": "cover", "kind": "image"},
+                        {"id": "captions", "kind": "json"},
+                    ],
+                    "checks": [{"id": "qa_gate"}],
+                }],
+            },
+        }))
+        if slug == "p-reels-pip":
+            # PIP local run seals inside qa_gate then needs checks/qa_gate.sh.
+            # Prove the seal alone puts loudness in range before any gate score.
+            seal_pip = subprocess.run(
+                [sys.executable, str(checks_py), "loudnorm",
+                 str(loc / "saves" / "final_video.mp4"), str(recipe_dir)],
+                capture_output=True, text=True, timeout=120)
+            if seal_pip.returncode != 0:
+                problems.append("pip local seal failed: %s" % ((seal_pip.stdout or seal_pip.stderr)[-300:]))
+            measured_pip = last_lufs(loc / "saves" / "final_video.mp4")
+            if measured_pip is None or not (-15.5 <= measured_pip <= -12.5):
+                problems.append("pip local sealed loudness %s" % measured_pip)
+            outdir_p = loc / "qa-out"
+            outdir_p.mkdir()
+            gp = subprocess.run(
+                ["bash", str(gate), str(loc / "saves" / "final_video.mp4"),
+                 "--format", "reel", "--outdir", str(outdir_p)],
+                capture_output=True, text=True, timeout=180)
+            rp = outdir_p / "qa-report.txt"
+            tp = rp.read_text() if rp.is_file() else (gp.stdout + "\n" + gp.stderr)
+            lp = [ln for ln in tp.splitlines() if "loudness" in ln.lower()]
+            if not any("[PASS] loudness" in ln for ln in lp):
+                problems.append("pip local first qa_gate loudness not PASS: %s" % (lp or tp[-400:]))
+        else:
+            # Spotlight: evidence seals before hashing; first qa_gate in run must PASS.
+            ev = subprocess.run(
+                [sys.executable, str(checks_py), "evidence", str(recipe_dir), str(loc), "final_checks"],
+                capture_output=True, text=True, timeout=180)
+            if ev.returncode != 0:
+                problems.append("spotlight evidence failed: %s" % ((ev.stdout or ev.stderr)[-400:]))
+            else:
+                review = json.loads((loc / "qa" / "review.json").read_text())
+                for row in review["checks"]:
+                    row["status"] = "PASS"
+                    row["reviewer"] = "wi262-test"
+                    row["observations"] = "Sealed before score."
+                    if row["id"] == "vo_continuous_bed":
+                        row["audioReviewed"] = True
+                (loc / "qa" / "review.json").write_text(json.dumps(review, indent=2) + "\n")
+                measured_s = last_lufs(loc / "saves" / "final_video.mp4")
+                if measured_s is None or not (-15.5 <= measured_s <= -12.5):
+                    problems.append("spotlight evidence loudness %s" % measured_s)
+                run = subprocess.run(
+                    [sys.executable, str(checks_py), "run", str(order), str(recipe_dir), str(loc), "final_checks"],
+                    capture_output=True, text=True, timeout=180)
+                try:
+                    rows = json.loads(run.stdout)
+                except json.JSONDecodeError:
+                    rows = None
+                if rows is None:
+                    problems.append("spotlight run not json: %s" % ((run.stdout or run.stderr)[-400:]))
+                else:
+                    by_id = {r["id"]: r for r in rows}
+                    if not by_id.get("qa_gate", {}).get("passed"):
+                        problems.append("spotlight first run qa_gate failed: %s" % by_id.get("qa_gate"))
+
+print("ok" if not problems else "; ".join(problems))
+raise SystemExit(0 if not problems else 1)
+PY
+)"
+wi262_rc=$?
+if [[ "$wi262_rc" == "0" && "$wi262_detail" == "ok" ]]; then
+  pass "WI2.62: both reel recipes seal quiet final_video so first qa_gate loudness is PASS"
+else
+  fail "WI2.62 pre-score loudness seal" "$wi262_detail"
+fi
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
