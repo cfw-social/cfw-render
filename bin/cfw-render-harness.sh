@@ -405,17 +405,11 @@ for sv in s.get("saves") or []:
 PY
   # Standalone prompt inspections can source the harness without the worker lib.
   if declare -F cr_provider_wait_note >/dev/null; then cr_provider_wait_note >> "$prompt"; fi
-  # Reel final_checks: seal loudness before the agent scores final_video (local and
-  # non-local). Spotlight also gets the local evidence instructions when opted in.
-  if [[ "$step_id" == "final_checks" ]]; then
-    case "$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("manifest") or {}).get("recipe") or "")' "$order_file")" in
-      p-reels-spotlight|p-reels-pip)
-        python3 "$CR_H_SELF_DIR/cfw-render-checks.py" instructions "$CR_H_RECIPE_DIR" "$step_id" >> "$prompt"
-        ;;
-    esac
-  elif (( CR_H_LOCAL )) && [[ "$step_id" == "assemble" || "$step_id" == "prepare_footage" ]] \
+  # Spotlight local evidence only. Loudness is sealed by cr_h_seal_prior_loudness
+  # before this prompt is built; the agent is not asked to loudnorm.
+  if (( CR_H_LOCAL )) && [[ "$step_id" == "assemble" || "$step_id" == "prepare_footage" || "$step_id" == "final_checks" ]] \
     && [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["manifest"]["recipe"])' "$order_file")" == p-reels-spotlight ]]; then
-    python3 "$CR_H_SELF_DIR/cfw-render-checks.py" instructions "$CR_H_RECIPE_DIR" "$step_id" >> "$prompt"
+    python3 "$CR_H_SELF_DIR/cfw-render-checks.py" instructions "$CR_H_RECIPE_DIR" "$step_id" local >> "$prompt"
   fi
 }
 
@@ -627,14 +621,52 @@ s = next((s for s in (o.get("manifest") or {}).get("steps", []) if s.get("id") =
 print(" ".join("%s.%s" % (v["id"], ext.get(v.get("kind"), "bin")) for v in s.get("saves") or []))' "$CR_H_ORDER_DIR/order.json" "$1"
 }
 
+# cr_h_seal_prior_loudness <stepId> <workdir>
+# Reel final_checks input is prior/assembled_video.mp4 (the step doc's OUT_RAW).
+# Seal it to the recipe target before the agent starts, on local and non-local
+# runs, so the step-doc cover concat already lands near -14 LUFS. The pinned
+# step docs still score immediately after that concat; this does not ask the
+# agent to loudnorm. A file already inside +/- 1.5 LU is left unchanged.
+# A missing file or a placeholder (no decodable audio) is skipped. A real
+# audio file whose seal fails is logged and returned to the caller.
+cr_h_seal_prior_loudness() {
+  local step_id="$1" workdir="$2" recipe media detail audio errfile
+  [[ "$step_id" == "final_checks" ]] || return 0
+  media="$workdir/prior/assembled_video.mp4"
+  [[ -f "$media" && ! -L "$media" ]] || return 0
+  recipe="$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("manifest") or {}).get("recipe") or "")' "$CR_H_ORDER_DIR/order.json")" || {
+    cr_log "harness: final loudness recipe lookup failed"
+    return 1
+  }
+  case "$recipe" in
+    p-reels-spotlight|p-reels-pip) ;;
+    *) return 0 ;;
+  esac
+  # Placeholder saves in harness tests are not decodable media. Leave them.
+  # A real audio file that fails to seal is not skipped.
+  audio="$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 "$media" 2>/dev/null || true)"
+  audio="${audio//$'\r'/}"
+  [[ "$audio" == "audio" ]] || return 0
+  errfile="$workdir/.cfw-loudnorm-prior.err"
+  if ! python3 "$CR_H_SELF_DIR/cfw-render-checks.py" loudnorm "$media" "$CR_H_RECIPE_DIR" >"$errfile" 2>&1; then
+    detail="$(tr '\n' ' ' < "$errfile" 2>/dev/null || true)"
+    rm -f "$errfile"
+    if (( ${#detail} > 400 )); then
+      detail="${detail:$((${#detail}-400))}"
+    fi
+    cr_log "harness: final loudness normalisation failed (${detail})"
+    return 1
+  fi
+  rm -f "$errfile"
+}
+
 # cr_h_seal_final_loudness <stepId> <workdir>
-# Safety net for non-local harness checks: seal before any check script reads
-# the file. The agent must already have sealed before its own qa gate (step
-# docs + prompt instructions). Local spotlight seals inside evidence mode,
-# before qa/review.json is hashed; local PIP seals inside run. This returns
-# without a second pass on local runs (checks.py owns that path).
-# Spotlight and PIP both deliver saves/final_video.mp4 and both can miss
-# I=-14 after cover concat. Video is copied; only audio is re-encoded.
+# Safety net for non-local harness checks: seal saves/final_video.mp4 before
+# any check script reads it. The prior input was already sealed before the
+# agent started. Local spotlight seals again inside evidence mode, before
+# qa/review.json is hashed; local PIP seals inside run. This returns without
+# a second pass on local runs (checks.py owns that path). A file already in
+# range is not encoded again. Video is copied; only audio is re-encoded.
 # A placeholder save (not decodable audio) is skipped. A real media file
 # whose seal fails is logged and returned to the caller, which fails qa_gate.
 cr_h_seal_final_loudness() {
@@ -943,6 +975,13 @@ o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alt
       if (( CR_H_LOCAL )); then
         cr_h_checkpoint prepare "$step_id" >/dev/null || return 31
         for p in "${completed_saves[@]}"; do cp "$p" "$workdir/prior/" || return 31; done
+      fi
+      # Seal the reel prior after any local recopy and before the agent.
+      # A quiet assemble save is encoded once; a file already in range is not.
+      if ! cr_h_seal_prior_loudness "$step_id" "$workdir"; then
+        cr_h_report step_failed "{\"stepId\":\"$step_id\",\"message\":\"Final loudness normalisation failed.\",\"checks\":[{\"id\":\"qa_gate\",\"passed\":false,\"detail\":\"Final loudness normalisation failed.\"}]}" || return $?
+        cr_h_report attempt_failed "{\"stepId\":\"$step_id\",\"message\":\"Final loudness normalisation failed.\"}" || return $?
+        return 30
       fi
       tried+="$engine "
       cr_h_report step_started "{\"stepId\":\"$step_id\",\"engine\":\"$engine\"}" || return $?
