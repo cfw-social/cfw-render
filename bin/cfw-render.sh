@@ -362,10 +362,20 @@ for x in a:
     p = x["path"]; ext = os.path.splitext(p)[1].lstrip(".").lower()
     if (x.get("role") == "captions" or (not x.get("role") and x.get("id") == "captions")) and ext == "json": print(p + "\tcaptions")
     elif ext in MEDIA: print(p + "\tmedia")' "$h_out" 2>/dev/null)
-      if (( ${#h_files[@]} > 0 )) && ( cd "$order_dir" && CFW_ORDER_ID="$order_id" CFW_CAPTIONS_FILE="${h_captions:-final/captions.json}" CFW_RENDER_KEEP_DIR="$(cr_keep_output_dir "$brand_slug" "$order_id")" PATH="$SELF_DIR:$PATH" cfw-render-report.sh complete "${h_files[@]}" ); then
+      # cr_load_config sources the settings file without exporting the worker
+      # key, API base, or worker id. Publish them in this subshell, the same
+      # way the step subshell does, or the report script cannot see them.
+      if (( ${#h_files[@]} > 0 )) && ( cd "$order_dir" && export CFW_WORKER_ID CFW_API_BASE CFW_RENDER_WORKER_KEY && CFW_ORDER_ID="$order_id" CFW_CAPTIONS_FILE="${h_captions:-final/captions.json}" CFW_RENDER_KEEP_DIR="$(cr_keep_output_dir "$brand_slug" "$order_id")" PATH="$SELF_DIR:$PATH" cfw-render-report.sh complete "${h_files[@]}" ); then
         h_outcome="completed"
       else
         cr_log "order $order_id — harness finished but complete_render_order failed"
+        # block refuses when a delivery may already have landed. That refusal
+        # stays a log line; the lease expiry is the backstop.
+        if ( cd "$order_dir" && export CFW_WORKER_ID CFW_API_BASE CFW_RENDER_WORKER_KEY && CFW_ORDER_ID="$order_id" PATH="$SELF_DIR:$PATH" cfw-render-report.sh block "could not hand off the finished render" ); then
+          h_outcome="failed"
+        else
+          cr_log "order $order_id — block after failed completion was not acknowledged; lease expiry is the backstop"
+        fi
       fi
     else
       case "$h_rc" in 20) h_outcome="cancelled" ;; 21) h_outcome="released" ;; 22) h_outcome="revoked" ;; 23) h_outcome="superseded" ;; 24) h_outcome="engine_limit" ;; 25) h_outcome="stage-completed" ;; 30) h_outcome="failed" ;; 31) h_outcome="checkpoint-blocked" ;; esac

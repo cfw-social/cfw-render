@@ -5638,6 +5638,179 @@ else
 fi
 rm -rf "$wi238" "$wi238_miss" "$wi238_src" "$wi238_sync"
 
+echo "=== Case 38: manifest completion sees settings-file worker values, and a failed hand-off blocks (WI2.40) ==="
+# The smoke ran the worker with these three unset in the process and present
+# only as plain assignments in the CFW_RENDER_ENV file. cr_load_config sources
+# that file. The step subshell exports them; the completion subshell must too.
+wi240_key="cfw_render_wi240fileonly0000"
+wi240_worker_id="w-wi240-file"
+wi240_link_bin() {
+  local dest="$1"
+  rm -rf "$dest"
+  mkdir -p "$dest"
+  local f base
+  for f in "$REPO_DIR/bin/"*; do
+    [[ -f "$f" ]] || continue
+    base="$(basename "$f")"
+    [[ "$base" == "cfw-render-report.sh" ]] && continue
+    cp "$f" "$dest/$base"
+  done
+  cat > "$dest/cfw-render-report.sh" <<'EOF'
+#!/usr/bin/env bash
+# Test stand-in placed where the completion subshell finds cfw-render-report.sh.
+# Records the three worker settings (never the key value) then runs the real script.
+set -u
+rec="${CFW_WI240_RECORD:?}"
+verb="${1:-}"
+{
+  printf 'verb=%s\n' "$verb"
+  printf 'api=%s\n' "${CFW_API_BASE:-}"
+  printf 'worker=%s\n' "${CFW_WORKER_ID:-}"
+  if [[ -n "${CFW_RENDER_WORKER_KEY:-}" && "${CFW_RENDER_WORKER_KEY}" == "${CFW_WI240_EXPECT_KEY:-}" ]]; then
+    printf 'key=match\n'
+  else
+    printf 'key=absent\n'
+  fi
+} >> "$rec"
+if [[ "$verb" == "complete" && "${CFW_WI240_FAIL_COMPLETE:-}" == "1" ]]; then
+  exit 1
+fi
+exec "${CFW_WI240_REAL_REPORT:?}" "$@"
+EOF
+  chmod +x "$dest/cfw-render-report.sh"
+}
+wi240_field() {
+  python3 -c '
+import sys
+want, key = sys.argv[2], sys.argv[3]
+cur = {}
+found = None
+def take():
+    global found
+    if cur.get("verb") == want:
+        found = dict(cur)
+for line in open(sys.argv[1]):
+    k, sep, v = line.strip().partition("=")
+    if not sep:
+        continue
+    if k == "verb" and cur:
+        take()
+        cur = {}
+    cur[k] = v
+take()
+print("" if found is None else found.get(key, ""))
+' "$1" "$2" "$3"
+}
+wi240_worker() {
+  local dir="$1" port="$2" fail_complete="$3"
+  local settings="$dir/settings.env" record="$dir/report-env.txt"
+  wi240_link_bin "$dir/bin"
+  printf 'CFW_API_BASE=http://127.0.0.1:%s\nCFW_WORKER_ID=%s\nCFW_RENDER_WORKER_KEY=%s\n' \
+    "$port" "$wi240_worker_id" "$wi240_key" > "$settings"
+  chmod 600 "$settings"
+  : > "$record"
+  (
+    unset CFW_API_BASE CFW_WORKER_ID CFW_RENDER_WORKER_KEY
+    export CFW_RENDER_ENV="$settings"
+    export CFW_RENDER_TEST_MEDIA_BASE_URL="http://127.0.0.1:$port"
+    export CFW_RENDER_STATE_DIR="$dir/cr-state"
+    export CFW_RENDER_LOG_DIR="$dir/cr-state"
+    export CFW_RENDER_KEEP_OUTPUTS=0
+    export CFW_RENDER_SCRATCH="$dir/cr-scratch"
+    export CFW_RENDER_SKILLS_DIR="$dir/skills"
+    export CFW_RENDER_OLLAMA_KEYS_FILE="$OLLAMA_KEYS_FIXTURE"
+    export CFW_RENDER_DIRECTOR_CMD="$TEST_DIR/fake-director.sh"
+    export CFW_RENDER_ENGINE_CMD="$TEST_DIR/fake-engine.sh"
+    export CFW_RENDER_HEARTBEAT_SEC=1
+    export CFW_RENDER_HEARTBEAT_SECS=0
+    export CFW_RENDER_CONCURRENCY=1
+    export CFW_RENDER_UPLOAD_MODE=multipart
+    export CFW_WI240_RECORD="$record"
+    export CFW_WI240_EXPECT_KEY="$wi240_key"
+    export CFW_WI240_REAL_REPORT="$REPO_DIR/bin/cfw-render-report.sh"
+    export CFW_WI240_FAIL_COMPLETE="$fail_complete"
+    "$dir/bin/cfw-render.sh" > "$dir/worker.out" 2>&1
+  )
+}
+wi240_leaked() {
+  local dir="$1"
+  grep -qF "$wi240_key" "$dir/worker.out" "$dir/report-env.txt" "$dir/cr-state/cfw-render.log" "$dir/mockstate/calls.jsonl" 2>/dev/null
+}
+wi240_hint() {
+  python3 -c '
+import pathlib, sys
+key, path = sys.argv[1], sys.argv[2]
+file = pathlib.Path(path)
+text = file.read_text(errors="replace")[-400:] if file.is_file() else ""
+print(text.replace(key, "[key]").replace("\n", " | ")[-300:])
+' "$wi240_key" "$1"
+}
+
+echo "--- 38a: completion report receives the three values from the settings file only"
+wi240a="$(mktemp -d)"
+wi240a_port=$((MOCK_PORT_BASE + 1010))
+c19_setup "$wi240a" "$wi240a_port"
+wi240_worker "$wi240a" "$wi240a_port" 0
+kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
+wi240a_api="$(wi240_field "$wi240a/report-env.txt" complete api)"
+wi240a_wid="$(wi240_field "$wi240a/report-env.txt" complete worker)"
+wi240a_key="$(wi240_field "$wi240a/report-env.txt" complete key)"
+wi240a_call="$(python3 -c '
+import json, sys
+want_id, want_worker = sys.argv[1], sys.argv[2]
+n = 0
+ok = False
+for line in open(sys.argv[3]):
+    d = json.loads(line)
+    if d.get("tool") != "complete_render_order":
+        continue
+    n += 1
+    a = d.get("args") or {}
+    if d.get("ok") is True and a.get("orderId") == want_id and a.get("workerId") == want_worker:
+        ok = True
+print("ok" if ok and n == 1 else "n=%s ok=%s" % (n, ok))
+' "order-h1" "$wi240_worker_id" "$wi240a/mockstate/calls.jsonl" 2>/dev/null || echo "parse-error")"
+if [[ "$wi240a_api" == "http://127.0.0.1:$wi240a_port" && "$wi240a_wid" == "$wi240_worker_id" && "$wi240a_key" == "match" && "$wi240a_call" == "ok" ]] && ! wi240_leaked "$wi240a"; then
+  pass "completion report: CFW_API_BASE, CFW_WORKER_ID and CFW_RENDER_WORKER_KEY come from the settings file"
+else
+  fail "completion report settings file" "api='$wi240a_api' worker='$wi240a_wid' keyflag='$wi240a_key' call='$wi240a_call' log=$(wi240_hint "$wi240a/worker.out")"
+fi
+rm -rf "$wi240a"
+
+echo "--- 38b: a failed completion blocks the order instead of only logging"
+wi240b="$(mktemp -d)"
+wi240b_port=$((MOCK_PORT_BASE + 1011))
+c19_setup "$wi240b" "$wi240b_port"
+wi240_worker "$wi240b" "$wi240b_port" 1
+kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
+wi240b_block="$(python3 -c '
+import json, sys
+want_id, want_worker, want_reason = sys.argv[1], sys.argv[2], sys.argv[3]
+blocked = False
+completed = 0
+for line in open(sys.argv[4]):
+    d = json.loads(line)
+    if d.get("tool") == "complete_render_order":
+        completed += 1
+    if d.get("tool") != "block_render_order":
+        continue
+    a = d.get("args") or {}
+    if d.get("ok") is True and a.get("orderId") == want_id and a.get("workerId") == want_worker and a.get("reason") == want_reason:
+        blocked = True
+print("ok" if blocked and completed == 0 else "blocked=%s completed=%s" % (blocked, completed))
+' "order-h1" "$wi240_worker_id" "could not hand off the finished render" "$wi240b/mockstate/calls.jsonl" 2>/dev/null || echo "parse-error")"
+wi240b_journal=0
+grep -q $'\tfailed\t' "$wi240b/cr-state/journal.tsv" 2>/dev/null && wi240b_journal=1
+wi240b_api="$(wi240_field "$wi240b/report-env.txt" block api)"
+wi240b_wid="$(wi240_field "$wi240b/report-env.txt" block worker)"
+wi240b_key="$(wi240_field "$wi240b/report-env.txt" block key)"
+if [[ "$wi240b_block" == "ok" && "$wi240b_journal" == "1" && "$wi240b_api" == "http://127.0.0.1:$wi240b_port" && "$wi240b_wid" == "$wi240_worker_id" && "$wi240b_key" == "match" ]] && ! wi240_leaked "$wi240b"; then
+  pass "failed completion: block_render_order with a reason, order not left claimed"
+else
+  fail "failed completion block" "block='$wi240b_block' journal=$wi240b_journal api='$wi240b_api' worker='$wi240b_wid' keyflag='$wi240b_key' log=$(wi240_hint "$wi240b/worker.out")"
+fi
+rm -rf "$wi240b"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
