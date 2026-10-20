@@ -5553,6 +5553,91 @@ else
 fi
 rm -rf "$r5d"
 
+echo "=== Case 37: carousel render.mjs loads Playwright from the work folder (WI2.38) ==="
+# The step runs `node "$SKILL_DIR/render.mjs"` with cwd = work/, after installing
+# Playwright into work/node_modules. The skill folder itself has no node_modules.
+# Before the loader, Node reported ERR_MODULE_NOT_FOUND from the script path.
+wi238="$(mktemp -d)"
+wi238_skill="$wi238/skill"
+wi238_work="$wi238/work"
+mkdir -p "$wi238_skill" "$wi238_work/node_modules/playwright"
+cp "$REPO_DIR/skills/p-carousel/render.mjs" "$wi238_skill/render.mjs"
+if [[ ! -e "$wi238_skill/node_modules" ]]; then
+  pass "render.mjs resolution: skill folder has no node_modules"
+else
+  fail "render.mjs resolution: skill node_modules" "the skill folder must not supply playwright"
+fi
+cat > "$wi238_work/node_modules/playwright/package.json" <<'EOF'
+{
+  "name": "playwright",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "index.js",
+  "exports": { ".": "./index.js" }
+}
+EOF
+cat > "$wi238_work/node_modules/playwright/index.js" <<'EOF'
+export const chromium = {
+  launch() {
+    throw new Error("WI238_PLAYWRIGHT_FROM_WORK");
+  },
+};
+EOF
+wi238_out="$(
+  cd "$wi238_work" && SCALE=1 node "$wi238_skill/render.mjs" carousel.html 2>&1 || true
+)"
+if [[ "$wi238_out" == *WI238_PLAYWRIGHT_FROM_WORK* && "$wi238_out" != *ERR_MODULE_NOT_FOUND* ]]; then
+  pass "render.mjs resolves the work-folder playwright stub when run from work"
+else
+  fail "render.mjs work-folder playwright" "${wi238_out:0:700}"
+fi
+
+wi238_miss="$(mktemp -d)"
+mkdir -p "$wi238_miss/skill" "$wi238_miss/work"
+cp "$REPO_DIR/skills/p-carousel/render.mjs" "$wi238_miss/skill/render.mjs"
+wi238_miss_out="$(
+  cd "$wi238_miss/work" && SCALE=1 node "$wi238_miss/skill/render.mjs" carousel.html 2>&1 || true
+)"
+if [[ "$wi238_miss_out" == *"/work/node_modules/playwright"* \
+   && "$wi238_miss_out" == *"/skill/node_modules/playwright"* \
+   && "$wi238_miss_out" == *"Cannot find package 'playwright'"* \
+   && "$wi238_miss_out" != *ERR_MODULE_NOT_FOUND* ]]; then
+  pass "render.mjs names the work folder and the script folder when playwright is missing"
+else
+  fail "render.mjs missing playwright" "${wi238_miss_out:0:700}"
+fi
+
+# Re-sync must keep the loader. The fixture source has no render.mjs, so plant
+# the pre-fix import block into a copy and let sync-skills.py rewrite it.
+wi238_src="$(mktemp -d)"
+cp -R "$TEST_DIR/fixtures/skills-src/." "$wi238_src/"
+python3 - "$REPO_DIR/skills/p-carousel/render.mjs" "$wi238_src/p-fixture-recipe/render.mjs" <<'PY'
+import pathlib, sys
+fixed = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+start = fixed.index("import { createRequire } from 'node:module';\n")
+end = fixed.index("const HTML")
+static = (
+    "import { chromium } from 'playwright';\n"
+    "import { mkdir } from 'node:fs/promises';\n"
+    "import { execFileSync } from 'node:child_process';\n"
+    "\n"
+)
+pathlib.Path(sys.argv[2]).write_text(fixed[:start] + static + fixed[end:], encoding="utf-8")
+PY
+wi238_sync="$(mktemp -d)"
+wi238_sync_rc=0
+wi238_sync_log="$(
+  CFW_SKILLS_SRC="$wi238_src" "$REPO_DIR/scripts/sync-skills.sh" \
+    --recipes "$TEST_DIR/fixtures/fixture-recipes.json" --out-dir "$wi238_sync" --skip-manifest 2>&1
+)" || wi238_sync_rc=$?
+if [[ "$wi238_sync_rc" == "0" ]] && cmp -s "$REPO_DIR/skills/p-carousel/render.mjs" "$wi238_sync/p-fixture-recipe/render.mjs"; then
+  pass "sync-skills.py keeps the work-folder Playwright loader on re-sync"
+else
+  wi238_diff="$(diff -u "$REPO_DIR/skills/p-carousel/render.mjs" "$wi238_sync/p-fixture-recipe/render.mjs" 2>&1 || true)"
+  fail "sync-skills.py playwright loader" "rc=$wi238_sync_rc diff=${wi238_diff:0:500} log=${wi238_sync_log:0:400}"
+fi
+rm -rf "$wi238" "$wi238_miss" "$wi238_src" "$wi238_sync"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then

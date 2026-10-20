@@ -195,6 +195,90 @@ def rewrite_host_path_resolvers(directory: Path, own_rel_path: str, is_nested: b
     return changed
 
 
+# ---- WI2.38: load Playwright from the step work folder ----
+#
+# The carousel step installs Playwright into work/node_modules and runs
+# `node "$SKILL_DIR/render.mjs"` from that work folder. Node resolves a static
+# `import { chromium } from 'playwright'` from the script's folder, not cwd,
+# so the install is invisible. The private source still has the static import;
+# this rewrite keeps the work-folder loader in the bundle. No-op when the
+# import block is absent (fixture recipes, and a source that already loads
+# Playwright itself).
+_PLAYWRIGHT_STATIC_IMPORT_RE = re.compile(
+    r"import \{ chromium \} from 'playwright';\n"
+    r"import \{ mkdir \} from 'node:fs/promises';\n"
+    r"import \{ execFileSync \} from 'node:child_process';\n"
+)
+_PLAYWRIGHT_WORK_LOADER = """import { createRequire } from 'node:module';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import path from 'node:path';
+import { mkdir } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+
+// Playwright is installed in the step work folder (the process cwd). A static
+// import resolves from this file's folder, which has no node_modules.
+async function loadPlaywrightChromium() {
+  const cwd = process.cwd();
+  const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+  const workPlace = path.join(cwd, 'node_modules', 'playwright');
+  const scriptPlace = path.join(scriptDir, 'node_modules', 'playwright');
+
+  const pick = (mod) => {
+    if (mod && mod.chromium) return mod.chromium;
+    if (mod && mod.default && mod.default.chromium) return mod.default.chromium;
+    return null;
+  };
+
+  let resolved = '';
+  try {
+    resolved = createRequire(cwd + '/').resolve('playwright', { paths: [cwd] });
+  } catch {
+    resolved = '';
+  }
+  if (resolved) {
+    const workRoot = path.resolve(cwd) + path.sep;
+    if (path.resolve(resolved).startsWith(workRoot)) {
+      try {
+        const picked = pick(await import(pathToFileURL(path.resolve(resolved)).href));
+        if (picked) return picked;
+      } catch {
+        // The copy under the work folder did not load.
+      }
+    }
+  }
+  try {
+    const picked = pick(await import('playwright'));
+    if (picked) return picked;
+  } catch {
+    // Not installed beside this file either.
+  }
+  console.error(`render.mjs: Cannot find package 'playwright' in ${workPlace} or ${scriptPlace}`);
+  process.exit(1);
+}
+
+const chromium = await loadPlaywrightChromium();
+"""
+
+
+def rewrite_playwright_work_resolvers(directory: Path) -> int:
+    """Replace the static Playwright import in render.mjs with the work-folder
+    loader. Returns the number of files changed. Leaves every other file,
+    and a render.mjs that does not have this exact import block, untouched."""
+    changed = 0
+    for path in sorted(directory.rglob("render.mjs")):
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, ValueError):
+            continue
+        new_text, n = _PLAYWRIGHT_STATIC_IMPORT_RE.subn(_PLAYWRIGHT_WORK_LOADER, text, count=1)
+        if n and new_text != text:
+            path.write_text(new_text, encoding="utf-8")
+            changed += 1
+    return changed
+
+
 # ---- CFW-318 Part 2: strip brand-overrides host-path fields ----
 #
 # brand-overrides/<slug>/brand.json is a live, documented mechanism
@@ -378,6 +462,7 @@ def main():
         recipe_dest = out_root / recipe
         copy_tree(recipe_src, recipe_dest)
         rewrite_host_path_resolvers(recipe_dest, recipe, is_nested=False)
+        rewrite_playwright_work_resolvers(recipe_dest)
         strip_brand_override_host_paths(recipe_dest)
         redact_literal_host_paths(recipe_dest)
 
@@ -393,6 +478,7 @@ def main():
             for dep in closure:
                 copy_tree(src_root / dep, hub_dir / dep)
                 rewrite_host_path_resolvers(hub_dir / dep, f"{recipe}/.hub/{dep}", is_nested=True)
+                rewrite_playwright_work_resolvers(hub_dir / dep)
                 strip_brand_override_host_paths(hub_dir / dep)
                 redact_literal_host_paths(hub_dir / dep)
 

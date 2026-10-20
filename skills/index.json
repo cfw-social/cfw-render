@@ -458,7 +458,7 @@
     },
     "p-carousel": {
       "version": "1.0.0",
-      "checksum": "sha256:686fe58b237e48ba11b34d015f66633820e291d278f997cafd1c32d2e635f8c9",
+      "checksum": "sha256:11616c03976207d80675b24a1427209e840621d652b635ad3c9b6b1fa128e4fe",
       "files": [
         ".hub/c-eval-runner/LEARNINGS.md",
         ".hub/c-eval-runner/SKILL.md",
@@ -505,7 +505,7 @@
         "brand-overrides/vasanth-sek8tv/brand.json": "sha256:9d4b9b46dd91643860ebe9498d2b656f153a31c82d9a97cd0674e8f878e762d5",
         "examples.json": "sha256:6cbd143eaaa63653c29764993611f3633a35eb24faa3ee6c09bb0a6e6f0cf96d",
         "manifest.json": "sha256:944e21c106f78479e7d111e8f2d383398d0c7e693cff5f22e49281296d19da3b",
-        "render.mjs": "sha256:115488eecd2889604c4e7fdd8938ca4282143f83df08fab8044a9fe2903257dd",
+        "render.mjs": "sha256:645aa08fbf408121b262e30b22df4992712165947f52168b1235c3723351fbcf",
         "steps/01-outline.md": "sha256:745c407c5abeecd019a1b5ee2b11edb4306ce3d029042472d6740a592678a442",
         "steps/02-author-slides.md": "sha256:92c62ae87a2b59453f1411781065d691633847a392a660c97189e9f2435486eb",
         "steps/03-render-slides.md": "sha256:610bda13e4518a327deb6dc329b54885ee2038332e2f5b957e77f66f5e16f461",
