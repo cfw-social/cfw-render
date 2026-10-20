@@ -619,27 +619,39 @@ print(" ".join("%s.%s" % (v["id"], ext.get(v.get("kind"), "bin")) for v in s.get
 }
 
 # cr_h_seal_final_loudness <stepId> <workdir>
-# Non-local runs do not enter cfw-render-checks.py. Seal the finished reel
-# here, before any check script reads it. Local runs seal inside that tool,
-# immediately before qa_gate, so this returns without a second pass.
+# Non-local runs do not enter cfw-render-checks.py run/evidence. Seal the
+# finished reel here, before any check script reads it. Local spotlight seals
+# inside evidence mode, before qa/review.json is hashed; local PIP seals
+# inside run. This returns without a second pass on local runs.
 # Spotlight and PIP both deliver saves/final_video.mp4 and both can miss
 # I=-14 after assemble. Video is copied; only audio is re-encoded.
+# A placeholder save (not decodable audio) is skipped. A real media file
+# whose seal fails is logged and returned to the caller, which fails qa_gate.
 cr_h_seal_final_loudness() {
-  local step_id="$1" workdir="$2" recipe media
+  local step_id="$1" workdir="$2" recipe media detail audio
   [[ "$step_id" == "final_checks" ]] || return 0
   if (( CR_H_LOCAL )); then
     return 0
   fi
   media="$workdir/saves/final_video.mp4"
   [[ -f "$media" && ! -L "$media" ]] || return 0
-  recipe="$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("manifest") or {}).get("recipe") or "")' "$CR_H_ORDER_DIR/order.json")" || return 1
+  recipe="$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("manifest") or {}).get("recipe") or "")' "$CR_H_ORDER_DIR/order.json")" || {
+    cr_log "harness: final loudness recipe lookup failed"
+    return 1
+  }
   case "$recipe" in
     p-reels-spotlight|p-reels-pip) ;;
     *) return 0 ;;
   esac
-  # Placeholder saves in harness tests are not media. A failed seal leaves
-  # the file untouched so the existing checks still decide the step.
-  python3 "$CR_H_SELF_DIR/cfw-render-checks.py" loudnorm "$media" >/dev/null || return 0
+  # Placeholder saves in harness tests are not decodable media. Leave them
+  # for the step checks. A real audio file that fails to seal is not skipped.
+  audio="$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 "$media" 2>/dev/null || true)"
+  audio="${audio//$'\r'/}"
+  [[ "$audio" == "audio" ]] || return 0
+  detail="$(python3 "$CR_H_SELF_DIR/cfw-render-checks.py" loudnorm "$media" "$CR_H_RECIPE_DIR" 2>&1)" || {
+    cr_log "harness: final loudness normalisation failed (${detail: -400})"
+    return 1
+  }
 }
 
 # cr_h_run_checks <stepId> <workdir> <check-ids...> → prints checks JSON; rc 1 if any failed.

@@ -7181,14 +7181,23 @@ harness = (repo / "bin" / "cfw-render-harness.sh").read_text()
 problems = []
 if "-15.5 <= float(values[-1]) <= -12.5" not in checks or "Loudness must be minus 14 LUFS, within 1.5 LUFS." not in checks:
     problems.append("gate target changed")
-if 'normalize_loudness(local(work, "saves/final_video.mp4"))' not in checks:
-    problems.append("seal is not wired before qa_gate")
+if 'normalize_loudness(self.artifact(), self.recipe)' not in checks:
+    problems.append("evidence does not seal before hashing")
+evidence_body = checks.split("def make_evidence", 1)[1].split("def review", 1)[0]
+if "normalize_loudness" not in evidence_body or evidence_body.find("normalize_loudness") > evidence_body.find("qa/review.json"):
+    problems.append("seal is after evidence is written")
+if 'normalize_loudness(local(work, "saves/final_video.mp4"), recipe)' not in checks or "sealed_evidence" not in checks:
+    problems.append("spotlight run can rewrite hashed evidence")
 if 'FINAL_LOUDNESS_RECIPES = ("p-reels-spotlight", "p-reels-pip")' not in checks:
     problems.append("pip is not sealed with spotlight")
 if "loudnorm=I=-14:TP=-1.5:LRA=11" not in checks or ":linear=true" not in checks or '"-c:v", "copy"' not in checks:
     problems.append("two-pass copy seal is missing")
 if 'cr_h_seal_final_loudness "$step_id" "$workdir"' not in harness or "p-reels-spotlight|p-reels-pip" not in harness:
     problems.append("harness does not seal both recipes before its checks")
+seal_fn = harness.split("cr_h_seal_final_loudness()", 1)[1].split("\ncr_h_run_checks()", 1)[0]
+loudnorm_at = seal_fn.find("loudnorm")
+if loudnorm_at < 0 or "|| return 0" in seal_fn[loudnorm_at:loudnorm_at + 500] or "final loudness normalisation failed" not in seal_fn:
+    problems.append("a real loudnorm failure is swallowed")
 
 def last_lufs(path):
     probe = subprocess.run(
@@ -7248,6 +7257,247 @@ if [[ "$wi261_rc" == "0" && "$wi261_detail" == "ok" ]]; then
   pass "WI2.61: quiet sine seals inside -14 LUFS +/- 1.5 and the gate target is unchanged"
 else
   fail "WI2.61 final loudness seal" "$wi261_detail"
+fi
+
+echo "=== Case 42: WI2.61 — spotlight run sees sealed evidence and does not re-encode ==="
+wi261b_detail="$(python3 - "$REPO_DIR" <<'PY'
+import hashlib, importlib.util, json, os, shutil, subprocess, sys, tempfile
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+checks_py = repo / "bin" / "cfw-render-checks.py"
+recipe_dir = repo / "skills" / "p-reels-spotlight"
+problems = []
+
+spec = importlib.util.spec_from_file_location("cfw_render_checks_wi261", checks_py)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+if mod.recipe_loudness_target(recipe_dir) != (-14.0, -1.5, 11.0):
+    problems.append("spotlight default target %s" % (mod.recipe_loudness_target(recipe_dir),))
+pip_target = mod.recipe_loudness_target(repo / "skills" / "p-reels-pip")
+if pip_target[0] != -14.0 or pip_target[1] != -1.5:
+    problems.append("pip target %s" % (pip_target,))
+
+def sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+def last_lufs(path):
+    probe = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-i", str(path), "-af", "ebur128", "-f", "null", "-"],
+        capture_output=True, text=True)
+    import re
+    values = re.findall(r"I:\s*(-?[0-9.]+) LUFS", probe.stderr)
+    if probe.returncode != 0 or not values:
+        return None
+    return float(values[-1])
+
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    custom = root / "custom-recipe"
+    custom.mkdir()
+    (custom / "acceptance.json").write_text(json.dumps({
+        "checks": [
+            {"id": "qa_gate", "type": "qa_gate", "target": -14, "tp": -1.5, "lra": 11},
+        ],
+        "steps": {"voicebed": {"checks": [
+            {"id": "bed_loudness", "type": "loudness", "target": -23, "tol": 1.5},
+        ]}},
+    }))
+    if mod.recipe_loudness_target(custom) != (-14.0, -1.5, 11.0):
+        problems.append("qa_gate target lost %s" % (mod.recipe_loudness_target(custom),))
+    (custom / "acceptance.json").write_text(json.dumps({
+        "checks": [{"id": "qa_gate", "type": "qa_gate", "target": -18, "tp": -2, "lra": 7}],
+    }))
+    if mod.recipe_loudness_target(custom) != (-18.0, -2.0, 7.0):
+        problems.append("declared target %s" % (mod.recipe_loudness_target(custom),))
+
+    src = root / "quiet.mp4"
+    gen = subprocess.run([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", "color=c=red:s=1080x1920:r=30:d=8",
+        "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:duration=8",
+        "-filter:a", "volume=-21dB",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30",
+        "-c:a", "aac", "-b:a", "192k", "-shortest", str(src),
+    ], capture_output=True, text=True)
+    if gen.returncode != 0 or not src.is_file():
+        problems.append("could not generate a quiet reel")
+    else:
+        work = root / "work"
+        (work / "saves").mkdir(parents=True)
+        (work / "prior").mkdir()
+        (work / "inputs" / "broll").mkdir(parents=True)
+        shutil.copy(src, work / "saves" / "final_video.mp4")
+        shutil.copy(src, work / "prior" / "assembled_video.mp4")
+        cover = subprocess.run([
+            "ffmpeg", "-y", "-i", str(src), "-frames:v", "1", str(work / "saves" / "cover.png"),
+        ], capture_output=True, text=True)
+        if cover.returncode != 0:
+            problems.append("could not write cover.png")
+        (work / "prior" / "edit_plan.json").write_text(json.dumps({"takeovers": [], "cover_at": 1.0}))
+        order = root / "order.json"
+        order.write_text(json.dumps({
+            "manifest": {
+                "recipe": "p-reels-spotlight",
+                "steps": [{
+                    "id": "final_checks",
+                    "saves": [{"id": "final_video", "kind": "video"}],
+                    "checks": [{"id": "qa_gate"}, {"id": "grade_is_subtle"}],
+                }],
+            },
+        }))
+        evidence = subprocess.run(
+            [sys.executable, str(checks_py), "evidence", str(recipe_dir), str(work), "final_checks"],
+            capture_output=True, text=True, timeout=180)
+        if evidence.returncode != 0:
+            problems.append("evidence failed: %s" % ((evidence.stdout or evidence.stderr)[-400:]))
+        else:
+            review = json.loads((work / "qa" / "review.json").read_text())
+            for row in review["checks"]:
+                row["status"] = "PASS"
+                row["reviewer"] = "wi261-test"
+                row["observations"] = "Red frame reviewed after the loudness seal."
+            (work / "qa" / "review.json").write_text(json.dumps(review, indent=2) + "\n")
+            video = work / "saves" / "final_video.mp4"
+            sealed = sha(video)
+            measured = last_lufs(video)
+            if measured is None or not (-15.5 <= measured <= -12.5):
+                problems.append("evidence seal loudness %s" % measured)
+            again = subprocess.run(
+                [sys.executable, str(checks_py), "loudnorm", str(video), str(recipe_dir)],
+                capture_output=True, text=True, timeout=120)
+            if again.returncode != 0:
+                problems.append("retry loudnorm failed: %s" % ((again.stdout or again.stderr)[-300:]))
+            elif sha(video) != sealed:
+                problems.append("retry re-encoded final_video")
+
+            def run_mode():
+                proc = subprocess.run(
+                    [sys.executable, str(checks_py), "run", str(order), str(recipe_dir), str(work), "final_checks"],
+                    capture_output=True, text=True, timeout=180)
+                try:
+                    rows = json.loads(proc.stdout)
+                except json.JSONDecodeError:
+                    rows = None
+                return proc, rows
+
+            first, rows = run_mode()
+            if rows is None:
+                problems.append("run output not json: %s" % ((first.stdout or first.stderr)[-400:]))
+            else:
+                stale = [r for r in rows if "stale" in str(r.get("detail") or "").lower()]
+                if stale:
+                    problems.append("stale checks: %s" % stale)
+                by_id = {r["id"]: r for r in rows}
+                for cid in ("qa_gate", "grade_is_subtle"):
+                    if not by_id.get(cid, {}).get("passed"):
+                        problems.append("%s failed: %s" % (cid, by_id.get(cid)))
+                if sha(video) != sealed:
+                    problems.append("run re-encoded final_video")
+                second, rows2 = run_mode()
+                if rows2 is None:
+                    problems.append("retry run output not json: %s" % ((second.stdout or second.stderr)[-300:]))
+                else:
+                    stale2 = [r for r in rows2 if "stale" in str(r.get("detail") or "").lower()]
+                    if stale2:
+                        problems.append("retry stale: %s" % stale2)
+                    if sha(video) != sealed:
+                        problems.append("retry run re-encoded final_video")
+                if last_lufs(video) is None or not (-15.5 <= last_lufs(video) <= -12.5):
+                    problems.append("run loudness %s" % last_lufs(video))
+            if list(work.rglob("*.cfw-loudnorm.mp4")) or list(work.rglob("*.cfw-loudnorm-prev.mp4")):
+                problems.append("loudnorm left a temporary file")
+
+    # Non-local harness: a real media failure is a failed check plus a log line.
+    # A placeholder save is skipped. Local mode does not seal here.
+    wrap = root / "wrap"
+    wrap.mkdir()
+    real = sys.executable
+    (wrap / "python3").write_text(
+        "#!/bin/sh\nfor a in \"$@\"; do\n"
+        "  if [ \"$a\" = \"loudnorm\" ]; then echo \"loudnorm encoder failed\"; exit 1; fi\ndone\n"
+        "exec \"%s\" \"$@\"\n" % real)
+    os.chmod(wrap / "python3", 0o755)
+    order_dir = root / "order-dir"
+    order_dir.mkdir()
+    (order_dir / "order.json").write_text(json.dumps({"manifest": {"recipe": "p-reels-spotlight"}}))
+    fail_wd = root / "fail-wd"
+    (fail_wd / "saves").mkdir(parents=True)
+    shutil.copy(src, fail_wd / "saves" / "final_video.mp4")
+    ph_wd = root / "ph-wd"
+    (ph_wd / "saves").mkdir(parents=True)
+    (ph_wd / "saves" / "final_video.mp4").write_text("placeholder\n")
+    log = root / "harness.log"
+    script = r'''
+source "$REPO/bin/cfw-render-harness.sh"
+cr_log() { printf '%s\n' "$*" >> "$LOG"; }
+export PATH="$WRAP:$PATH"
+CR_H_ORDER_DIR="$ORDER_DIR"
+CR_H_RECIPE_DIR="$RECIPE"
+CR_H_LOCAL=0
+: > "$LOG"
+seal_rc=0
+cr_h_seal_final_loudness final_checks "$FAIL_WD" || seal_rc=$?
+seal_log="$(cat "$LOG")"
+: > "$LOG"
+place_rc=0
+cr_h_seal_final_loudness final_checks "$PH_WD" || place_rc=$?
+place_log="$(cat "$LOG")"
+CR_H_LOCAL=1
+local_rc=0
+cr_h_seal_final_loudness final_checks "$FAIL_WD" || local_rc=$?
+CR_H_LOCAL=0
+: > "$LOG"
+check_rc=0
+check_out="$(cr_h_run_checks final_checks "$FAIL_WD" qa_gate)" || check_rc=$?
+check_log="$(cat "$LOG")"
+printf 'SEAL=%s\nPLACE=%s\nLOCAL=%s\nCHECK=%s\n' "$seal_rc" "$place_rc" "$local_rc" "$check_rc"
+printf 'SEAL_LOG=%s\n' "$seal_log"
+printf 'PLACE_LOG=%s\n' "$place_log"
+printf 'CHECK_OUT=%s\n' "$check_out"
+printf 'CHECK_LOG=%s\n' "$check_log"
+'''
+    env = os.environ.copy()
+    env.update({
+        "REPO": str(repo),
+        "WRAP": str(wrap),
+        "ORDER_DIR": str(order_dir),
+        "RECIPE": str(recipe_dir),
+        "FAIL_WD": str(fail_wd),
+        "PH_WD": str(ph_wd),
+        "LOG": str(log),
+        "PATH": str(wrap) + os.pathsep + env.get("PATH", ""),
+    })
+    harness = subprocess.run(["bash", "--noprofile", "--norc", "-c", script], capture_output=True, text=True, env=env, timeout=60)
+    text = harness.stdout + "\n" + harness.stderr
+    if harness.returncode != 0 and "SEAL=" not in harness.stdout:
+        problems.append("harness probe failed: %s" % text[-500:])
+    else:
+        fields = {}
+        for line in harness.stdout.splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                fields[key] = value
+        if fields.get("SEAL") != "1" or "final loudness normalisation failed" not in fields.get("SEAL_LOG", ""):
+            problems.append("real seal failure hidden: %s" % fields)
+        if "loudnorm encoder failed" not in fields.get("SEAL_LOG", ""):
+            problems.append("seal log dropped the tool error: %s" % fields.get("SEAL_LOG"))
+        if fields.get("PLACE") != "0" or "normalisation failed" in fields.get("PLACE_LOG", ""):
+            problems.append("placeholder was not skipped: %s" % fields)
+        if fields.get("LOCAL") != "0":
+            problems.append("local harness sealed: %s" % fields.get("LOCAL"))
+        if fields.get("CHECK") != "1" or "Final loudness normalisation failed." not in fields.get("CHECK_OUT", ""):
+            problems.append("run_checks hid the seal failure: %s" % fields)
+
+print("ok" if not problems else "; ".join(problems))
+raise SystemExit(0 if not problems else 1)
+PY
+)"
+wi261b_rc=$?
+if [[ "$wi261b_rc" == "0" && "$wi261b_detail" == "ok" ]]; then
+  pass "WI2.61: spotlight run keeps fresh review evidence and a retry does not re-encode"
+else
+  fail "WI2.61 spotlight run after loudness seal" "$wi261b_detail"
 fi
 
 echo "-------------------------------------"

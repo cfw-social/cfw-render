@@ -95,9 +95,85 @@ def decode(path: Path, kind: str) -> None:
 
 
 # Recipes whose finished reel can leave assemble quieter than the gate.
-# The seal runs once, immediately before qa_gate reads saves/final_video.mp4.
+# Spotlight seals inside evidence mode, before qa/review.json records hashes.
+# PIP has no review-hash contract; run seals it immediately before qa_gate.
+# A file already inside the integrated target is not encoded again.
 FINAL_LOUDNESS_RECIPES = ("p-reels-spotlight", "p-reels-pip")
 _LOUDNESS_NUMBER = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)")
+# Documented default. The qa_gate comparison (-14 within 1.5) stays literal.
+_DEFAULT_I, _DEFAULT_TP, _DEFAULT_LRA = -14.0, -1.5, 11.0
+_DEFAULT_LOUDNORM = "loudnorm=I=-14:TP=-1.5:LRA=11"
+_LOUDNESS_TOLERANCE = 1.5
+
+
+def _finite(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        return None
+    return float(value)
+
+
+def _acceptance_checks(spec: object) -> list[dict]:
+    if not isinstance(spec, dict):
+        return []
+    rows = [c for c in spec.get("checks") or [] if isinstance(c, dict)]
+    steps = spec.get("steps") or {}
+    if isinstance(steps, dict):
+        for step in steps.values():
+            if isinstance(step, dict):
+                rows.extend(c for c in step.get("checks") or [] if isinstance(c, dict))
+    return rows
+
+
+def recipe_loudness_target(recipe: Path | None) -> tuple[float, float, float]:
+    """Integrated LUFS, true peak, LRA. Recipe declaration wins; else -14 / -1.5 / 11."""
+    integrated, tp, lra = _DEFAULT_I, _DEFAULT_TP, _DEFAULT_LRA
+    if recipe is None or not (recipe / "acceptance.json").is_file():
+        return integrated, tp, lra
+    best: tuple[int, dict] | None = None
+    for check in _acceptance_checks(load(recipe / "acceptance.json")):
+        declared = _finite(check.get("target"))
+        if declared is None:
+            declared = _finite(check.get("lufs"))
+        if declared is None:
+            declared = _finite(check.get("I"))
+        if declared is None or check.get("type") not in ("qa_gate", "loudness"):
+            continue
+        cid = str(check.get("id") or "")
+        rank = 3 if check.get("type") == "qa_gate" else 2 if "final" in cid else 1
+        if best is None or rank > best[0]:
+            best = (rank, check)
+    if best is None:
+        return integrated, tp, lra
+    check = best[1]
+    found = _finite(check.get("target"))
+    if found is None:
+        found = _finite(check.get("lufs"))
+    if found is None:
+        found = _finite(check.get("I"))
+    if found is not None:
+        integrated = found
+    for key in ("tp", "true_peak", "TP"):
+        found = _finite(check.get(key))
+        if found is not None:
+            tp = found
+            break
+    found = _finite(check.get("lra"))
+    if found is None:
+        found = _finite(check.get("LRA"))
+    if found is not None:
+        lra = found
+    return integrated, tp, lra
+
+
+def _loudnorm_number(value: float) -> str:
+    text = f"{value:.4f}".rstrip("0").rstrip(".")
+    return "0" if text in ("-0", "0") else text
+
+
+def loudnorm_filter(integrated: float, tp: float, lra: float) -> str:
+    if (integrated, tp, lra) == (_DEFAULT_I, _DEFAULT_TP, _DEFAULT_LRA):
+        return _DEFAULT_LOUDNORM
+    return f"loudnorm=I={_loudnorm_number(integrated)}:TP={_loudnorm_number(tp)}:LRA={_loudnorm_number(lra)}"
 
 
 def _loudness_stat(stats: dict, key: str) -> str:
@@ -109,14 +185,33 @@ def _loudness_stat(stats: dict, key: str) -> str:
     return text
 
 
-def normalize_loudness(path: Path) -> None:
-    """Two-pass linear loudnorm to I=-14:TP=-1.5:LRA=11. Copy video; re-encode audio only."""
+def integrated_lufs(path: Path) -> float:
+    # Same summary line the unchanged qa_gate reads.
+    _, err = command(["ffmpeg", "-hide_banner", "-i", str(path), "-af", "ebur128", "-f", "null", "-"])
+    values = re.findall(r"I:\s*(-?[0-9.]+) LUFS", err)
+    require(values, "Loudness measurement is incomplete.")
+    value = float(values[-1])
+    require(math.isfinite(value), "Loudness measurement is not finite.")
+    return value
+
+
+def normalize_loudness(path: Path, recipe: Path | None = None) -> None:
+    """Two-pass linear loudnorm. Copy video; re-encode audio only.
+
+    Default target is I=-14:TP=-1.5:LRA=11. A recipe acceptance check of type
+    qa_gate or loudness can declare target, tp and lra. A file already within
+    1.5 LU of the integrated target is left untouched.
+    """
     require(not path.is_symlink() and path.is_file() and path.stat().st_size > 0, "Loudness input is missing.")
     streams = probe(path)["streams"]
     has_video = any(s.get("codec_type") == "video" for s in streams)
     require(any(s.get("codec_type") == "audio" for s in streams), "Loudness input has no audio.")
+    integrated, tp, lra = recipe_loudness_target(recipe)
+    if abs(integrated_lufs(path) - integrated) <= _LOUDNESS_TOLERANCE:
+        return
+    prefix = loudnorm_filter(integrated, tp, lra)
     out, err = command(["ffmpeg", "-hide_banner", "-nostats", "-i", str(path), "-vn",
-                         "-af", "loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-"])
+                         "-af", prefix + ":print_format=json", "-f", "null", "-"])
     stats = None
     for blob in re.findall(r"\{[^{}]*\}", err + "\n" + out.decode("utf-8", "replace")):
         try:
@@ -127,27 +222,46 @@ def normalize_loudness(path: Path) -> None:
             stats = parsed
     require(isinstance(stats, dict), "Loudness measurement did not return stats.")
     filt = (
-        "loudnorm=I=-14:TP=-1.5:LRA=11"
-        f":measured_I={_loudness_stat(stats, 'input_i')}"
-        f":measured_TP={_loudness_stat(stats, 'input_tp')}"
-        f":measured_LRA={_loudness_stat(stats, 'input_lra')}"
-        f":measured_thresh={_loudness_stat(stats, 'input_thresh')}"
-        f":offset={_loudness_stat(stats, 'target_offset')}"
-        ":linear=true"
+        prefix
+        + f":measured_I={_loudness_stat(stats, 'input_i')}"
+        + f":measured_TP={_loudness_stat(stats, 'input_tp')}"
+        + f":measured_LRA={_loudness_stat(stats, 'input_lra')}"
+        + f":measured_thresh={_loudness_stat(stats, 'input_thresh')}"
+        + f":offset={_loudness_stat(stats, 'target_offset')}"
+        + ":linear=true"
     )
     dest = path.with_name(path.name + ".cfw-loudnorm.mp4")
+    backup = path.with_name(path.name + ".cfw-loudnorm-prev.mp4")
+    kind = "video" if has_video else "audio"
     args = ["ffmpeg", "-y", "-i", str(path), "-af", filt]
     if has_video:
         args += ["-c:v", "copy"]
     else:
         args += ["-vn"]
     args += ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-movflags", "+faststart", str(dest)]
+    moved = False
     try:
         command(args)
+        decode(dest, kind)
+        path.replace(backup)
+        moved = True
         dest.replace(path)
+        decode(path, kind)
+        moved = False
+        backup.unlink()
+    except Exception:
+        if moved and backup.exists():
+            if path.exists():
+                path.unlink()
+            backup.replace(path)
+        raise
     finally:
         if dest.exists():
             dest.unlink()
+        if moved and backup.exists():
+            if path.exists():
+                path.unlink()
+            backup.replace(path)
 
 
 def frame(path: Path, t: float) -> bytes:
@@ -337,6 +451,10 @@ class Spotlight:
         return [c["id"] for c in self.spec["checks"] if c["type"] == "perceptual"] if self.step == "final_checks" else ["vo_continuous_bed"]
 
     def make_evidence(self) -> None:
+        # Hash the sealed deliverable. Sealing later, inside qa_gate, rewrites
+        # saves/final_video.mp4 and every later review() reports stale evidence.
+        if self.step == "final_checks":
+            normalize_loudness(self.artifact(), self.recipe)
         rows = []
         self.path("qa").mkdir(exist_ok=True)
         for i, (source, t) in enumerate(self.evidence_frames()):
@@ -453,6 +571,14 @@ stale, unreadable or failed evidence blocks completion. Re-generate and review
 after any artifact edit. Do not use the eval runner's exit 0 or NEEDS_VISION as
 approval. The harness independently decodes saves and runs objective checks.
 """)
+    if step == "final_checks":
+        print("\nSeal order for final_checks: that evidence command normalises "
+              "saves/final_video.mp4 to the recipe loudness target (default I=-14, "
+              "true peak -1.5 dBTP, LRA 11) BEFORE it writes qa/review.json. "
+              "Run it after every save exists, including final_video, and before you "
+              "review frames. Do not replace or loudnorm final_video after it. "
+              "A file already inside the target is left unchanged, so a retry does not "
+              "re-encode. The QA gate target stays minus 14 LUFS within 1.5 LUFS.\n")
 
 
 def run(order: Path, recipe: Path, work: Path, sid: str) -> int:
@@ -488,9 +614,14 @@ def run(order: Path, recipe: Path, work: Path, sid: str) -> int:
     for cid in ids:
         def validate_check(cid: str = cid) -> None:
             require(re.fullmatch(r"[a-z][a-z0-9_]{0,119}", cid), "Check declaration is invalid.")
-            # Two-pass seal before the unchanged gate measures this reel.
+            # PIP seals here, before its gate. Spotlight already sealed inside
+            # evidence mode; rewriting saves/final_video.mp4 after qa/review.json
+            # would fail every later review-backed check as stale. If that
+            # evidence file is absent, seal once so the gate still sees -14.
             if cid == "qa_gate" and manifest.get("recipe") in FINAL_LOUDNESS_RECIPES:
-                normalize_loudness(local(work, "saves/final_video.mp4"))
+                sealed_evidence = manifest.get("recipe") == "p-reels-spotlight" and local(work, "qa/review.json").is_file()
+                if not sealed_evidence:
+                    normalize_loudness(local(work, "saves/final_video.mp4"), recipe)
             if spotlight:
                 spotlight.check(cid)
             else:
@@ -520,9 +651,10 @@ def main() -> int:
         elif mode == "run":
             return run(Path(args[0]), Path(args[1]).resolve(), Path(args[2]).resolve(), args[3])
         elif mode == "loudnorm":
-            require(len(args) == 1, "Unknown validation command.")
+            require(1 <= len(args) <= 2, "Unknown validation command.")
+            recipe = Path(args[1]).resolve() if len(args) == 2 else None
             try:
-                normalize_loudness(Path(args[0]))
+                normalize_loudness(Path(args[0]), recipe)
             except Invalid as exc:
                 print(str(exc))
                 return 1
