@@ -1184,6 +1184,10 @@ print(json.dumps({"saveId": sys.argv[1], "url": sys.argv[2], "checksum": "sha256
   # the lease and no later heartbeat should race that transition.
   cr_harness_heartbeat_stop
   if (( CR_H_LOCAL )); then final_outputs="$(cr_h_checkpoint final)" || return 31; fi
+  # Delivery order is this list. Do this before attempt_completed so a reel
+  # whose final video or cover is missing does not report success and then
+  # fall through with step videos (voice_track, assembled, scenes).
+  final_outputs="$(cr_h_reel_delivery_outputs "$order_file" "$final_outputs" "$CR_H_RECIPE_DIR")" || return 1
   cr_h_report attempt_completed '{}' || return $?
   if [[ "$nonfinal" == "1" ]]; then
     [[ -f "$order_dir/attempt-completed-ack" ]] || return 1
@@ -1191,4 +1195,68 @@ print(json.dumps({"saveId": sys.argv[1], "url": sys.argv[2], "checksum": "sha256
   fi
   printf '%s\n' "$final_outputs"
   return 0
+}
+
+# cr_h_reel_delivery_outputs <order-file> <outputs-json> <recipe-dir>
+# p-reels-spotlight and p-reels-pip: Reviews must show saves/final_video.mp4.
+# The cover still is attached, second. Earlier videos (voice_track,
+# rendered_scenes, background, assembled_video) are step files, never
+# deliverables. Captions stay so the worker can send them beside the media.
+# Any other recipe is returned unchanged, in the same order the steps saved.
+# A reel missing final_video or cover contributes no media, so an intermediate
+# cannot become outputUrl.
+cr_h_reel_delivery_outputs() {
+  python3 -c '
+import json, os, sys
+order_path, raw, recipe_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+recipe = ""
+try:
+    order = json.load(open(order_path))
+except (OSError, ValueError):
+    order = {}
+if isinstance(order, dict):
+    manifest = order.get("manifest")
+    if isinstance(manifest, dict) and isinstance(manifest.get("recipe"), str):
+        recipe = manifest["recipe"]
+    elif isinstance(order.get("recipe"), str):
+        recipe = order["recipe"]
+if not recipe and recipe_dir:
+    recipe = os.path.basename(recipe_dir.rstrip("/"))
+if recipe not in ("p-reels-spotlight", "p-reels-pip"):
+    sys.stdout.write(raw)
+    raise SystemExit(0)
+try:
+    items = json.loads(raw or "[]")
+except json.JSONDecodeError:
+    items = []
+if not isinstance(items, list):
+    items = []
+
+def ident(item):
+    sid = item.get("id") if isinstance(item.get("id"), str) else ""
+    if not sid and isinstance(item.get("saveId"), str):
+        sid = item["saveId"]
+    path = item.get("path") if isinstance(item.get("path"), str) else ""
+    return sid, os.path.basename(path)
+
+chosen = {}
+captions = []
+for item in items:
+    if not isinstance(item, dict):
+        continue
+    sid, base = ident(item)
+    if sid == "captions" or base == "captions.json":
+        captions.append(item)
+        continue
+    if sid == "final_video" or base == "final_video.mp4":
+        chosen["final_video"] = item
+    elif sid == "cover" or base == "cover.png":
+        chosen["cover"] = item
+out = []
+if "final_video" in chosen and "cover" in chosen:
+    out.append(chosen["final_video"])
+    out.append(chosen["cover"])
+out.extend(captions)
+sys.stdout.write(json.dumps(out, separators=(",", ":")))
+' "$1" "$2" "$3"
 }

@@ -7782,6 +7782,277 @@ else
   fail "WI2.62 pre-score loudness seal" "$wi262_detail"
 fi
 
+echo "=== Case 44: WI2.63 — reel complete uploads final_video then cover, never step videos ==="
+# Smoke 20b reached Reviews with outputUrl = voice_track.mp4 because the harness
+# listed every save in step order and report.sh sets outputUrl from urls[0].
+# Run the real harness, selector and complete path for both reel recipes.
+# Fixture bytes make a renamed intermediate obvious. Step progress uploads are
+# not the Reviews list; only the complete upload log is.
+wi263_delivery() {
+  local slug="$1" root recipe h_rc=0 complete_rc=0 captions="" f role
+  local -a files=()
+  root="$(mktemp -d)"
+  recipe="$REPO_DIR/skills/$slug"
+  mkdir -p "$root/fixtures" "$root/bin" "$root/state" "$root/logs"
+  printf 'voice-track-fixture\n' > "$root/fixtures/voice_track.mp4"
+  printf 'assembled-fixture\n' > "$root/fixtures/assembled_video.mp4"
+  printf 'scenes-fixture\n' > "$root/fixtures/rendered_scenes.mp4"
+  printf 'background-fixture\n' > "$root/fixtures/background.mp4"
+  printf 'final-video-fixture\n' > "$root/fixtures/final_video.mp4"
+  printf 'cover-fixture\n' > "$root/fixtures/cover.png"
+  python3 - "$root/engine.sh" <<'PY'
+import pathlib, sys
+pathlib.Path(sys.argv[1]).write_text("""#!/usr/bin/env bash
+set -eu
+cat >/dev/null
+mkdir -p saves
+for sv in ${CFW_STEP_SAVES:-}; do
+  sid="${sv%%:*}"
+  ext="${sv##*:}"
+  dest="saves/${sid}.${ext}"
+  src="${WI263_FIXTURES}/${sid}.${ext}"
+  if [[ -f "$src" ]]; then
+    cp "$src" "$dest"
+  elif [[ "$sid" == captions ]]; then
+    printf '%s\\n' '{"instagram":"Reel caption","default":"Reel caption"}' > "$dest"
+  else
+    printf 'side %s\\n' "$sid" > "$dest"
+  fi
+done
+""")
+PY
+  chmod +x "$root/engine.sh"
+  python3 - "$root/order.json" "$recipe/manifest.json" "$slug" <<'PY'
+import json, sys
+dest, man_path, slug = sys.argv[1:]
+man = json.load(open(man_path))
+json.dump({
+    "id": "order-wi263-" + slug,
+    "attempt": {"id": "att-wi263"},
+    "recipe": slug,
+    "kind": "video",
+    "taskOrder": {},
+    "inputs": {},
+    "manifest": man,
+}, open(dest, "w"))
+PY
+  (
+    export CFW_RENDER_LOG_DIR="$root/logs"
+    export CFW_RENDER_STATE_DIR="$root/state"
+    export CFW_RENDER_ENGINE=codex
+    export CFW_RENDER_ENGINE_CMD="$root/engine.sh"
+    export WI263_FIXTURES="$root/fixtures"
+    export CFW_WORKER_ID="w-wi263"
+    export CFW_ORDER_ID="order-wi263-$slug"
+    export CFW_API_BASE="http://127.0.0.1:9"
+    export CFW_RENDER_WORKER_KEY="cfw_render_wi263testkey0000"
+    export CFW_RENDER_HEARTBEAT_SEC=30
+    export CFW_RENDER_STEP_TIMEOUT_SEC=60
+    unset CFW_RENDER_SKILLS_DIR
+    unset CFW_RENDER_LOCAL_CHECKPOINTS
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-lib.sh"
+    source "$REPO_DIR/bin/cfw-render-engine.sh"
+    source "$REPO_DIR/bin/cfw-render-harness.sh"
+    cr_harness_heartbeat_start() { :; }
+    cr_harness_heartbeat_stop() { :; }
+    cr_h_run_with_timeout() { shift; "$@"; }
+    cr_report_step() { printf '%s' '{"ok":true,"directive":"continue"}'; }
+    cr_h_upload_with_retry() { printf 'https://media.cfw.social/step-%s' "$(basename "$1")"; }
+    cr_engine_limit_detect() { return 1; }
+    cr_harness_run "$root/order.json" "$root" "$recipe" >"$root/harness.out" 2>"$root/harness.err"
+  )
+  h_rc=$?
+  if [[ "$h_rc" != "0" ]]; then
+    python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); t=p.read_text(errors="replace") if p.is_file() else ""; print(t[-500:].replace("\n"," | "))' "$root/harness.err" > "$root/err-tail.txt"
+    python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); t=p.read_text(errors="replace") if p.is_file() else ""; print(t[:300].replace("\n"," | "))' "$root/harness.out" > "$root/out-head.txt"
+    printf 'harness rc %s out=%s err=%s' "$h_rc" "$(cat "$root/out-head.txt")" "$(cat "$root/err-tail.txt")"
+    rm -rf "$root"
+    return 0
+  fi
+  sel="$(
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-lib.sh"
+    cr_select_deliverables "$root" "$(cat "$root/harness.out")"
+  )"
+  printf '%s\n' "$sel" > "$root/select.txt"
+  while IFS=$'\t' read -r f role; do
+    [[ -n "$f" ]] || continue
+    if [[ "$role" == "captions" ]]; then captions="$f"; else files+=("$f"); fi
+  done < "$root/select.txt"
+  cp "$REPO_DIR/bin/cfw-render-report.sh" "$root/bin/cfw-render-report.sh"
+  cp "$REPO_DIR/bin/cfw-render-lib.sh" "$root/bin/cfw-render-lib.sh"
+  cat >> "$root/bin/cfw-render-lib.sh" <<EOF
+cr_mcp_call() {
+  printf '%s\n' "\$2" >> "$root/calls.jsonl"
+  printf '{"ok":true}'
+}
+EOF
+  python3 - "$root/bin/cfw-render-upload.sh" <<'PY'
+import pathlib, sys
+pathlib.Path(sys.argv[1]).write_text("""#!/usr/bin/env bash
+set -eu
+line=""
+IFS= read -r line < "$1" || true
+printf '%s\\t%s\\n' "$(basename "$1")" "$line" >> "$WI263_UPLOADS"
+printf 'https://media.cfw.social/%s\\n' "$(basename "$1")"
+""")
+PY
+  chmod +x "$root/bin/cfw-render-upload.sh"
+  if (( ${#files[@]} > 0 )); then
+    (
+      cd "$root" || exit 1
+      export CFW_ORDER_ID="order-wi263-$slug" CFW_WORKER_ID="w-wi263" CFW_ATTEMPT_ID="att-wi263"
+      export CFW_API_BASE="http://127.0.0.1:9" CFW_RENDER_WORKER_KEY="cfw_render_wi263testkey0000"
+      export CFW_RENDER_DIRECTOR_MODEL="sonnet"
+      export CFW_CAPTIONS_FILE="$captions"
+      export WI263_UPLOADS="$root/uploads.txt"
+      unset CFW_RENDER_KEEP_DIR
+      PATH="$root/bin:$PATH"
+      bash "$root/bin/cfw-render-report.sh" complete "${files[@]}"
+    ) >"$root/complete.out" 2>"$root/complete.err" || complete_rc=$?
+  else
+    printf 'no media from select\n' > "$root/complete.err"
+    complete_rc=2
+  fi
+  printf '%s\n' "$complete_rc" > "$root/complete.rc"
+  python3 - "$root" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+bad = []
+harness_err = ""
+err_path = root / "harness.err"
+if err_path.is_file():
+    harness_err = err_path.read_text(errors="replace")[-400:].replace("\n", " | ")
+complete_err = ""
+cerr = root / "complete.err"
+if cerr.is_file():
+    complete_err = cerr.read_text(errors="replace")[-400:].replace("\n", " | ")
+try:
+    items = json.loads((root / "harness.out").read_text())
+except Exception as exc:
+    bad.append("harness json %s; err=%s" % (exc, harness_err))
+    items = None
+if isinstance(items, list):
+    ids = [i.get("id") for i in items if isinstance(i, dict)]
+    if ids != ["final_video", "cover", "captions"]:
+        bad.append("ids=%r err=%s" % (ids, harness_err))
+    by_id = {i.get("id"): i for i in items if isinstance(i, dict)}
+    for sid, needle in (("final_video", "final-video-fixture"), ("cover", "cover-fixture")):
+        item = by_id.get(sid) or {}
+        path = item.get("path") or ""
+        if "/steps/final_checks/saves/" not in path:
+            bad.append("%s path=%r" % (sid, path))
+        else:
+            lines = pathlib.Path(path).read_text(errors="replace").splitlines()
+            got = lines[0] if lines else ""
+            if got != needle:
+                bad.append("%s bytes=%r" % (sid, got))
+    blob = json.dumps(items)
+    for name in ("voice_track", "assembled_video", "rendered_scenes", "background"):
+        if name in blob:
+            bad.append("harness leaked %s" % name)
+uploads = (root / "uploads.txt").read_text(errors="replace") if (root / "uploads.txt").is_file() else ""
+want_lines = ["final_video.mp4\tfinal-video-fixture", "cover.png\tcover-fixture"]
+if uploads.splitlines() != want_lines:
+    bad.append("uploads=%r complete=%s" % (uploads.splitlines(), complete_err))
+for banned in ("voice_track", "assembled_video", "rendered_scenes", "background", "captions.json"):
+    if banned in uploads:
+        bad.append("upload leaked %s" % banned)
+calls_path = root / "calls.jsonl"
+if not calls_path.is_file() or not calls_path.read_text().strip():
+    bad.append("no complete call; complete=%s" % complete_err)
+else:
+    rows = [json.loads(line) for line in calls_path.read_text().splitlines() if line.strip()]
+    if len(rows) != 1:
+        bad.append("calls=%d" % len(rows))
+    else:
+        data = rows[0]
+        url = data.get("outputUrl") or ""
+        if not str(url).endswith("/final_video.mp4"):
+            bad.append("outputUrl=%r" % url)
+        names = [u.split("/")[-1].split("?")[0] for u in data.get("outputUrls") or []]
+        if names != ["final_video.mp4", "cover.png"]:
+            bad.append("outputUrls=%r" % names)
+        roles = [o.get("role") for o in data.get("outputs") or []]
+        kinds = [o.get("kind") for o in data.get("outputs") or []]
+        if roles != ["cover", "poster"]:
+            bad.append("roles=%r" % roles)
+        if kinds != ["video", "image"]:
+            bad.append("kinds=%r" % kinds)
+        caps = data.get("captions") or {}
+        if caps.get("instagram") != "Reel caption":
+            bad.append("captions=%r" % caps)
+print("ok" if not bad else "; ".join(bad))
+PY
+  rm -rf "$root"
+}
+
+for wi263_slug in p-reels-spotlight p-reels-pip; do
+  wi263_detail="$(wi263_delivery "$wi263_slug")"
+  if [[ "$wi263_detail" == "ok" ]]; then
+    if [[ "$wi263_slug" == "p-reels-spotlight" ]]; then
+      pass "WI2.63 spotlight: delivery uploads final_video then cover, no voice_track or assembled or scenes"
+    else
+      pass "WI2.63 pip: delivery uploads final_video then cover, no voice_track, assembled or background"
+    fi
+  else
+    fail "WI2.63 $wi263_slug delivery" "$wi263_detail"
+  fi
+done
+
+wi263_guard="$(python3 - "$REPO_DIR" <<'PY'
+import os, subprocess, sys, pathlib, tempfile, json, textwrap
+repo = pathlib.Path(sys.argv[1])
+script = r'''
+set -u
+source "$REPO/bin/cfw-render-harness.sh"
+got="$(cr_h_reel_delivery_outputs "$ORDER" "$RAW" "$RECIPE")"
+printf '%s\n---\n' "$got"
+got2="$(cr_h_reel_delivery_outputs "$SPOT" "$MISSING" "$SPOT_RECIPE")"
+printf '%s' "$got2"
+'''
+raw = '[{"id":"voice_track","path":"/order/voice_track.mp4"},{"id":"final_video","path":"/order/final_video.mp4"}]'
+missing = '[{"id":"voice_track","path":"/s/voice_track.mp4"},{"id":"final_video","path":"/s/final_video.mp4"},{"id":"captions","path":"/s/captions.json"}]'
+with tempfile.TemporaryDirectory(prefix="wi263-guard-") as tmp:
+    root = pathlib.Path(tmp)
+    order = root / "carousel.json"
+    order.write_text(json.dumps({"recipe": "p-carousel", "manifest": {"recipe": "p-carousel"}}))
+    spot = root / "spot.json"
+    spot.write_text(json.dumps({"manifest": {"recipe": "p-reels-spotlight"}}))
+    env = os.environ.copy()
+    env.update({
+        "REPO": str(repo),
+        "ORDER": str(order),
+        "RAW": raw,
+        "RECIPE": str(repo / "skills" / "p-carousel"),
+        "SPOT": str(spot),
+        "MISSING": missing,
+        "SPOT_RECIPE": str(repo / "skills" / "p-reels-spotlight"),
+    })
+    proc = subprocess.run(["bash", "--noprofile", "--norc", "-c", script], capture_output=True, text=True, env=env, timeout=60)
+parts = proc.stdout.split("\n---\n", 1)
+bad = []
+if proc.returncode != 0:
+    bad.append("guard rc %s %s" % (proc.returncode, proc.stderr[-300:].replace("\n", " | ")))
+elif len(parts) != 2:
+    bad.append("guard shape %r" % proc.stdout[:300])
+else:
+    if parts[0] != raw:
+        bad.append("non-reel changed to %r" % parts[0][:300])
+    want = '[{"id":"captions","path":"/s/captions.json"}]'
+    if parts[1] != want:
+        bad.append("missing cover delivered %r" % parts[1][:300])
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi263_guard" == "ok" ]]; then
+  pass "WI2.63: non-reel harness output is left in caller order"
+  pass "WI2.63: reel missing its cover does not deliver a step video"
+else
+  fail "WI2.63 non-reel and missing-cover delivery" "$wi263_guard"
+fi
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
