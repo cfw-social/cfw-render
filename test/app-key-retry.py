@@ -179,8 +179,11 @@ else
 fi
 ''')
         # Do not inherit user configuration, credentials, BASH_ENV or tool paths.
+        # TMPDIR is handed through: bash keeps here-doc and here-string temp
+        # files there, and the runner sandbox allows only its own scratch.
         self.env = {
             "HOME": str(self.root), "PATH": str(self.bin), "LC_ALL": "C",
+            "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
             "FROM_APP": str(helper.parent.parent / "install" / "from-app.sh"),
             "PYTHON": sys.executable, "HELPER": str(helper),
             "FIXTURE_ROOT": str(self.root), "WORKER_ID_FILE": str(self.worker),
@@ -191,7 +194,10 @@ fi
         }
 
     def run_shell(self, expected: int = 0, stdin: str = "", **overrides: str) -> subprocess.CompletedProcess[str]:
-        args = ["/bin/bash", "--noprofile", "--norc", str(self.script)]
+        # Under test/run-tests.sh this is the suite's own bash (TEST_SUITE_BASH):
+        # /bin/bash 3.2 parks here-string temp files in the system temp dir,
+        # which the runner sandbox refuses. Standalone runs keep /bin/bash.
+        args = [os.environ.get("TEST_SUITE_BASH") or "/bin/bash", "--noprofile", "--norc", str(self.script)]
         assert_no_secrets("\n".join(args))
         result = subprocess.run(args, input=stdin, env={**self.env, **overrides},
                                 capture_output=True, text=True, timeout=30)

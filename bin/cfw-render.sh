@@ -527,10 +527,19 @@ print(path)
   # the lookup races a very short-lived process (e.g. a config error that
   # exits in milliseconds) and comes back empty, fall back to the bare PID —
   # today's behavior, never a hard failure of the drainer.
-  local director_pgid director_kill_target
-  director_pgid="$(ps -o pgid= -p "$director_pid" 2>/dev/null | tr -d ' ')"
+  #
+  # When `ps` itself cannot run (exit >1: a sandbox refusing the setuid
+  # binary, a box without it) the process table is still known from the
+  # shell's own job control: `set -m` above gave the `( ... ) &` job a new
+  # process group whose id is the job's own pid, so that is the group to
+  # signal — the Director's tree and nothing else. Unchanged wherever ps runs.
+  local director_pgid director_kill_target ps_rc=0
+  director_pgid="$(ps -o pgid= -p "$director_pid" 2>/dev/null)" || ps_rc=$?
+  director_pgid="${director_pgid//[[:space:]]/}"
   if [[ -n "$director_pgid" ]]; then
     director_kill_target="-$director_pgid"
+  elif (( ps_rc > 1 )) && [[ "$-" == *m* ]]; then
+    director_kill_target="-$director_pid"
   else
     director_kill_target="$director_pid"
   fi

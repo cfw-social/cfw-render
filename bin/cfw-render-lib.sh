@@ -696,15 +696,66 @@ print(json.dumps(d))
 # render watchdog's own `sleep $timeout_secs` outlives a normal-path completion
 # and wedges any caller that captures cfw-render.sh's output via `$( )` — see
 # CFW-292). Worse: it means a genuinely hung render is never actually killed by
-# the watchdog. Walk the tree with pgrep -P (present on both Linux and
-# macOS — no new dependency) so every descendant gets the signal.
+# the watchdog. Walk the tree with cr_proc_children (pgrep -P, present on both
+# Linux and macOS — no new dependency) so every descendant gets the signal.
 # ---------------------------------------------------------------------------
 cr_kill_tree() {
   local pid="$1" sig="${2:-TERM}" kid
-  for kid in $(pgrep -P "$pid" 2>/dev/null); do
+  for kid in $(cr_proc_children "$pid"); do
     cr_kill_tree "$kid" "$sig"
   done
   kill "-$sig" "$pid" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# cr_proc_children <pid> — print the pids of <pid>'s live children, one per
+# line. `pgrep -P` first, and its answer is final wherever it runs (exit 0 =
+# children, 1 = none). Only when pgrep itself cannot run or cannot read the
+# process table (exit >1: a sandbox refusing the binary, a box without it) ask
+# the kernel directly through python3 — libproc proc_listchildpids on macOS,
+# /proc on Linux — which needs no setuid binary. Same answer: direct children
+# by parent pid, nothing matched by name. Empty output when nothing is found.
+# ---------------------------------------------------------------------------
+cr_proc_children() {
+  local pid="$1" kids="" rc=0
+  kids="$(pgrep -P "$pid" 2>/dev/null)" || rc=$?
+  if (( rc <= 1 )); then
+    [[ -n "$kids" ]] && printf '%s\n' "$kids"
+    return 0
+  fi
+  python3 -c '
+import ctypes, os, sys
+ppid = int(sys.argv[1])
+kids = []
+try:
+    lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    lib.proc_listchildpids.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+    lib.proc_listchildpids.restype = ctypes.c_int
+    size = 256
+    while True:
+        buf = (ctypes.c_int * size)()
+        n = lib.proc_listchildpids(ppid, buf, ctypes.sizeof(buf))
+        if n < 0:
+            sys.exit(1)
+        if n < size:
+            kids = [p for p in buf[:n] if p > 0]
+            break
+        size *= 2
+except OSError:
+    # No libproc: a Linux box. /proc/<pid>/stat field 4 is the parent pid.
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            with open("/proc/" + name + "/stat") as f:
+                stat = f.read()
+        except OSError:
+            continue
+        if int(stat[stat.rindex(")") + 2:].split()[1]) == ppid:
+            kids.append(int(name))
+for p in sorted(kids):
+    print(p)
+' "$pid" 2>/dev/null || return 0
 }
 
 # ---------------------------------------------------------------------------

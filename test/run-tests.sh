@@ -113,6 +113,13 @@ PY
 }
 if [[ "${1:-}" == --wake-short-tick ]]; then short_tick_wake_case; exit $?; fi
 
+# Hermetic groups that run scripts under a bash of their own choosing use the
+# bash running this suite ($BASH, a full path). /bin/bash 3.2 keeps here-doc
+# and here-string temp files in the system temp dir whatever TMPDIR says; the
+# runner sandbox refuses that dir, while this suite's own here-docs work.
+TEST_SUITE_BASH="$BASH"
+export TEST_SUITE_BASH
+
 if [[ "${1:-}" == --app-key-retry ]]; then
   python3 "$TEST_DIR/app-key-retry.py"
   exit $?
@@ -648,7 +655,7 @@ fi
 # Hermetic stage-range regression group: fake engine/report/upload functions and
 # an in-memory HTTP opener. No services, credentials, installs or live network.
 stage_range_tests() {
-  python3 - "$REPO_DIR" <<'PY'
+  python3 - "$REPO_DIR" "$TEST_SUITE_BASH" <<'PY'
 import hashlib
 import importlib.util
 import io
@@ -663,6 +670,9 @@ from unittest.mock import patch
 from urllib.request import Request
 
 repo = Path(sys.argv[1])
+# The suite's own bash (see TEST_SUITE_BASH): the scripts below use here-docs
+# and here-strings, which /bin/bash 3.2 would park in the system temp dir.
+suite_bash = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else "bash"
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("stage", repo / "bin/cfw-render-stage.py")
 stage = importlib.util.module_from_spec(spec)
@@ -753,7 +763,7 @@ fi
                    "CFW_RENDER_WORKER_KEY": "", "CFW_RENDER_STATE_DIR": directory,
                    "CFW_RENDER_LOG_DIR": directory, "CFW_RENDER_SCRATCH": str(root / "scratch"),
                    "CFW_RENDER_SKILLS_DIR": str(root / "skills")}
-            result = subprocess.run(["bash", "--noprofile", "--norc", "-c", script],
+            result = subprocess.run([suite_bash, "--noprofile", "--norc", "-c", script],
                                     env=env, text=True, capture_output=True, timeout=30)
             events = [json.loads(line) for line in (root / "reports").read_text().splitlines()]
             completed = (root / "final-calls").read_text() if (root / "final-calls").exists() else ""
