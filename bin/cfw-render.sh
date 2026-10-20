@@ -953,7 +953,20 @@ loop_sleep() { # loop_sleep <secs> — returns early when a running order ends,
   wake_limit="$(awk -v t="$tick" -v g="$CR_WAKE_GAP_SECS" 'BEGIN { printf "%d", t+g }')"
   ticks="$(awk -v s="$secs" -v t="$tick" 'BEGIN { n = int(s / t + 0.999); if (n < 1) n = 1; print n }')"
   prune_running; before=$RUNNING
-  prev="$(cr_now_epoch)"
+  # CR_WAKE_BASE is taken before the back-off log. The wake test jumps the
+  # clock only after that line is visible, so a sample taken afterwards can
+  # land past the jump and then look like an ordinary 2s tick for the whole
+  # back-off. Any other caller samples here.
+  prev=""
+  if [[ "${CR_WAKE_BASE:-}" =~ ^[0-9]+$ ]]; then prev="$CR_WAKE_BASE"; fi
+  CR_WAKE_BASE=""
+  if [[ ! "$prev" =~ ^[0-9]+$ ]]; then prev="$(cr_now_epoch)"; fi
+  # The jump can already have landed while this function was setting up.
+  # Noticing it before the first sleep keeps a long tick from hiding it.
+  now="$(cr_now_epoch)"
+  if [[ "$now" =~ ^[0-9]+$ && "$prev" =~ ^[0-9]+$ ]] && (( now - prev > wake_limit )); then
+    CR_WOKE=1; cr_log "woke from sleep ($(( now - prev ))s gap): checking for requests now"; return 0
+  fi
   for (( i = 0; i < ticks; i++ )); do
     sleep "$tick"
     # Wake: the wall clock jumped well past one tick (the Mac slept). Claim
@@ -975,6 +988,7 @@ loop_sleep() { # loop_sleep <secs> — returns early when a running order ends,
 
 backoff=0
 CR_WOKE=0
+CR_WAKE_BASE=""
 cr_log "loop: started (pid $$) — idle claim every ${CR_CAPACITY_IDLE_CLAIM_SECS}s, back-off ${CR_CLAIM_BACKOFF_BASE_SECS}s..${CR_CLAIM_BACKOFF_MAX_SECS}s"
 while true; do
   cr_tick_lock_touch
@@ -987,6 +1001,9 @@ while true; do
       'BEGIN { n = (b == 0) ? base : b * 2; if (n > mx) n = mx; print n }')"
     if [[ "$next" != "$backoff" ]]; then
       backoff="$next"
+      # Before the line the wake test waits on. It jumps the clock after the
+      # line is visible; the baseline has to already be in the past.
+      CR_WAKE_BASE="$(cr_now_epoch)"
       cr_log "claim back-off: claim_render_order keeps failing — retrying every ${backoff}s (cap ${CR_CLAIM_BACKOFF_MAX_SECS}s)"
     fi
     CR_WOKE=0; loop_sleep "$backoff"
