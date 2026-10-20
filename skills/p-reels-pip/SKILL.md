@@ -253,7 +253,7 @@ else
     cfw-transcribe --input "$W/bed.mp4" --out "$W/transcript.srt" --format srt
   elif command -v mlx_whisper >/dev/null 2>&1; then
     echo "[p-reels-pip] cfw-transcribe not found — falling back to mlx_whisper"
-    mlx_whisper "$W/bed.mp4" --model mlx-community/whisper-small --output-dir "$W" --output-format srt
+    mlx_whisper "$W/bed.mp4" --model mlx-community/whisper-small-mlx --output-dir "$W" --output-format srt
     mv "$W/bed.srt" "$W/transcript.srt"
   elif command -v whisper >/dev/null 2>&1; then
     echo "[p-reels-pip] cfw-transcribe not found — falling back to whisper CLI"
@@ -324,7 +324,7 @@ if [ ${#BROLL_CLIPS[@]} -gt 0 ]; then
       if command -v cfw-transcribe >/dev/null 2>&1; then
         cfw-transcribe --input "$clip" --out "$srt_out" --format srt 2>/dev/null
       elif command -v mlx_whisper >/dev/null 2>&1; then
-        mlx_whisper "$clip" --model mlx-community/whisper-small --output-dir "$(dirname "$srt_out")" --output-format srt 2>/dev/null && \
+        mlx_whisper "$clip" --model mlx-community/whisper-small-mlx --output-dir "$(dirname "$srt_out")" --output-format srt 2>/dev/null && \
         mv "$(dirname "$srt_out")/$(basename "$clip" .mp4).srt" "$srt_out" 2>/dev/null || true
       elif command -v whisper >/dev/null 2>&1; then
         whisper "$clip" --model small --output_dir "$(dirname "$srt_out")" --output_format srt 2>/dev/null && \

@@ -8387,6 +8387,231 @@ done <<EOF
 $wi264_out
 EOF
 
+echo "=== Case 46: WI2.68 — reel whisper model id is whisper-small-mlx ==="
+wi268_rc=0
+wi268_out="$(python3 - "$REPO_DIR" <<'PY'
+import hashlib, importlib.util, json, os, re, shutil, subprocess, sys, tempfile
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+rows = []
+
+def add(name, detail=""):
+    rows.append((name, detail.replace("\n", " | ").replace("\t", " ")[:900]))
+
+def sha256_file(path):
+    return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+def recipe_checksum(recipe):
+    base = repo / "skills" / recipe
+    rels = []
+    for path in base.rglob("*"):
+        if path.is_file() and path.name not in {".DS_Store", "__pycache__", ".git", ".hub"}:
+            rels.append(str(path.relative_to(base)).replace("\\", "/"))
+    rels = sorted(rels)
+    blob = "\n".join("%s=%s" % (rel, sha256_file(base / rel)) for rel in rels)
+    return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+BAD = "mlx-community/whisper-small"
+GOOD = "mlx-community/whisper-small-mlx"
+BAD_RE = re.compile(r"mlx-community/whisper-small(?!-mlx)")
+
+EDITED = [
+    "skills/p-reels-pip/SKILL.md",
+    "skills/p-reels-pip/steps/02-transcribe.md",
+    "skills/p-reels-pip-heygen/steps/02-transcribe.md",
+    "skills/p-reels-spotlight/SKILL.md",
+    "skills/p-reels-spotlight/steps/02-transcribe.md",
+    "skills/p-reels-spotlight-heygen/steps/02-transcribe.md",
+]
+
+try:
+    bad_hits = []
+    for rel in EDITED:
+        text = (repo / rel).read_text(encoding="utf-8")
+        if BAD_RE.search(text):
+            bad_hits.append(rel)
+        if GOOD not in text:
+            bad_hits.append("%s missing good id" % rel)
+        sys.stderr.write("WI2.68-HASH %s %s\n" % (rel, sha256_file(repo / rel)))
+    for recipe in ("p-reels-pip", "p-reels-spotlight", "p-reels-pip-heygen", "p-reels-spotlight-heygen"):
+        sys.stderr.write("WI2.68-CHECKSUM %s %s\n" % (recipe, recipe_checksum(recipe)))
+    sys.stderr.flush()
+    if bad_hits:
+        add("WI2.68 edited reel files name whisper-small-mlx", "; ".join(bad_hits))
+    else:
+        add("WI2.68 edited reel files name whisper-small-mlx")
+
+    idx = json.loads((repo / "skills/index.json").read_text(encoding="utf-8"))
+    hash_mismatches = []
+    checksum_mismatches = []
+    for rel in EDITED:
+        parts = Path(rel).parts  # skills, recipe, ...
+        recipe = parts[1]
+        file_rel = "/".join(parts[2:])
+        actual = sha256_file(repo / rel)
+        expected = (idx.get("recipes", {}).get(recipe, {}).get("fileHashes") or {}).get(file_rel)
+        if expected != actual:
+            hash_mismatches.append("%s/%s expected %s actual %s" % (recipe, file_rel, expected, actual))
+    for recipe in ("p-reels-pip", "p-reels-spotlight", "p-reels-pip-heygen", "p-reels-spotlight-heygen"):
+        actual_cs = recipe_checksum(recipe)
+        expected_cs = (idx.get("recipes", {}).get(recipe) or {}).get("checksum")
+        if expected_cs != actual_cs:
+            checksum_mismatches.append("%s expected %s actual %s" % (recipe, expected_cs, actual_cs))
+    if hash_mismatches:
+        add("WI2.68 index.json fileHashes match edited reel files", "; ".join(hash_mismatches))
+    else:
+        add("WI2.68 index.json fileHashes match edited reel files")
+    if checksum_mismatches:
+        add("WI2.68 index.json recipe checksums match", "; ".join(checksum_mismatches))
+    else:
+        add("WI2.68 index.json recipe checksums match")
+
+    spec = importlib.util.spec_from_file_location("sync_skills_wi268", repo / "scripts/sync-skills.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    sample_bad = 'mlx_whisper x --model mlx-community/whisper-small --output-dir w\n'
+    sample_good = 'mlx_whisper x --model mlx-community/whisper-small-mlx --output-dir w\n'
+    once = mod.rewrite_whisper_small_mlx(sample_bad)
+    twice = mod.rewrite_whisper_small_mlx(once)
+    already = mod.rewrite_whisper_small_mlx(sample_good)
+    if once != sample_good:
+        add("WI2.68 rewrite_whisper_small_mlx rewrites the bad id", repr(once))
+    elif twice != sample_good:
+        add("WI2.68 rewrite_whisper_small_mlx rewrites the bad id", "second pass changed text")
+    elif already != sample_good:
+        add("WI2.68 rewrite_whisper_small_mlx rewrites the bad id", "good id was altered")
+    else:
+        add("WI2.68 rewrite_whisper_small_mlx rewrites the bad id")
+
+    with tempfile.TemporaryDirectory(prefix="wi268-tx-") as tmp:
+        root = Path(tmp)
+        recipe = root / "recipe"
+        (recipe / "steps").mkdir(parents=True)
+        hub = recipe / ".hub" / "p-reels-split" / "steps"
+        hub.mkdir(parents=True)
+        (recipe / "SKILL.md").write_text(
+            "# demo\nmlx_whisper a --model mlx-community/whisper-small --out x\n",
+            encoding="utf-8",
+        )
+        (recipe / "steps" / "02-transcribe.md").write_text(
+            "mlx_whisper b --model mlx-community/whisper-small --out y\n",
+            encoding="utf-8",
+        )
+        (hub / "02-transcribe.md").write_text(
+            "mlx_whisper c --model mlx-community/whisper-small --out z\n",
+            encoding="utf-8",
+        )
+        n1 = mod.apply_whisper_small_mlx(recipe)
+        texts = [
+            (recipe / "SKILL.md").read_text(encoding="utf-8"),
+            (recipe / "steps" / "02-transcribe.md").read_text(encoding="utf-8"),
+            (hub / "02-transcribe.md").read_text(encoding="utf-8"),
+        ]
+        n2 = mod.apply_whisper_small_mlx(recipe)
+        again = [
+            (recipe / "SKILL.md").read_text(encoding="utf-8"),
+            (recipe / "steps" / "02-transcribe.md").read_text(encoding="utf-8"),
+            (hub / "02-transcribe.md").read_text(encoding="utf-8"),
+        ]
+        detail = ""
+        if n1 != 3:
+            detail = "first apply changed %d files" % n1
+        elif any(BAD_RE.search(t) for t in texts) or any(GOOD not in t for t in texts):
+            detail = "first apply left a bad or missing good id"
+        elif n2 != 0:
+            detail = "second apply changed %d files" % n2
+        elif again != texts:
+            detail = "second apply mutated bytes"
+        if detail:
+            add("WI2.68 apply_whisper_small_mlx is idempotent and covers hub copies", detail)
+        else:
+            add("WI2.68 apply_whisper_small_mlx is idempotent and covers hub copies")
+
+        src = root / "src"
+        for name, deps, body in (
+            ("p-reels-pip", "[]", sample_bad),
+            ("p-reels-faceless", "[]", sample_bad),
+            ("p-reels-pip-heygen", "[p-reels-pip]", sample_bad),
+        ):
+            steps = src / name / "steps"
+            steps.mkdir(parents=True)
+            (src / name / "SKILL.md").write_text(
+                "---\nname: %s\ndependsOn: %s\n---\n# %s\n%s" % (name, deps, name, body),
+                encoding="utf-8",
+            )
+            (steps / "02-transcribe.md").write_text(body, encoding="utf-8")
+        recipes = root / "recipes.json"
+        recipes.write_text(json.dumps({
+            "source": "test-wi268",
+            "recipes": [
+                {"name": "p-reels-pip", "version": "1.0.0", "providers": []},
+                {"name": "p-reels-faceless", "version": "1.0.0", "providers": []},
+                {"name": "p-reels-pip-heygen", "version": "1.0.0", "providers": []},
+            ],
+        }), encoding="utf-8")
+        out = root / "out"
+        env = os.environ.copy()
+        env["CFW_SKILLS_SRC"] = str(src)
+        proc = subprocess.run(
+            ["bash", str(repo / "scripts/sync-skills.sh"), "--recipes", str(recipes),
+             "--out-dir", str(out), "--skip-manifest"],
+            capture_output=True, text=True, env=env,
+        )
+        paths = [
+            out / "p-reels-pip/SKILL.md",
+            out / "p-reels-pip/steps/02-transcribe.md",
+            out / "p-reels-faceless/SKILL.md",
+            out / "p-reels-faceless/steps/02-transcribe.md",
+            out / "p-reels-pip-heygen/steps/02-transcribe.md",
+            out / "p-reels-pip-heygen/.hub/p-reels-pip/steps/02-transcribe.md",
+        ]
+        bad_sync = []
+        if proc.returncode != 0:
+            bad_sync.append("rc %s %s" % (proc.returncode, (proc.stderr or proc.stdout or "")[-400:]))
+        for path in paths:
+            if not path.is_file():
+                bad_sync.append("missing %s" % path.relative_to(out))
+                continue
+            text = path.read_text(encoding="utf-8")
+            if BAD_RE.search(text):
+                bad_sync.append("bad id in %s" % path.relative_to(out))
+            if GOOD not in text:
+                bad_sync.append("no good id in %s" % path.relative_to(out))
+        # Idempotent second sync on already-good output: re-copy from a good src
+        # is covered by apply on the out tree directly.
+        n_again = mod.apply_whisper_small_mlx(out / "p-reels-pip")
+        if n_again != 0:
+            bad_sync.append("re-apply on synced pip changed %d" % n_again)
+        if bad_sync:
+            add("WI2.68 sync-skills.sh rewrites whisper-small on reel recipes and hub copies", "; ".join(bad_sync))
+        else:
+            add("WI2.68 sync-skills.sh rewrites whisper-small on reel recipes and hub copies")
+except Exception as exc:
+    add("WI2.68 whisper model harness", "%s: %s" % (type(exc).__name__, exc))
+
+for name, detail in rows:
+    if detail:
+        print("BAD\t%s\t%s" % (name, detail))
+    else:
+        print("OK\t%s\t." % (name,))
+PY
+)" || wi268_rc=$?
+if [[ "$wi268_rc" != "0" ]]; then
+  fail "WI2.68 whisper model harness" "python exited $wi268_rc"
+fi
+while IFS=$'\t' read -r status name detail; do
+  [[ -z "${status:-}" ]] && continue
+  if [[ "$status" == "OK" ]]; then
+    pass "$name"
+  else
+    fail "$name" "$detail"
+  fi
+done <<EOF
+$wi268_out
+EOF
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then

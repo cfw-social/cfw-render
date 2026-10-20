@@ -259,7 +259,7 @@ json.dump(words, open(sys.argv[2], 'w'))
 PY
 elif command -v mlx_whisper >/dev/null 2>&1; then
   echo "[spotlight] local transcription: mlx_whisper"
-  mlx_whisper "$W/base.mp4" --model mlx-community/whisper-small --output-dir "$W" --output-format json
+  mlx_whisper "$W/base.mp4" --model mlx-community/whisper-small-mlx --output-dir "$W" --output-format json
   python3 -c "import json; d=json.load(open('$W/base.json')); words=[{'text':s['text'],'start':s['start'],'end':s['end']} for s in d.get('segments',[])] ; json.dump(words,open('$W/words.json','w'))"
 elif command -v whisper >/dev/null 2>&1; then
   echo "[spotlight] local transcription: whisper CLI"

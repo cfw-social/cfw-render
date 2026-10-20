@@ -36,6 +36,11 @@ caption clamp onto p-reels-pip and p-reels-pip-heygen after every copy,
 including the heygen .hub copy of p-reels-pip. Upstream still overlays the
 CTA card with itsoffset and burns captions across that window.
 
+WI2.68 apply_whisper_small_mlx() rewrites the missing HF model id
+mlx-community/whisper-small to mlx-community/whisper-small-mlx in every
+p-reels-* recipe after every copy, including .hub copies. Idempotent: an
+already-correct id is left alone.
+
 Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
 and before list_files/hashing, same ordering guarantee:
   strip_brand_override_host_paths() nulls/drops the two host-path fields
@@ -1064,6 +1069,39 @@ def apply_p_reels_pip_tail(directory: Path) -> int:
     return changed
 
 
+# WI2.68: HF repo mlx-community/whisper-small does not exist (401). The
+# published MLX build is mlx-community/whisper-small-mlx. Negative lookbehind
+# keeps an already-correct id untouched (idempotent).
+WHISPER_SMALL_BAD = "mlx-community/whisper-small"
+WHISPER_SMALL_GOOD = "mlx-community/whisper-small-mlx"
+_WHISPER_SMALL_RE = re.compile(r"mlx-community/whisper-small(?!-mlx)")
+
+
+def rewrite_whisper_small_mlx(text: str) -> str:
+    """Rewrite the missing whisper-small model id. Idempotent on already-good text."""
+    return _WHISPER_SMALL_RE.sub(WHISPER_SMALL_GOOD, text)
+
+
+def apply_whisper_small_mlx(directory: Path) -> int:
+    """Rewrite mlx-community/whisper-small -> whisper-small-mlx under directory.
+    Walks every text file (including .hub/). Idempotent. Returns files changed."""
+    changed = 0
+    if not directory.is_dir():
+        return 0
+    for path in sorted(directory.rglob("*")):
+        if not path.is_file() or path.name in IGNORE_NAMES:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, ValueError):
+            continue
+        new = rewrite_whisper_small_mlx(text)
+        if new != text:
+            path.write_text(new, encoding="utf-8")
+            changed += 1
+    return changed
+
+
 def git_head_sha(repo: Path) -> str | None:
     """Best-effort `git rev-parse HEAD` of `repo`. Returns None (never
     raises) when `repo` isn't a git checkout — e.g. a test fixture dir — so
@@ -1191,6 +1229,11 @@ def main():
         # gets the same tail hold and CTA caption clamp as the top-level step.
         if recipe in ("p-reels-pip", "p-reels-pip-heygen"):
             apply_p_reels_pip_tail(recipe_dest)
+
+        # WI2.68: after the hub copy so every reel recipe (pip/spotlight/split/
+        # faceless and heygen wrappers) plus .hub copies get the real MLX model id.
+        if recipe.startswith("p-reels-"):
+            apply_whisper_small_mlx(recipe_dest)
 
         files = list_files(recipe_dest)
         file_hashes = {f: sha256_file(recipe_dest / f) for f in files}

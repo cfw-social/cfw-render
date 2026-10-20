@@ -34,7 +34,7 @@ b-roll was supplied. Clip paths are the workdir-relative `inputs/broll/...` path
 
 ```bash
 if command -v mlx_whisper >/dev/null 2>&1; then
-  mlx_whisper prior/voice_track.mp4 --model mlx-community/whisper-small --output-dir work --output-format json
+  mlx_whisper prior/voice_track.mp4 --model mlx-community/whisper-small-mlx --output-dir work --output-format json
   python3 -c "import json; d=json.load(open('work/voice_track.json')); json.dump([{'text':s['text'],'start':s['start'],'end':s['end']} for s in d.get('segments',[])], open('work/words.json','w'))"
 elif command -v whisper >/dev/null 2>&1; then
   whisper prior/voice_track.mp4 --model small --output_dir work --output_format json
