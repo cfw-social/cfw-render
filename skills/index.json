@@ -457,8 +457,8 @@
       ]
     },
     "p-carousel": {
-      "version": "1.0.0",
-      "checksum": "sha256:1e5011fd904511938dcc1e3add3ec75b5e57a6b6eac599f8f6e01d5059972635",
+      "version": "2026.10.3",
+      "checksum": "sha256:feb3c4cccfc0c48890df47bc75d803d48e50651b2ad25f757744d226aca83b50",
       "files": [
         ".hub/c-eval-runner/LEARNINGS.md",
         ".hub/c-eval-runner/SKILL.md",
@@ -496,7 +496,7 @@
         ".hub/c-script/SKILL.md": "sha256:ba1d83d551ec02cd7ae634fe6b5fd9017f74433f54ada1a8b7b689d355efdf0c",
         ".hub/c-vision-qa/SKILL.md": "sha256:328c298e86f09327f3c6156218e32426b1653897d117e6b8057b50e15edeefc3",
         ".hub/c-vision-qa/scripts/precheck.sh": "sha256:fed240467d8c01c2b94893b272d539054fb9afad42a880f33b804e38d70a8fc8",
-        "LEARNINGS.md": "sha256:f2ec37764d947f6c4f507e291334583286261c36bfb62f07a46e58d6d77a4cb6",
+        "LEARNINGS.md": "sha256:a3832d605cd8274ed9a6cd8e071f06b2c06999966c80827603ae9fd49aeb93ea",
         "SKILL.md": "sha256:744734dcb111d8fac0bf0d5d5914c97e5a70f0641c6660bc83a6bf815a391c37",
         "acceptance.json": "sha256:8c8750eaa27f126a24e1840c67f6b57413d6997d2ad613c41b37d94f726681dc",
         "brand-overrides/README.md": "sha256:ba96dcd60132107bfdb629031252b2b0a53c3f603b9ca3f87336dbec4a36c02c",
@@ -504,11 +504,11 @@
         "brand-overrides/b-vasanth/template.html": "sha256:4cb9717b6d45dc9807eb0590fb5d0f58fa8f02e85db1e375ec860be0f6a3e7cd",
         "brand-overrides/vasanth-sek8tv/brand.json": "sha256:9d4b9b46dd91643860ebe9498d2b656f153a31c82d9a97cd0674e8f878e762d5",
         "examples.json": "sha256:6cbd143eaaa63653c29764993611f3633a35eb24faa3ee6c09bb0a6e6f0cf96d",
-        "manifest.json": "sha256:944e21c106f78479e7d111e8f2d383398d0c7e693cff5f22e49281296d19da3b",
+        "manifest.json": "sha256:4f8be1268d389a32accef3183b0252ac1fcf7d712bf6e0818a8e2942d58e1dd2",
         "render.mjs": "sha256:645aa08fbf408121b262e30b22df4992712165947f52168b1235c3723351fbcf",
         "steps/01-outline.md": "sha256:745c407c5abeecd019a1b5ee2b11edb4306ce3d029042472d6740a592678a442",
         "steps/02-author-slides.md": "sha256:92c62ae87a2b59453f1411781065d691633847a392a660c97189e9f2435486eb",
-        "steps/03-render-slides.md": "sha256:38175c04074c23641d27ca6fdac8c820cc62f1fe54c377bb669efe8844601bc4",
+        "steps/03-render-slides.md": "sha256:f1756d5a6c2415a3312ea75ee26d4408d0d2882477628cbc62c7ef0afee979a6",
         "steps/04-captions.md": "sha256:c5954bbbe64e7772305766e964442f694e6c77ce68ec44733875b406e1cfcc27",
         "steps/_shared.md": "sha256:2a32c387049d261b57f3d6ab33f9a8985e70b97aa7f3f9f8ff0d0aed505877b2",
         "template.html": "sha256:c6260bca8cd6cc4009dc69ad664059fbd2ede417a4c1339099a81307746e2668"

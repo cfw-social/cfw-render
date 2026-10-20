@@ -744,6 +744,9 @@ REPORT
 }
 if [[ "$OUTER" == 1 ]]; then
   source "$TEST_ROOT/worker-functions.sh"
+  # WI2.45: spawn_director calls cr_select_deliverables from the shared lib.
+  # shellcheck disable=SC1091
+  source "$REPO/bin/cfw-render-lib.sh"
   cr_recipe_needs_heygen() { return 1; }
   cr_verify_skills_bundle() { return 0; }
   cr_keep_output_dir() { echo "$TEST_ROOT/kept"; }
@@ -5984,6 +5987,130 @@ else
 fi
 rm -rf "$wi243_reel"
 rm -rf "$wi243"
+
+echo "=== Case 40: WI2.45 — one selector, resume with clean work, slide saves, version ==="
+# Finding 1: worker must call the tested cr_select_deliverables (no inline copy).
+if grep -q 'cr_select_deliverables' "$REPO_DIR/bin/cfw-render.sh" \
+  && ! grep -q 'slides_json = os.path.join' "$REPO_DIR/bin/cfw-render.sh"; then
+  pass "worker uses shared cr_select_deliverables (no inline slides.json selector)"
+else
+  fail "worker selector shared" "cfw-render.sh must call cr_select_deliverables and must not inline slides_json selection"
+fi
+
+# Finding 2: manifest declares per-slide saves; resume with clean work/ still delivers.
+wi245_manifest_ok=1
+for n in 1 2 3 4 5 6 7 8 9 10; do
+  grep -q "\"id\": \"slide_${n}\"" "$REPO_DIR/skills/p-carousel/manifest.json" || wi245_manifest_ok=0
+done
+grep -q '"recipeVersion": "2026.10.3"' "$REPO_DIR/skills/p-carousel/manifest.json" || wi245_manifest_ok=0
+if [[ "$wi245_manifest_ok" == "1" ]]; then
+  pass "carousel manifest: slide_1..slide_10 declared; recipeVersion 2026.10.3"
+else
+  fail "carousel manifest slide saves" "manifest missing slide_1..slide_10 or recipeVersion 2026.10.3"
+fi
+
+wi245="$(mktemp -d)"
+mkdir -p "$wi245/steps/render_slides/saves" "$wi245/steps/captions/saves"
+# Real sha256 values so the work/ fallback check can reuse this fixture.
+python3 - "$wi245" <<'PY'
+import hashlib, json, os, sys
+root = sys.argv[1]
+saves = os.path.join(root, "steps", "render_slides", "saves")
+slides = []
+for n, body in enumerate((b"slide-one", b"slide-two", b"slide-three"), 1):
+    path = os.path.join(saves, "slide_%d.png" % n)
+    open(path, "wb").write(body)
+    slides.append({"n": n, "sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body)})
+json.dump({"width": 1080, "height": 1350, "count": 3, "slides": slides},
+          open(os.path.join(saves, "slides.json"), "w"))
+PY
+printf 'preview-cover' > "$wi245/steps/render_slides/saves/cover.png"
+printf 'preview-sheet' > "$wi245/steps/render_slides/saves/slide_sheet.png"
+printf '{"instagram":"Resume caption","default":"Resume caption"}' > "$wi245/steps/captions/saves/captions.json"
+# Clean work folder: resume restored saves only; work/ is gone.
+rm -rf "$wi245/steps/render_slides/work"
+wi245_h_out='[]'
+wi245_sel="$(
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_select_deliverables "$wi245" "$wi245_h_out"
+)"
+wi245_resume_check="$(python3 -c '
+import sys
+root, text = sys.argv[1], sys.argv[2]
+lines = [l for l in text.splitlines() if l.strip()]
+want = [
+  root + "/steps/render_slides/saves/slide_1.png\tmedia",
+  root + "/steps/render_slides/saves/slide_2.png\tmedia",
+  root + "/steps/render_slides/saves/slide_3.png\tmedia",
+  root + "/steps/captions/saves/captions.json\tcaptions",
+]
+print("ok" if lines == want else "got=%r want=%r" % (lines, want))
+' "$wi245" "$wi245_sel")"
+if [[ "$wi245_resume_check" == "ok" ]]; then
+  pass "carousel resume: clean work folder still delivers slide_1..slide_N from saves"
+else
+  fail "carousel resume clean work" "$wi245_resume_check"
+fi
+
+# Finding 4: work/slides/slide-N.png fallback only when sha256 matches slides.json.
+rm -f "$wi245/steps/render_slides/saves/slide_2.png"
+mkdir -p "$wi245/steps/render_slides/work/slides"
+printf 'slide-two' > "$wi245/steps/render_slides/work/slides/slide-2.png"
+wi245_work_ok="$(
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_select_deliverables "$wi245" "$wi245_h_out"
+)"
+if [[ "$wi245_work_ok" == *"/work/slides/slide-2.png"$'\tmedia'* ]]; then
+  pass "carousel select: work/slides fallback accepted when sha256 matches slides.json"
+else
+  fail "carousel work fallback match" "expected work slide-2 in selection, got: $wi245_work_ok"
+fi
+printf 'tampered' > "$wi245/steps/render_slides/work/slides/slide-2.png"
+wi245_work_bad="$(
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_select_deliverables "$wi245" "$wi245_h_out"
+)"
+if [[ -z "$wi245_work_bad" ]]; then
+  pass "carousel select: work/slides fallback refused when sha256 mismatches slides.json"
+else
+  fail "carousel work fallback mismatch" "expected empty, got: $wi245_work_bad"
+fi
+
+# Finding 3: LEARNINGS records the upstream port text (sync rewrites skills/).
+wi245_learn=1
+grep -q 'Upstream source port' "$REPO_DIR/skills/p-carousel/LEARNINGS.md" || wi245_learn=0
+grep -q 'slide_1' "$REPO_DIR/skills/p-carousel/LEARNINGS.md" || wi245_learn=0
+grep -q '2026.10.3' "$REPO_DIR/skills/p-carousel/LEARNINGS.md" || wi245_learn=0
+grep -q 'sync-skills' "$REPO_DIR/skills/p-carousel/LEARNINGS.md" || wi245_learn=0
+if [[ "$wi245_learn" == "1" ]]; then
+  pass "carousel LEARNINGS: upstream port text for sync survival recorded"
+else
+  fail "carousel LEARNINGS upstream port" "LEARNINGS.md missing WI2.45 upstream port section"
+fi
+
+# Finding 5: skills-version / index version stay aligned with recipeVersion bump.
+wi245_ver="$(python3 - "$REPO_DIR" <<'PY'
+import json, os, sys
+root = sys.argv[1]
+idx = json.load(open(os.path.join(root, "skills", "index.json")))
+sv = json.load(open(os.path.join(root, "config", "skills-version.json")))
+iv = idx["recipes"]["p-carousel"]["version"]
+vv = sv["recipes"]["p-carousel"]["version"]
+ic = idx["recipes"]["p-carousel"]["checksum"]
+vc = sv["recipes"]["p-carousel"]["checksum"]
+bad = []
+if iv != "2026.10.3": bad.append("index.version=%r" % iv)
+if vv != "2026.10.3": bad.append("skills-version.version=%r" % vv)
+if ic != vc: bad.append("checksum mismatch index=%s sv=%s" % (ic, vc))
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi245_ver" == "ok" ]]; then
+  pass "carousel version: index.json and skills-version.json at 2026.10.3 with matching checksum"
+else
+  fail "carousel version alignment" "$wi245_ver"
+fi
+rm -rf "$wi245"
 
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"

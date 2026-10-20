@@ -14,8 +14,12 @@ every slide passes. Only a slide set that passed leaves this step.
 
 ## You must produce
 
-- `saves/slide_1.png` … `saves/slide_N.png` — every slide at the exact canvas, in slide
-  order (N = `slides.json.count`). These are the carousel deliverables.
+- `saves/slide_1.png`, `saves/slide_2.png`, `saves/slide_3.png`, `saves/slide_4.png`,
+  `saves/slide_5.png`, `saves/slide_6.png`, `saves/slide_7.png`, `saves/slide_8.png`,
+  `saves/slide_9.png`, `saves/slide_10.png` — the manifest declares all ten. Write the
+  real slides for N = `slides.json.count` at the exact canvas in order; pad any unused
+  slot (`slide_{N+1}`…`slide_10`) with a copy of the last real slide so harness
+  upload/resume has every declared save. Delivery still uses only `slides.json.count`.
 - `saves/cover.png` — slide 1 at the exact canvas (**preview only**; not a deliverable).
 - `saves/slide_sheet.png` — every slide stacked vertically in order (canvas width × N·height),
   the owner's preview of the whole set (**preview only**; not a deliverable).
@@ -83,8 +87,10 @@ re-render.
 python3 - "$W" "$H" <<'PY'
 import glob, hashlib, json, os, re, shutil, sys
 W, H = int(sys.argv[1]), int(sys.argv[2])
+MAX_SLIDES = 10  # manifest declares slide_1..slide_10 (num_slides choices max)
 files = sorted(glob.glob('work/slides/slide-*.png'), key=lambda p: int(re.search(r'(\d+)\.png$', p).group(1)))
 assert files, "no slides rendered"
+assert 1 <= len(files) <= MAX_SLIDES, f"slide count {len(files)} outside 1..{MAX_SLIDES}"
 os.makedirs('saves', exist_ok=True)
 slides = []
 for i, src in enumerate(files):
@@ -92,6 +98,10 @@ for i, src in enumerate(files):
     dest = f'saves/slide_{n}.png'
     shutil.copy2(src, dest)
     slides.append({"n": n, "sha256": hashlib.sha256(open(dest,'rb').read()).hexdigest(), "bytes": os.path.getsize(dest)})
+# Pad unused declared saves so the harness can upload/restore every slide_K.
+last = files[-1]
+for n in range(len(files) + 1, MAX_SLIDES + 1):
+    shutil.copy2(last, f'saves/slide_{n}.png')
 shutil.copy2(files[0], 'saves/cover.png')
 json.dump({"width": W, "height": H, "count": len(files), "slides": slides}, open('saves/slides.json','w'), indent=1)
 qa = json.load(open('work/qa_report.json'))
@@ -102,8 +112,10 @@ PY
 convert $(ls -v work/slides/slide-*.png) -append saves/slide_sheet.png
 ```
 
-`saves/slide_1.png` … `saves/slide_N.png` are the deliverables (slide order). `cover.png` and
-`slide_sheet.png` are previews only — the worker must not send them as the carousel.
+`saves/slide_1.png` … `saves/slide_N.png` are the deliverables (slide order; N from
+`slides.json.count`). Unused `slide_{N+1}`…`slide_10` pads exist only so the declared
+manifest saves upload and restore. `cover.png` and `slide_sheet.png` are previews only —
+the worker must not send them as the carousel.
 
 Keep `work/qa_report.json` up to date during the loop (one entry per slide, `notes` = the
 fixes applied) so the save is the true record.

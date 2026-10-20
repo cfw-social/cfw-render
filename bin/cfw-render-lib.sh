@@ -234,18 +234,19 @@ NOTE
 # Prints path<TAB>role lines for cfw-render.sh complete. Role is "media" or
 # "captions".
 #
-# Carousel (WI2.43): when steps/render_slides/saves/slides.json names count N
-# and saves/slide_1.png … slide_N.png (or work/slides/slide-N.png) exist, those
-# ordered slide images are the only media deliverables. cover.png and
-# slide_sheet.png stay previews and are never selected. Captions still come
-# from the harness result or steps/captions/saves/captions.json.
+# Carousel (WI2.43/WI2.45): when steps/render_slides/saves/slides.json names
+# count N and saves/slide_1.png … slide_N.png exist (or work/slides/slide-N.png
+# whose sha256 matches slides.json), those ordered slide images are the only
+# media deliverables. cover.png and slide_sheet.png stay previews and are never
+# selected. Captions still come from the harness result or
+# steps/captions/saves/captions.json.
 #
 # Otherwise keep every media path from the harness result, plus captions.
 # ---------------------------------------------------------------------------
 cr_select_deliverables() {
   local order_dir="$1" h_out="${2:-[]}"
   python3 -c '
-import json, os, sys
+import hashlib, json, os, sys
 
 MEDIA = {"mp4", "mov", "webm", "m4v", "png", "jpg", "jpeg", "gif", "webp", "pdf", "mp3", "wav", "m4a"}
 order_dir = os.path.abspath(sys.argv[1])
@@ -284,7 +285,8 @@ def emit_default():
             print(path + "\tmedia")
 
 # Carousel: slides.json is the ordered set contract. Prefer saves/slide_N.png,
-# then work/slides/slide-N.png. Never select cover.png or slide_sheet.png.
+# then work/slides/slide-N.png (work fallback must match slides.json sha256).
+# Never select cover.png or slide_sheet.png.
 slides_json = os.path.join(order_dir, "steps", "render_slides", "saves", "slides.json")
 if os.path.isfile(slides_json):
     try:
@@ -292,17 +294,27 @@ if os.path.isfile(slides_json):
     except (OSError, ValueError, json.JSONDecodeError):
         meta = None
     count = meta.get("count") if isinstance(meta, dict) else None
+    by_n = {}
+    if isinstance(meta, dict):
+        for entry in meta.get("slides") or []:
+            if isinstance(entry, dict) and isinstance(entry.get("n"), int) and isinstance(entry.get("sha256"), str):
+                by_n[entry["n"]] = entry["sha256"].lower()
     if isinstance(count, int) and 1 <= count <= 30:
         base = os.path.join(order_dir, "steps", "render_slides")
         slides = []
         for n in range(1, count + 1):
             chosen = ""
-            for rel in (os.path.join("saves", "slide_%d.png" % n),
-                        os.path.join("work", "slides", "slide-%d.png" % n)):
-                path = os.path.join(base, rel)
-                if os.path.isfile(path) and os.path.getsize(path) > 0 and not os.path.islink(path):
-                    chosen = path
-                    break
+            save_path = os.path.join(base, "saves", "slide_%d.png" % n)
+            if os.path.isfile(save_path) and os.path.getsize(save_path) > 0 and not os.path.islink(save_path):
+                chosen = save_path
+            else:
+                work_path = os.path.join(base, "work", "slides", "slide-%d.png" % n)
+                if os.path.isfile(work_path) and os.path.getsize(work_path) > 0 and not os.path.islink(work_path):
+                    want = by_n.get(n)
+                    if want:
+                        got = hashlib.sha256(open(work_path, "rb").read()).hexdigest()
+                        if got == want:
+                            chosen = work_path
             if not chosen:
                 slides = []
                 break

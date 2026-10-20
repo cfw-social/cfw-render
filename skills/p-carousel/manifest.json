@@ -1,7 +1,7 @@
 {
   "manifestFormat": 1,
   "recipe": "p-carousel",
-  "recipeVersion": "2026.10.2",
+  "recipeVersion": "2026.10.3",
   "label": "Carousel",
   "deliverable": {
     "kind": "image",
@@ -175,6 +175,16 @@
       "when": "always",
       "instructions": "steps/03-render-slides.md",
       "saves": [
+        { "id": "slide_1", "kind": "image", "preview": false },
+        { "id": "slide_2", "kind": "image", "preview": false },
+        { "id": "slide_3", "kind": "image", "preview": false },
+        { "id": "slide_4", "kind": "image", "preview": false },
+        { "id": "slide_5", "kind": "image", "preview": false },
+        { "id": "slide_6", "kind": "image", "preview": false },
+        { "id": "slide_7", "kind": "image", "preview": false },
+        { "id": "slide_8", "kind": "image", "preview": false },
+        { "id": "slide_9", "kind": "image", "preview": false },
+        { "id": "slide_10", "kind": "image", "preview": false },
         {
           "id": "cover",
           "kind": "image",
