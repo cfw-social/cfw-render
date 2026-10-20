@@ -6471,6 +6471,134 @@ else
 fi
 rm -rf "$wi245"
 
+# WI2.32: the real needs_input path must send count as {min,max}.
+# A bare number (and a numeric string) becomes {min:n,max:n}. An object with
+# min and max passes through. No count stays absent. Anything else is dropped
+# and logged once. This fails on d8f00e75, which forwards count: 1 unchanged.
+wi232="$(mktemp -d)"
+wi232_detail="$(
+  root="$wi232"
+  bad=""
+  run_shape() {
+    local shape="$1"
+    local dir="$root/$shape"
+    local rc=0
+    local got=""
+    mkdir -p "$dir/recipe"
+    python3 - "$dir/order.json" <<'PY'
+import json, sys
+json.dump({
+    "id": "ord-wi232",
+    "attempt": {"id": "att-wi232"},
+    "manifest": {"steps": [{
+        "id": "plan_cards",
+        "runsOn": "computer",
+        "instructions": "steps/missing.md",
+        "saves": [{"id": "plan", "kind": "json"}],
+    }]},
+    "taskOrder": {},
+}, open(sys.argv[1], "w"))
+PY
+    CASE_DIR="$dir"
+    ASK_SHAPE="$shape"
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-harness.sh"
+    cr_log() { printf '%s\n' "$*" >> "$CASE_DIR/harness.log"; }
+    cr_engine_detect() { echo test; }
+    cr_engine_limit_detect() { return 1; }
+    cr_harness_heartbeat_start() { :; }
+    cr_harness_heartbeat_stop() { :; }
+    cr_h_run_with_timeout() { shift; "$@"; }
+    cr_engine_run() {
+      python3 - "$ASK_SHAPE" "$3/needs_input.json" <<'PY'
+import json, sys
+shape, path = sys.argv[1], sys.argv[2]
+ask = {"inputId": "topic", "reason": "Need a topic."}
+if shape == "number":
+    ask["count"] = 1
+elif shape == "string":
+    ask["count"] = "1"
+elif shape == "object":
+    ask["count"] = {"min": 2, "max": 4}
+elif shape == "junk":
+    ask["count"] = "soon"
+elif shape == "bool":
+    ask["count"] = True
+json.dump(ask, open(path, "w"))
+PY
+      return 0
+    }
+    cr_report_step() {
+      python3 -c 'import json,sys; print(json.dumps({"event":sys.argv[1],"extra":json.loads(sys.argv[2])}))' "$5" "$6" >> "$CASE_DIR/events.jsonl"
+      printf '%s' '{"ok":true,"directive":"pause"}'
+    }
+    CFW_WORKER_ID="test-worker" CFW_RENDER_PAUSE_MAX_SEC=0 \
+      cr_harness_run "$dir/order.json" "$dir" "$dir/recipe" >"$dir/harness.out" 2>"$dir/harness.err" || rc=$?
+    got="$(python3 - "$shape" "$dir/events.jsonl" "$dir/harness.log" <<'PY'
+import json, sys
+shape, events_path, log_path = sys.argv[1:]
+try:
+    events = [json.loads(line) for line in open(events_path) if line.strip()]
+except Exception as exc:
+    print("no events: %s" % exc)
+    raise SystemExit(0)
+asks = [event["extra"]["ask"] for event in events if event.get("event") == "needs_input"]
+try:
+    log = open(log_path).read()
+except Exception:
+    log = ""
+drops = log.count("needs_input count dropped")
+if len(asks) != 1:
+    print("needs_input reports=%s" % len(asks))
+    raise SystemExit(0)
+ask = asks[0]
+problems = []
+if ask.get("inputId") != "topic" or ask.get("reason") != "Need a topic.":
+    problems.append("ask=%r" % ask)
+if shape in ("number", "string"):
+    if ask.get("count") != {"min": 1, "max": 1}:
+        problems.append("count=%r" % (ask.get("count"),))
+    if drops:
+        problems.append("unexpected drop")
+elif shape == "object":
+    if ask.get("count") != {"min": 2, "max": 4}:
+        problems.append("count=%r" % (ask.get("count"),))
+    if drops:
+        problems.append("unexpected drop")
+elif shape == "absent":
+    if "count" in ask:
+        problems.append("count=%r" % (ask.get("count"),))
+    if drops:
+        problems.append("unexpected drop")
+elif shape in ("junk", "bool"):
+    if "count" in ask:
+        problems.append("count=%r" % (ask.get("count"),))
+    if drops != 1:
+        problems.append("drops=%s" % drops)
+else:
+    problems.append("unknown shape")
+print("ok" if not problems else "; ".join(problems))
+PY
+)"
+    if [[ "$rc" != "21" || "$got" != "ok" ]]; then
+      bad="${bad}${shape}: rc=${rc} ${got}; "
+    fi
+  }
+  run_shape number
+  run_shape string
+  run_shape object
+  run_shape absent
+  run_shape junk
+  run_shape bool
+  if [[ -z "$bad" ]]; then printf '%s' ok; else printf '%s' "$bad"; fi
+)"
+if [[ "$wi232_detail" == "ok" ]]; then
+  pass "harness needs_input: numeric count is {min:1,max:1}; object passes through; absent stays absent"
+else
+  fail "harness needs_input count shape" "$wi232_detail"
+fi
+rm -rf "$wi232"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then

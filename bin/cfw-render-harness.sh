@@ -795,7 +795,52 @@ o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alt
       fi
 
       if [[ -f "$workdir/needs_input.json" ]]; then
-        ask="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))))' "$workdir/needs_input.json" 2>/dev/null || echo '{}')"
+        # Social accepts ask.count only as {min,max}. A bare integer n, or a
+        # numeric string of one, is sent as {min:n,max:n}. An object that
+        # already has min and max is kept. No count stays absent. Anything
+        # else is dropped, with one log line.
+        ask="$(python3 - "$workdir/needs_input.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+try:
+    ask = json.load(open(path))
+except Exception:
+    print("keep")
+    print("{}")
+    raise SystemExit(0)
+dropped = False
+if isinstance(ask, dict) and "count" in ask:
+    count = ask["count"]
+    number = None
+    if isinstance(count, bool):
+        number = None
+    elif isinstance(count, int):
+        number = count
+    elif isinstance(count, str):
+        text = count.strip()
+        if text.startswith("+"):
+            text = text[1:]
+        if text.startswith("-"):
+            if len(text) > 1 and text[1:].isdigit():
+                number = int(text)
+        elif text.isdigit():
+            number = int(text)
+    if number is not None:
+        ask["count"] = {"min": number, "max": number}
+    elif isinstance(count, dict) and "min" in count and "max" in count:
+        pass
+    else:
+        del ask["count"]
+        dropped = True
+print("drop" if dropped else "keep")
+print(json.dumps(ask))
+PY
+)" || ask=$'keep\n{}'
+        if [[ "${ask%%$'\n'*}" == "drop" ]]; then
+          cr_log "harness: step $step_id needs_input count dropped (not an integer or {min,max})"
+        fi
+        ask="${ask#*$'\n'}"
+        [[ -n "$ask" ]] || ask='{}'
         cr_h_report needs_input "{\"stepId\":\"$step_id\",\"ask\":$ask}"
         if [[ "$(cr_h_directive)" == "not_implemented" ]]; then
           cr_log "harness: step $step_id asked for input but the server does not implement asks — failing attempt"
