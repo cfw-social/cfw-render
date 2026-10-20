@@ -6556,10 +6556,11 @@ else
 fi
 rm -rf "$wi245"
 
-# WI2.32: the real needs_input path must send count as {min,max}.
-# A bare number (and a numeric string) becomes {min:n,max:n}. An object with
-# min and max passes through. No count stays absent. Anything else is dropped
-# and logged once. This fails on d8f00e75, which forwards count: 1 unchanged.
+# WI2.32 / WI2.50: the real needs_input path must send count as {min,max}.
+# A bare number >= 0 (and a numeric string of one) becomes {min:n,max:n}. An
+# object with integer min >= 0 and min <= max passes through. No count stays
+# absent. A negative count, a min>max object, and anything else that breaks
+# integer / min>=0 / min<=max is dropped and logged once.
 wi232="$(mktemp -d)"
 wi232_detail="$(
   root="$wi232"
@@ -6609,6 +6610,10 @@ elif shape == "junk":
     ask["count"] = "soon"
 elif shape == "bool":
     ask["count"] = True
+elif shape == "negative":
+    ask["count"] = -3
+elif shape == "inverted":
+    ask["count"] = {"min": 4, "max": 1}
 json.dump(ask, open(path, "w"))
 PY
       return 0
@@ -6655,7 +6660,7 @@ elif shape == "absent":
         problems.append("count=%r" % (ask.get("count"),))
     if drops:
         problems.append("unexpected drop")
-elif shape in ("junk", "bool"):
+elif shape in ("junk", "bool", "negative", "inverted"):
     if "count" in ask:
         problems.append("count=%r" % (ask.get("count"),))
     if drops != 1:
@@ -6675,10 +6680,12 @@ PY
   run_shape absent
   run_shape junk
   run_shape bool
+  run_shape negative
+  run_shape inverted
   if [[ -z "$bad" ]]; then printf '%s' ok; else printf '%s' "$bad"; fi
 )"
 if [[ "$wi232_detail" == "ok" ]]; then
-  pass "harness needs_input: numeric count is {min:1,max:1}; object passes through; absent stays absent"
+  pass "harness needs_input: numeric count is {min:1,max:1}; object passes through; negative and min>max are dropped"
 else
   fail "harness needs_input count shape" "$wi232_detail"
 fi
@@ -6749,6 +6756,186 @@ else
   fail "harness stage inputs typed topic" "$wi249_detail"
 fi
 rm -rf "$wi249"
+
+# WI2.50: Social refusing report_render_step must end the step failed with the
+# refusal text. The directive from step_started stays `continue` on the old
+# path, and the needs_input wait then reruns the step. This fails on be009c3f.
+wi250="$(mktemp -d)"
+wi250_detail="$(
+  dir="$wi250"
+  mkdir -p "$dir/recipe"
+  python3 - "$dir/order.json" <<'PY'
+import json, sys
+json.dump({
+    "id": "ord-wi250",
+    "attempt": {"id": "att-wi250"},
+    "manifest": {"steps": [{
+        "id": "plan_cards",
+        "runsOn": "computer",
+        "instructions": "steps/missing.md",
+        "saves": [{"id": "plan", "kind": "json"}],
+    }]},
+    "taskOrder": {},
+}, open(sys.argv[1], "w"))
+PY
+  # shellcheck disable=SC1091
+  source "$REPO_DIR/bin/cfw-render-harness.sh"
+  cr_log() { printf '%s\n' "$*" >> "$dir/harness.log"; }
+  cr_engine_detect() { echo test; }
+  cr_engine_limit_detect() { return 1; }
+  cr_harness_heartbeat_start() { :; }
+  cr_harness_heartbeat_stop() { :; }
+  cr_h_run_with_timeout() { shift; "$@"; }
+  cr_engine_run() {
+    local n=0
+    if [[ -f "$dir/runs" ]]; then n="$(wc -l < "$dir/runs" | tr -d ' ')"; fi
+    printf '%s\n' "$CFW_STEP_ID" >> "$dir/runs"
+    if [[ "${n:-0}" == "0" ]]; then
+      python3 -c 'import json,sys; json.dump({"inputId":"topic","reason":"Need a topic.","count":1}, open(sys.argv[1],"w"))' "$3/needs_input.json"
+      return 0
+    fi
+    mkdir -p "$3/saves"
+    printf '{"ok":true}\n' > "$3/saves/plan.json"
+    return 0
+  }
+  cr_report_step() {
+    python3 -c 'import json,sys; print(json.dumps({"event":sys.argv[1],"extra":json.loads(sys.argv[2])}))' "$5" "$6" >> "$dir/events.jsonl"
+    if [[ "$5" == "needs_input" ]]; then
+      printf '%s' 'Social refused the step report: ask not allowed'
+      return 70
+    fi
+    printf '%s' '{"ok":true,"directive":"continue"}'
+  }
+  rc=0
+  CFW_WORKER_ID="test-worker" CFW_RENDER_PAUSE_MAX_SEC=0 \
+    cr_harness_run "$dir/order.json" "$dir" "$dir/recipe" >"$dir/harness.out" 2>"$dir/harness.err" || rc=$?
+  python3 - "$rc" "$dir/runs" "$dir/events.jsonl" "$dir/harness.log" <<'PY'
+import json, sys
+rc, runs_path, events_path, log_path = sys.argv[1:]
+problems = []
+if rc != "30":
+    problems.append("rc=%s" % rc)
+try:
+    runs = open(runs_path).read().splitlines()
+except Exception:
+    runs = []
+if runs != ["plan_cards"]:
+    problems.append("runs=%r" % runs)
+try:
+    events = [json.loads(line) for line in open(events_path) if line.strip()]
+except Exception as exc:
+    events = []
+    problems.append("events: %s" % exc)
+started = [event for event in events if event.get("event") == "step_started"]
+if len(started) != 1:
+    problems.append("step_started=%s" % len(started))
+failed = [event for event in events if event.get("event") == "attempt_failed"]
+if len(failed) != 1:
+    problems.append("attempt_failed=%s" % len(failed))
+else:
+    message = failed[0].get("extra", {}).get("message") or ""
+    if "Social refused the step report: ask not allowed" not in message:
+        problems.append("message=%r" % message)
+    if failed[0].get("extra", {}).get("stepId") != "plan_cards":
+        problems.append("stepId=%r" % (failed[0].get("extra"),))
+log = open(log_path).read() if __import__("os").path.isfile(log_path) else ""
+if log.count("tool error:") != 1:
+    problems.append("tool-error logs=%s" % log.count("tool error:"))
+if "Social refused the step report: ask not allowed" not in log:
+    problems.append("refusal missing from log")
+print("ok" if not problems else "; ".join(problems))
+PY
+)"
+if [[ "$wi250_detail" == "ok" ]]; then
+  pass "harness refused step report: ends failed with the refusal text and does not rerun the step"
+else
+  fail "harness refused step report" "$wi250_detail"
+fi
+rm -rf "$wi250"
+
+# WI2.50: number and boolean start answers are staged as text. An input name
+# containing / or .. is refused, so the file cannot land outside inputs/.
+wi250b="$(mktemp -d)"
+wi250b_detail="$(
+  dir="$wi250b"
+  mkdir -p "$dir/typed/work" "$dir/unsafe/work"
+  python3 - "$dir/typed/order.json" <<'PY'
+import json, sys
+json.dump({
+    "id": "ord-wi250-typed",
+    "inputs": {"count": 3, "ready": True, "off": False, "zero": 0, "topic": "Hello"},
+}, open(sys.argv[1], "w"))
+PY
+  python3 - "$dir/unsafe/order.json" <<'PY'
+import json, sys
+json.dump({
+    "id": "ord-wi250-unsafe",
+    "inputs": {
+        "topic": "kept",
+        "../outside": "nope",
+        "nested/name": "nope",
+        "a..b": "nope",
+    },
+}, open(sys.argv[1], "w"))
+PY
+  # shellcheck disable=SC1091
+  source "$REPO_DIR/bin/cfw-render-harness.sh"
+  cr_log() { printf '%s\n' "$*" >> "$dir/harness.log"; }
+  typed_rc=0
+  cr_h_stage_inputs "$dir/typed/work" "$dir/typed/order.json" || typed_rc=$?
+  unsafe_rc=0
+  cr_h_stage_inputs "$dir/unsafe/work" "$dir/unsafe/order.json" || unsafe_rc=$?
+  python3 - "$typed_rc" "$unsafe_rc" "$dir/typed/work" "$dir/unsafe/work" "$dir/harness.log" <<'PY'
+import pathlib, sys
+typed_rc, unsafe_rc, typed_work, unsafe_work, log_path = sys.argv[1:]
+problems = []
+if typed_rc != "0":
+    problems.append("typed rc=%s" % typed_rc)
+typed = pathlib.Path(typed_work)
+expect = {
+    "count/count.md": "3",
+    "ready/ready.md": "true",
+    "off/off.md": "false",
+    "zero/zero.md": "0",
+    "topic/topic.md": "Hello",
+}
+for rel, want in expect.items():
+    path = typed / "inputs" / rel
+    if not path.is_file():
+        problems.append("missing %s" % rel)
+    elif path.read_text(encoding="utf-8") != want:
+        problems.append("%s=%r" % (rel, path.read_text(encoding="utf-8")))
+if unsafe_rc != "1":
+    problems.append("unsafe rc=%s" % unsafe_rc)
+unsafe = pathlib.Path(unsafe_work).resolve()
+for path in unsafe.rglob("*"):
+    if not path.is_file():
+        continue
+    rel = path.relative_to(unsafe).as_posix()
+    if rel != "brief.json" and not rel.startswith("inputs/"):
+        problems.append("escaped %s" % rel)
+    if ".." in rel.split("/"):
+        problems.append("dotdot %s" % rel)
+outside = unsafe / "outside"
+nested = unsafe / "inputs" / "nested"
+dotty = unsafe / "inputs" / "a..b"
+if outside.exists() or nested.exists() or dotty.exists():
+    problems.append("unsafe path was created")
+log = pathlib.Path(log_path).read_text(encoding="utf-8") if pathlib.Path(log_path).is_file() else ""
+lines = [line for line in log.splitlines() if "input name refused" in line]
+if len(lines) != 1:
+    problems.append("refuse logs=%s" % len(lines))
+elif "../outside" not in lines[0] or "nested/name" not in lines[0] or "a..b" not in lines[0]:
+    problems.append("refuse log=%r" % lines[0])
+print("ok" if not problems else "; ".join(problems))
+PY
+)"
+if [[ "$wi250b_detail" == "ok" ]]; then
+  pass "harness stage inputs: number and boolean answers are text; names with / or .. are refused"
+else
+  fail "harness stage inputs typed scalars and unsafe names" "$wi250b_detail"
+fi
+rm -rf "$wi250b"
 
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"

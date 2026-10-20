@@ -181,12 +181,55 @@ cr_h_report_lock() {
 }
 cr_h_report_unlock() { rmdir "$CR_H_ORDER_DIR/report.lock" 2>/dev/null || true; }
 
+# cr_h_refuse_step <event> <extra-json> — Social refused report_render_step.
+# End this step as failed and carry the refusal text on step_failed and
+# attempt_failed. Do not report a failure report again (that loops). A
+# heartbeat stays best-effort so a background pulse cannot fail the step.
+cr_h_refuse_step() {
+  local event="$1" extra="${2:-{\}}"
+  case "$event" in
+    heartbeat|step_failed|attempt_failed|attempt_cancelled|attempt_released) return 0 ;;
+  esac
+  local refusal="" step_id="" fail_msg=""
+  [[ -f "$CR_H_ORDER_DIR/report-refusal.txt" ]] && refusal="$(cat "$CR_H_ORDER_DIR/report-refusal.txt")"
+  step_id="$(python3 -c 'import json,sys
+try:
+    extra = json.loads(sys.argv[1])
+except Exception:
+    extra = {}
+if not isinstance(extra, dict):
+    extra = {}
+print(extra.get("stepId") or "")' "$extra" 2>/dev/null)" || step_id=""
+  fail_msg="$(python3 -c 'import json,sys
+step, event, refusal = sys.argv[1], sys.argv[2], sys.argv[3]
+text = refusal.replace("\n", " ").strip()
+if len(text) > 400:
+    text = text[:400]
+msg = "report %s refused: %s" % (event, text)
+body = {"message": msg}
+if step:
+    body["stepId"] = step
+print(json.dumps(body))' "$step_id" "$event" "$refusal" 2>/dev/null)" || return 0
+  if [[ -n "$step_id" ]]; then
+    cr_h_report step_failed "$fail_msg" || true
+  fi
+  cr_h_report attempt_failed "$fail_msg" || true
+  return 0
+}
+
 # cr_h_report <event> [extra-json] — legacy buffers; local fails on unacknowledged reports.
 cr_h_report() {
   cr_h_report_lock || return $?
   local rc=0
   cr_h_report_locked "$@" || rc=$?
   cr_h_report_unlock
+  # rc 30 is a refused report. Record the failure after the lock is released
+  # so the failure reports can take the same lock. Callers return this rc
+  # and must not treat the step as answered.
+  if (( rc == 30 )); then
+    cr_h_refuse_step "$1" "${2:-{\}}"
+    return 30
+  fi
   return "$rc"
 }
 
@@ -217,6 +260,16 @@ cr_h_report_locked() {
     cr_h_handle_reply "$reply" "$event"
   else
     cr_log "harness: order $CR_H_ORDER_ID — report $event seq $seq tool error: $reply"
+    # A tool error is a refusal, not an outage (rc 75 is the outage). Leaving
+    # directive at `continue` from step_started makes the needs_input wait
+    # treat the refusal as an answered ask and rerun the step. Stop instead.
+    # Heartbeats stay best-effort and must not change the directive.
+    if [[ "$event" == "heartbeat" ]]; then
+      return 0
+    fi
+    printf '%s' "$reply" > "$CR_H_ORDER_DIR/report-refusal.txt"
+    printf 'blocked' > "$CR_H_ORDER_DIR/directive"
+    return 30
   fi
   return 0
 }
@@ -271,6 +324,7 @@ cr_h_wait_pause() {
     d="$(cr_h_directive)"
     case "$d" in
       report_blocked) return 31 ;;
+      blocked) return 30 ;;
       cancel) return 20 ;;
       stop_after_step) return 22 ;;
       superseded) return 23 ;;
@@ -454,13 +508,72 @@ PY
 
 # cr_h_stage_inputs <workdir> <order-file> — copy/download claim inputs.
 # A plain-text value (not an http(s) URL and not an existing path) is written
-# as UTF-8 to inputs/<name>/<name>.md. URL and path values stay on the
-# copy/download path below. The text is taken from JSON; it is never eval'd.
+# as UTF-8 to inputs/<name>/<name>.md. A JSON number or boolean is written
+# the same way, as text (3, true, false), including 0 and false. URL and path
+# values stay on the copy/download path below. The text is taken from JSON;
+# it is never eval'd. An input name containing / or .. is refused so a staged
+# file cannot land outside inputs/.
 cr_h_stage_inputs() {
-  local workdir="$1" order_file="$2" iid src dest
+  local workdir="$1" order_file="$2" iid src dest list err py_rc=0
   cr_h_write_brief "$workdir" "$order_file" || return 1
+  list="$(mktemp)"
+  err="$(mktemp)"
+  python3 - "$workdir" "$order_file" >"$list" 2>"$err" <<'PY' || py_rc=$?
+import json, os, sys
+workdir, order_path = sys.argv[1], sys.argv[2]
+order = json.load(open(order_path))
+refused = False
+
+def name_refused(name):
+    text = str(name)
+    return "/" in text or ".." in text
+
+def write_text(key, text):
+    folder = os.path.join(workdir, "inputs", str(key))
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, str(key) + ".md"), "w", encoding="utf-8", newline="") as handle:
+        handle.write(text)
+
+for key, value in (order.get("inputs") or {}).items():
+    if name_refused(key):
+        print(key, file=sys.stderr)
+        refused = True
+        continue
+    vals = value if isinstance(value, list) else [value]
+    for item in vals:
+        raw = (item.get("url") or item.get("path")) if isinstance(item, dict) else item
+        if raw is None or raw == "":
+            continue
+        if isinstance(raw, str):
+            if raw.startswith("http://") or raw.startswith("https://") or os.path.exists(raw):
+                print(f"{key}\x1f{raw}")
+                continue
+            write_text(key, raw)
+            continue
+        if isinstance(raw, bool) or isinstance(raw, (int, float)):
+            write_text(key, json.dumps(raw))
+            continue
+        print(f"{key}\x1f{raw}")
+if refused:
+    raise SystemExit(2)
+PY
+  if (( py_rc == 2 )); then
+    cr_log "harness: input name refused ($(tr '\n' ' ' < "$err"))"
+    rm -f "$list" "$err"
+    return 1
+  fi
+  if (( py_rc != 0 )); then
+    cr_log "harness: input staging failed"
+    rm -f "$list" "$err"
+    return 1
+  fi
   while IFS=$'\x1f' read -r iid src; do
     [[ -n "$iid" && -n "$src" ]] || continue
+    if [[ "$iid" == *"/"* || "$iid" == *".."* ]]; then
+      cr_log "harness: input name refused ($iid)"
+      rm -f "$list" "$err"
+      return 1
+    fi
     dest="$workdir/inputs/$iid"; mkdir -p "$dest"
     if [[ "$src" == http://* || "$src" == https://* ]]; then
       curl -sS -L --max-time 600 -o "$dest/$(basename "${src%%\?*}")" "$src" 2>/dev/null \
@@ -468,28 +581,8 @@ cr_h_stage_inputs() {
     elif [[ -e "$src" ]]; then
       cp -R "$src" "$dest/" 2>/dev/null || true
     fi
-  done < <(python3 - "$workdir" "$order_file" <<'PY'
-import json, os, sys
-workdir, order_path = sys.argv[1], sys.argv[2]
-order = json.load(open(order_path))
-for key, value in (order.get("inputs") or {}).items():
-    vals = value if isinstance(value, list) else [value]
-    for item in vals:
-        raw = (item.get("url") or item.get("path")) if isinstance(item, dict) else item
-        if not raw:
-            continue
-        if not isinstance(raw, str):
-            print(f"{key}\x1f{raw}")
-            continue
-        if raw.startswith("http://") or raw.startswith("https://") or os.path.exists(raw):
-            print(f"{key}\x1f{raw}")
-            continue
-        folder = os.path.join(workdir, "inputs", str(key))
-        os.makedirs(folder, exist_ok=True)
-        with open(os.path.join(folder, str(key) + ".md"), "w", encoding="utf-8", newline="") as handle:
-            handle.write(raw)
-PY
-)
+  done < "$list"
+  rm -f "$list" "$err"
   return 0
 }
 
@@ -713,6 +806,7 @@ for s in (o.get("manifest") or {}).get("steps", []):
     (( rc == 21 )) && { cr_log "harness: pause timeout — releasing order $CR_H_ORDER_ID"; return 21; }
     (( rc == 22 )) && { cr_h_release_revoked "$step_id"; return 22; }
     (( rc == 23 )) && return 23
+    (( rc == 30 )) && return 30
     (( rc == 31 )) && return 31
 
     if (( CR_H_LOCAL )); then
@@ -812,10 +906,11 @@ o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alt
       fi
 
       if [[ -f "$workdir/needs_input.json" ]]; then
-        # Social accepts ask.count only as {min,max}. A bare integer n, or a
-        # numeric string of one, is sent as {min:n,max:n}. An object that
-        # already has min and max is kept. No count stays absent. Anything
-        # else is dropped, with one log line.
+        # Social accepts ask.count only as {min,max}. A bare integer n >= 0,
+        # or a numeric string of one, is sent as {min:n,max:n}. An object is
+        # kept only when min and max are integers, min >= 0, and min <= max
+        # (max may be null). No count stays absent. A count that breaks those
+        # rules is dropped, with one log line.
         ask="$(python3 - "$workdir/needs_input.json" <<'PY'
 import json, sys
 path = sys.argv[1]
@@ -825,26 +920,43 @@ except Exception:
     print("keep")
     print("{}")
     raise SystemExit(0)
-dropped = False
-if isinstance(ask, dict) and "count" in ask:
-    count = ask["count"]
-    number = None
+
+def whole(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+def parse_number(count):
     if isinstance(count, bool):
-        number = None
-    elif isinstance(count, int):
-        number = count
-    elif isinstance(count, str):
+        return None
+    if isinstance(count, int):
+        return count
+    if isinstance(count, str):
         text = count.strip()
         if text.startswith("+"):
             text = text[1:]
         if text.startswith("-"):
             if len(text) > 1 and text[1:].isdigit():
-                number = int(text)
-        elif text.isdigit():
-            number = int(text)
-    if number is not None:
+                return int(text)
+            return None
+        if text.isdigit():
+            return int(text)
+    return None
+
+def range_ok(min_v, max_v):
+    if not whole(min_v) or min_v < 0:
+        return False
+    if max_v is None:
+        return True
+    if not whole(max_v) or max_v < 0:
+        return False
+    return min_v <= max_v
+
+dropped = False
+if isinstance(ask, dict) and "count" in ask:
+    count = ask["count"]
+    number = parse_number(count)
+    if number is not None and number >= 0:
         ask["count"] = {"min": number, "max": number}
-    elif isinstance(count, dict) and "min" in count and "max" in count:
+    elif isinstance(count, dict) and "min" in count and "max" in count and range_ok(count.get("min"), count.get("max")):
         pass
     else:
         del ask["count"]
@@ -854,11 +966,13 @@ print(json.dumps(ask))
 PY
 )" || ask=$'keep\n{}'
         if [[ "${ask%%$'\n'*}" == "drop" ]]; then
-          cr_log "harness: step $step_id needs_input count dropped (not an integer or {min,max})"
+          cr_log "harness: step $step_id needs_input count dropped (need integer min>=0 and min<=max)"
         fi
         ask="${ask#*$'\n'}"
         [[ -n "$ask" ]] || ask='{}'
-        cr_h_report needs_input "{\"stepId\":\"$step_id\",\"ask\":$ask}"
+        # A refused needs_input report already failed the step (rc 30) and
+        # carried the refusal text. Do not wait, and do not rerun the step.
+        cr_h_report needs_input "{\"stepId\":\"$step_id\",\"ask\":$ask}" || return $?
         if [[ "$(cr_h_directive)" == "not_implemented" ]]; then
           cr_log "harness: step $step_id asked for input but the server does not implement asks — failing attempt"
           cr_h_report step_failed "{\"stepId\":\"$step_id\",\"checks\":[{\"id\":\"needs_input\",\"passed\":false,\"detail\":\"asks not implemented\"}]}"
@@ -871,6 +985,7 @@ PY
           [[ "$d" == "cancel" ]] && { cr_h_report attempt_cancelled "{\"stepId\":\"$step_id\"}"; return 20; }
           [[ "$d" == "superseded" ]] && return 23
           [[ "$d" == "report_blocked" ]] && return 31
+          [[ "$d" == "blocked" ]] && return 30
           [[ "$d" == "stop_after_step" ]] && { cr_h_release_revoked "$step_id"; return 22; }
           [[ "$d" == "continue" ]] && break
           (( waited >= CFW_RENDER_PAUSE_MAX_SEC )) && return 21
@@ -934,7 +1049,7 @@ print(json.dumps({"saveId": sys.argv[1], "url": sys.argv[2], "checksum": "sha256
     done
     outputs="${outputs%,}]"
     rm -f "$order_dir/current-step.json"
-    cr_h_report step_completed "{\"stepId\":\"$step_id\",\"outputs\":$outputs,\"checks\":$checks_json}"
+    cr_h_report step_completed "{\"stepId\":\"$step_id\",\"outputs\":$outputs,\"checks\":$checks_json}" || return $?
     fi
     case "$(cr_h_directive)" in
       cancel) cr_h_report attempt_cancelled "{\"stepId\":\"$step_id\"}"; return 20 ;;
