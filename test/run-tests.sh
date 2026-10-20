@@ -6599,6 +6599,72 @@ else
 fi
 rm -rf "$wi232"
 
+# WI2.49: a typed start answer is written to inputs/<name>/<name>.md before
+# the step runs. A URL is still downloaded to the basename, and an existing
+# path is still copied. This fails on db62e119, which leaves the typed topic
+# unstaged.
+wi249="$(mktemp -d)"
+wi249_detail="$(
+  dir="$wi249"
+  mkdir -p "$dir/work" "$dir/src"
+  printf 'headshot-bytes' > "$dir/src/headshot.png"
+  python3 - "$dir/order.json" "$dir/src/headshot.png" <<'PY'
+import json, sys
+json.dump({
+    "id": "ord-wi249",
+    "inputs": {
+        "topic": "Three tips for first-time buyers",
+        "logo": "https://cdn.example/brand-logo.png?x=1",
+        "photo": sys.argv[2],
+    },
+}, open(sys.argv[1], "w"))
+PY
+  # shellcheck disable=SC1091
+  source "$REPO_DIR/bin/cfw-render-harness.sh"
+  curl() {
+    local out="" prev="" arg
+    for arg in "$@"; do
+      if [[ "$prev" == "-o" ]]; then out="$arg"; fi
+      prev="$arg"
+    done
+    printf '%s\n' "$prev" > "$dir/curl.url"
+    if [[ -n "$out" ]]; then printf 'downloaded' > "$out"; fi
+  }
+  cr_h_stage_inputs "$dir/work" "$dir/order.json"
+  python3 - "$dir/work" "$dir/src/headshot.png" "$dir/curl.url" <<'PY'
+import pathlib, sys
+work, photo_src, curl_url_path = sys.argv[1:]
+problems = []
+topic = pathlib.Path(work) / "inputs" / "topic" / "topic.md"
+want = b"Three tips for first-time buyers"
+if not topic.is_file():
+    problems.append("topic.md missing")
+elif topic.read_bytes() != want:
+    problems.append("topic.md=%r" % topic.read_bytes())
+logo = pathlib.Path(work) / "inputs" / "logo" / "brand-logo.png"
+if not logo.is_file() or logo.read_bytes() != b"downloaded":
+    problems.append("logo download missing")
+if (pathlib.Path(work) / "inputs" / "logo" / "logo.md").exists():
+    problems.append("logo written as text")
+got_url = pathlib.Path(curl_url_path).read_text(encoding="utf-8").strip() if pathlib.Path(curl_url_path).is_file() else ""
+if got_url != "https://cdn.example/brand-logo.png?x=1":
+    problems.append("curl url=%r" % got_url)
+photo = pathlib.Path(work) / "inputs" / "photo" / "headshot.png"
+src = pathlib.Path(photo_src).read_bytes()
+if not photo.is_file() or photo.read_bytes() != src:
+    problems.append("photo not copied")
+if (pathlib.Path(work) / "inputs" / "photo" / "photo.md").exists():
+    problems.append("photo written as text")
+print("ok" if not problems else "; ".join(problems))
+PY
+)"
+if [[ "$wi249_detail" == "ok" ]]; then
+  pass "harness stage inputs: typed topic is inputs/topic/topic.md; URL still downloads"
+else
+  fail "harness stage inputs typed topic" "$wi249_detail"
+fi
+rm -rf "$wi249"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then

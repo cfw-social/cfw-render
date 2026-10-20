@@ -453,6 +453,9 @@ PY
 }
 
 # cr_h_stage_inputs <workdir> <order-file> — copy/download claim inputs.
+# A plain-text value (not an http(s) URL and not an existing path) is written
+# as UTF-8 to inputs/<name>/<name>.md. URL and path values stay on the
+# copy/download path below. The text is taken from JSON; it is never eval'd.
 cr_h_stage_inputs() {
   local workdir="$1" order_file="$2" iid src dest
   cr_h_write_brief "$workdir" "$order_file" || return 1
@@ -465,14 +468,28 @@ cr_h_stage_inputs() {
     elif [[ -e "$src" ]]; then
       cp -R "$src" "$dest/" 2>/dev/null || true
     fi
-  done < <(python3 -c '
-import json, sys
-o = json.load(open(sys.argv[1]))
-for k, v in (o.get("inputs") or {}).items():
-    vals = v if isinstance(v, list) else [v]
-    for x in vals:
-        u = (x.get("url") or x.get("path")) if isinstance(x, dict) else x
-        if u: print(f"{k}\x1f{u}")' "$order_file")
+  done < <(python3 - "$workdir" "$order_file" <<'PY'
+import json, os, sys
+workdir, order_path = sys.argv[1], sys.argv[2]
+order = json.load(open(order_path))
+for key, value in (order.get("inputs") or {}).items():
+    vals = value if isinstance(value, list) else [value]
+    for item in vals:
+        raw = (item.get("url") or item.get("path")) if isinstance(item, dict) else item
+        if not raw:
+            continue
+        if not isinstance(raw, str):
+            print(f"{key}\x1f{raw}")
+            continue
+        if raw.startswith("http://") or raw.startswith("https://") or os.path.exists(raw):
+            print(f"{key}\x1f{raw}")
+            continue
+        folder = os.path.join(workdir, "inputs", str(key))
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, str(key) + ".md"), "w", encoding="utf-8", newline="") as handle:
+            handle.write(raw)
+PY
+)
   return 0
 }
 
