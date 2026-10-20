@@ -6,12 +6,12 @@ caption cannot be published.
 
 ## Delivery boundary
 
-This terminal stage saves captions, not the carousel images. The current manifest
-has no `finalOutputs` mapping to the earlier full-resolution slide set. Tracked
-delivery remains blocked until ordered individual-slide outputs are declared and
-tested. Do not select the first preview, cover or contact sheet as the carousel.
-Standalone delivery retains every passing slide in `prior/slides.json` order,
-with these captions and the per-slide QA evidence.
+This terminal stage saves captions, not the carousel images. The worker delivers
+the ordered individual slides from `render_slides` (`saves/slide_1.png` …
+`saves/slide_N.png` in `prior/slides.json` order) plus these captions. Do not
+select the first preview, `cover.png` or `slide_sheet.png` as the carousel —
+those stay previews only. Standalone delivery keeps the same rule: every passing
+slide in order, then captions and the per-slide QA evidence.
 
 ## You receive
 

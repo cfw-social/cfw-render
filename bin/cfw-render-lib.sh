@@ -228,6 +228,100 @@ its reply is lost, retain artifacts; do not retry complete automatically.
 NOTE
 }
 
+# ---------------------------------------------------------------------------
+# cr_select_deliverables <order-dir> <harness-result-json>
+#
+# Prints path<TAB>role lines for cfw-render.sh complete. Role is "media" or
+# "captions".
+#
+# Carousel (WI2.43): when steps/render_slides/saves/slides.json names count N
+# and saves/slide_1.png … slide_N.png (or work/slides/slide-N.png) exist, those
+# ordered slide images are the only media deliverables. cover.png and
+# slide_sheet.png stay previews and are never selected. Captions still come
+# from the harness result or steps/captions/saves/captions.json.
+#
+# Otherwise keep every media path from the harness result, plus captions.
+# ---------------------------------------------------------------------------
+cr_select_deliverables() {
+  local order_dir="$1" h_out="${2:-[]}"
+  python3 -c '
+import json, os, sys
+
+MEDIA = {"mp4", "mov", "webm", "m4v", "png", "jpg", "jpeg", "gif", "webp", "pdf", "mp3", "wav", "m4a"}
+order_dir = os.path.abspath(sys.argv[1])
+try:
+    items = json.loads(sys.argv[2] or "[]")
+except json.JSONDecodeError:
+    items = []
+if not isinstance(items, list):
+    items = []
+
+def is_captions(item, path):
+    ext = os.path.splitext(path)[1].lstrip(".").lower()
+    if ext != "json":
+        return False
+    return item.get("role") == "captions" or item.get("id") == "captions" or os.path.basename(path) == "captions.json"
+
+def captions_path():
+    for item in items:
+        path = item.get("path") or ""
+        if path and is_captions(item, path):
+            return path
+    fallback = os.path.join(order_dir, "steps", "captions", "saves", "captions.json")
+    if os.path.isfile(fallback) and os.path.getsize(fallback) > 0:
+        return fallback
+    return ""
+
+def emit_default():
+    for item in items:
+        path = item.get("path") or ""
+        if not path:
+            continue
+        ext = os.path.splitext(path)[1].lstrip(".").lower()
+        if is_captions(item, path):
+            print(path + "\tcaptions")
+        elif ext in MEDIA:
+            print(path + "\tmedia")
+
+# Carousel: slides.json is the ordered set contract. Prefer saves/slide_N.png,
+# then work/slides/slide-N.png. Never select cover.png or slide_sheet.png.
+slides_json = os.path.join(order_dir, "steps", "render_slides", "saves", "slides.json")
+if os.path.isfile(slides_json):
+    try:
+        meta = json.load(open(slides_json))
+    except (OSError, ValueError, json.JSONDecodeError):
+        meta = None
+    count = meta.get("count") if isinstance(meta, dict) else None
+    if isinstance(count, int) and 1 <= count <= 30:
+        base = os.path.join(order_dir, "steps", "render_slides")
+        slides = []
+        for n in range(1, count + 1):
+            chosen = ""
+            for rel in (os.path.join("saves", "slide_%d.png" % n),
+                        os.path.join("work", "slides", "slide-%d.png" % n)):
+                path = os.path.join(base, rel)
+                if os.path.isfile(path) and os.path.getsize(path) > 0 and not os.path.islink(path):
+                    chosen = path
+                    break
+            if not chosen:
+                slides = []
+                break
+            slides.append(chosen)
+        if len(slides) == count:
+            for path in slides:
+                print(path + "\tmedia")
+            cap = captions_path()
+            if cap:
+                print(cap + "\tcaptions")
+            sys.exit(0)
+        # slides.json present but the ordered PNGs are missing: refuse to fall
+        # back to cover.png / slide_sheet.png (smoke 10 defect).
+        sys.exit(0)
+
+emit_default()
+' "$order_dir" "$h_out"
+}
+
 # Shared watchdog for Director and step engines. Finish grace is only for an
 # explicit delivery invocation, not a guessed file set. No rescue upload here.
 cr_budget_watchdog() {

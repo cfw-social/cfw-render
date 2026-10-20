@@ -350,18 +350,85 @@ print("\x1f".join([mode, token, expires, pool, expired]))
       # an image after the video and the server rejects it ("image after a
       # video must be role poster"). A save with id `captions` is the
       # recipe's captions file and goes to the report as CFW_CAPTIONS_FILE.
+      # WI2.43: carousel completion selects ordered slide_N.png from
+      # render_slides (via slides.json), never cover.png or slide_sheet.png.
+      # Logic is inlined here (same rules as cr_select_deliverables) so the
+      # stage-range hermetic extract of spawn_director stays self-contained.
       local -a h_files=() h_captions=""
       while IFS=$'\t' read -r f role; do
         [[ -n "$f" ]] || continue
         if [[ "$role" == "captions" ]]; then h_captions="$f"; else h_files+=("$f"); fi
       done < <(python3 -c '
-import json, sys, os
+import json, os, sys
 MEDIA = {"mp4", "mov", "webm", "m4v", "png", "jpg", "jpeg", "gif", "webp", "pdf", "mp3", "wav", "m4a"}
-a = json.loads(sys.argv[1] or "[]")
-for x in a:
-    p = x["path"]; ext = os.path.splitext(p)[1].lstrip(".").lower()
-    if (x.get("role") == "captions" or (not x.get("role") and x.get("id") == "captions")) and ext == "json": print(p + "\tcaptions")
-    elif ext in MEDIA: print(p + "\tmedia")' "$h_out" 2>/dev/null)
+order_dir = os.path.abspath(sys.argv[1])
+try:
+    items = json.loads(sys.argv[2] or "[]")
+except json.JSONDecodeError:
+    items = []
+if not isinstance(items, list):
+    items = []
+
+def is_captions(item, path):
+    ext = os.path.splitext(path)[1].lstrip(".").lower()
+    if ext != "json":
+        return False
+    return item.get("role") == "captions" or item.get("id") == "captions" or os.path.basename(path) == "captions.json"
+
+def captions_path():
+    for item in items:
+        path = item.get("path") or ""
+        if path and is_captions(item, path):
+            return path
+    fallback = os.path.join(order_dir, "steps", "captions", "saves", "captions.json")
+    if os.path.isfile(fallback) and os.path.getsize(fallback) > 0:
+        return fallback
+    return ""
+
+def emit_default():
+    for item in items:
+        path = item.get("path") or ""
+        if not path:
+            continue
+        ext = os.path.splitext(path)[1].lstrip(".").lower()
+        if is_captions(item, path):
+            print(path + "\tcaptions")
+        elif ext in MEDIA:
+            print(path + "\tmedia")
+
+slides_json = os.path.join(order_dir, "steps", "render_slides", "saves", "slides.json")
+if os.path.isfile(slides_json):
+    try:
+        meta = json.load(open(slides_json))
+    except (OSError, ValueError, json.JSONDecodeError):
+        meta = None
+    count = meta.get("count") if isinstance(meta, dict) else None
+    if isinstance(count, int) and 1 <= count <= 30:
+        base = os.path.join(order_dir, "steps", "render_slides")
+        slides = []
+        for n in range(1, count + 1):
+            chosen = ""
+            for rel in (os.path.join("saves", "slide_%d.png" % n),
+                        os.path.join("work", "slides", "slide-%d.png" % n)):
+                path = os.path.join(base, rel)
+                if os.path.isfile(path) and os.path.getsize(path) > 0 and not os.path.islink(path):
+                    chosen = path
+                    break
+            if not chosen:
+                slides = []
+                break
+            slides.append(chosen)
+        if len(slides) == count:
+            for path in slides:
+                print(path + "\tmedia")
+            cap = captions_path()
+            if cap:
+                print(cap + "\tcaptions")
+            raise SystemExit(0)
+        raise SystemExit(0)
+
+emit_default()
+' "$order_dir" "$h_out" 2>/dev/null)
       # cr_load_config sources the settings file without exporting the worker
       # key, API base, or worker id. Publish them in this subshell, the same
       # way the step subshell does, or the report script cannot see them.

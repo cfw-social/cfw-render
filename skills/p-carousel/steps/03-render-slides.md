@@ -14,9 +14,11 @@ every slide passes. Only a slide set that passed leaves this step.
 
 ## You must produce
 
-- `saves/cover.png` — slide 1 at the exact canvas.
+- `saves/slide_1.png` … `saves/slide_N.png` — every slide at the exact canvas, in slide
+  order (N = `slides.json.count`). These are the carousel deliverables.
+- `saves/cover.png` — slide 1 at the exact canvas (**preview only**; not a deliverable).
 - `saves/slide_sheet.png` — every slide stacked vertically in order (canvas width × N·height),
-  the owner's preview of the whole set.
+  the owner's preview of the whole set (**preview only**; not a deliverable).
 - `saves/slides.json` — `{ "width", "height", "count", "slides": [ { "n", "sha256", "bytes" } ] }`
   describing the final slide PNGs in order (the captions step and the delivery read it).
 - `saves/qa_report.json` — `{ "rounds": 2, "slides": [ { "n", "verdict": "PASS", "notes": [] } ] }`;
@@ -78,21 +80,30 @@ re-render.
 ### 4. Write the saves
 
 ```bash
-cp "$(ls -v work/slides/slide-*.png | head -1)" saves/cover.png
-convert $(ls -v work/slides/slide-*.png) -append saves/slide_sheet.png
 python3 - "$W" "$H" <<'PY'
-import glob, hashlib, json, os, re, sys
+import glob, hashlib, json, os, re, shutil, sys
 W, H = int(sys.argv[1]), int(sys.argv[2])
 files = sorted(glob.glob('work/slides/slide-*.png'), key=lambda p: int(re.search(r'(\d+)\.png$', p).group(1)))
 assert files, "no slides rendered"
-slides = [{"n": i+1, "sha256": hashlib.sha256(open(f,'rb').read()).hexdigest(), "bytes": os.path.getsize(f)} for i, f in enumerate(files)]
+os.makedirs('saves', exist_ok=True)
+slides = []
+for i, src in enumerate(files):
+    n = i + 1
+    dest = f'saves/slide_{n}.png'
+    shutil.copy2(src, dest)
+    slides.append({"n": n, "sha256": hashlib.sha256(open(dest,'rb').read()).hexdigest(), "bytes": os.path.getsize(dest)})
+shutil.copy2(files[0], 'saves/cover.png')
 json.dump({"width": W, "height": H, "count": len(files), "slides": slides}, open('saves/slides.json','w'), indent=1)
 qa = json.load(open('work/qa_report.json'))
 assert all(s["verdict"] == "PASS" for s in qa["slides"]) and len(qa["slides"]) == len(files), "a slide did not pass"
 json.dump(qa, open('saves/qa_report.json','w'), indent=1)
 print(f"[carousel] {len(files)} slides {W}x{H}, QA rounds={qa['rounds']}")
 PY
+convert $(ls -v work/slides/slide-*.png) -append saves/slide_sheet.png
 ```
+
+`saves/slide_1.png` … `saves/slide_N.png` are the deliverables (slide order). `cover.png` and
+`slide_sheet.png` are previews only — the worker must not send them as the carousel.
 
 Keep `work/qa_report.json` up to date during the loop (one entry per slide, `notes` = the
 fixes applied) so the save is the true record.

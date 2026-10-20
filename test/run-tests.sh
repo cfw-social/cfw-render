@@ -5811,6 +5811,180 @@ else
 fi
 rm -rf "$wi240b"
 
+echo "=== Case 39: p-carousel completion sends N slides in order, never cover/sheet (WI2.43) ==="
+# Smoke 10 delivered only cover.png + slide_sheet.png because the harness lists
+# every media save and the recipe only declared those two images. The worker must
+# select saves/slide_1..slide_N from slides.json instead.
+wi243="$(mktemp -d)"
+mkdir -p "$wi243/steps/render_slides/saves" "$wi243/steps/captions/saves" "$wi243/bin"
+cp "$REPO_DIR/bin/cfw-render-lib.sh" "$wi243/bin/cfw-render-lib.sh"
+cp "$REPO_DIR/bin/cfw-render-report.sh" "$wi243/bin/cfw-render-report.sh"
+cat > "$wi243/steps/render_slides/saves/slides.json" <<'JSON'
+{"width":1080,"height":1350,"count":3,"slides":[{"n":1,"sha256":"a","bytes":1},{"n":2,"sha256":"b","bytes":1},{"n":3,"sha256":"c","bytes":1}]}
+JSON
+printf 'slide-one' > "$wi243/steps/render_slides/saves/slide_1.png"
+printf 'slide-two' > "$wi243/steps/render_slides/saves/slide_2.png"
+printf 'slide-three' > "$wi243/steps/render_slides/saves/slide_3.png"
+printf 'preview-cover' > "$wi243/steps/render_slides/saves/cover.png"
+printf 'preview-sheet' > "$wi243/steps/render_slides/saves/slide_sheet.png"
+printf '{"instagram":"Carousel caption","default":"Carousel caption"}' > "$wi243/steps/captions/saves/captions.json"
+wi243_h_out="$(python3 -c '
+import json, sys
+root = sys.argv[1]
+print(json.dumps([
+  {"id":"cover","path":root+"/steps/render_slides/saves/cover.png"},
+  {"id":"slide_sheet","path":root+"/steps/render_slides/saves/slide_sheet.png"},
+  {"id":"slides","path":root+"/steps/render_slides/saves/slides.json"},
+  {"id":"qa_report","path":root+"/steps/render_slides/saves/qa_report.json"},
+  {"id":"captions","path":root+"/steps/captions/saves/captions.json"},
+]))
+' "$wi243")"
+wi243_sel="$(
+  # shellcheck disable=SC1091
+  source "$wi243/bin/cfw-render-lib.sh"
+  cr_select_deliverables "$wi243" "$wi243_h_out"
+)"
+wi243_sel_check="$(python3 -c '
+import os, sys
+root = sys.argv[1]
+lines = [l for l in sys.argv[2].splitlines() if l.strip()]
+want = [
+  root + "/steps/render_slides/saves/slide_1.png\tmedia",
+  root + "/steps/render_slides/saves/slide_2.png\tmedia",
+  root + "/steps/render_slides/saves/slide_3.png\tmedia",
+  root + "/steps/captions/saves/captions.json\tcaptions",
+]
+bad = []
+if lines != want:
+  bad.append("selected=%r want=%r" % (lines, want))
+joined = "\n".join(lines)
+if "cover.png" in joined or "slide_sheet.png" in joined:
+  bad.append("preview leaked into selection")
+print("ok" if not bad else "; ".join(bad))
+' "$wi243" "$wi243_sel")"
+if [[ "$wi243_sel_check" == "ok" ]]; then
+  pass "carousel select: ordered slide_1..slide_3 + captions, no cover/sheet"
+else
+  fail "carousel select ordered slides" "$wi243_sel_check"
+fi
+
+# Missing individual slides with slides.json present must not fall back to previews.
+rm -f "$wi243/steps/render_slides/saves/slide_2.png"
+wi243_missing="$(
+  source "$wi243/bin/cfw-render-lib.sh"
+  cr_select_deliverables "$wi243" "$wi243_h_out"
+)"
+if [[ -z "$wi243_missing" ]]; then
+  pass "carousel select: refuses cover/sheet fallback when a slide PNG is missing"
+else
+  fail "carousel select missing slide" "expected empty, got: $wi243_missing"
+fi
+printf 'slide-two' > "$wi243/steps/render_slides/saves/slide_2.png"
+
+# Full complete_render_order payload: N slides in order, never cover/sheet.
+wi243_calls="$wi243/calls.jsonl"
+: > "$wi243_calls"
+cat > "$wi243/bin/cfw-render-upload.sh" <<'EOF'
+#!/usr/bin/env bash
+printf "https://media.cfw.social/%s\n" "$(basename "$1")"
+EOF
+chmod +x "$wi243/bin/cfw-render-upload.sh"
+cp "$REPO_DIR/bin/cfw-render-lib.sh" "$wi243/bin/cfw-render-lib.sh"
+cat >> "$wi243/bin/cfw-render-lib.sh" <<EOF
+cr_mcp_call() {
+  printf '%s\n' "\$2" >> "$wi243_calls"
+  printf '{"ok":true}'
+}
+cr_heartbeat_stop_if_pending() { :; }
+EOF
+wi243_files=()
+wi243_captions=""
+while IFS=$'\t' read -r f role; do
+  [[ -n "$f" ]] || continue
+  if [[ "$role" == "captions" ]]; then wi243_captions="$f"; else wi243_files+=("$f"); fi
+done < <(
+  # shellcheck disable=SC1091
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_select_deliverables "$wi243" "$wi243_h_out"
+)
+wi243_complete_err="$wi243/complete.err"
+(
+  cd "$wi243" || exit 1
+  export CFW_ORDER_ID="order-wi243" CFW_WORKER_ID="w-wi243" CFW_ATTEMPT_ID="attempt-wi243"
+  export CFW_API_BASE="http://127.0.0.1:9" CFW_RENDER_WORKER_KEY="cfw_render_wi243testkey0000"
+  export CFW_RENDER_DIRECTOR_MODEL="sonnet"
+  export CFW_CAPTIONS_FILE="${wi243_captions}"
+  PATH="$wi243/bin:$PATH"
+  bash "$wi243/bin/cfw-render-report.sh" complete "${wi243_files[@]}"
+) >"$wi243/complete.out" 2>"$wi243_complete_err"
+wi243_payload="$(python3 -c '
+import json, pathlib, sys
+calls = pathlib.Path(sys.argv[1])
+err = pathlib.Path(sys.argv[2]).read_text(errors="replace")[-400:] if pathlib.Path(sys.argv[2]).is_file() else ""
+if not calls.is_file() or not calls.read_text().strip():
+    print("parse-error: empty calls; stderr=%r" % err.replace("\n", " | "))
+    raise SystemExit(0)
+rows = [json.loads(l) for l in calls.read_text().splitlines() if l.strip()]
+assert len(rows) == 1, rows
+d = rows[0]
+names = [u.split("/")[-1] for u in d.get("outputUrls", [])]
+roles = [o.get("role") for o in d.get("outputs", [])]
+bad = []
+if names != ["slide_1.png", "slide_2.png", "slide_3.png"]:
+  bad.append("names=%r" % names)
+if "cover.png" in names or "slide_sheet.png" in names:
+  bad.append("preview in outputUrls")
+if roles != ["cover", "slide", "slide"]:
+  bad.append("roles=%r" % roles)
+caps = d.get("captions") or {}
+if caps.get("instagram") != "Carousel caption":
+  bad.append("captions=%r" % caps)
+print("ok" if not bad else "; ".join(bad))
+' "$wi243_calls" "$wi243_complete_err" 2>/dev/null || echo "parse-error")"
+if [[ "$wi243_payload" == "ok" ]]; then
+  pass "carousel complete: N slides in order, roles cover/slide/slide, no cover.png or slide_sheet.png"
+else
+  fail "carousel complete ordered slides" "$wi243_payload"
+fi
+
+# Recipe step still requires ordered slide_N saves (instruction contract).
+wi243_recipe_ok=1
+grep -q 'saves/slide_1.png' "$REPO_DIR/skills/p-carousel/steps/03-render-slides.md" || wi243_recipe_ok=0
+grep -q 'saves/slide_N.png' "$REPO_DIR/skills/p-carousel/steps/03-render-slides.md" || wi243_recipe_ok=0
+grep -q 'preview only' "$REPO_DIR/skills/p-carousel/steps/03-render-slides.md" || wi243_recipe_ok=0
+grep -q 'cover.png' "$REPO_DIR/skills/p-carousel/SKILL.md" || wi243_recipe_ok=0
+grep -q 'slide_sheet.png' "$REPO_DIR/skills/p-carousel/SKILL.md" || wi243_recipe_ok=0
+grep -q 'never' "$REPO_DIR/skills/p-carousel/SKILL.md" || grep -qi 'Never' "$REPO_DIR/skills/p-carousel/SKILL.md" || wi243_recipe_ok=0
+if [[ "$wi243_recipe_ok" == "1" ]] && grep -q 'slide_N.png' "$REPO_DIR/skills/p-carousel/SKILL.md"; then
+  pass "carousel recipe: render_slides saves slide_N; cover/sheet are previews only"
+else
+  fail "carousel recipe slide_N contract" "03-render-slides.md or SKILL.md missing ordered-slide delivery wording"
+fi
+
+# Non-carousel: without slides.json, reel cover.png remains a deliverable.
+wi243_reel="$(mktemp -d)"
+mkdir -p "$wi243_reel/final"
+printf 'video' > "$wi243_reel/final/out.mp4"
+printf 'poster' > "$wi243_reel/final/cover.png"
+wi243_reel_out="$(
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_select_deliverables "$wi243_reel" "$(python3 -c '
+import json, sys
+root = sys.argv[1]
+print(json.dumps([
+  {"id":"video","path":root+"/final/out.mp4"},
+  {"id":"cover","path":root+"/final/cover.png"},
+]))
+' "$wi243_reel")"
+)"
+if [[ "$wi243_reel_out" == *$'\tmedia'* && "$wi243_reel_out" == *"/final/out.mp4"$'\tmedia'* && "$wi243_reel_out" == *"/final/cover.png"$'\tmedia'* ]]; then
+  pass "non-carousel select: reel cover.png stays a deliverable when slides.json is absent"
+else
+  fail "non-carousel reel cover" "got: $wi243_reel_out"
+fi
+rm -rf "$wi243_reel"
+rm -rf "$wi243"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
