@@ -31,6 +31,11 @@ WI2.45 apply_p_carousel_contract() re-applies slide_1..slide_10 saves,
 recipeVersion 2026.10.3, and the render/captions delivery wording onto
 p-carousel after every copy (upstream still ships cover/slide_sheet only).
 
+WI2.64 apply_p_reels_pip_tail() re-applies the pip tail hold and the CTA
+caption clamp onto p-reels-pip and p-reels-pip-heygen after every copy,
+including the heygen .hub copy of p-reels-pip. Upstream still overlays the
+CTA card with itsoffset and burns captions across that window.
+
 Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
 and before list_files/hashing, same ordering guarantee:
   strip_brand_override_host_paths() nulls/drops the two host-path fields
@@ -610,6 +615,455 @@ def redact_literal_host_paths(directory: Path) -> int:
     return changed
 
 
+# WI2.64: exact slices of skills/p-reels-pip/steps/05-composite.md. Raw strings
+# so ffmpeg continuations and the embedded Python `\n` escapes stay literal.
+_PIP_TAIL_PROSE_OLD = """`shortest=1` on the head overlay only — the static frame overlay keeps `eof_action=repeat`.
+
+```bash
+"""
+_PIP_TAIL_PROSE_NEW = """`shortest=1` on the head overlay only — the static frame overlay keeps `eof_action=repeat`.
+That shortest cut can end the picture before the bed audio; the hold below clones the last
+real frame across the gap so the tail is not black. A CTA mov that runs past the bed does
+the same if it is not trimmed — the overlay cap below stops at the bed.
+
+```bash
+"""
+_PIP_TAIL_COMPOSE_OLD = "work/composed.mp4\nfi\n"
+_PIP_TAIL_COMPOSE_NEW = r"""work/composed.mp4
+fi
+# WI2.64: hold the last real frame out to the bed, and stop captions at the CTA window.
+cat > work/hold_tail.py <<'PY'
+import json, os, re, subprocess, sys
+
+FLOOR = 16.0
+OUT_FPS = 30.0
+
+def run(args):
+    return subprocess.run(args, capture_output=True, text=True)
+
+def probe(path):
+    p = run(["ffprobe", "-v", "error", "-show_entries",
+             "format=duration:stream=codec_type,duration,nb_frames,r_frame_rate",
+             "-of", "json", path])
+    if p.returncode != 0:
+        sys.stderr.write("hold_tail: ffprobe failed\n")
+        return None
+    data = json.loads(p.stdout or "{}")
+    fmt = float((data.get("format") or {}).get("duration") or 0)
+    vid = None
+    fps = OUT_FPS
+    for st in data.get("streams") or []:
+        if st.get("codec_type") != "video":
+            continue
+        rate = str(st.get("r_frame_rate") or "30/1")
+        if "/" in rate:
+            n, d = rate.split("/", 1)
+            df = float(d) if d else 0.0
+            fps = (float(n) / df) if df else OUT_FPS
+        else:
+            fps = float(rate or OUT_FPS)
+        if fps <= 0:
+            fps = OUT_FPS
+        dur = st.get("duration")
+        nb = st.get("nb_frames")
+        if dur not in (None, "N/A", ""):
+            vid = float(dur)
+        elif nb not in (None, "N/A", ""):
+            vid = float(nb) / fps
+        break
+    if vid is None:
+        c = run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_packets",
+                 "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", path])
+        n = (c.stdout or "").strip()
+        vid = (int(n) / fps) if n.isdigit() else fmt
+    return fmt, vid, fps
+
+def yavgs(path, start):
+    cmd = ["ffmpeg", "-hide_banner", "-nostats"]
+    if start is not None and start > 0:
+        cmd += ["-ss", "%.3f" % start]
+    cmd += ["-i", path, "-vf", "signalstats,metadata=print:key=lavfi.signalstats.YAVG",
+            "-an", "-f", "null", "-"]
+    p = run(cmd)
+    blob = (p.stderr or "") + "\n" + (p.stdout or "")
+    return [float(v) for v in re.findall(r"lavfi\.signalstats\.YAVG=([0-9.]+)", blob)]
+
+def trailing(samples):
+    n = 0
+    for v in reversed(samples):
+        if v <= FLOOR:
+            n += 1
+        else:
+            break
+    return n
+
+def main():
+    if len(sys.argv) < 2:
+        sys.stderr.write("usage: hold_tail.py VIDEO [TARGET_SECONDS]\n")
+        return 2
+    path = sys.argv[1]
+    if not os.path.isfile(path):
+        sys.stderr.write("hold_tail: missing %s\n" % path)
+        return 1
+    target = None
+    if len(sys.argv) > 2 and sys.argv[2] not in ("", "none"):
+        target = float(sys.argv[2])
+    probed = probe(path)
+    if not probed:
+        return 1
+    fmt, vid, fps = probed
+    if target is None:
+        target = fmt
+    if target <= 0 or vid <= 0:
+        sys.stderr.write("hold_tail: bad duration\n")
+        return 1
+    samples = yavgs(path, max(0.0, vid - 3.0))
+    if not samples:
+        samples = yavgs(path, None)
+    if not samples:
+        sys.stderr.write("hold_tail: no YAVG samples\n")
+        return 1
+    trail = trailing(samples)
+    if trail == len(samples):
+        full = yavgs(path, None)
+        if not full or trailing(full) == len(full):
+            sys.stderr.write("hold_tail: entire video is black\n")
+            return 1
+        samples = full
+        trail = trailing(samples)
+    picture_end = vid - (trail / fps)
+    if trail > 0:
+        picture_end -= 0.5 / fps
+    frame = 1.0 / fps
+    # A short video stream must not no-op just because the container matches the bed.
+    if trail == 0 and abs(vid - target) <= frame + 1e-3 and abs(fmt - target) <= frame + 1e-3:
+        print("hold_tail: no-op %s picture=%.3f target=%.3f" % (path, picture_end, target))
+        return 0
+    out_frames = max(1, int(round(target * OUT_FPS)))
+    keep = int(picture_end * OUT_FPS)
+    if keep < 1:
+        keep = 1
+    if keep > out_frames:
+        keep = out_frames
+    good_end = keep / OUT_FPS
+    gap = (out_frames - keep) / OUT_FPS
+    out = path + ".hold.mp4"
+    fc = (
+        "[0:v]trim=start=0:end=%.6f,setpts=PTS-STARTPTS,fps=30,"
+        "tpad=stop_mode=clone:stop_duration=%.6f,format=yuv420p[v]"
+        % (good_end, gap)
+    )
+    # Copy the bed audio. Re-encoding it would move the sealed -14 LUFS level.
+    p = run([
+        "ffmpeg", "-y", "-i", path, "-filter_complex", fc,
+        "-map", "[v]", "-map", "0:a",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "19", "-pix_fmt", "yuv420p",
+        "-c:a", "copy", "-t", "%.6f" % (out_frames / OUT_FPS), "-movflags", "+faststart", out,
+    ])
+    if p.returncode != 0 or not os.path.isfile(out):
+        err = ((p.stderr or "")[-400:]).replace("\n", " | ")
+        sys.stderr.write("hold_tail: encode failed: %s\n" % err)
+        if os.path.isfile(out):
+            os.remove(out)
+        return 1
+    last = yavgs(out, max(0.0, (out_frames / OUT_FPS) - 0.5))
+    if not last or last[-1] <= FLOOR:
+        got = last[-1] if last else None
+        sys.stderr.write("hold_tail: last frame still black (%s)\n" % got)
+        os.remove(out)
+        return 1
+    os.replace(out, path)
+    print("hold_tail: held %s to %.3fs (keep %.3f gap %.3f)" % (path, out_frames / OUT_FPS, good_end, gap))
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
+PY
+cat > work/clamp_captions.py <<'PY'
+import json, os, sys
+
+EPS = 1e-3
+
+def limit_of():
+    path = os.environ.get("CTA_WINDOW") or "work/cta-window.json"
+    if not os.path.exists(path):
+        return None
+    data = json.load(open(path))
+    if not isinstance(data, dict):
+        return None
+    start = data.get("cta_start")
+    if start is None:
+        return None
+    return float(start)
+
+def start_of(row):
+    if isinstance(row, dict) and "start" in row:
+        return float(row["start"])
+    if isinstance(row, dict) and "s" in row:
+        return float(row["s"])
+    return None
+
+def end_of(row):
+    if isinstance(row, dict) and "end" in row:
+        return float(row["end"])
+    if isinstance(row, dict) and "e" in row:
+        return float(row["e"])
+    return None
+
+def clamp_row(row, limit):
+    s = start_of(row)
+    if s is not None and s >= limit - EPS:
+        return None
+    e = end_of(row)
+    if e is not None and e > limit:
+        if "end" in row:
+            row["end"] = limit
+        if "e" in row:
+            row["e"] = limit
+    return row
+
+def overlaps(row, limit):
+    s = start_of(row)
+    e = end_of(row)
+    if s is not None and s >= limit - EPS:
+        return True
+    if e is not None and e > limit + 1e-6:
+        return True
+    return False
+
+def dump(path, obj):
+    with open(path, "w") as fh:
+        json.dump(obj, fh)
+        fh.write("\n")
+
+def main():
+    if len(sys.argv) < 3:
+        sys.stderr.write("usage: clamp_captions.py words SRC DEST | plan PLAN\n")
+        return 2
+    mode = sys.argv[1]
+    limit = limit_of()
+    if mode == "words":
+        if len(sys.argv) != 4:
+            sys.stderr.write("usage: clamp_captions.py words SRC DEST\n")
+            return 2
+        src, dest = sys.argv[2], sys.argv[3]
+        data = json.load(open(src))
+        words = data["words"] if isinstance(data, dict) and "words" in data else data
+        if not isinstance(words, list):
+            sys.stderr.write("clamp_captions: words payload is not a list\n")
+            return 1
+        out = []
+        for w in words:
+            if limit is None or not isinstance(w, dict):
+                out.append(w)
+                continue
+            c = clamp_row(dict(w), limit)
+            if c is not None:
+                out.append(c)
+        if limit is not None:
+            for w in out:
+                if isinstance(w, dict) and overlaps(w, limit):
+                    sys.stderr.write("clamp_captions: word still overlaps the CTA window\n")
+                    return 1
+        dump(dest, out)
+        return 0
+    if mode == "plan":
+        plan_path = sys.argv[2]
+        if not os.path.exists(plan_path):
+            return 0
+        plan = json.load(open(plan_path))
+        if limit is not None and isinstance(plan, dict) and isinstance(plan.get("caption_groups"), list):
+            kept = []
+            for g in plan["caption_groups"]:
+                if not isinstance(g, dict):
+                    kept.append(g)
+                    continue
+                gs = start_of(g)
+                if gs is not None and gs >= limit - EPS:
+                    continue
+                g = dict(g)
+                words = g.get("words")
+                if isinstance(words, list):
+                    nw = []
+                    for w in words:
+                        if not isinstance(w, dict):
+                            nw.append(w)
+                            continue
+                        c = clamp_row(dict(w), limit)
+                        if c is not None:
+                            nw.append(c)
+                    g["words"] = nw
+                    if not nw:
+                        continue
+                ge = end_of(g)
+                if ge is not None and ge > limit:
+                    if "end" in g:
+                        g["end"] = limit
+                    if "e" in g:
+                        g["e"] = limit
+                kept.append(g)
+            plan["caption_groups"] = kept
+            for g in kept:
+                if not isinstance(g, dict):
+                    continue
+                if overlaps(g, limit):
+                    sys.stderr.write("clamp_captions: caption group still overlaps the CTA window\n")
+                    return 1
+                for w in g.get("words") or []:
+                    if isinstance(w, dict) and overlaps(w, limit):
+                        sys.stderr.write("clamp_captions: plan word still overlaps the CTA window\n")
+                        return 1
+        if isinstance(plan, (dict, list)):
+            dump(plan_path, plan)
+        return 0
+    sys.stderr.write("clamp_captions: unknown mode %s\n" % mode)
+    return 2
+
+if __name__ == "__main__":
+    sys.exit(main())
+PY
+python3 work/hold_tail.py work/composed.mp4 "$BED_DUR" || exit 1
+"""
+_PIP_TAIL_CTA_OLD = r"""  CTA_START=$(python3 -c "print(round(${BED_DUR} - ${CTA_DURATION}, 3))")
+  ffmpeg -y -i work/composed.mp4 -itsoffset "$CTA_START" -i work/cta-card.mov \
+    -filter_complex "[0:v][1:v]overlay=enable='between(t,${CTA_START},${BED_DUR})':eof_action=pass[v]" \
+    -map "[v]" -map 0:a -c:v libx264 -pix_fmt yuv420p -c:a copy -movflags +faststart work/with-cta.mp4
+  # Scrim proof: the bottom 55 % of the last frame must be more than one flat colour.
+  ffmpeg -y -v error -ss "$(python3 -c "print(max(0.0, ${BED_DUR} - 0.5))")" -i work/with-cta.mp4 -frames:v 1 work/cta-proof.png
+  N=$(ffmpeg -v error -i work/cta-proof.png -vf "crop=iw:ih*0.55:0:ih*0.45" -f rawvideo -pix_fmt rgb24 - | python3 -c "import sys; b=sys.stdin.buffer.read(); print(len({b[i:i+3] for i in range(0,len(b),3)}))")
+  [ "${N:-0}" -gt 1 ] || { echo "CTA scrim shipped opaque"; exit 1; }
+else
+  cp work/composed.mp4 work/with-cta.mp4
+fi
+"""
+_PIP_TAIL_CTA_NEW = r"""  BED_DUR=${BED_DUR:-$(ffprobe -v error -show_entries format=duration -of csv=p=0 prior/voice_track.mp4)}
+  python3 work/hold_tail.py work/composed.mp4 "$BED_DUR" || exit 1
+  CTA_START=$(python3 -c "print(max(0.0, round(${BED_DUR} - ${CTA_DURATION}, 3)))")
+  python3 -c 'import json,sys; json.dump({"cta_start": float(sys.argv[1]), "bed_dur": float(sys.argv[2])}, open("work/cta-window.json","w"))' "$CTA_START" "$BED_DUR"
+  # WI2.64 CTA overlay: trim the card to the window, delay it, stop at the bed.
+  ffmpeg -y -i work/composed.mp4 -i work/cta-card.mov \
+    -filter_complex "[1:v]trim=duration=${CTA_DURATION},setpts=PTS-STARTPTS+${CTA_START}/TB[cta];[0:v][cta]overlay=enable='between(t,${CTA_START},${BED_DUR})':eof_action=pass[v]" \
+    -map "[v]" -map 0:a -c:v libx264 -pix_fmt yuv420p -c:a copy -t "$BED_DUR" -movflags +faststart work/with-cta.mp4
+  python3 work/hold_tail.py work/with-cta.mp4 "$BED_DUR" || exit 1
+  # Scrim proof: the bottom 55 % of the last frame must be more than one flat colour.
+  ffmpeg -y -v error -ss "$(python3 -c "print(max(0.0, ${BED_DUR} - 0.5))")" -i work/with-cta.mp4 -frames:v 1 work/cta-proof.png
+  N=$(ffmpeg -v error -i work/cta-proof.png -vf "crop=iw:ih*0.55:0:ih*0.45" -f rawvideo -pix_fmt rgb24 - | python3 -c "import sys; b=sys.stdin.buffer.read(); print(len({b[i:i+3] for i in range(0,len(b),3)}))")
+  [ "${N:-0}" -gt 1 ] || { echo "CTA scrim shipped opaque"; exit 1; }
+else
+  BED_DUR=${BED_DUR:-$(ffprobe -v error -show_entries format=duration -of csv=p=0 prior/voice_track.mp4)}
+  python3 work/hold_tail.py work/composed.mp4 "$BED_DUR" || exit 1
+  python3 -c 'import json,sys; json.dump({"cta_start": None, "bed_dur": float(sys.argv[1])}, open("work/cta-window.json","w"))' "$BED_DUR"
+  cp work/composed.mp4 work/with-cta.mp4
+fi
+"""
+_PIP_TAIL_OUTRO_OLD = "  cp work/with-cta.mp4 work/pre-premium.mp4\nfi\n"
+_PIP_TAIL_OUTRO_NEW = "  cp work/with-cta.mp4 work/pre-premium.mp4\nfi\npython3 work/hold_tail.py work/pre-premium.mp4 || exit 1\n"
+_PIP_TAIL_WORDS_OLD = "python3 -c \"import json; json.dump(json.load(open('prior/transcripts.json'))['words'], open('work/words.json','w'))\"\n"
+_PIP_TAIL_WORDS_NEW = "# WI2.64: drop caption cues that would sit on the CTA card. Card off leaves the words unchanged.\npython3 work/clamp_captions.py words prior/transcripts.json work/words.json || exit 1\n"
+_PIP_TAIL_PLAN_OLD = """# run P1 → P4 here; GSAP for the premium comp: cp \"$GSAP\" \"$PW/comp/gsap.min.js\" \"$PW/comp/compositions/\"
+python3 - <<'PY'
+import os
+assert os.path.getsize(\"work/polished.mp4\") > 100_000, \"premium output missing/empty — the pass did not run\"
+PY
+"""
+_PIP_TAIL_PLAN_NEW = """# run P1 → P4 here; GSAP for the premium comp: cp \"$GSAP\" \"$PW/comp/gsap.min.js\" \"$PW/comp/compositions/\"
+python3 work/clamp_captions.py plan work/premium/plan.json || exit 1
+python3 - <<'PY'
+import os
+assert os.path.getsize(\"work/polished.mp4\") > 100_000, \"premium output missing/empty — the pass did not run\"
+PY
+"""
+_PIP_TAIL_SAVE_OLD = r"""cp work/polished.mp4 saves/assembled_video.mp4
+python3 - <<'PY'
+import os, subprocess
+d = lambda f: float(subprocess.run(['ffprobe','-v','error','-show_entries','format=duration','-of','csv=p=0',f],capture_output=True,text=True).stdout)
+a, b = d('saves/assembled_video.mp4'), d('prior/voice_track.mp4')
+if os.path.exists('work/outro-norm.mp4'): b += d('work/outro-norm.mp4')
+assert abs(a-b) < 0.15, f'duration drifted {a:.2f} vs expected {b:.2f}'; print(f'assembled OK {a:.2f}s')
+PY
+"""
+_PIP_TAIL_SAVE_NEW = r"""python3 work/clamp_captions.py plan work/premium/plan.json || exit 1
+python3 work/hold_tail.py work/polished.mp4 || exit 1
+cp work/polished.mp4 saves/assembled_video.mp4
+python3 - <<'PY'
+import json, os, subprocess
+d = lambda f: float(subprocess.run(['ffprobe','-v','error','-show_entries','format=duration','-of','csv=p=0',f],capture_output=True,text=True).stdout)
+a, b = d('saves/assembled_video.mp4'), d('prior/voice_track.mp4')
+if os.path.exists('work/outro-norm.mp4'): b += d('work/outro-norm.mp4')
+assert abs(a-b) < 0.15, f'duration drifted {a:.2f} vs expected {b:.2f}'
+win = json.load(open('work/cta-window.json')) if os.path.exists('work/cta-window.json') else {}
+limit = win.get('cta_start')
+if limit is not None:
+    limit = float(limit)
+    bad = []
+    def cue_bad(row):
+        if not isinstance(row, dict):
+            return
+        s = row.get('start', row.get('s'))
+        e = row.get('end', row.get('e'))
+        if s is not None and float(s) >= limit - 1e-3:
+            bad.append('start %s' % s)
+        if e is not None and float(e) > limit + 1e-6:
+            bad.append('end %s' % e)
+    words = []
+    if os.path.exists('work/words.json'):
+        words = json.load(open('work/words.json'))
+        if isinstance(words, dict):
+            words = words.get('words') or []
+    for w in words or []:
+        cue_bad(w)
+    plan_path = 'work/premium/plan.json'
+    if os.path.exists(plan_path):
+        plan = json.load(open(plan_path))
+        groups = plan.get('caption_groups') if isinstance(plan, dict) else []
+        for g in groups or []:
+            cue_bad(g)
+            if isinstance(g, dict):
+                for w in g.get('words') or []:
+                    cue_bad(w)
+    assert not bad, 'caption cue overlaps CTA window: ' + ', '.join(bad)
+print(f'assembled OK {a:.2f}s')
+PY
+"""
+
+P_REELS_PIP_TAIL_PAIRS = (
+    (_PIP_TAIL_PROSE_OLD, _PIP_TAIL_PROSE_NEW),
+    (_PIP_TAIL_COMPOSE_OLD, _PIP_TAIL_COMPOSE_NEW),
+    (_PIP_TAIL_CTA_OLD, _PIP_TAIL_CTA_NEW),
+    (_PIP_TAIL_OUTRO_OLD, _PIP_TAIL_OUTRO_NEW),
+    (_PIP_TAIL_WORDS_OLD, _PIP_TAIL_WORDS_NEW),
+    (_PIP_TAIL_PLAN_OLD, _PIP_TAIL_PLAN_NEW),
+    (_PIP_TAIL_SAVE_OLD, _PIP_TAIL_SAVE_NEW),
+)
+
+P_REELS_PIP_TAIL_FILES = (
+    "steps/05-composite.md",
+    ".hub/p-reels-pip/steps/05-composite.md",
+)
+
+
+def apply_p_reels_pip_tail(directory: Path) -> int:
+    """Re-apply the WI2.64 pip tail hold and CTA caption clamp. Idempotent.
+    Returns the number of files changed. A heygen hub copy is updated when present."""
+    changed = 0
+    for rel in P_REELS_PIP_TAIL_FILES:
+        path = directory / rel
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, ValueError):
+            continue
+        new = text
+        for old, repl in P_REELS_PIP_TAIL_PAIRS:
+            if old in new and repl not in new:
+                new = new.replace(old, repl, 1)
+        if new != text:
+            path.write_text(new, encoding="utf-8")
+            changed += 1
+    return changed
+
+
 def git_head_sha(repo: Path) -> str | None:
     """Best-effort `git rev-parse HEAD` of `repo`. Returns None (never
     raises) when `repo` isn't a git checkout — e.g. a test fixture dir — so
@@ -732,6 +1186,11 @@ def main():
                 rewrite_playwright_work_resolvers(hub_dir / dep)
                 strip_brand_override_host_paths(hub_dir / dep)
                 redact_literal_host_paths(hub_dir / dep)
+
+        # WI2.64: after the hub copy so the heygen .hub/p-reels-pip composite
+        # gets the same tail hold and CTA caption clamp as the top-level step.
+        if recipe in ("p-reels-pip", "p-reels-pip-heygen"):
+            apply_p_reels_pip_tail(recipe_dest)
 
         files = list_files(recipe_dest)
         file_hashes = {f: sha256_file(recipe_dest / f) for f in files}

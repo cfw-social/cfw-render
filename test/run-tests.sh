@@ -8053,6 +8053,340 @@ else
   fail "WI2.63 non-reel and missing-cover delivery" "$wi263_guard"
 fi
 
+echo "=== Case 45: WI2.64 — pip last frame stays bright and captions stop before the CTA ==="
+wi264_rc=0
+wi264_out="$(python3 - "$REPO_DIR" <<'PY'
+import hashlib, importlib.util, json, os, re, shutil, subprocess, sys, tempfile
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+rows = []
+
+def add(name, detail=""):
+    rows.append((name, detail.replace("\n", " | ").replace("\t", " ")[:900]))
+
+def sha256_file(path):
+    return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+def recipe_checksum(recipe):
+    base = repo / "skills" / recipe
+    rels = []
+    for path in base.rglob("*"):
+        if path.is_file() and path.name not in {".DS_Store", "__pycache__", ".git", ".hub"}:
+            rels.append(str(path.relative_to(base)).replace("\\", "/"))
+    rels = sorted(rels)
+    blob = "\n".join("%s=%s" % (rel, sha256_file(base / rel)) for rel in rels)
+    return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+pip_md = (repo / "skills/p-reels-pip/steps/05-composite.md").read_text(encoding="utf-8")
+hey_md = (repo / "skills/p-reels-pip-heygen/steps/05-composite.md").read_text(encoding="utf-8")
+pip_hash = sha256_file(repo / "skills/p-reels-pip/steps/05-composite.md")
+hey_hash = sha256_file(repo / "skills/p-reels-pip-heygen/steps/05-composite.md")
+sys.stderr.write("WI2.64-HASH p-reels-pip steps/05-composite.md %s\n" % pip_hash)
+sys.stderr.write("WI2.64-HASH p-reels-pip-heygen steps/05-composite.md %s\n" % hey_hash)
+sys.stderr.write("WI2.64-CHECKSUM p-reels-pip %s\n" % recipe_checksum("p-reels-pip"))
+sys.stderr.write("WI2.64-CHECKSUM p-reels-pip-heygen %s\n" % recipe_checksum("p-reels-pip-heygen"))
+sys.stderr.flush()
+
+def extract(text, name):
+    marker = "cat > work/%s <<'PY'\n" % name
+    start = text.index(marker) + len(marker)
+    end = text.index("\nPY\n", start)
+    return text[start:end] + "\n"
+
+def run_ff(cwd, args):
+    proc = subprocess.run(
+        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *args],
+        cwd=cwd, capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError("ffmpeg %s :: %s" % (" ".join(args[:8]), (proc.stderr or "")[-400:]))
+
+def probe_durs(path):
+    proc = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type,duration", "-of", "json", str(path)],
+        capture_output=True, text=True,
+    )
+    data = json.loads(proc.stdout or "{}")
+    fmt = float((data.get("format") or {}).get("duration") or 0)
+    vid = None
+    for st in data.get("streams") or []:
+        if st.get("codec_type") == "video" and st.get("duration") not in (None, "N/A", ""):
+            vid = float(st["duration"])
+    return fmt, vid
+
+def last_yavg(path):
+    proc = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-nostats", "-sseof", "-0.2", "-i", str(path),
+         "-vf", "signalstats,metadata=print:key=lavfi.signalstats.YAVG", "-an", "-f", "null", "-"],
+        capture_output=True, text=True,
+    )
+    vals = re.findall(r"lavfi\.signalstats\.YAVG=([0-9.]+)", (proc.stderr or "") + "\n" + (proc.stdout or ""))
+    return float(vals[-1]) if vals else None
+
+def hold(script, video, target=None):
+    cmd = [sys.executable, script, str(video)]
+    if target is not None:
+        cmd.append("%.3f" % target)
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+try:
+    if pip_md != hey_md:
+        add("WI2.64 pip and heygen composite match", "byte mismatch len %d vs %d" % (len(pip_md), len(hey_md)))
+    else:
+        add("WI2.64 pip and heygen composite match")
+    hub = repo / "skills/p-reels-pip-heygen/.hub/p-reels-pip/steps/05-composite.md"
+    hub_hash = sha256_file(hub)
+    if hub_hash != "sha256:ff6d3d1e0e2e903446264955c9f40fdde3f3db2033d30ce4bea5ae2ab37dbabe":
+        add("WI2.64 heygen hub composite left for sync", hub_hash)
+    else:
+        add("WI2.64 heygen hub composite left for sync")
+    if "itsoffset \"$CTA_START\"" in pip_md:
+        add("WI2.64 bundled composite drops itsoffset", "itsoffset still present")
+    else:
+        add("WI2.64 bundled composite drops itsoffset")
+
+    spec = importlib.util.spec_from_file_location("sync_skills_wi264", repo / "scripts/sync-skills.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    inverted = pip_md
+    invert_bad = ""
+    for old, new in reversed(mod.P_REELS_PIP_TAIL_PAIRS):
+        count = inverted.count(new)
+        if count != 1:
+            invert_bad = "hunk count %d for %r" % (count, new[:80])
+            break
+        inverted = inverted.replace(new, old, 1)
+    if invert_bad:
+        add("WI2.64 sync transform reproduces the bundled composite", invert_bad)
+    elif 'itsoffset "$CTA_START"' not in inverted:
+        add("WI2.64 sync transform reproduces the bundled composite", "inverted text has no itsoffset overlay")
+    else:
+        with tempfile.TemporaryDirectory(prefix="wi264-tx-") as tmp:
+            root = Path(tmp)
+            recipe = root / "recipe"
+            (recipe / "steps").mkdir(parents=True)
+            target = recipe / "steps/05-composite.md"
+            target.write_text(inverted, encoding="utf-8")
+            mod.apply_p_reels_pip_tail(recipe)
+            got = target.read_text(encoding="utf-8")
+            mod.apply_p_reels_pip_tail(recipe)
+            again = target.read_text(encoding="utf-8")
+            if got != pip_md:
+                pos = next((i for i, (a, b) in enumerate(zip(got, pip_md)) if a != b), min(len(got), len(pip_md)))
+                add("WI2.64 sync transform reproduces the bundled composite",
+                    "at %d got %r want %r lens %d/%d" % (pos, got[max(0, pos-60):pos+60], pip_md[max(0, pos-60):pos+60], len(got), len(pip_md)))
+            elif again != pip_md:
+                add("WI2.64 sync transform reproduces the bundled composite", "second apply changed bytes")
+            else:
+                add("WI2.64 sync transform reproduces the bundled composite")
+                src = root / "src"
+                for name, deps in (("p-reels-pip", "[]"), ("p-reels-pip-heygen", "[p-reels-pip]")):
+                    steps = src / name / "steps"
+                    steps.mkdir(parents=True)
+                    (src / name / "SKILL.md").write_text(
+                        "---\nname: %s\ndependsOn: %s\n---\n# %s\n" % (name, deps, name),
+                        encoding="utf-8",
+                    )
+                    (steps / "05-composite.md").write_text(inverted, encoding="utf-8")
+                recipes = root / "recipes.json"
+                recipes.write_text(json.dumps({
+                    "source": "test-wi264",
+                    "recipes": [
+                        {"name": "p-reels-pip", "version": "1.0.0", "providers": []},
+                        {"name": "p-reels-pip-heygen", "version": "1.0.0", "providers": []},
+                    ],
+                }), encoding="utf-8")
+                out = root / "out"
+                env = os.environ.copy()
+                env["CFW_SKILLS_SRC"] = str(src)
+                proc = subprocess.run(
+                    ["bash", str(repo / "scripts/sync-skills.sh"), "--recipes", str(recipes),
+                     "--out-dir", str(out), "--skip-manifest"],
+                    capture_output=True, text=True, env=env,
+                )
+                paths = [
+                    out / "p-reels-pip/steps/05-composite.md",
+                    out / "p-reels-pip-heygen/steps/05-composite.md",
+                    out / "p-reels-pip-heygen/.hub/p-reels-pip/steps/05-composite.md",
+                ]
+                bad_sync = []
+                if proc.returncode != 0:
+                    bad_sync.append("rc %s %s" % (proc.returncode, (proc.stderr or proc.stdout or "")[-400:]))
+                for path in paths:
+                    if not path.is_file():
+                        bad_sync.append("missing %s" % path.name)
+                    elif path.read_text(encoding="utf-8") != pip_md:
+                        bad_sync.append("diff %s" % path.relative_to(out))
+                if bad_sync:
+                    add("WI2.64 sync-skills.sh re-applies the pip tail on both recipes and the hub copy", "; ".join(bad_sync))
+                else:
+                    add("WI2.64 sync-skills.sh re-applies the pip tail on both recipes and the hub copy")
+
+    hold_src = extract(pip_md, "hold_tail.py")
+    clamp_src = extract(pip_md, "clamp_captions.py")
+    with tempfile.TemporaryDirectory(prefix="wi264-pic-") as tmp:
+        d = Path(tmp)
+        (d / "work").mkdir()
+        script = d / "hold_tail.py"
+        script.write_text(hold_src, encoding="utf-8")
+        clamp = d / "clamp_captions.py"
+        clamp.write_text(clamp_src, encoding="utf-8")
+
+        run_ff(d, ["-f", "lavfi", "-i", "color=c=white:s=160x160:r=30:d=2",
+                   "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo:d=2",
+                   "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "vid.mp4"])
+        run_ff(d, ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2.4",
+                   "-c:a", "aac", "tone.m4a"])
+        run_ff(d, ["-i", "vid.mp4", "-i", "tone.m4a", "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "short.mp4"])
+        before_fmt, before_vid = probe_durs(d / "short.mp4")
+        proc = hold(str(script), d / "short.mp4", 2.4)
+        fmt, vid = probe_durs(d / "short.mp4")
+        y = last_yavg(d / "short.mp4")
+        detail = "before fmt %.3f vid %s after fmt %.3f vid %s y %s err %s" % (
+            before_fmt, before_vid, fmt, vid, y, (proc.stderr or "")[-240:])
+        if proc.returncode != 0 or before_vid is None or before_vid > before_fmt - 0.2:
+            add("WI2.64 short picture is held out to the bright bed", detail)
+        elif y is None or y <= 30 or abs(fmt - 2.4) > 0.15 or vid is None or abs(vid - fmt) > 0.1:
+            add("WI2.64 short picture is held out to the bright bed", detail)
+        else:
+            add("WI2.64 short picture is held out to the bright bed")
+
+        run_ff(d, ["-f", "lavfi", "-i", "color=c=white:s=160x160:r=30:d=2",
+                   "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2",
+                   "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "bright.mp4"])
+        run_ff(d, ["-f", "lavfi", "-i", "color=c=black:s=160x160:r=30:d=0.4",
+                   "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=0.4",
+                   "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "black.mp4"])
+        (d / "list.txt").write_text("file 'bright.mp4'\nfile 'black.mp4'\n", encoding="utf-8")
+        run_ff(d, ["-f", "concat", "-safe", "0", "-i", "list.txt",
+                   "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", "tailed.mp4"])
+        tail_before = last_yavg(d / "tailed.mp4")
+        orig_fmt, _orig_vid = probe_durs(d / "tailed.mp4")
+        proc = hold(str(script), d / "tailed.mp4")
+        fmt, vid = probe_durs(d / "tailed.mp4")
+        y = last_yavg(d / "tailed.mp4")
+        detail = "tail before %s after y %s fmt %.3f->%.3f vid %s err %s" % (
+            tail_before, y, orig_fmt, fmt, vid, (proc.stderr or "")[-240:])
+        if proc.returncode != 0 or tail_before is None or tail_before > 16:
+            add("WI2.64 encoded black tail is replaced with the last bright frame", detail)
+        elif y is None or y <= 30 or abs(fmt - orig_fmt) > 0.15 or vid is None or abs(vid - fmt) > 0.1:
+            add("WI2.64 encoded black tail is replaced with the last bright frame", detail)
+        else:
+            add("WI2.64 encoded black tail is replaced with the last bright frame")
+
+        run_ff(d, ["-f", "lavfi", "-i", "color=c=white:s=160x160:r=30:d=2",
+                   "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2",
+                   "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+                   "work/composed.mp4"])
+        run_ff(d, ["-f", "lavfi", "-i", "color=c=white:s=160x160:r=30:d=0.2",
+                   "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", "-an", "cta-w.mp4"])
+        run_ff(d, ["-f", "lavfi", "-i", "color=c=black:s=160x160:r=30:d=0.8",
+                   "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", "-an", "cta-b.mp4"])
+        (d / "cta-list.txt").write_text("file 'cta-w.mp4'\nfile 'cta-b.mp4'\n", encoding="utf-8")
+        run_ff(d, ["-f", "concat", "-safe", "0", "-i", "cta-list.txt",
+                   "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", "work/cta-card.mov"])
+        marker = "ffmpeg -y -i work/composed.mp4 -i work/cta-card.mov"
+        start = pip_md.index(marker)
+        end = pip_md.index("work/with-cta.mp4", start) + len("work/with-cta.mp4")
+        overlay = pip_md[start:end]
+        shell = "set -e\nBED_DUR=2\nCTA_DURATION=0.2\nCTA_START=1.8\n" + overlay + "\n"
+        proc = subprocess.run(["bash", "-c", shell], cwd=d, capture_output=True, text=True)
+        if proc.returncode != 0:
+            add("WI2.64 CTA overlay stops at the bed without a black frame", (proc.stderr or "")[-400:])
+        else:
+            held = hold(str(script), d / "work/with-cta.mp4", 2.0)
+            fmt, vid = probe_durs(d / "work/with-cta.mp4")
+            y = last_yavg(d / "work/with-cta.mp4")
+            detail = "fmt %.3f vid %s y %s err %s" % (fmt, vid, y, (held.stderr or proc.stderr or "")[-240:])
+            if held.returncode != 0 or y is None or y <= 30 or abs(fmt - 2.0) > 0.15 or vid is None or abs(vid - fmt) > 0.1:
+                add("WI2.64 CTA overlay stops at the bed without a black frame", detail)
+            else:
+                add("WI2.64 CTA overlay stops at the bed without a black frame")
+
+        window = d / "cta-window.json"
+        window.write_text(json.dumps({"cta_start": 3.0, "bed_dur": 6.0}), encoding="utf-8")
+        words_src = d / "transcripts.json"
+        words_src.write_text(json.dumps({"words": [
+            {"text": "Hello", "start": 0.2, "end": 1.0},
+            {"text": "still", "start": 2.5, "end": 3.4},
+            {"text": "edge", "start": 3.0, "end": 3.2},
+            {"text": "late", "start": 3.2, "end": 4.0},
+        ]}), encoding="utf-8")
+        plan_path = d / "plan.json"
+        plan_path.write_text(json.dumps({
+            "caption_groups": [
+                {"start": 0.2, "end": 1.0, "words": [{"w": "Hello", "s": 0.2, "e": 1.0}]},
+                {"start": 2.5, "end": 3.4, "words": [{"w": "still", "s": 2.5, "e": 3.4}]},
+                {"start": 3.2, "end": 4.0, "words": [{"w": "over", "s": 3.2, "e": 4.0}]},
+            ],
+            "sfx": [{"id": "whoosh", "start": 3.5, "end": 4.0}],
+        }), encoding="utf-8")
+        env = os.environ.copy()
+        env["CTA_WINDOW"] = str(window)
+        words_out = d / "words.json"
+        wproc = subprocess.run([sys.executable, str(clamp), "words", str(words_src), str(words_out)],
+                               capture_output=True, text=True, env=env)
+        pproc = subprocess.run([sys.executable, str(clamp), "plan", str(plan_path)],
+                               capture_output=True, text=True, env=env)
+        words = json.loads(words_out.read_text(encoding="utf-8")) if words_out.is_file() else []
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        groups = plan.get("caption_groups") or []
+        cue_bad = []
+        for row in words:
+            if float(row["start"]) >= 3.0 - 1e-3 or float(row["end"]) > 3.0 + 1e-6:
+                cue_bad.append("word %s" % row)
+        for g in groups:
+            if float(g["start"]) >= 3.0 - 1e-3 or float(g["end"]) > 3.0 + 1e-6:
+                cue_bad.append("group %s" % g.get("start"))
+            for w in g.get("words") or []:
+                if float(w["s"]) >= 3.0 - 1e-3 or float(w["e"]) > 3.0 + 1e-6:
+                    cue_bad.append("plan word %s" % w)
+        sfx = plan.get("sfx") or []
+        if wproc.returncode != 0 or pproc.returncode != 0 or cue_bad or len(words) != 2 or len(groups) != 2:
+            add("WI2.64 caption cues stop at the CTA window",
+                "rc %s/%s cues %s words %s groups %s" % (wproc.returncode, pproc.returncode, cue_bad, words, groups))
+        elif not sfx or sfx[0].get("start") != 3.5:
+            add("WI2.64 caption cues stop at the CTA window", "sfx changed %s" % sfx)
+        else:
+            add("WI2.64 caption cues stop at the CTA window")
+        off = d / "cta-off.json"
+        off.write_text(json.dumps({"cta_start": None, "bed_dur": 6.0}), encoding="utf-8")
+        env["CTA_WINDOW"] = str(off)
+        off_words = d / "words-off.json"
+        off_src = d / "transcripts-off.json"
+        shutil.copyfile(words_src, off_src)
+        oproc = subprocess.run([sys.executable, str(clamp), "words", str(off_src), str(off_words)],
+                               capture_output=True, text=True, env=env)
+        kept = json.loads(off_words.read_text(encoding="utf-8")) if off_words.is_file() else []
+        if oproc.returncode != 0 or len(kept) != 4:
+            add("WI2.64 card off leaves caption cues unchanged", "rc %s n %s" % (oproc.returncode, len(kept)))
+        else:
+            add("WI2.64 card off leaves caption cues unchanged")
+except Exception as exc:
+    add("WI2.64 pip tail harness", "%s: %s" % (type(exc).__name__, exc))
+
+for name, detail in rows:
+    if detail:
+        print("BAD\t%s\t%s" % (name, detail))
+    else:
+        print("OK\t%s\t." % (name,))
+PY
+)" || wi264_rc=$?
+if [[ "$wi264_rc" != "0" ]]; then
+  fail "WI2.64 pip tail harness" "python exited $wi264_rc"
+fi
+while IFS=$'\t' read -r status name detail; do
+  [[ -z "${status:-}" ]] && continue
+  if [[ "$status" == "OK" ]]; then
+    pass "$name"
+  else
+    fail "$name" "$detail"
+  fi
+done <<EOF
+$wi264_out
+EOF
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then

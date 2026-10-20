@@ -1023,7 +1023,7 @@
     },
     "p-reels-pip": {
       "version": "1.0.0",
-      "checksum": "sha256:05a5108ebe9cb55a25fe308a3941a9227ccd1adca1ab3fd150653d5f3a56f753",
+      "checksum": "sha256:a63094360495fb4ce4566b4cdbad44abbc1cc0395ae4a0464ebb9f8148a80066",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1233,7 +1233,7 @@
         "steps/02-transcribe.md": "sha256:c9d356feedd28e033e4268fb1f3bdeea184d3fa01c5bcfa24c00d5f058ccf0ff",
         "steps/03-plan-beats.md": "sha256:f66a79cffd9ec11461a2f7bedf665d2abd72117d6d8dd73dafcc6b0ecf051d27",
         "steps/04-build-background.md": "sha256:9db6fa203a45f70d98da8df63c2e6c115a84b2d45e85bc57c625dcbfc941d1fd",
-        "steps/05-composite.md": "sha256:ff6d3d1e0e2e903446264955c9f40fdde3f3db2033d30ce4bea5ae2ab37dbabe",
+        "steps/05-composite.md": "sha256:92ad9d0e368bed4847fa9d5c3ab99af9ff06efaa9a291b5f0ee11755a882d724",
         "steps/06-final-checks.md": "sha256:44589f5c49356e53f0b7ced0656bf794695a0917c2755bedcd0a9a609cbf2346",
         "steps/_shared.md": "sha256:342379211e937e9d942f604892fb03ecd0769bede0dad93db02811a2aee45ed6",
         "templates/motion-card.html": "sha256:81f0a62270ed98a5d5e75e26b715562c24d681fb72406cbdf75ffb4c9c44bd60"
@@ -2021,7 +2021,7 @@
     },
     "p-reels-pip-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:d1bc1fb05dca8ff584caad704e51e080fc27b72c8af57a271146644b29c10b91",
+      "checksum": "sha256:b455a23398af7359c145146d15ee666c1aa59ee9bc67ab1ef3febd128dff4fd4",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -2258,7 +2258,7 @@
         "steps/02-transcribe.md": "sha256:c9d356feedd28e033e4268fb1f3bdeea184d3fa01c5bcfa24c00d5f058ccf0ff",
         "steps/03-plan-beats.md": "sha256:f66a79cffd9ec11461a2f7bedf665d2abd72117d6d8dd73dafcc6b0ecf051d27",
         "steps/04-build-background.md": "sha256:9db6fa203a45f70d98da8df63c2e6c115a84b2d45e85bc57c625dcbfc941d1fd",
-        "steps/05-composite.md": "sha256:ff6d3d1e0e2e903446264955c9f40fdde3f3db2033d30ce4bea5ae2ab37dbabe",
+        "steps/05-composite.md": "sha256:92ad9d0e368bed4847fa9d5c3ab99af9ff06efaa9a291b5f0ee11755a882d724",
         "steps/06-final-checks.md": "sha256:44589f5c49356e53f0b7ced0656bf794695a0917c2755bedcd0a9a609cbf2346",
         "steps/_shared.md": "sha256:d522ccdfe7b24b7208654e95487517f96a313bf271a853b41113540cf78bfdfb"
       },
