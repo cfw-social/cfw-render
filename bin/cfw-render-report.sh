@@ -191,7 +191,9 @@ PY
     # fanout list from work/.models-fanout (deduped, written by
     # cfw-render-subagent.sh).
     director_model="$(cat work/.director-model 2>/dev/null || true)"
-    [[ -z "$director_model" ]] && director_model="$CFW_RENDER_DIRECTOR_MODEL"
+    # set -u: completion may run without work/.director-model and without the
+    # worker having exported CFW_RENDER_DIRECTOR_MODEL into this process.
+    [[ -z "$director_model" ]] && director_model="${CFW_RENDER_DIRECTOR_MODEL:-}"
     fanout_json="[]"
     if [[ -f work/.models-fanout ]]; then
       fanout_json="$(sort -u work/.models-fanout | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')"
