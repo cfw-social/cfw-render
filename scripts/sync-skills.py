@@ -3484,6 +3484,106 @@ def apply_spotlight_end_card_room(directory: Path, recipe: str) -> int:
     return changed
 
 
+# WI2.91: spotlight typing takeover prompt. Step 05 (and SKILL.md Step 5) filled the scene's
+# `var PROMPT_TEXT = "{{PROMPT}}"` JS literal with html.escape(PROMPT): a backslash changed the typed
+# text and a carriage return (CRLF text) broke the script, so the HyperFrames render failed (independent
+# review 01a15e05-5322 of 69bc5ce). CR/CRLF now become one line break and the HTML-escaped prompt is
+# JSON-encoded (ASCII) as the literal's body, with < > { } as \u escapes, so no backslash, quote,
+# control character, U+2028/2029, </script> or {{KEY}} can change or break the scene. The other keys
+# the scene reads in JS literals drop line breaks and carry a backslash as &#92;. Also: c-typing-ui's
+# hard-coded card label "The prompt · paste this" is replaced, for spotlight only, by a CARD_LABEL fill
+# key with the neutral default "The prompt" (the other c-typing-ui users keep their label).
+_SPOTLIGHT_PROMPT_LINE_OLD = r"""        m["PROMPT"] = html.escape(str(tk["fill"].get("PROMPT", ""))).replace("\n", "&#10;")  # decoded in-page
+"""
+_SPOTLIGHT_PROMPT_BLOCK = r"""        # WI2.91: the scene reads PROMPT inside a JS "..." literal and decodes its entities in-page. html.escape
+        # alone let a backslash change the typed text and a carriage return break the script (the render
+        # failed). CR/CRLF become one line break; the HTML-escaped text is JSON-encoded (ASCII) as the
+        # literal's body, so backslash, quote, control characters and U+2028/2029 are escaped, and < > { }
+        # become \u escapes: no </script> break-out, no {{KEY}} in a prompt is ever filled. The other keys
+        # the scene reads in JS literals drop line breaks and carry a backslash as &#92;.
+        prompt = str(tk["fill"].get("PROMPT", "")).replace("\r\n", "\n").replace("\r", "\n")
+        m["PROMPT"] = json.dumps(html.escape(prompt).replace("\n", "&#10;"), ensure_ascii=True)[1:-1].translate(
+            {ord("<"): "\\u003c", ord(">"): "\\u003e", ord("{"): "\\u007b", ord("}"): "\\u007d"})
+        for k in ("TYPING_SPEED", "VARIANT", "BOTTOM_TAG"):
+            if k in m:
+                m[k] = %(re)s.sub(r"[\r\n\u2028\u2029]+", " ", str(m[k])).replace("\\", "&#92;")
+        m.setdefault("CARD_LABEL", "The prompt")   # the label above the card (neutral; no "paste this")
+"""
+SPOTLIGHT_PROMPT_STEP = _SPOTLIGHT_PROMPT_BLOCK % {"re": "re"}
+SPOTLIGHT_PROMPT_SKILL = _SPOTLIGHT_PROMPT_BLOCK % {"re": "re_mod"}
+_SPOTLIGHT_LABEL_STEP_OLD = r"""        src = src[src.index('<template id="typing-scene-template">'):]   # drop the usage comment
+"""
+SPOTLIGHT_LABEL_STEP = _SPOTLIGHT_LABEL_STEP_OLD + r"""        assert src.count('id="ts-label">The prompt · paste this</div>') == 1, \
+            "FATAL: c-typing-ui typing-scene.html card label changed shape; cannot fill CARD_LABEL (WI2.91)"
+        src = src.replace('id="ts-label">The prompt · paste this</div>', 'id="ts-label">{{CARD_LABEL}}</div>')
+"""
+_SPOTLIGHT_LABEL_SKILL_OLD = r"""        tpl_src = tpl_src[tpl_src.index('<template id="typing-scene-template">'):]   # drop the usage comment
+"""
+SPOTLIGHT_LABEL_SKILL = _SPOTLIGHT_LABEL_SKILL_OLD + r"""        assert tpl_src.count('id="ts-label">The prompt · paste this</div>') == 1, \
+            "FATAL: c-typing-ui typing-scene.html card label changed shape; cannot fill CARD_LABEL (WI2.91)"
+        tpl_src = tpl_src.replace('id="ts-label">The prompt · paste this</div>', 'id="ts-label">{{CARD_LABEL}}</div>')
+"""
+_SPOTLIGHT_PROMPT_PLAN_STEP_OLD = """LABEL (e.g. `claude.ai`), PROMPT (the typed text), TYPING_SPEED (0.5–1.5), BOTTOM_TAG.
+"""
+SPOTLIGHT_PROMPT_PLAN_STEP = """LABEL (e.g. `claude.ai`), PROMPT (the typed text), TYPING_SPEED (0.5–1.5), BOTTOM_TAG, and
+optionally CARD_LABEL (the line above the card; default `The prompt`).
+"""
+_SPOTLIGHT_PROMPT_PLAN_SKILL_OLD = """tk-typing-ui: LABEL (e.g. 'claude.ai'), PROMPT (the typed text), TYPING_SPEED (0.5-1.5), BOTTOM_TAG.
+"""
+SPOTLIGHT_PROMPT_PLAN_SKILL = """tk-typing-ui: LABEL (e.g. 'claude.ai'), PROMPT (the typed text), TYPING_SPEED (0.5-1.5), BOTTOM_TAG,
+and optionally CARD_LABEL (the line above the card; default 'The prompt').
+"""
+SPOTLIGHT_PLAN_FILE = Path("steps") / "03-plan-edit.md"
+# (file under a spotlight root, only in a full p-reels-spotlight copy (not the heygen wrapper), edits)
+_SPOTLIGHT_PROMPT_FILES = (
+    (SPOTLIGHT_RENDER_FILE, False, ((_SPOTLIGHT_PROMPT_LINE_OLD, SPOTLIGHT_PROMPT_STEP),
+                                    (_SPOTLIGHT_LABEL_STEP_OLD, SPOTLIGHT_LABEL_STEP))),
+    (SPOTLIGHT_PLAN_FILE, False, ((_SPOTLIGHT_PROMPT_PLAN_STEP_OLD, SPOTLIGHT_PROMPT_PLAN_STEP),)),
+    (Path("SKILL.md"), True, ((_SPOTLIGHT_PROMPT_LINE_OLD, SPOTLIGHT_PROMPT_SKILL),
+                              (_SPOTLIGHT_LABEL_SKILL_OLD, SPOTLIGHT_LABEL_SKILL),
+                              (_SPOTLIGHT_PROMPT_PLAN_SKILL_OLD, SPOTLIGHT_PROMPT_PLAN_SKILL))),
+)
+
+
+def apply_spotlight_typing_prompt(directory: Path, recipe: str) -> int:
+    """WI2.91: every p-reels-spotlight copy under `directory` (the top-level p-reels-spotlight /
+    p-reels-spotlight-heygen steps 03 and 05, .hub/p-reels-spotlight, and SKILL.md of each full copy) fills
+    the typing takeover's JS prompt literal JSON-encoded (backslash, CR/CRLF, quotes, </script>, U+2028/2029
+    and {{KEY}} cannot change or break it) and fills the card label from CARD_LABEL (default "The prompt").
+    Runs after WI2.87. Idempotent; fails fast when a copy lost its anchor or file, or when a spotlight
+    recipe ships no render-scenes step."""
+    changed = 0
+    if not directory.is_dir():
+        return 0
+    roots = [directory] if directory.name.startswith("p-reels-spotlight") else []
+    roots += sorted(p for p in directory.rglob("p-reels-spotlight") if p.is_dir() and p.parent.name == ".hub")
+    roots = [r for r in roots if (r / SPOTLIGHT_RENDER_FILE).is_file()]
+    if recipe.startswith("p-reels-spotlight") and not roots:
+        raise SystemExit(f"sync-skills.py: ERROR - no p-reels-spotlight {SPOTLIGHT_RENDER_FILE} under {directory} "
+                         f"({recipe}); the WI2.91 transform cannot apply")
+    for root in roots:
+        for rel, full_only, edits in _SPOTLIGHT_PROMPT_FILES:
+            if full_only and root.name != "p-reels-spotlight":
+                continue
+            path = root / rel
+            if not path.is_file():
+                raise SystemExit(f"sync-skills.py: ERROR - {path} is missing ({recipe}); the WI2.91 transform cannot apply")
+            text = path.read_text(encoding="utf-8")
+            new_text = text
+            for old, new in edits:
+                if new in new_text:
+                    continue
+                if new_text.count(old) != 1:
+                    raise SystemExit(f"sync-skills.py: ERROR - typing prompt anchor {old.strip().splitlines()[0][:60]!r} "
+                                     f"found {new_text.count(old)} time(s) in {path} ({recipe}); "
+                                     "the WI2.91 transform cannot apply")
+                new_text = new_text.replace(old, new, 1)
+            if new_text != text:
+                path.write_text(new_text, encoding="utf-8")
+                changed += 1
+    return changed
+
+
 def git_head_sha(repo: Path) -> str | None:
     """Best-effort `git rev-parse HEAD` of `repo`. Returns None (never
     raises) when `repo` isn't a git checkout — e.g. a test fixture dir — so
@@ -3656,6 +3756,9 @@ def main():
 
         # WI2.90: step 06 fails when the end card has no room; SKILL.md reads the order's cta_card (every copy).
         apply_spotlight_end_card_room(recipe_dest, recipe)
+
+        # WI2.91: the typing takeover's prompt is a JSON-encoded JS literal; its card label is CARD_LABEL (every copy).
+        apply_spotlight_typing_prompt(recipe_dest, recipe)
 
         files = list_files(recipe_dest)
         file_hashes = {f: sha256_file(recipe_dest / f) for f in files}

@@ -83,11 +83,26 @@ for i, tk in enumerate(plan.get("takeovers", [])):
         # takeover falls back to a still card (no slam-in, no typing). Keep the wrapper, give the scene
         # this slot's id, scope its ts-* ids/classes and script to the slot, fill every key it reads.
         m["ACCENT"] = str(brand["accent"]).lstrip("#")   # the scene writes #{{ACCENT}}
-        m["PROMPT"] = html.escape(str(tk["fill"].get("PROMPT", ""))).replace("\n", "&#10;")  # decoded in-page
+        # WI2.91: the scene reads PROMPT inside a JS "..." literal and decodes its entities in-page. html.escape
+        # alone let a backslash change the typed text and a carriage return break the script (the render
+        # failed). CR/CRLF become one line break; the HTML-escaped text is JSON-encoded (ASCII) as the
+        # literal's body, so backslash, quote, control characters and U+2028/2029 are escaped, and < > { }
+        # become \u escapes: no </script> break-out, no {{KEY}} in a prompt is ever filled. The other keys
+        # the scene reads in JS literals drop line breaks and carry a backslash as &#92;.
+        prompt = str(tk["fill"].get("PROMPT", "")).replace("\r\n", "\n").replace("\r", "\n")
+        m["PROMPT"] = json.dumps(html.escape(prompt).replace("\n", "&#10;"), ensure_ascii=True)[1:-1].translate(
+            {ord("<"): "\\u003c", ord(">"): "\\u003e", ord("{"): "\\u007b", ord("}"): "\\u007d"})
+        for k in ("TYPING_SPEED", "VARIANT", "BOTTOM_TAG"):
+            if k in m:
+                m[k] = re.sub(r"[\r\n\u2028\u2029]+", " ", str(m[k])).replace("\\", "&#92;")
+        m.setdefault("CARD_LABEL", "The prompt")   # the label above the card (neutral; no "paste this")
         for k, v in (("TYPING_SPEED", "1.0"), ("BOTTOM_TAG", ""), ("VARIANT", "full"), ("BOTTOM_TAG_DISPLAY", "")):
             m.setdefault(k, v)
         src = open(f"{TYPING}/templates/typing-scene.html").read()
         src = src[src.index('<template id="typing-scene-template">'):]   # drop the usage comment
+        assert src.count('id="ts-label">The prompt · paste this</div>') == 1, \
+            "FATAL: c-typing-ui typing-scene.html card label changed shape; cannot fill CARD_LABEL (WI2.91)"
+        src = src.replace('id="ts-label">The prompt · paste this</div>', 'id="ts-label">{{CARD_LABEL}}</div>')
         src = re.sub(r'(?<=[.#"])ts-', f"tk{i}-ts-", src.replace("typing-scene", f"tk{i}"))
         src = src.replace("<script>\n", "<script>\n(function () {\n", 1)
         src = src.replace("\n  </script>\n</div>\n</template>", "\n})();\n  </script>\n</div>\n</template>")

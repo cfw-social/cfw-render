@@ -412,7 +412,8 @@ Schema:
 Template fill keys — tk-stat: EYEBROW, STAT (short e.g. '3X' or '70%'), LABEL.
 tk-keyword: WORD (one word), SUPPORT (short line). tk-list: TITLE, ITEM1, ITEM2, ITEM3.
 tk-quote: QUOTE, ATTR. TITLE and QUOTE may wrap ONE key word in <span class="accent">WORD</span>.
-tk-typing-ui: LABEL (e.g. 'claude.ai'), PROMPT (the typed text), TYPING_SPEED (0.5-1.5), BOTTOM_TAG.
+tk-typing-ui: LABEL (e.g. 'claude.ai'), PROMPT (the typed text), TYPING_SPEED (0.5-1.5), BOTTOM_TAG,
+and optionally CARD_LABEL (the line above the card; default 'The prompt').
 RULES:
 1. caption_groups cover the FULL duration, 2-4 words each, non-overlapping, break on sentence
    boundaries or pauses >=150ms. Words VERBATIM from the transcript.
@@ -590,11 +591,26 @@ for i, tk in enumerate(plan.get("takeovers", [])):
         # scoped to the slot, and every key it reads is filled.
         import re as re_mod
         m["ACCENT"] = str(brand["accent"]).lstrip("#")   # the scene writes #{{ACCENT}}
-        m["PROMPT"] = html.escape(str(tk["fill"].get("PROMPT", ""))).replace("\n", "&#10;")  # decoded in-page
+        # WI2.91: the scene reads PROMPT inside a JS "..." literal and decodes its entities in-page. html.escape
+        # alone let a backslash change the typed text and a carriage return break the script (the render
+        # failed). CR/CRLF become one line break; the HTML-escaped text is JSON-encoded (ASCII) as the
+        # literal's body, so backslash, quote, control characters and U+2028/2029 are escaped, and < > { }
+        # become \u escapes: no </script> break-out, no {{KEY}} in a prompt is ever filled. The other keys
+        # the scene reads in JS literals drop line breaks and carry a backslash as &#92;.
+        prompt = str(tk["fill"].get("PROMPT", "")).replace("\r\n", "\n").replace("\r", "\n")
+        m["PROMPT"] = json.dumps(html.escape(prompt).replace("\n", "&#10;"), ensure_ascii=True)[1:-1].translate(
+            {ord("<"): "\\u003c", ord(">"): "\\u003e", ord("{"): "\\u007b", ord("}"): "\\u007d"})
+        for k in ("TYPING_SPEED", "VARIANT", "BOTTOM_TAG"):
+            if k in m:
+                m[k] = re_mod.sub(r"[\r\n\u2028\u2029]+", " ", str(m[k])).replace("\\", "&#92;")
+        m.setdefault("CARD_LABEL", "The prompt")   # the label above the card (neutral; no "paste this")
         for k, v in (("TYPING_SPEED", "1.0"), ("BOTTOM_TAG", ""), ("VARIANT", "full"), ("BOTTOM_TAG_DISPLAY", "")):
             m.setdefault(k, v)
         tpl_src = open(f"{TYPING}/templates/typing-scene.html").read()
         tpl_src = tpl_src[tpl_src.index('<template id="typing-scene-template">'):]   # drop the usage comment
+        assert tpl_src.count('id="ts-label">The prompt · paste this</div>') == 1, \
+            "FATAL: c-typing-ui typing-scene.html card label changed shape; cannot fill CARD_LABEL (WI2.91)"
+        tpl_src = tpl_src.replace('id="ts-label">The prompt · paste this</div>', 'id="ts-label">{{CARD_LABEL}}</div>')
         tpl_src = re_mod.sub(r'(?<=[.#"])ts-', f"tk{i}-ts-", tpl_src.replace("typing-scene", f"tk{i}"))
         tpl_src = tpl_src.replace("<script>\n", "<script>\n(function () {\n", 1)
         tpl_src = tpl_src.replace("\n  </script>\n</div>\n</template>", "\n})();\n  </script>\n</div>\n</template>")

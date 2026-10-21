@@ -10831,8 +10831,12 @@ try:
         up = root / "skills"
         for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
             shutil.copytree(skills / rec, up / rec)
+        # WI2.91 rewrites lines WI2.87 wrote (prompt fill, label): revert it first, re-apply it after.
+        wi291 = [e for _rel, _full, edits in getattr(ss, "_SPOTLIGHT_PROMPT_FILES", ()) for e in edits]
         for f in list(up.rglob("05-render-scenes.md")) + list(up.rglob("SKILL.md")):
             text = f.read_text(encoding="utf-8")
+            for old, new in reversed(wi291):
+                text = text.replace(new, old)
             for old, new in ss._SPOTLIGHT_TYPING_EDITS_STEP + ss._SPOTLIGHT_TYPING_EDITS_SKILL:
                 text = text.replace(new, old)
             f.write_text(text, encoding="utf-8")
@@ -10840,6 +10844,8 @@ try:
             got = (fn(up / rec, rec), fn(up / rec, rec))
             if got != want:
                 bad.append("transform on %s changed %r file(s), expected %r" % (rec, got, want))
+            if wi291:
+                ss.apply_spotlight_typing_prompt(up / rec, rec)
             for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
                 if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
                     bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
@@ -11497,6 +11503,173 @@ else
   fail "WI2.90 spotlight end card fails loudly when no room; SKILL.md honours cta_card off" "$wi290_detail"
 fi
 rm -rf "$wi290_root"
+
+echo "=== Case 68: WI2.91 — the spotlight typing takeover types a prompt with \\, CR/LF, <, & and quotes exactly ==="
+# Observed 2026-10-21 (independent review 01a15e05-5322 of Render 69bc5ce): step 05 (and SKILL.md Step 5)
+# put html.escape(PROMPT) into the scene's `var PROMPT_TEXT = "{{PROMPT}}"` JS literal. html.escape does not
+# escape a backslash (it changed the typed text) or a carriage return (CRLF text broke the script, so the
+# HyperFrames render failed: "invalid_inline_script_syntax"). Also c-typing-ui's card label "The prompt ·
+# paste this" was hard-coded on every spotlight reel. This case runs the real step 05 Part B assembler of
+# every copy on hostile prompts, checks the slotted file has no raw CR / U+2028 / </script> / unfilled key,
+# runs its script (fake DOM + GSAP, as in Case 63) and checks the typed text is the prompt exactly (CR/CRLF
+# as one line break), and that the label is CARD_LABEL (default "The prompt"). The SKILL.md copies and the
+# sync transform (idempotent, fail-fast) are checked too.
+wi291_root="$(mktemp -d)"
+wi291_detail="$(python3 - "$REPO_DIR" "$wi291_root" <<'PY'
+import importlib.util, json, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+SIM = r"""
+const vm = require('vm'), fs = require('fs');
+const els = {};
+function el(id) { return els[id] || (els[id] = { id, textContent: '', style: {}, classList: { add() {} } }); }
+const decode = s => s.replace(/&#10;/g, '\n').replace(/&quot;/g, '"').replace(/&#x27;/g, "'")
+                     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+const tweens = [];
+function timeline() { const tl = { to(t, v) { tweens.push({ tl, t, v }); return tl; }, fromTo() { return tl; } }; return tl; }
+const document = { getElementById: el, querySelector: () => null,
+  createElement: () => { const o = { value: '' }; Object.defineProperty(o, 'innerHTML', { set(s) { o.value = decode(s); } }); return o; } };
+const ctx = vm.createContext({ window: {}, document, gsap: { timeline }, parseFloat, Math });
+const out = {};
+for (const f of process.argv.slice(2)) {
+  const src = fs.readFileSync(f, 'utf8');
+  const inline = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+  if (inline.length !== 1) { out[f] = { error: 'inline scripts ' + inline.length }; continue; }
+  try { new vm.Script(inline[0]); } catch (e) { out[f] = { error: 'syntax: ' + e.message }; continue; }
+  vm.runInContext(inline[0], ctx);
+}
+for (const tw of tweens) if (tw.v && typeof tw.v.onUpdate === 'function') { tw.t.n = tw.v.n; tw.v.onUpdate(); }
+for (const id of Object.keys(els)) if (/-ts-typed$/.test(id)) out[id] = els[id].textContent;
+console.log(JSON.stringify(out));
+"""
+(root / "sim.js").write_text(SIM, encoding="utf-8")
+def part_b(step):
+    m = re.search(r'^python3 - work "\$SKILL_DIR" "\$TYPING_DIR" <<\'PY\'\n(.*?)^PY$', step.read_text(encoding="utf-8"), re.S | re.M)
+    return m.group(1) if m else None
+PROMPTS = ['Rewrite "C:\\new\\table" & <b>bold</b>\r\nkeep it\'s {{ACCENT}} </script> \\o/',
+           "line one\rline two\u2028three\\\\ end\\",
+           "Plan my posts\nfor Friday"]
+WANT = [p.replace("\r\n", "\n").replace("\r", "\n") for p in PROMPTS]
+plan = {"duration": 14.0, "brand": {"bg": "#111111", "accent": "#3B82F6", "fg": "#F4F4F4"}, "takeovers": [
+    {"start": 1.0, "end": 4.5, "template": "tk-typing-ui", "fill": {"LABEL": "CFW", "PROMPT": PROMPTS[0],
+     "BOTTOM_TAG": "a\\b\r\nc"}},
+    {"start": 5.0, "end": 9.0, "template": "tk-typing-ui", "fill": {"LABEL": "CFW", "PROMPT": PROMPTS[1],
+     "CARD_LABEL": "Try <this> & that"}},
+    {"start": 10.0, "end": 13.0, "template": "tk-typing-ui", "fill": {"LABEL": "CFW", "PROMPT": PROMPTS[2]}}]}
+LABELS = ["The prompt", "Try &lt;this&gt; &amp; that", "The prompt"]
+try:
+    skills = repo / "skills"
+    roots = [skills / "p-reels-spotlight", skills / "p-reels-spotlight-heygen",
+             skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight"]
+    for r in roots:
+        step = r / "steps" / "05-render-scenes.md"
+        rel = step.relative_to(repo)
+        code = part_b(step)
+        if code is None:
+            bad.append("%s: no step 05 Part B assembler block" % rel); continue
+        skill = skills / "p-reels-spotlight"
+        w = root / ("w-" + r.name + ("-hub" if r.parent.name == ".hub" else ""))
+        w.mkdir()
+        (w / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+        (w / "base.mp4").write_bytes(b"")
+        (root / "partb.py").write_text(code, encoding="utf-8")
+        out = subprocess.run([sys.executable, str(root / "partb.py"), str(w), str(skill), str(skill / ".hub" / "c-typing-ui")],
+                             capture_output=True, text=True, timeout=60)
+        if out.returncode != 0:
+            bad.append("%s: assembler failed: %s" % (rel, out.stderr.strip()[-200:])); continue
+        files = []
+        for i in range(len(PROMPTS)):
+            f = w / "comp" / "compositions" / ("tk%d.html" % i)
+            text = f.read_text(encoding="utf-8")
+            files.append(str(f))
+            script = text.split("<script>", 1)[-1]
+            if "\r" in text or "\u2028" in text or "\u2029" in text:
+                bad.append("%s: tk%d carries a raw CR / U+2028 / U+2029" % (rel, i))
+            if script.count("</script>") != 1:
+                bad.append("%s: tk%d's prompt closes the inline script early" % (rel, i))
+            if re.search(r"\{\{[A-Z_]+\}\}", text):
+                bad.append("%s: tk%d has an unfilled {{KEY}} or a prompt key was filled" % (rel, i))
+            if "paste this" in text.lower():
+                bad.append("%s: tk%d still shows c-typing-ui's 'The prompt · paste this' label" % (rel, i))
+            if ('id="tk%d-ts-label">%s</div>' % (i, LABELS[i])) not in text:
+                bad.append("%s: tk%d card label is not %r" % (rel, i, LABELS[i]))
+        sim = subprocess.run(["node", str(root / "sim.js")] + files, capture_output=True, text=True, timeout=60)
+        got = json.loads(sim.stdout) if sim.returncode == 0 and sim.stdout.strip() else {"error": sim.stderr[-300:]}
+        errs = {k: v for k, v in got.items() if isinstance(v, dict) or k == "error"}
+        if errs:
+            bad.append("%s: typing scripts did not run: %s" % (rel, json.dumps(errs)[:300])); continue
+        for i, want in enumerate(WANT):
+            if got.get("tk%d-ts-typed" % i) != want:
+                bad.append("%s: tk%d typed %r, expected exactly %r" % (rel, i, got.get("tk%d-ts-typed" % i), want))
+    docs = (skills / "p-reels-spotlight" / "SKILL.md", skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "SKILL.md")
+    spec = importlib.util.spec_from_file_location("ss291", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    fn, pfiles = getattr(ss, "apply_spotlight_typing_prompt", None), getattr(ss, "_SPOTLIGHT_PROMPT_FILES", None)
+    if fn is None or pfiles is None:
+        bad.append("sync-skills.py has no apply_spotlight_typing_prompt (WI2.91)")
+    else:
+        for doc in docs:
+            text = doc.read_text(encoding="utf-8")
+            if ss.SPOTLIGHT_PROMPT_SKILL not in text or ss.SPOTLIGHT_LABEL_SKILL not in text \
+                    or 'm["PROMPT"] = html.escape(' in text:
+                bad.append("%s: Step 5 does not JSON-encode the prompt / fill CARD_LABEL" % doc.relative_to(repo))
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        def revert(base):
+            for rel, full_only, edits in pfiles:
+                if full_only and base.name != "p-reels-spotlight":
+                    continue
+                t = (base / rel).read_text(encoding="utf-8")
+                for old, new in reversed(edits):
+                    t = t.replace(new, old)
+                (base / rel).write_text(t, encoding="utf-8")
+        for base in (up / "p-reels-spotlight", up / "p-reels-spotlight-heygen",
+                     up / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight"):
+            revert(base)
+        # Sanity: the restored (a0714c9) step 05 really breaks on the CR prompt.
+        w = root / "restored"; w.mkdir()
+        (w / "plan.json").write_text(json.dumps(plan), encoding="utf-8"); (w / "base.mp4").write_bytes(b"")
+        (root / "partb.py").write_text(part_b(up / "p-reels-spotlight" / "steps" / "05-render-scenes.md"), encoding="utf-8")
+        subprocess.run([sys.executable, str(root / "partb.py"), str(w), str(up / "p-reels-spotlight"),
+                        str(up / "p-reels-spotlight" / ".hub" / "c-typing-ui")], capture_output=True, text=True, timeout=60)
+        sim = subprocess.run(["node", str(root / "sim.js"), str(w / "comp" / "compositions" / "tk0.html")],
+                             capture_output=True, text=True, timeout=60)
+        if "syntax" not in sim.stdout:
+            bad.append("sanity: the restored a0714c9 step 05 did not break the script on a CRLF prompt (%s)" % sim.stdout[:200])
+        for rec, want in (("p-reels-spotlight", (3, 0)), ("p-reels-spotlight-heygen", (5, 0))):
+            got = (fn(up / rec, rec), fn(up / rec, rec))
+            if got != want:
+                bad.append("transform on %s changed %r file(s), expected %r" % (rec, got, want))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        revert(up / "p-reels-spotlight")
+        t = up / "p-reels-spotlight" / "steps" / "05-render-scenes.md"
+        t.write_text(t.read_text(encoding="utf-8").replace("  # decoded in-page\n", "\n"), encoding="utf-8")
+        try:
+            fn(up / "p-reels-spotlight", "fixture")
+            bad.append("transform did not fail on a drifted step 05 anchor")
+        except SystemExit:
+            pass
+        (up / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "SKILL.md").unlink()
+        try:
+            fn(up / "p-reels-spotlight-heygen", "p-reels-spotlight-heygen")
+            bad.append("transform did not fail on a missing .hub SKILL.md")
+        except SystemExit:
+            pass
+except (Exception, SystemExit) as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad[:12]))
+PY
+)"
+if [[ "$wi291_detail" == "ok" ]]; then
+  pass "WI2.91 spotlight typing takeover types a prompt with \\, CR/LF, <, & and quotes exactly; card label is CARD_LABEL (every copy)"
+else
+  fail "WI2.91 spotlight typing takeover prompt escaping and card label" "$wi291_detail"
+fi
+rm -rf "$wi291_root"
 
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
