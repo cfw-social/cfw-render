@@ -60,14 +60,93 @@ def write_project(card: dict, project_dir: str, gsap_src: str) -> None:
                    + ("letter-spacing:0.18em;" if kind == "kicker" else "")
                    + ("text-transform:uppercase;line-height:1.0;" if kind == "hero" else "") + "}")
         if kind == "hero":
-            words = " ".join(f'<span class="word">{html.escape(t)}</span>' for t in layer["text"].split())
-            parts.append(f'<div class="layer hero {cls}">{words}</div>')
+            # WI2.96: the brand name (the kicker text) is ONE unit: a nowrap span whose words are joined by
+            # non-breaking spaces, so the headline never splits it ("FOLLOW TEST / BRAND FOR / MORE").
+            norm = lambda t: t.strip(".,!?:;'\"()").upper()
+            keep = [norm(t) for t in next((l["text"] for l in card["layers"] if l["type"] == "kicker"), "").split()]
+            toks, units, i = layer["text"].split(), [], 0
+            while i < len(toks):
+                if keep and [norm(t) for t in toks[i:i + len(keep)]] == keep:
+                    units.append('<span class="word brand">'
+                                 + "&#160;".join(html.escape(t) for t in toks[i:i + len(keep)]) + "</span>")
+                    i += len(keep)
+                else:
+                    units.append(f'<span class="word">{html.escape(toks[i])}</span>')
+                    i += 1
+            words = " ".join(units)
+            parts.append(f'<div class="layer hero {cls}" data-size="{size}">{words}</div>')
         else:
-            parts.append(f'<div class="layer {kind} {cls}">{html.escape(layer["text"])}</div>')
+            parts.append(f'<div class="layer {kind} {cls}" data-size="{size}">{html.escape(layer["text"])}</div>')
     accent = next((l["color"] for l in card["layers"] if l["type"] == "arrow"), "#ffffff")
     arrow_at = next((float(l.get("appearAt", 0.5)) for l in card["layers"] if l["type"] == "arrow"), 0.5)
     bobs = max(0, int((dur - arrow_at - 0.6) / 0.5) * 2 - 1)
     css_text, body_text = "".join(css), "\n        ".join(parts)
+    # WI2.96: fit the headline and the kicker before the timeline is built, and again once fonts load.
+    fit_js = r'''        // WI2.96: the brand name is one hero unit (.word.brand, nowrap) and never breaks. The units go on
+        // the fewest lines (max 3) whose most balanced split fits HERO_MAX_W ((1080 - 2 x 60) / 1.04 breathe),
+        // at the design size when possible, else the font shrinks; at HERO_MIN a unit still wider than the
+        // safe width (a very long brand name) shrinks on its own. The kicker stays on one line inside
+        // KICKER_MAX_W. Refit once fonts load. The text is never cut.
+        var HERO_MAX_W = 920, HERO_MAX_LINES = 3, HERO_MIN = 60, KICKER_MAX_W = 960;
+        function fitOne(el, base, maxW) {
+          el.style.fontSize = base + "px";
+          var w = el.scrollWidth;
+          if (w <= maxW) return;
+          var size = Math.floor(base * maxW / w);
+          el.style.fontSize = size + "px";
+          while (size > 8 && el.scrollWidth > maxW) { size -= 1; el.style.fontSize = size + "px"; }
+        }
+        function splitLines(ws, gap) {
+          var n = ws.length;
+          function span(a, b) { var s = gap * (b - a - 1); for (var i = a; i < b; i++) s += ws[i]; return s; }
+          for (var k = 1; k <= Math.min(HERO_MAX_LINES, n); k++) {
+            var cuts = [], best = null, bestW = Infinity;
+            if (k === 1) cuts.push([]);
+            if (k === 2) for (var a = 1; a < n; a++) cuts.push([a]);
+            if (k === 3) for (var b = 1; b < n - 1; b++) for (var c = b + 1; c < n; c++) cuts.push([b, c]);
+            cuts.forEach(function (cut) {
+              var edges = [0].concat(cut, [n]), widest = 0;
+              for (var j = 0; j < k; j++) widest = Math.max(widest, span(edges[j], edges[j + 1]));
+              if (widest < bestW) { bestW = widest; best = edges; }
+            });
+            if (bestW <= HERO_MAX_W) return best;
+          }
+          return null;
+        }
+        function fitHero() {
+          var hero = document.querySelector("#cta-card .hero");
+          if (!hero) return;
+          var units = Array.prototype.slice.call(hero.querySelectorAll(".word"));
+          if (!units.length) return;
+          var size = parseFloat(hero.getAttribute("data-size")) || 110, edges = null;
+          for (;;) {
+            hero.style.fontSize = size + "px";
+            units.forEach(function (u) {
+              u.style.fontSize = "";
+              if (size <= HERO_MIN && u.scrollWidth > HERO_MAX_W) fitOne(u, size, HERO_MAX_W);
+            });
+            edges = splitLines(units.map(function (u) { return u.scrollWidth; }), size * 0.28);
+            if (edges || size <= 8) break;
+            size = size > HERO_MIN ? Math.max(HERO_MIN, Math.floor(size * 0.94)) : size - 2;
+          }
+          if (!edges) edges = [0, units.length];
+          var old = Array.prototype.slice.call(hero.querySelectorAll(".line"));
+          for (var j = 0; j + 1 < edges.length; j++) {
+            var row = document.createElement("div");
+            row.className = "line";
+            for (var i = edges[j]; i < edges[j + 1]; i++) row.appendChild(units[i]);
+            hero.appendChild(row);
+          }
+          old.forEach(function (r) { hero.removeChild(r); });
+        }
+        function fitCard() {
+          var kicker = document.querySelector("#cta-card .kicker");
+          if (kicker) fitOne(kicker, parseFloat(kicker.getAttribute("data-size")) || 52, KICKER_MAX_W);
+          fitHero();
+        }
+        fitCard();
+        if (document.fonts && document.fonts.ready) { document.fonts.ready.then(fitCard); }
+'''
     doc = f'''<!doctype html>
 <html lang="en">
   <head>
@@ -84,6 +163,9 @@ def write_project(card: dict, project_dir: str, gsap_src: str) -> None:
       #cta-card .layer {{ position: absolute; left: 60px; right: 60px; text-align: center; }}
       #cta-card .hero {{ display: flex; flex-wrap: wrap; justify-content: center; gap: 0 0.28em; }}
       #cta-card .word {{ display: inline-block; }}
+      #cta-card .hero .line {{ flex: 0 0 100%; display: flex; justify-content: center; gap: 0 0.28em; }}
+      #cta-card .hero .word {{ flex: none; }}
+      #cta-card .word.brand, #cta-card .kicker {{ white-space: nowrap; }}
       #cta-card .arrow, #cta-card .arrow div {{ position: absolute; right: auto; }}
       {css_text}
     </style>
@@ -100,7 +182,7 @@ def write_project(card: dict, project_dir: str, gsap_src: str) -> None:
       window.__timelines = window.__timelines || {{}};
       (function () {{
         var DUR = {dur};
-        var tl = gsap.timeline({{ paused: true }});
+{fit_js}        var tl = gsap.timeline({{ paused: true }});
         tl.fromTo("#cta-card .glow", {{ x: -120, y: 80, opacity: 0.4 }},
           {{ x: 360, y: -140, opacity: 1, duration: DUR, ease: "sine.inOut" }}, 0);
         tl.fromTo("#cta-card .card", {{ scale: {pop_from}, opacity: 0 }},

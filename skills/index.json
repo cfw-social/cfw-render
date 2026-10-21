@@ -1256,7 +1256,7 @@
     },
     "p-reels-spotlight": {
       "version": "1.0.0",
-      "checksum": "sha256:a5da2cb049a3d1f25dc36a89fa338355630a4d2dc4a17cebefc6649b018ff80b",
+      "checksum": "sha256:e4ecc646c111507d0d2a958a2afe71e55d918f75d39454a6d61ee74b4d238279",
       "files": [
         ".hub/c-broll-sync/SCENE-PLAN.md",
         ".hub/c-broll-sync/SKILL.md",
@@ -1489,7 +1489,7 @@
         "assets/sfx/whoosh-deep.wav": "sha256:76fc60b7464f76cfe168820eb15d55b76344f73360aa1b46103ea293b53c64df",
         "examples.json": "sha256:098b9152a46c470de40409f4c961ed862b4ea6ccfdc2166a3f99f59cc94e2c3f",
         "manifest.json": "sha256:cb534fc5b5b216162e7f4133f2bbf612f22dc6e07a17de8ead20c7411e067371",
-        "scripts/cta-card.py": "sha256:3d96af0100c44d9ca9470e6c51e0153c1b22999446957ed8730aae5d0c8c3d2c",
+        "scripts/cta-card.py": "sha256:7793456a73393933581e550084d896fb656b99a93925adc68fe91c08978b74d7",
         "steps/01-prepare-footage.md": "sha256:84ef164541fea3db354f1e0baef91fd8442c3c2b0786fcd1ae6a006949aef743",
         "steps/02-transcribe.md": "sha256:77a7fc03a1200f09304b37207a4fcbf6a5ec64139c7d51fcbeff3f3e74890600",
         "steps/03-plan-edit.md": "sha256:ad4992964966d5ca45b8b25b3e635f6107cd351dda5914a66adf95cedaca665c",
@@ -2282,7 +2282,7 @@
     },
     "p-reels-spotlight-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:42991dc316eab1c6b988a208391b6d7f66335ac6b18da956ded59edd2886b3fe",
+      "checksum": "sha256:9e111965e82fed118ee05b16509f53a897d28fa393baf0c4fa9a5df292dbfcf9",
       "files": [
         ".hub/c-broll-sync/SCENE-PLAN.md",
         ".hub/c-broll-sync/SKILL.md",
@@ -2532,7 +2532,7 @@
         ".hub/p-reels-spotlight/assets/sfx/whoosh-deep.wav": "sha256:76fc60b7464f76cfe168820eb15d55b76344f73360aa1b46103ea293b53c64df",
         ".hub/p-reels-spotlight/examples.json": "sha256:098b9152a46c470de40409f4c961ed862b4ea6ccfdc2166a3f99f59cc94e2c3f",
         ".hub/p-reels-spotlight/manifest.json": "sha256:99f4d615ef06842c0691f8fa209fafd5a5816ad915929a96c9919263a1418473",
-        ".hub/p-reels-spotlight/scripts/cta-card.py": "sha256:3d96af0100c44d9ca9470e6c51e0153c1b22999446957ed8730aae5d0c8c3d2c",
+        ".hub/p-reels-spotlight/scripts/cta-card.py": "sha256:7793456a73393933581e550084d896fb656b99a93925adc68fe91c08978b74d7",
         ".hub/p-reels-spotlight/steps/01-prepare-footage.md": "sha256:044d96914856ae4b0b3aad5e48a64982f8655ef07195b2b98d385b457a718d80",
         ".hub/p-reels-spotlight/steps/02-transcribe.md": "sha256:0210479bcc690d0db8a72eb3ce81ecf7d910d92e97a6fdae557c4e57934c5dac",
         ".hub/p-reels-spotlight/steps/03-plan-edit.md": "sha256:b8b6d7b08ae9fbf694413e2c680c0702608f16c560106324055dd5e3efb4cc72",

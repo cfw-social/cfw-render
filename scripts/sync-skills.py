@@ -132,6 +132,12 @@ it is never closed. The WI2.72 script check (apply_reel_script_align) also takes
 intent as the script when no script file exists, strictly: 80 % must match and only a look-alike
 word is swapped one-for-one (never a number); no word is added or dropped.
 
+WI2.96 apply_spotlight_end_card_fit() makes scripts/cta-card.py of every full p-reels-spotlight copy keep
+the brand name on one line in the end-card headline (one nowrap unit, non-breaking spaces), lay the
+headline out on the fewest lines (max 3) whose most balanced split fits 920 px, and shrink the font when
+none does (a brand name still too wide at 60 px shrinks on its own); the kicker stays on one line inside
+960 px. It refits once fonts load and upgrades the WI2.93 write_project text in place.
+
 Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
 and before list_files/hashing, same ordering guarantee:
   strip_brand_override_host_paths() nulls/drops the two host-path fields
@@ -3125,6 +3131,7 @@ def write_project(card: dict, project_dir: str, gsap_src: str) -> None:
 
 def main(argv: list[str]) -> int:
 """
+SPOTLIGHT_CTA_HF_WRITE_PROJECT_DEF = "\ndef write_project(card: dict, project_dir: str, gsap_src: str) -> None:\n"
 _SPOTLIGHT_CTA_HF_FILES = (
     # (file under a spotlight root, only in a full p-reels-spotlight copy (not the heygen wrapper), edits)
     (SPOTLIGHT_ASSEMBLE_FILE, False, ((_SPOTLIGHT_CTA_HF_STEP_RENDER_OLD, SPOTLIGHT_CTA_HF_STEP_RENDER),
@@ -3164,6 +3171,10 @@ def apply_spotlight_end_card_render(directory: Path, recipe: str) -> int:
             new_text = text
             for old, new in edits:
                 if new in new_text:
+                    continue
+                # WI2.96 upgrades the hero / fit code inside write_project, so a later transform can leave this
+                # function's text changed; an existing write_project means the WI2.93 insert already happened.
+                if new is SPOTLIGHT_CTA_HF_CTA_FN and SPOTLIGHT_CTA_HF_WRITE_PROJECT_DEF in new_text:
                     continue
                 if new_text.count(old) != 1:
                     raise SystemExit(f"sync-skills.py: ERROR - end-card render anchor {old.strip().splitlines()[0][:60]!r} "
@@ -3797,6 +3808,165 @@ def apply_spotlight_caption_pop(directory: Path, recipe: str) -> int:
     return changed
 
 
+# WI2.96: re-smoke 26 (Render 48ef94d) showed the end-card headline "Follow Test Brand for more" as
+# "FOLLOW TEST / BRAND FOR / MORE": the WI2.93 hero is a flex-wrap row of single words, so the brand name
+# broke across lines and the lines were unbalanced. cta-card.py now makes the brand name (the kicker text,
+# matched in the hero case-insensitively) one nowrap unit with non-breaking spaces, and the page lays the
+# units out on the fewest lines (max 3) whose most balanced split fits the safe width, shrinking the font
+# when none does; a unit still too wide at the floor size (a very long brand name) shrinks on its own. The
+# kicker (the brand name again) stays on one line and shrinks to fit. It refits once fonts load. Every word
+# is still html-escaped. Runs after WI2.93 (it upgrades the WI2.93 write_project text in place).
+SPOTLIGHT_CTA_FIT_HERO_W = 920  # (1080 - 2 x 60) / 1.04 breathe, rounded down to 920
+SPOTLIGHT_CTA_FIT_KICKER_W = 960  # 1080 - 2 x 60
+_SPOTLIGHT_CTA_FIT_HERO_OLD = r"""        if kind == "hero":
+            words = " ".join(f'<span class="word">{html.escape(t)}</span>' for t in layer["text"].split())
+            parts.append(f'<div class="layer hero {cls}">{words}</div>')
+        else:
+            parts.append(f'<div class="layer {kind} {cls}">{html.escape(layer["text"])}</div>')
+"""
+SPOTLIGHT_CTA_FIT_HERO = r"""        if kind == "hero":
+            # WI2.96: the brand name (the kicker text) is ONE unit: a nowrap span whose words are joined by
+            # non-breaking spaces, so the headline never splits it ("FOLLOW TEST / BRAND FOR / MORE").
+            norm = lambda t: t.strip(".,!?:;'\"()").upper()
+            keep = [norm(t) for t in next((l["text"] for l in card["layers"] if l["type"] == "kicker"), "").split()]
+            toks, units, i = layer["text"].split(), [], 0
+            while i < len(toks):
+                if keep and [norm(t) for t in toks[i:i + len(keep)]] == keep:
+                    units.append('<span class="word brand">'
+                                 + "&#160;".join(html.escape(t) for t in toks[i:i + len(keep)]) + "</span>")
+                    i += len(keep)
+                else:
+                    units.append(f'<span class="word">{html.escape(toks[i])}</span>')
+                    i += 1
+            words = " ".join(units)
+            parts.append(f'<div class="layer hero {cls}" data-size="{size}">{words}</div>')
+        else:
+            parts.append(f'<div class="layer {kind} {cls}" data-size="{size}">{html.escape(layer["text"])}</div>')
+"""
+_SPOTLIGHT_CTA_FIT_CSS_OLD = r"""      #cta-card .word {{ display: inline-block; }}
+"""
+SPOTLIGHT_CTA_FIT_CSS = r"""      #cta-card .word {{ display: inline-block; }}
+      #cta-card .hero .line {{ flex: 0 0 100%; display: flex; justify-content: center; gap: 0 0.28em; }}
+      #cta-card .hero .word {{ flex: none; }}
+      #cta-card .word.brand, #cta-card .kicker {{ white-space: nowrap; }}
+"""
+_SPOTLIGHT_CTA_FIT_JS_OLD = r"""    css_text, body_text = "".join(css), "\n        ".join(parts)
+"""
+SPOTLIGHT_CTA_FIT_JS = _SPOTLIGHT_CTA_FIT_JS_OLD + r"""    # WI2.96: fit the headline and the kicker before the timeline is built, and again once fonts load.
+    fit_js = r'''        // WI2.96: the brand name is one hero unit (.word.brand, nowrap) and never breaks. The units go on
+        // the fewest lines (max 3) whose most balanced split fits HERO_MAX_W ((1080 - 2 x 60) / 1.04 breathe),
+        // at the design size when possible, else the font shrinks; at HERO_MIN a unit still wider than the
+        // safe width (a very long brand name) shrinks on its own. The kicker stays on one line inside
+        // KICKER_MAX_W. Refit once fonts load. The text is never cut.
+        var HERO_MAX_W = __HERO_W__, HERO_MAX_LINES = 3, HERO_MIN = 60, KICKER_MAX_W = __KICKER_W__;
+        function fitOne(el, base, maxW) {
+          el.style.fontSize = base + "px";
+          var w = el.scrollWidth;
+          if (w <= maxW) return;
+          var size = Math.floor(base * maxW / w);
+          el.style.fontSize = size + "px";
+          while (size > 8 && el.scrollWidth > maxW) { size -= 1; el.style.fontSize = size + "px"; }
+        }
+        function splitLines(ws, gap) {
+          var n = ws.length;
+          function span(a, b) { var s = gap * (b - a - 1); for (var i = a; i < b; i++) s += ws[i]; return s; }
+          for (var k = 1; k <= Math.min(HERO_MAX_LINES, n); k++) {
+            var cuts = [], best = null, bestW = Infinity;
+            if (k === 1) cuts.push([]);
+            if (k === 2) for (var a = 1; a < n; a++) cuts.push([a]);
+            if (k === 3) for (var b = 1; b < n - 1; b++) for (var c = b + 1; c < n; c++) cuts.push([b, c]);
+            cuts.forEach(function (cut) {
+              var edges = [0].concat(cut, [n]), widest = 0;
+              for (var j = 0; j < k; j++) widest = Math.max(widest, span(edges[j], edges[j + 1]));
+              if (widest < bestW) { bestW = widest; best = edges; }
+            });
+            if (bestW <= HERO_MAX_W) return best;
+          }
+          return null;
+        }
+        function fitHero() {
+          var hero = document.querySelector("#cta-card .hero");
+          if (!hero) return;
+          var units = Array.prototype.slice.call(hero.querySelectorAll(".word"));
+          if (!units.length) return;
+          var size = parseFloat(hero.getAttribute("data-size")) || 110, edges = null;
+          for (;;) {
+            hero.style.fontSize = size + "px";
+            units.forEach(function (u) {
+              u.style.fontSize = "";
+              if (size <= HERO_MIN && u.scrollWidth > HERO_MAX_W) fitOne(u, size, HERO_MAX_W);
+            });
+            edges = splitLines(units.map(function (u) { return u.scrollWidth; }), size * 0.28);
+            if (edges || size <= 8) break;
+            size = size > HERO_MIN ? Math.max(HERO_MIN, Math.floor(size * 0.94)) : size - 2;
+          }
+          if (!edges) edges = [0, units.length];
+          var old = Array.prototype.slice.call(hero.querySelectorAll(".line"));
+          for (var j = 0; j + 1 < edges.length; j++) {
+            var row = document.createElement("div");
+            row.className = "line";
+            for (var i = edges[j]; i < edges[j + 1]; i++) row.appendChild(units[i]);
+            hero.appendChild(row);
+          }
+          old.forEach(function (r) { hero.removeChild(r); });
+        }
+        function fitCard() {
+          var kicker = document.querySelector("#cta-card .kicker");
+          if (kicker) fitOne(kicker, parseFloat(kicker.getAttribute("data-size")) || 52, KICKER_MAX_W);
+          fitHero();
+        }
+        fitCard();
+        if (document.fonts && document.fonts.ready) { document.fonts.ready.then(fitCard); }
+'''
+""".replace("__HERO_W__", str(SPOTLIGHT_CTA_FIT_HERO_W)).replace("__KICKER_W__", str(SPOTLIGHT_CTA_FIT_KICKER_W))
+_SPOTLIGHT_CTA_FIT_DOC_OLD = r"""        var DUR = {dur};
+"""
+SPOTLIGHT_CTA_FIT_DOC = r"""        var DUR = {dur};
+{fit_js}"""
+_SPOTLIGHT_CTA_FIT_EDITS = (
+    (_SPOTLIGHT_CTA_FIT_HERO_OLD, SPOTLIGHT_CTA_FIT_HERO),
+    (_SPOTLIGHT_CTA_FIT_CSS_OLD, SPOTLIGHT_CTA_FIT_CSS),
+    (_SPOTLIGHT_CTA_FIT_JS_OLD, SPOTLIGHT_CTA_FIT_JS),
+    (_SPOTLIGHT_CTA_FIT_DOC_OLD, SPOTLIGHT_CTA_FIT_DOC),
+)
+SPOTLIGHT_CTA_SCRIPT = Path("scripts") / "cta-card.py"
+
+
+def apply_spotlight_end_card_fit(directory: Path, recipe: str) -> int:
+    """WI2.96: every full p-reels-spotlight copy under `directory` (top-level or .hub/p-reels-spotlight)
+    has a scripts/cta-card.py whose end-card headline keeps the brand name on one line, balances its lines
+    and shrinks to fit the safe width (the kicker too), refitting once fonts load. Upgrades the WI2.93
+    write_project text in place. Idempotent; fails fast when a copy lost cta-card.py or an anchor, or when
+    a spotlight recipe ships no full p-reels-spotlight copy."""
+    changed = 0
+    if not directory.is_dir():
+        return 0
+    roots = [directory] if directory.name == "p-reels-spotlight" else []
+    roots += sorted(p for p in directory.rglob("p-reels-spotlight") if p.is_dir() and p.parent.name == ".hub")
+    roots = [r for r in roots if (r / "SKILL.md").is_file()]
+    if recipe.startswith("p-reels-spotlight") and not roots:
+        raise SystemExit(f"sync-skills.py: ERROR - no full p-reels-spotlight copy under {directory} "
+                         f"({recipe}); the WI2.96 transform cannot apply")
+    for root in roots:
+        path = root / SPOTLIGHT_CTA_SCRIPT
+        if not path.is_file():
+            raise SystemExit(f"sync-skills.py: ERROR - {path} is missing ({recipe}); the WI2.96 transform cannot apply")
+        text = path.read_text(encoding="utf-8")
+        new_text = text
+        for old, new in _SPOTLIGHT_CTA_FIT_EDITS:
+            if new in new_text:
+                continue
+            if new_text.count(old) != 1:
+                raise SystemExit(f"sync-skills.py: ERROR - end-card fit anchor {old.strip().splitlines()[0][:60]!r} "
+                                 f"found {new_text.count(old)} time(s) in {path} ({recipe}); "
+                                 "the WI2.96 transform cannot apply")
+            new_text = new_text.replace(old, new, 1)
+        if new_text != text:
+            path.write_text(new_text, encoding="utf-8")
+            changed += 1
+    return changed
+
+
 def git_head_sha(repo: Path) -> str | None:
     """Best-effort `git rev-parse HEAD` of `repo`. Returns None (never
     raises) when `repo` isn't a git checkout — e.g. a test fixture dir — so
@@ -3975,6 +4145,9 @@ def main():
 
         # WI2.88: the caption emphasis word is a plain word until spoken; its pop keeps the space before it.
         apply_spotlight_caption_pop(recipe_dest, recipe)
+
+        # WI2.96: the end-card headline keeps the brand name on one line, balanced and fitted (every copy).
+        apply_spotlight_end_card_fit(recipe_dest, recipe)
 
         files = list_files(recipe_dest)
         file_hashes = {f: sha256_file(recipe_dest / f) for f in files}

@@ -12020,6 +12020,194 @@ else
 fi
 rm -rf "$wi288s_root"
 
+echo "=== Case 71: WI2.96 — the spotlight end card keeps the brand name on one line; the headline is balanced and fits ==="
+# Observed 2026-10-21 (re-smoke 26, p-reels-spotlight on Render 48ef94d, frames f_43.3/f_44.5): the WI2.93
+# end-card headline "Follow Test Brand for more" showed as "FOLLOW TEST / BRAND FOR / MORE": the hero was a
+# flex-wrap row of single words, so the brand name broke across two lines and the lines were unbalanced.
+# Every scripts/cta-card.py copy now makes the brand name one nowrap unit (non-breaking spaces) and the
+# page puts the units on the fewest lines (max 3) whose most balanced split fits 920 px, shrinking the
+# font when none does; a brand still too wide at 60 px shrinks on its own; the kicker stays on one line
+# inside 960 px; it refits once fonts load. The real cta-card.py writes the page; its script runs in node
+# with a fake DOM whose text width grows with font size (a fallback font until fonts load).
+wi296_root="$(mktemp -d)"
+wi296_detail="$(python3 - "$REPO_DIR" "$wi296_root" <<'PY'
+import html, importlib.util, json, os, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+SIM = r"""
+const vm = require('vm'), fs = require('fs');
+const [page, emHero, emKicker, fallback] = process.argv.slice(2);
+const src = fs.readFileSync(page, 'utf8');
+const scripts = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+const unesc = s => s.replace(/&#160;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+  .replace(/&#x27;/g, "'").replace(/&amp;/g, '&');
+let scale = parseFloat(fallback);            // the fallback font until fonts load
+function node(cls, text) {
+  return { className: cls, text, style: {}, children: [], parent: null, attrs: {},
+    getAttribute(k) { return this.attrs[k] === undefined ? null : this.attrs[k]; },
+    appendChild(c) { if (c.parent) c.parent.children.splice(c.parent.children.indexOf(c), 1);
+      c.parent = this; this.children.push(c); return c; },
+    removeChild(c) { this.children.splice(this.children.indexOf(c), 1); c.parent = null; return c; } };
+}
+const heroM = src.match(/<div class="layer hero [^"]*"([^>]*)>([\s\S]*?)<\/div>/);
+const hero = node('hero', '');
+const heroBase = heroM && /data-size="(\d+)"/.test(heroM[1]) ? parseFloat(heroM[1].match(/data-size="(\d+)"/)[1]) : 110;
+if (heroM) { hero.attrs['data-size'] = String(heroBase);
+  for (const m of heroM[2].matchAll(/<span class="([^"]*)">([^<]*)<\/span>/g)) hero.appendChild(node(m[1], unesc(m[2]))); }
+const fsOf = el => parseFloat(el.style.fontSize) || parseFloat((el.parent && el.parent.style.fontSize) || '')
+  || parseFloat((el.parent && el.parent.parent && el.parent.parent.style.fontSize) || '') || heroBase;
+const unitW = el => Math.round(fsOf(el) * parseFloat(emHero) * scale * el.text.length);
+const units = hero.children.slice();
+units.forEach(u => Object.defineProperty(u, 'scrollWidth', { get() { return unitW(u); } }));
+const kM = src.match(/<div class="layer kicker [^"]*"([^>]*)>([^<]*)<\/div>/);
+let kicker = null;
+if (kM) { kicker = node('kicker', unesc(kM[2]));
+  const ks = kM[1].match(/data-size="(\d+)"/); if (ks) kicker.attrs['data-size'] = ks[1];
+  Object.defineProperty(kicker, 'scrollWidth', { get() {
+    return Math.round((parseFloat(kicker.style.fontSize) || 52) * parseFloat(emKicker) * scale * kicker.text.length); } }); }
+const all = (el, out) => { el.children.forEach(c => { out.push(c); all(c, out); }); return out; };
+hero.querySelectorAll = s => all(hero, []).filter(c => (' ' + c.className + ' ').includes(' ' + s.replace(/^\./, '') + ' '));
+const tl = new Proxy({}, { get: () => () => tl });
+const readies = [];
+const ctx = { window: {}, gsap: { timeline: () => tl }, parseFloat, Math, Array, Infinity,
+  document: { querySelector: s => (s.endsWith('.hero') ? hero : s.endsWith('.kicker') ? kicker : null),
+    createElement: () => node('', ''), fonts: { ready: { then: f => { readies.push(f); } } } } };
+for (const code of scripts) vm.runInNewContext(code, ctx);
+scale = 1;                                   // fonts finished loading
+readies.forEach(f => f());
+const hs = parseFloat(hero.style.fontSize) || heroBase;
+const lines = hero.children.map(r => {
+  const us = r.className === 'line' ? r.children : [r];
+  return { text: us.map(u => u.text).join(' '), units: us.map(u => ({ text: u.text, cls: u.className })),
+    width: us.reduce((s, u) => s + unitW(u), 0) + Math.round(hs * 0.28) * (us.length - 1), row: r.className === 'line' }; });
+console.log(JSON.stringify({ heroSize: hs, lines, readies: readies.length,
+  kicker: kicker ? { text: kicker.text, width: kicker.scrollWidth } : null }));
+"""
+(root / "sim.js").write_text(SIM, encoding="utf-8")
+(root / "plan.json").write_text(json.dumps({"brand": {"bg": "#111111", "accent": "#3B82F6", "fg": "#F4F4F4"}}))
+GSAP = repo / "skills" / "p-reels-spotlight" / ".hub" / "f-gsap" / "vendor" / "gsap.min.js"
+LONG = "The Very Long Artisan Sourdough Bakery Company"
+EVIL = "Ben & Jerry's <img src=x onerror=alert(1)>"
+def card(script, name, brand, text):
+    out = root / name
+    shutil.rmtree(out, ignore_errors=True)
+    env = dict(os.environ, BRAND_NAME=brand, CTA_TEXT=text, CTA_HANDLE="@handle", CTA_DURATION="3.0")
+    p = subprocess.run([sys.executable, str(script), str(root / "plan.json"), str(root / (name + ".json")), str(out), str(GSAP)],
+                       env=env, capture_output=True, text=True, timeout=60)
+    if p.returncode != 0:
+        return None, "cta-card.py failed: " + (p.stdout + p.stderr)[-200:]
+    return (out / "index.html"), None
+def sim(page, em, fallback):
+    p = subprocess.run(["node", str(root / "sim.js"), str(page), str(em), str(em + 0.18), str(fallback)],
+                       capture_output=True, text=True, timeout=60)
+    if p.returncode != 0:
+        return {"error": p.stderr.strip()[-300:]}
+    return json.loads(p.stdout)
+def check(script, label):
+    found = []
+    for name, brand, text in (("smoke", "Test Brand", "Follow Test Brand for more"), ("long", LONG, "Follow %s for more" % LONG),
+                              ("evil", EVIL, "Follow %s for more" % EVIL), ("nobrand", "", "Follow for more")):
+        page, err = card(script, name, brand, text)
+        if err:
+            found.append("%s %s: %s" % (label, name, err)); continue
+        body = page.read_text(encoding="utf-8")
+        if "<img" in body or "onerror=alert(1)>" in body:
+            found.append("%s %s: the brand name reached the page unescaped" % (label, name))
+        # same font, a wider and a narrower fallback font before fonts load; the smoke frame's em and Oswald's
+        for em in (0.67, 0.5):
+            results = [sim(page, em, fb) for fb in (1.0, 1.3, 0.7)]
+            if any("error" in r for r in results):
+                found.append("%s %s: page script did not run: %s" % (label, name, [r.get("error") for r in results][:1])); break
+            r = results[0]
+            if any(x["lines"] != r["lines"] or x["heroSize"] != r["heroSize"] for x in results[1:]):
+                found.append("%s %s: the headline is not refitted once fonts load (em %s)" % (label, name, em))
+            lines = r["lines"]
+            if not lines or not all(l["row"] for l in lines):
+                found.append("%s %s: the headline is not laid out in fitted lines (%r)"
+                             % (label, name, [l["text"] for l in lines][:4])); continue
+            if " ".join(l["text"] for l in lines).upper() != " ".join(text.split()).upper():
+                found.append("%s %s: headline words were cut or reordered: %r" % (label, name, [l["text"] for l in lines]))
+            if len(lines) > 3:
+                found.append("%s %s: headline is %d lines (max 3)" % (label, name, len(lines)))
+            for l in lines:
+                if l["width"] > 920:
+                    found.append("%s %s: line %r is %d px, past the 920 px safe width (em %s)" % (label, name, l["text"], l["width"], em))
+            if brand:
+                held = [u for l in lines for u in l["units"] if u["text"].upper() == brand.upper()]
+                if len(held) != 1 or "brand" not in held[0]["cls"].split():
+                    found.append("%s %s: the brand name %r is not one unbroken unit on one line (%r)"
+                                 % (label, name, brand, [l["text"] for l in lines]))
+                if r["kicker"] is None or r["kicker"]["width"] > 960:
+                    found.append("%s %s: the kicker is past 960 px (%r)" % (label, name, r["kicker"]))
+                if "white-space: nowrap" not in body.split("#cta-card .word.brand", 1)[-1][:80]:
+                    found.append("%s %s: the brand unit is not nowrap" % (label, name))
+            if name == "smoke" and em == 0.67 and ([l["text"].upper() for l in lines] != ["FOLLOW", "TEST BRAND", "FOR MORE"]
+                                                  or r["heroSize"] != 110):
+                found.append("%s smoke: headline is %r at %spx, wanted FOLLOW / TEST BRAND / FOR MORE at 110px"
+                             % (label, [l["text"].upper() for l in lines], r["heroSize"]))
+    return found
+try:
+    skills = repo / "skills"
+    ctas = sorted(p for p in skills.rglob("cta-card.py") if p.parent.name == "scripts")
+    if len(ctas) != 2:
+        bad.append("expected 2 cta-card.py copies, found %d" % len(ctas))
+    if len({p.read_bytes() for p in ctas}) > 1:
+        bad.append("the cta-card.py copies differ")
+    for c in ctas:
+        bad += check(c, str(c.relative_to(repo)))
+    spec = importlib.util.spec_from_file_location("ss296", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    fn, edits = getattr(ss, "apply_spotlight_end_card_fit", None), getattr(ss, "_SPOTLIGHT_CTA_FIT_EDITS", None)
+    if fn is None or edits is None:
+        bad.append("sync-skills.py has no apply_spotlight_end_card_fit transform (WI2.96)")
+    else:
+        # Restore the WI2.93 cta-card.py in a copy; the transform upgrades it once, then is a no-op, and its
+        # output is byte-identical to the committed bundle. The WI2.93 transform leaves the upgrade alone.
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        def revert(t):
+            text = t.read_text(encoding="utf-8")
+            for old, new in reversed(edits):
+                text = text.replace(new, old)
+            t.write_text(text, encoding="utf-8")
+        for t in up.rglob("cta-card.py"):
+            revert(t)
+        if not check(up / "p-reels-spotlight" / "scripts" / "cta-card.py", "restored"):
+            bad.append("sanity: the restored WI2.93 cta-card.py was not caught")
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            got = (fn(up / rec, rec), fn(up / rec, rec), ss.apply_spotlight_end_card_render(up / rec, rec))
+            if got != (1, 0, 0):
+                bad.append("transforms on %s changed %r file(s), expected (1, 0, 0)" % (rec, got))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        t = up / "p-reels-spotlight" / "scripts" / "cta-card.py"
+        revert(t)
+        t.write_text(t.read_text(encoding="utf-8").replace("#cta-card .word {{ display: inline-block; }}",
+                                                           "#cta-card .word {{ display: inline; }}"), encoding="utf-8")
+        try:
+            fn(up / "p-reels-spotlight", "fixture"); bad.append("transform did not fail on a drifted cta-card.py")
+        except SystemExit:
+            pass
+        t.unlink()
+        try:
+            fn(up / "p-reels-spotlight", "p-reels-spotlight"); bad.append("transform did not fail on a missing cta-card.py")
+        except SystemExit:
+            pass
+except (Exception, SystemExit) as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad[:12]))
+PY
+)"
+if [[ "$wi296_detail" == "ok" ]]; then
+  pass "WI2.96 spotlight end card keeps the brand name on one line; headline balanced, fitted to 920 px, refitted on font load (every copy)"
+else
+  fail "WI2.96 spotlight end card keeps the brand name on one line and fits the headline" "$wi296_detail"
+fi
+rm -rf "$wi296_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
