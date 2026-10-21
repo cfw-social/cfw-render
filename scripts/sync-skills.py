@@ -91,6 +91,11 @@ and scales its font size down from the 340 px design size until it is no wider t
 padding); it refits once fonts load. WI2.85 (same transform) caps the slam-in start scale at
 min(2.4, 936 / fitted width), so a wide stat no longer starts at 2.4x and clips both edges.
 
+WI2.86 apply_spotlight_end_card() makes every p-reels-spotlight steps/06-assemble.md copy
+(top-level, the heygen wrapper's own step and .hub) start the end card at
+max(bed - cta_duration, last spoken word end), so the closing line keeps the face and captions.
+Nothing is appended; under 1.0 s of bed after the last word, the card is skipped with a log line.
+
 Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
 and before list_files/hashing, same ordering guarantee:
   strip_brand_override_host_paths() nulls/drops the two host-path fields
@@ -2422,6 +2427,103 @@ def apply_spotlight_stat_fit(directory: Path, recipe: str) -> int:
     return changed
 
 
+# WI2.86: the spotlight end card started at bed - cta_duration, a fixed time that ignores the words.
+# The closing line ("...this was built for you.", 38.50-41.60 s) kept playing over the card with no
+# face and no captions from ~39.0 s (re-smoke 24, 2026-10-21). The card now starts at
+# max(bed - cta_duration, last spoken word end), from the transcript words and the plan's caption
+# words, and covers the rest of the bed. The card is rendered at that shorter length. The bed is
+# sealed and the assembled reel must equal it, so nothing is appended: when less than
+# SPOTLIGHT_CTA_MIN_S of bed is left after the last word, the card is skipped with a log line.
+SPOTLIGHT_ASSEMBLE_FILE = Path("steps") / "06-assemble.md"
+SPOTLIGHT_CTA_MIN_S = 1.0
+_SPOTLIGHT_CTA_PRODUCE_OLD = """  duration: graded picture, captions burned, SFX under the voice, end card over the last
+  `cta_duration` seconds. No cover frame yet — that is the final step.
+"""
+SPOTLIGHT_CTA_PRODUCE = """  duration: graded picture, captions burned, SFX under the voice, end card over the last
+  `cta_duration` seconds, but never before the last spoken word ends (WI2.86). No cover frame
+  yet — that is the final step.
+"""
+_SPOTLIGHT_CTA_DOC_OLD = """Resolve the copy: `inputs/cta/cta.json` wins; otherwise `brief.json.brand`. **No handle → no
+handle line.** Never invent a handle or reuse another brand's.
+"""
+SPOTLIGHT_CTA_DOC = _SPOTLIGHT_CTA_DOC_OLD + """
+**The card never covers speech (WI2.86).** It starts at `max(bed − cta_duration, last word end)`,
+where the last word end is the latest `end` in `work/words.json` or `e` in the plan's
+`caption_groups`, so the closing line keeps the face and its captions. The card covers the rest
+of the bed and is rendered at that length. Nothing is appended: when less than
+""" + str(SPOTLIGHT_CTA_MIN_S) + """ s of bed is left after the last word, the card is skipped with one log line.
+"""
+_SPOTLIGHT_CTA_IF_OLD = """if [ "$CTA_CARD" = "on" ]; then
+  CTA_DURATION="$CTA_DURATION" CTA_TEXT="$CTA_TEXT" """
+SPOTLIGHT_CTA_START = """# WI2.86: start the card only after the last spoken word ends; it covers the rest of the bed.
+CTA_START=""
+if [ "$CTA_CARD" = "on" ]; then
+  CTA_START=$(python3 - "$BED_DUR" "$CTA_DURATION" <<'PY'
+import json, sys
+bed, want = float(sys.argv[1]), float(sys.argv[2])
+ends = [float(w["end"]) for w in json.load(open("work/words.json")) if isinstance(w, dict) and "end" in w]
+for g in json.load(open("work/plan.json")).get("caption_groups") or []:
+    ends += [float(w["e"]) for w in g.get("words") or [] if isinstance(w, dict) and "e" in w]
+if not ends:
+    sys.exit("end card: no word timings in work/words.json or the plan caption groups")
+print("%.3f" % max(bed - want, max(ends)))
+PY
+  ) || exit 1
+  CTA_DURATION=$(python3 -c "print('%.3f' % max(0.0, ${BED_DUR} - ${CTA_START}))")
+  if python3 -c "import sys; sys.exit(0 if ${CTA_DURATION} < """ + str(SPOTLIGHT_CTA_MIN_S) + """ else 1)"; then
+    echo "[spotlight] end card skipped: only ${CTA_DURATION}s of bed after the last spoken word (needs """ + str(SPOTLIGHT_CTA_MIN_S) + """s)"
+    CTA_CARD=off
+  fi
+fi
+"""
+_SPOTLIGHT_CTA_START_OLD = """  CTA_START=$(python3 -c "print(${BED_DUR} - ${CTA_DURATION})")
+"""
+SPOTLIGHT_CTA_START_SET = """  # CTA_START and CTA_DURATION were set above (WI2.86): the card starts after the last word.
+"""
+_SPOTLIGHT_CTA_CHECK_OLD = """  present) plus the end-card window, `volumedetect` on `saves/assembled_video.mp4` reports a real
+"""
+SPOTLIGHT_CTA_CHECK = """  present), `volumedetect` on `saves/assembled_video.mp4` reports a real
+"""
+_SPOTLIGHT_CTA_EDITS = (
+    (_SPOTLIGHT_CTA_PRODUCE_OLD, SPOTLIGHT_CTA_PRODUCE),
+    (_SPOTLIGHT_CTA_DOC_OLD, SPOTLIGHT_CTA_DOC),
+    (_SPOTLIGHT_CTA_IF_OLD, SPOTLIGHT_CTA_START + _SPOTLIGHT_CTA_IF_OLD),
+    (_SPOTLIGHT_CTA_START_OLD, SPOTLIGHT_CTA_START_SET),
+    (_SPOTLIGHT_CTA_CHECK_OLD, SPOTLIGHT_CTA_CHECK),
+)
+
+
+def apply_spotlight_end_card(directory: Path, recipe: str) -> int:
+    """WI2.86: every p-reels-spotlight steps/06-assemble.md copy under `directory` (the top-level
+    step of p-reels-spotlight / p-reels-spotlight-heygen, and .hub/p-reels-spotlight) starts the end
+    card only after the last spoken word ends. Idempotent; fails fast when a copy lost its anchor,
+    or when a spotlight recipe ships no assemble step at all."""
+    changed = 0
+    if not directory.is_dir():
+        return 0
+    roots = [directory] if directory.name.startswith("p-reels-spotlight") else []
+    roots += sorted(p for p in directory.rglob("p-reels-spotlight") if p.is_dir() and p.parent.name == ".hub")
+    steps = [r / SPOTLIGHT_ASSEMBLE_FILE for r in roots if (r / SPOTLIGHT_ASSEMBLE_FILE).is_file()]
+    if recipe.startswith("p-reels-spotlight") and not steps:
+        raise SystemExit(f"sync-skills.py: ERROR - no p-reels-spotlight {SPOTLIGHT_ASSEMBLE_FILE} under {directory} "
+                         f"({recipe}); the WI2.86 transform cannot apply")
+    for step in steps:
+        text = step.read_text(encoding="utf-8")
+        new_text = text
+        for old, new in _SPOTLIGHT_CTA_EDITS:
+            if new in new_text:
+                continue
+            if new_text.count(old) != 1:
+                raise SystemExit(f"sync-skills.py: ERROR - assemble anchor {old.strip().splitlines()[0][:60]!r} "
+                                 f"found {new_text.count(old)} time(s) in {step} ({recipe}); "
+                                 "the WI2.86 transform cannot apply")
+            new_text = new_text.replace(old, new, 1)
+        if new_text != text:
+            step.write_text(new_text, encoding="utf-8")
+            changed += 1
+    return changed
+
+
 def git_head_sha(repo: Path) -> str | None:
     """Best-effort `git rev-parse HEAD` of `repo`. Returns None (never
     raises) when `repo` isn't a git checkout — e.g. a test fixture dir — so
@@ -2573,6 +2675,9 @@ def main():
         # WI2.83: the spotlight big-stat takeover fits its stat to the safe width (every copy);
         # WI2.85: its slam-in start scale is capped to the same safe width.
         apply_spotlight_stat_fit(recipe_dest, recipe)
+
+        # WI2.86: the spotlight end card starts only after the last spoken word ends (every copy).
+        apply_spotlight_end_card(recipe_dest, recipe)
 
         files = list_files(recipe_dest)
         file_hashes = {f: sha256_file(recipe_dest / f) for f in files}

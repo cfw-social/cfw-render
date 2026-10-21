@@ -10366,6 +10366,137 @@ else
 fi
 rm -rf "$wi285_root"
 
+echo "=== Case 61: WI2.86 — the spotlight end card starts only after the last spoken word ends ==="
+# Observed 2026-10-21 (re-smoke 24, p-reels-spotlight, Render 503d906): step 06 started the end card
+# at bed - cta_duration (~39.0 s) while the closing line ran to 41.6 s, so it played over the card
+# with no face and no captions. Every p-reels-spotlight steps/06-assemble.md copy now starts the card
+# at max(bed - cta_duration, last word end) and renders it at the shorter length; under 1.0 s left,
+# it skips the card with a log line. The section-4 bash block of each copy runs under bash with a
+# stub ffmpeg/npx (the overlay window is read from the ffmpeg call) and the real cta-card.py.
+wi286_root="$(mktemp -d)"
+wi286_detail="$(python3 - "$REPO_DIR" "$wi286_root" <<'PY'
+import importlib.util, json, os, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+STUB = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$WI286_LOG\"\nfor a; do last=$a; done\ncase \"$last\" in *.mp4|*.json) : > \"$last\";; esac\nexit 0\n"
+bin_dir = root / "bin"; bin_dir.mkdir()
+for tool in ("ffmpeg", "npx"):
+    (bin_dir / tool).write_text(STUB); (bin_dir / tool).chmod(0o755)
+def block(step):
+    text = step.read_text(encoding="utf-8")
+    sec = text.split("### 4. CTA end card", 1)[1].split("### 5.", 1)[0]
+    m = re.search(r"```bash\n(.*?)```", sec, re.S)
+    return m.group(1) if m else None
+def run(step, case, bed, cta, words_end, caption_end, card="on", sh="bash"):
+    work = root / case; shutil.rmtree(work, ignore_errors=True); (work / "work").mkdir(parents=True)
+    words = [{"text": "built", "start": words_end - 0.4, "end": words_end - 0.2},
+             {"text": "you.", "start": words_end - 0.2, "end": words_end}]
+    (work / "work" / "words.json").write_text(json.dumps(words))
+    plan = {"brand": {"bg": "#0F172A", "accent": "#F97316", "fg": "#F1F5F9"},
+            "caption_groups": [{"start": 38.5, "end": caption_end, "words": [
+                {"w": "built", "s": 38.5, "e": 39.0}, {"w": "you.", "s": 39.0, "e": caption_end}]}]}
+    (work / "work" / "plan.json").write_text(json.dumps(plan))
+    (work / "work" / "polished.mp4").write_bytes(b"x" * 10)
+    (work / "brief.json").write_text(json.dumps({"brand": {"name": "Test", "handle": "@test", "cta": "Try it"}}))
+    code = block(step)
+    if code is None:
+        return {"error": "no bash block in section 4"}
+    (work / "s4.sh").write_text("set -u\nCTA_CARD=%s; CTA_DURATION=%s; BED_DUR=%s\nSKILL_DIR=%s\n%s"
+                                % (card, cta, bed, repo / "skills" / "p-reels-spotlight", code))
+    log = work / "ffmpeg.log"
+    env = dict(os.environ, PATH="%s:%s" % (bin_dir, os.environ["PATH"]), WI286_LOG=str(log))
+    p = subprocess.run([sh, "s4.sh"], cwd=work, env=env, capture_output=True, text=True, timeout=60)
+    calls = log.read_text().splitlines() if log.exists() else []
+    over = [c for c in calls if "overlay=enable" in c]
+    m = re.search(r"between\(t,([0-9.]+),([0-9.]+)\)", over[0]) if over else None
+    card_json = work / "work" / "cta-card.json"
+    dur = json.loads(card_json.read_text())["duration"] if card_json.exists() and card_json.stat().st_size else None
+    return {"rc": p.returncode, "out": (p.stdout + p.stderr)[-300:], "start": float(m.group(1)) if m else None,
+            "end": float(m.group(2)) if m else None, "card_dur": dur,
+            "assembled": (work / "work" / "assembled.mp4").exists()}
+try:
+    skills = repo / "skills"
+    steps = sorted(p for p in skills.rglob("06-assemble.md")
+                   if p.parent.name == "steps" and p.parent.parent.name.startswith("p-reels-spotlight"))
+    if len(steps) != 3:
+        bad.append("expected 3 p-reels-spotlight steps/06-assemble.md copies, found %d" % len(steps))
+    if len({s.read_bytes() for s in steps}) > 1:
+        bad.append("the 06-assemble.md copies differ")
+    shells = ["bash"] + (["/bin/bash"] if Path("/bin/bash").exists() else [])
+    for step in steps:
+        rel = step.relative_to(repo)
+        for sh in shells:
+            # Speech to 41.6 s on a 44.0 s bed: the old rule started the card at 41.0 s, over the last words.
+            r = run(step, "late", 44.0, 3.0, 41.6, 41.6, sh=sh)
+            if r.get("rc") != 0 or r.get("start") is None or r["start"] < 41.6 - 1e-6 or abs(r["end"] - 44.0) > 1e-6:
+                bad.append("%s (%s): card over speech, bed 44.0 / last word 41.6: %r" % (rel, sh, r))
+            elif r.get("card_dur") is None or abs(float(r["card_dur"]) - 2.4) > 0.01:
+                bad.append("%s (%s): card not rendered at the 2.4 s left after the last word: %r" % (rel, sh, r))
+            # Plenty of tail: the card keeps its full cta_duration at the bed end.
+            r = run(step, "room", 45.0, 3.0, 41.6, 41.6, sh=sh)
+            if r.get("rc") != 0 or r.get("start") is None or abs(r["start"] - 42.0) > 1e-6 or abs(float(r["card_dur"] or 0) - 3.0) > 0.01:
+                bad.append("%s (%s): full-length card lost when there is room: %r" % (rel, sh, r))
+            # A caption word ending later than the transcript also holds the card back.
+            r = run(step, "caption", 44.0, 3.0, 41.2, 41.8, sh=sh)
+            if r.get("rc") != 0 or r.get("start") is None or r["start"] < 41.8 - 1e-6:
+                bad.append("%s (%s): card starts before the last caption word ends: %r" % (rel, sh, r))
+            # The smoke: speech runs to within 0.07 s of the bed end -> no card over the speech.
+            r = run(step, "smoke", 41.67, 3.0, 41.6, 41.6, sh=sh)
+            if r.get("rc") != 0 or r.get("start") is not None or not r.get("assembled") or "end card skipped" not in r.get("out", ""):
+                bad.append("%s (%s): under 1.0 s after the last word, the card is not skipped cleanly: %r" % (rel, sh, r))
+            r = run(step, "off", 44.0, 3.0, 41.6, 41.6, card="off", sh=sh)
+            if r.get("rc") != 0 or r.get("start") is not None or not r.get("assembled"):
+                bad.append("%s (%s): cta_card off still overlays a card: %r" % (rel, sh, r))
+    spec = importlib.util.spec_from_file_location("ss286", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    edits = getattr(ss, "_SPOTLIGHT_CTA_EDITS", None)
+    if edits is None or not hasattr(ss, "apply_spotlight_end_card"):
+        bad.append("sync-skills.py does not carry the WI2.86 apply_spotlight_end_card transform")
+    else:
+        # From the 503d906 step the transform adds the rule once and matches the committed bundle.
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        for t in up.rglob("06-assemble.md"):
+            if t.parent.name != "steps" or not t.parent.parent.name.startswith("p-reels-spotlight"):
+                continue
+            text = t.read_text(encoding="utf-8")
+            for old, new in reversed(edits):
+                text = text.replace(new, old)
+            t.write_text(text, encoding="utf-8")
+            r = run(t, "restored", 44.0, 3.0, 41.6, 41.6)
+            if r.get("start") is None or r["start"] >= 41.6 - 1e-6:
+                bad.append("sanity: the restored 503d906 step was not caught (%r)" % r)
+        for rec, n in (("p-reels-spotlight", 1), ("p-reels-spotlight-heygen", 2)):
+            n1 = ss.apply_spotlight_end_card(up / rec, rec); n2 = ss.apply_spotlight_end_card(up / rec, rec)
+            if (n1, n2) != (n, 0):
+                bad.append("transform on %s changed (%d, %d) file(s), expected (%d, 0)" % (rec, n1, n2, n))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        t = up / "p-reels-spotlight" / "steps" / "06-assemble.md"
+        text = t.read_text(encoding="utf-8")
+        for old, new in reversed(edits):
+            text = text.replace(new, old)
+        t.write_text(text.replace("print(${BED_DUR} - ${CTA_DURATION})", "print(${BED_DUR} - ${CTA_DURATION} - 0.5)"), encoding="utf-8")
+        try:
+            ss.apply_spotlight_end_card(up / "p-reels-spotlight", "fixture")
+            bad.append("transform did not fail on a drifted CTA_START line")
+        except SystemExit:
+            pass
+except Exception as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi286_detail" == "ok" ]]; then
+  pass "WI2.86 spotlight end card starts at max(bed - cta_duration, last word end); skipped under 1.0 s (every copy)"
+else
+  fail "WI2.86 spotlight end card starts only after the last spoken word ends" "$wi286_detail"
+fi
+rm -rf "$wi286_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then

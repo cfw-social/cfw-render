@@ -1256,7 +1256,7 @@
     },
     "p-reels-spotlight": {
       "version": "1.0.0",
-      "checksum": "sha256:5f43aa36e377ff4e7218986ef5d75041bde0077c4d0ba2e9812966c339a653f3",
+      "checksum": "sha256:230a5fdab8ca0a751c36da50a1e9c00346361a1d83074a4d94b0e30e9964baf0",
       "files": [
         ".hub/c-broll-sync/SCENE-PLAN.md",
         ".hub/c-broll-sync/SKILL.md",
@@ -1495,7 +1495,7 @@
         "steps/03-plan-edit.md": "sha256:5f7c9e57e5b6fc8a719f76b5b4fc3c02a418a70aa4729a1fbb10b2ca35a4bd8e",
         "steps/04-plan-broll.md": "sha256:9fbdd196fabb70023b487ec165f48a608aaa2dc4cd23393ad1a407e56f582d58",
         "steps/05-render-scenes.md": "sha256:1f0fc2820b252317ff015ddef09d82e1893ae1b9e76bc19b911948b6515c5d48",
-        "steps/06-assemble.md": "sha256:abd4f0e83e53173bfec4951a2194bb463aa65994966df976b8da1e390dae8430",
+        "steps/06-assemble.md": "sha256:6cfdb6c089a4683cecd5b3584d63caaf608ca31f9c4bbabb30ed528ea24e5fb1",
         "steps/07-final-checks.md": "sha256:5f7ad4c0eeda2d582102f0e503e9dc60fbfb3dd7533e11c714b70b8da267891a",
         "steps/_shared.md": "sha256:d251db905555679fc8a6f0932d998338500311bc9b50a6109a7d48abb26ae1de",
         "templates/caption-overlay.html": "sha256:5c840d82302d8fbd44690a99217065751ee54ae2c636b72e076c8cb6c110d5f8",
@@ -2282,7 +2282,7 @@
     },
     "p-reels-spotlight-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:db137b852dd44e24a422f4c7be8fe3585c45fd422abd189d0f4b38f454da4798",
+      "checksum": "sha256:48293169905b010e57b953280e33a186890d7dec5c4279260995cac48b4492e0",
       "files": [
         ".hub/c-broll-sync/SCENE-PLAN.md",
         ".hub/c-broll-sync/SKILL.md",
@@ -2538,7 +2538,7 @@
         ".hub/p-reels-spotlight/steps/03-plan-edit.md": "sha256:c256d95bd03f1a99f33ae42dbe19c5b5e546e99a21841268588b85cd313b72a3",
         ".hub/p-reels-spotlight/steps/04-plan-broll.md": "sha256:9fbdd196fabb70023b487ec165f48a608aaa2dc4cd23393ad1a407e56f582d58",
         ".hub/p-reels-spotlight/steps/05-render-scenes.md": "sha256:1f0fc2820b252317ff015ddef09d82e1893ae1b9e76bc19b911948b6515c5d48",
-        ".hub/p-reels-spotlight/steps/06-assemble.md": "sha256:abd4f0e83e53173bfec4951a2194bb463aa65994966df976b8da1e390dae8430",
+        ".hub/p-reels-spotlight/steps/06-assemble.md": "sha256:6cfdb6c089a4683cecd5b3584d63caaf608ca31f9c4bbabb30ed528ea24e5fb1",
         ".hub/p-reels-spotlight/steps/07-final-checks.md": "sha256:5f7ad4c0eeda2d582102f0e503e9dc60fbfb3dd7533e11c714b70b8da267891a",
         ".hub/p-reels-spotlight/steps/_shared.md": "sha256:1c242569c9d26ad0814a76e76dd140909a0411754939dc99c327df84e337374a",
         ".hub/p-reels-spotlight/templates/caption-overlay.html": "sha256:5c840d82302d8fbd44690a99217065751ee54ae2c636b72e076c8cb6c110d5f8",
@@ -2555,7 +2555,7 @@
         "steps/03-plan-edit.md": "sha256:5f7c9e57e5b6fc8a719f76b5b4fc3c02a418a70aa4729a1fbb10b2ca35a4bd8e",
         "steps/04-plan-broll.md": "sha256:9fbdd196fabb70023b487ec165f48a608aaa2dc4cd23393ad1a407e56f582d58",
         "steps/05-render-scenes.md": "sha256:1f0fc2820b252317ff015ddef09d82e1893ae1b9e76bc19b911948b6515c5d48",
-        "steps/06-assemble.md": "sha256:abd4f0e83e53173bfec4951a2194bb463aa65994966df976b8da1e390dae8430",
+        "steps/06-assemble.md": "sha256:6cfdb6c089a4683cecd5b3584d63caaf608ca31f9c4bbabb30ed528ea24e5fb1",
         "steps/07-final-checks.md": "sha256:5f7ad4c0eeda2d582102f0e503e9dc60fbfb3dd7533e11c714b70b8da267891a",
         "steps/_shared.md": "sha256:62f4ae8d9b82252a5f97911ecd49453e6682be3d1b92a7ad3aeafba9725638d9"
       },

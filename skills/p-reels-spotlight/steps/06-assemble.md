@@ -21,7 +21,8 @@ duration.
 
 - `saves/assembled_video.mp4` — 1080×1920 30 fps, H.264 + AAC 48 kHz stereo, exactly the bed's
   duration: graded picture, captions burned, SFX under the voice, end card over the last
-  `cta_duration` seconds. No cover frame yet — that is the final step.
+  `cta_duration` seconds, but never before the last spoken word ends (WI2.86). No cover frame
+  yet — that is the final step.
 
 ## How
 
@@ -109,6 +110,12 @@ face, never the caption band (y ≈ 1180–1440). Skip with a log line if the co
 Resolve the copy: `inputs/cta/cta.json` wins; otherwise `brief.json.brand`. **No handle → no
 handle line.** Never invent a handle or reuse another brand's.
 
+**The card never covers speech (WI2.86).** It starts at `max(bed − cta_duration, last word end)`,
+where the last word end is the latest `end` in `work/words.json` or `e` in the plan's
+`caption_groups`, so the closing line keeps the face and its captions. The card covers the rest
+of the bed and is rendered at that length. Nothing is appended: when less than
+1.0 s of bed is left after the last word, the card is skipped with one log line.
+
 ```bash
 eval "$(python3 - <<'PY'
 import json, os, shlex
@@ -119,6 +126,26 @@ print(f"CTA_TEXT={shlex.quote(text)}; BRAND_NAME={shlex.quote(cta.get('brandName
       f"CTA_HANDLE={shlex.quote(cta.get('handle') or brand.get('handle') or '')}")
 PY
 )"
+# WI2.86: start the card only after the last spoken word ends; it covers the rest of the bed.
+CTA_START=""
+if [ "$CTA_CARD" = "on" ]; then
+  CTA_START=$(python3 - "$BED_DUR" "$CTA_DURATION" <<'PY'
+import json, sys
+bed, want = float(sys.argv[1]), float(sys.argv[2])
+ends = [float(w["end"]) for w in json.load(open("work/words.json")) if isinstance(w, dict) and "end" in w]
+for g in json.load(open("work/plan.json")).get("caption_groups") or []:
+    ends += [float(w["e"]) for w in g.get("words") or [] if isinstance(w, dict) and "e" in w]
+if not ends:
+    sys.exit("end card: no word timings in work/words.json or the plan caption groups")
+print("%.3f" % max(bed - want, max(ends)))
+PY
+  ) || exit 1
+  CTA_DURATION=$(python3 -c "print('%.3f' % max(0.0, ${BED_DUR} - ${CTA_START}))")
+  if python3 -c "import sys; sys.exit(0 if ${CTA_DURATION} < 1.0 else 1)"; then
+    echo "[spotlight] end card skipped: only ${CTA_DURATION}s of bed after the last spoken word (needs 1.0s)"
+    CTA_CARD=off
+  fi
+fi
 if [ "$CTA_CARD" = "on" ]; then
   CTA_DURATION="$CTA_DURATION" CTA_TEXT="$CTA_TEXT" CTA_HANDLE="$CTA_HANDLE" BRAND_NAME="$BRAND_NAME" \
     python3 "$SKILL_DIR/scripts/cta-card.py" work/plan.json work/cta-card.json   # omits the handle layer when empty
@@ -131,7 +158,7 @@ if [ "$CTA_CARD" = "on" ]; then
     ffmpeg -y -f lavfi -i "color=c=#${BG_HEX}:s=1080x1920:r=30:d=${CTA_DURATION}" -vf "$CTA_VF" \
       -c:v libx264 -pix_fmt yuv420p -r 30 work/cta-card.mp4
   }
-  CTA_START=$(python3 -c "print(${BED_DUR} - ${CTA_DURATION})")
+  # CTA_START and CTA_DURATION were set above (WI2.86): the card starts after the last word.
   ffmpeg -y -i work/polished.mp4 -itsoffset "$CTA_START" -i work/cta-card.mp4 \
     -filter_complex "[0:v][1:v]overlay=enable='between(t,${CTA_START},${BED_DUR})':eof_action=pass[v]" \
     -map "[v]" -map 0:a -c:v libx264 -pix_fmt yuv420p -c:a copy -movflags +faststart work/assembled.mp4
@@ -165,6 +192,6 @@ failure: exit non-zero with one plain line.
 ## Checks the harness runs
 
 - `vo_continuous_bed` — for every takeover window in the edit plan (and every b-roll beat when
-  present) plus the end-card window, `volumedetect` on `saves/assembled_video.mp4` reports a real
+  present), `volumedetect` on `saves/assembled_video.mp4` reports a real
   (non −inf) `mean_volume`: the voice is audible under every cutaway and the duration equals the
   bed's.
