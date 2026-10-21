@@ -54,7 +54,7 @@ Both templates use `{{PLACEHOLDER}}` substitution (same pattern as `p-reels-hf-f
 | `{{DURATION}}` | Yes | `9.0` | Clip length in seconds |
 | `{{LABEL}}` | Yes | `claude.ai` | Title bar label (plain text) |
 | `{{PROMPT}}` | Yes | `Research this person…` | Prompt text typed out. Newlines as `\n` in JSON, literal `&#10;` in the HTML template. Use `{{PROMPT_HTML}}` for markup. |
-| `{{TYPING_SPEED}}` | No | `1.0` | Multiplier (0.5 = slow, 2.0 = fast). Characters typed = `text.length × speed` per duration. |
+| `{{TYPING_SPEED}}` | No | `1.0` | Multiplier (0.5 = slow, 2.0 = fast). The whole prompt is always typed: `typingWindow(duration, speed)` starts at 0.5 s and ends at `duration × 0.88 / speed`, never later than 0.6 s before the clip ends. |
 | `{{ACCENT}}` | No | `#F97316` | 6-digit hex, no `#` prefix needed in template (template prepends `#`). |
 | `{{VARIANT}}` | No | `full` | `full` = full-frame (content centred); `pip-safe` = content in top 55% only (clears the PIP zone). |
 | `{{BOTTOM_TAG}}` | No | `` | Optional mono caption below the card, e.g. `"research · personalise · send"`. Leave blank to hide. |
@@ -73,6 +73,10 @@ Both templates use `{{PLACEHOLDER}}` substitution (same pattern as `p-reels-hf-f
 
 ## Usage — standalone render (one beat)
 
+There is no per-beat render script: `scripts/render-sample.sh` renders a fixed demo only (it takes
+just an output folder). To render a beat, fill the template, put `gsap.min.js` beside it, then lint
+and render with HyperFrames:
+
 ```bash
 SKILL_DIR="${CFW_RENDER_SKILLS_DIR:?CFW_RENDER_SKILLS_DIR not set}/p-reels-faceless/.hub/c-typing-ui"
 BEAT_DIR="$W/beat_typing_0"
@@ -86,11 +90,12 @@ import sys, html as h
 replacements = {
     "DURATION":     "9.0",
     "LABEL":        "claude.ai",
-    "PROMPT":       h.escape("Research this person based on\ntheir LinkedIn bio: [paste bio].\n\nFind one real thing they did recently.\n\nWrite a two-sentence opening that references it.\n\nNo fake compliments."),
+    "PROMPT":       h.escape("Research this person based on\ntheir LinkedIn bio: [paste bio].\n\nFind one real thing they did recently.\n\nWrite a two-sentence opening that references it.\n\nNo fake compliments.").replace("\n", "&#10;"),  # newlines as &#10; (JS string literal)
     "TYPING_SPEED": "1.0",
     "ACCENT":       "F97316",
     "VARIANT":      "pip-safe",
     "BOTTOM_TAG":   "research · personalise · send",
+    "BOTTOM_TAG_DISPLAY": "",  # "display:none" when BOTTOM_TAG is blank
 }
 src, dst = sys.argv[1], sys.argv[2]
 tmpl = open(src).read()
@@ -109,6 +114,7 @@ with open(dst, "w") as f:
 </head><body>{body}</body></html>""")
 PY
 
+cp "$SKILL_DIR/../f-gsap/vendor/gsap.min.js" "$BEAT_DIR/"  # the template loads gsap.min.js from its folder
 cd "$BEAT_DIR" && npx hyperframes@0.7.5 lint && npx hyperframes@0.7.5 render --output "$W/typing_beat.mp4" --fps 30 --quality high
 ```
 
@@ -144,8 +150,9 @@ layouts where no PIP sits on top.
   is on screen before the cut at any `DURATION` / `TYPING_SPEED`; a clip too short to type in shows
   the whole prompt. Keep `{{DURATION}}` equal to the clip's `data-duration`.
 - Typing is driven by a **stepped GSAP counter** (not TextPlugin) for frame-stability under headless chromium.
-  Counter tween on `#char-count` from `0` to `text.length`, ease `none`, then sliced in a `gsap.ticker.add`.
-  A GSAP `ticker` is NOT used in final form — the count proxy is tweened and read at each GSAP scrub position.
+  A plain `proxy = { n: 0 }` object is tweened from `0` to the prompt length (ease `none`) over
+  `typingWindow()`; its `onUpdate` writes `PROMPT_TEXT.slice(0, Math.round(n))` into `#ts-typed`.
+  No `gsap.ticker` and no counter element are used.
 - GSAP `repeat` is always finite: `Math.ceil(duration / blinkPeriod) - 1`.
 - Never inline `Math.random()` — use a mulberry32 seeded PRNG if decorative noise is needed.
 - Cursor blink uses `opacity` tween with `repeat` + `yoyo: true` — never `visibility`.

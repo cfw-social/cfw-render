@@ -10000,6 +10000,130 @@ else
 fi
 rm -rf "$wi273_root"
 
+echo "=== Case 58: WI2.80 — every scripts/<file> a recipe step names ships in that recipe's bundle ==="
+# Observed 2026-10-21 (WI2.73): p-reels-pip step 04 (and its p-reels-pip-heygen copies, and the split
+# step 04 copies) told the agent to run "$TYPING_UI_DIR/scripts/render.sh --text ... --duration ...".
+# No c-typing-ui copy ships render.sh (only render-sample.sh, a fixed demo), so agents had to work the
+# render out by hand. Step 04 now names the real usage (fill the template + hyperframes render), and
+# every c-typing-ui SKILL.md describes the shipped typingWindow() timing, not "text.length × speed"
+# or a #char-count element the template never had.
+wi280_root="$(mktemp -d)"
+wi280_detail="$(python3 - "$REPO_DIR" "$wi280_root" <<'PY'
+import importlib.util, re, shutil, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+# Gaps that predate WI2.80 (the c-audio / c-heygen / c-ai-media / c-ffmpeg scripts are not vendored
+# into these recipes). Listed exactly so a NEW missing script still fails, and an entry that gets
+# fixed must be removed from this list (a stale entry fails too).
+KNOWN_GAPS = {
+    ("p-clone-reel", "steps/01-ingest-reference.md", "transcribe.sh"),
+    ("p-clone-reel", "steps/03-generate-narration.md", "render.py"),
+    ("p-longform", "steps/02-avatar-render.md", "render.py"),
+    ("p-longform", "steps/03-transcribe.md", "transcribe.sh"),
+    ("p-longform", "steps/04-build-visuals.md", "generate.py"),
+    ("p-longform", "steps/06-composite.md", "build-segments.py"),
+}
+REF = re.compile(r"(?<![\w.-])scripts/([A-Za-z0-9_.-]+\.(?:sh|py|mjs|cjs|js|ts))")
+def missing_refs(skills):
+    out = set()
+    for recipe in sorted(p for p in skills.iterdir() if p.is_dir()):
+        shipped = {f.name for f in recipe.rglob("*") if f.is_file() and f.parent.name == "scripts"}
+        for step in sorted(recipe.rglob("*.md")):
+            rel = step.relative_to(recipe)
+            if "steps" not in rel.parts:
+                continue
+            for m in REF.finditer(step.read_text(encoding="utf-8")):
+                if m.group(1) not in shipped:
+                    out.add((recipe.name, rel.as_posix(), m.group(1)))
+    return out
+try:
+    spec = importlib.util.spec_from_file_location("ss280", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    skills = repo / "skills"
+    got = missing_refs(skills)
+    new = sorted(got - KNOWN_GAPS)
+    if new:
+        bad.append("step names a script its recipe does not ship: " +
+                   ", ".join("%s/%s -> scripts/%s" % g for g in new[:8]))
+    stale = sorted(KNOWN_GAPS - got)
+    if stale:
+        bad.append("KNOWN_GAPS entry now resolves; remove it: " + ", ".join("%s/%s" % g[:2] for g in stale))
+    for need in ("p-reels-pip", "p-reels-pip-heygen", "p-reels-split", "p-reels-split-heygen"):
+        if not list((skills / need).rglob("steps/04-build-*.md")):
+            bad.append("%s: no step 04 found" % need)
+    steps04 = [p for p in sorted(skills.glob("*/steps/04-build-*.md")) + sorted(skills.glob("*/.hub/*/steps/04-build-*.md"))
+               if p.name in ss._STEP_TYPING_RENDER_EDITS]
+    if len(steps04) != 6:
+        bad.append("expected 6 pip/split step 04 copies, found %d" % len(steps04))
+    for step in steps04:
+        body = step.read_text(encoding="utf-8")
+        if "typing-scene.html" not in body or "npx hyperframes@0.7.5 render" not in body:
+            bad.append("%s: step 04 does not name the typing template + hyperframes render" % step.relative_to(repo))
+    docs = sorted(skills.glob("*/.hub/c-typing-ui/SKILL.md"))
+    if len(docs) < 8:
+        bad.append("expected 8 vendored c-typing-ui SKILL.md copies, found %d" % len(docs))
+    for doc in docs:
+        body = doc.read_text(encoding="utf-8")
+        tpl = (doc.parent / "templates" / "typing-scene.html").read_text(encoding="utf-8")
+        if "typingWindow(duration, speed)" not in body or "function typingWindow(duration, speed)" not in tpl:
+            bad.append("%s: does not describe typingWindow(duration, speed)" % doc.relative_to(repo))
+        if "text.length × speed" in body:
+            bad.append("%s: still says text.length × speed" % doc.relative_to(repo))
+        for el in set(re.findall(r"`#([A-Za-z][\w-]*)`", body)):
+            if re.fullmatch(r"[0-9A-Fa-f]{3,8}", el):
+                continue  # a colour, not an element
+            if 'id="%s"' % el not in tpl:
+                bad.append("%s: names #%s, which typing-scene.html does not have" % (doc.relative_to(repo), el))
+        if '.replace("\\n", "&#10;")' not in body or "gsap.min.js" not in body or "BOTTOM_TAG_DISPLAY" not in body:
+            bad.append("%s: standalone usage misses &#10; newlines, BOTTOM_TAG_DISPLAY or gsap.min.js" % doc.relative_to(repo))
+    # The check really catches the old step: restore the pre-WI2.80 text in a copy and scan it.
+    up = root / "skills"
+    for rec in ("p-reels-pip", "p-reels-split-heygen"):
+        shutil.copytree(skills / rec, up / rec)
+    for name, (old, newtxt) in ss._STEP_TYPING_RENDER_EDITS.items():
+        for step in up.rglob(name):
+            step.write_text(step.read_text(encoding="utf-8").replace(newtxt, old), encoding="utf-8")
+    old_miss = missing_refs(up)
+    for want in (("p-reels-pip", "steps/04-build-background.md", "render.sh"),
+                 ("p-reels-split-heygen", "steps/04-build-top.md", "render.sh"),
+                 ("p-reels-split-heygen", ".hub/p-reels-split/steps/04-build-top.md", "render.sh")):
+        if want not in old_miss:
+            bad.append("sanity: the old step text was not caught (%s/%s)" % want[:2])
+    # Restore the old c-typing-ui SKILL.md text too; the transform upgrades both once, then is a no-op.
+    for doc in up.rglob(".hub/c-typing-ui/SKILL.md"):
+        text = doc.read_text(encoding="utf-8")
+        for old, newtxt in ss._TYPING_SKILL_RENDER_EDITS:
+            text = text.replace(newtxt, old)
+        doc.write_text(text, encoding="utf-8")
+    for rec in ("p-reels-pip", "p-reels-split-heygen"):
+        n1 = ss.apply_typing_render_usage(up / rec, rec); n2 = ss.apply_typing_render_usage(up / rec, rec)
+        want = 2 if rec == "p-reels-pip" else 3
+        if (n1, n2) != (want, 0):
+            bad.append("transform on %s changed (%d, %d) file(s), expected (%d, 0)" % (rec, n1, n2, want))
+        for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+            if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+    step = up / "p-reels-pip" / "steps" / "04-build-background.md"
+    step.write_text(step.read_text(encoding="utf-8").replace(ss._STEP_TYPING_RENDER_EDITS["04-build-background.md"][1],
+                                                           "- drifted typing bullet\n"), encoding="utf-8")
+    try:
+        ss.apply_typing_render_usage(up / "p-reels-pip", "fixture")
+        bad.append("transform did not fail on a step 04 without its anchor")
+    except SystemExit:
+        pass
+except Exception as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi280_detail" == "ok" ]]; then
+  pass "WI2.80 recipe steps name only scripts their bundle ships; step 04 names the real typing render"
+else
+  fail "WI2.80 recipe steps name only shipped scripts" "$wi280_detail"
+fi
+rm -rf "$wi280_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then

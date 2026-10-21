@@ -675,7 +675,7 @@
     },
     "p-longform": {
       "version": "1.0.0",
-      "checksum": "sha256:edebd84df18087effa1810efccba7eba94c948563b8e70e9f824404cfed994f1",
+      "checksum": "sha256:80b2eba5279868d10f6e19a91cee27048fc6d7f9f06f5e7832dcd21e5d15d57c",
       "files": [
         ".hub/c-ai-media/LEARNINGS.md",
         ".hub/c-ai-media/SKILL.md",
@@ -888,7 +888,7 @@
         ".hub/c-shorts-qa-gate/LEARNINGS.md": "sha256:c10d9ff913acd03c91a3c0243e0e3ce591ad33467435f355b3d06f009c50cdbc",
         ".hub/c-shorts-qa-gate/SKILL.md": "sha256:4d1859ea719170f7cf1268888f488bd35ca934d47b6ca97ab72f774aa8115729",
         ".hub/c-shorts-qa-gate/scripts/qa-gate.sh": "sha256:5b715db5737e4594ecb57170eb0a877ffc397b495c8d9d895aa59c0846af037b",
-        ".hub/c-typing-ui/SKILL.md": "sha256:acc16ac9fa02109806e4581d8b935bddaa115150e197f20d772612a2af0419d2",
+        ".hub/c-typing-ui/SKILL.md": "sha256:2d8cea60e28f540fada639040d7e7df39fcb9fad7583966bda4ea0e734514cda",
         ".hub/c-typing-ui/scripts/render-sample.sh": "sha256:6eb8449a08c5055f9ae99bd6a3a138b3db15a1d329aee54b1003b963139ef559",
         ".hub/c-typing-ui/templates/hook-scene.html": "sha256:01a16ade084a855035c03195be776e00e338029fcc17d9316cae42e6f8d66599",
         ".hub/c-typing-ui/templates/typing-scene.html": "sha256:97c618e8ae01932b1c4286407cc80c8faa940c560b413ffe123af6b2d871a3be",
@@ -1023,7 +1023,7 @@
     },
     "p-reels-pip": {
       "version": "1.0.0",
-      "checksum": "sha256:8736cdb24550bf1fc388666754413118974a31e7f5ae18431864fc4203ca1e53",
+      "checksum": "sha256:7c26d06b8cb564787eb26d61c28ae1d38820fe41c472f0bf7943927b3aef0e6a",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1175,7 +1175,7 @@
         ".hub/c-shorts-qa-gate/LEARNINGS.md": "sha256:c10d9ff913acd03c91a3c0243e0e3ce591ad33467435f355b3d06f009c50cdbc",
         ".hub/c-shorts-qa-gate/SKILL.md": "sha256:4d1859ea719170f7cf1268888f488bd35ca934d47b6ca97ab72f774aa8115729",
         ".hub/c-shorts-qa-gate/scripts/qa-gate.sh": "sha256:5b715db5737e4594ecb57170eb0a877ffc397b495c8d9d895aa59c0846af037b",
-        ".hub/c-typing-ui/SKILL.md": "sha256:5749dfa695ec725fea93ecaf8c910fc4ef27a83b9ab7b8ae2a2f30899fb13db0",
+        ".hub/c-typing-ui/SKILL.md": "sha256:02b71629cb45a749ff1778a2f0a6045dc49786dcd175ad3ecc0f8e7cacbc8282",
         ".hub/c-typing-ui/scripts/render-sample.sh": "sha256:6eb8449a08c5055f9ae99bd6a3a138b3db15a1d329aee54b1003b963139ef559",
         ".hub/c-typing-ui/templates/hook-scene.html": "sha256:01a16ade084a855035c03195be776e00e338029fcc17d9316cae42e6f8d66599",
         ".hub/c-typing-ui/templates/typing-scene.html": "sha256:97c618e8ae01932b1c4286407cc80c8faa940c560b413ffe123af6b2d871a3be",
@@ -1232,7 +1232,7 @@
         "steps/01-prepare-footage.md": "sha256:4156669f5968677b30c800bb6995726993dabf52a22778c3a14a81a8020af0a4",
         "steps/02-transcribe.md": "sha256:45bf6daa19d2f9a0eaa2cb4d6844bef75482545957677f2d8a7018d635aa0ab2",
         "steps/03-plan-beats.md": "sha256:f66a79cffd9ec11461a2f7bedf665d2abd72117d6d8dd73dafcc6b0ecf051d27",
-        "steps/04-build-background.md": "sha256:9db6fa203a45f70d98da8df63c2e6c115a84b2d45e85bc57c625dcbfc941d1fd",
+        "steps/04-build-background.md": "sha256:7b0226808e436cc2a05cbf6dd5f3056f7e0084fea8ca1f0ee87008d7c0b8b473",
         "steps/05-composite.md": "sha256:263b25589857f4385e5e3e95ba23d47bae2b4d968d0bc3153928c2c9d1d433eb",
         "steps/06-final-checks.md": "sha256:44589f5c49356e53f0b7ced0656bf794695a0917c2755bedcd0a9a609cbf2346",
         "steps/_shared.md": "sha256:0d2cafc6bfcc51ec80194d2d1c30144c166c8bcad3223832a043aa209d5f6a20",
@@ -1256,7 +1256,7 @@
     },
     "p-reels-spotlight": {
       "version": "1.0.0",
-      "checksum": "sha256:066e6b214d5226e444d818d87916f1331cad65b7dd13c3a9388fe4879efa0c67",
+      "checksum": "sha256:d036d1ee63dc9b2dd13a288e533566b21566f9a6d100ef0796f8695b06833b9c",
       "files": [
         ".hub/c-broll-sync/SCENE-PLAN.md",
         ".hub/c-broll-sync/SKILL.md",
@@ -1427,7 +1427,7 @@
         ".hub/c-shorts-qa-gate/LEARNINGS.md": "sha256:c10d9ff913acd03c91a3c0243e0e3ce591ad33467435f355b3d06f009c50cdbc",
         ".hub/c-shorts-qa-gate/SKILL.md": "sha256:4d1859ea719170f7cf1268888f488bd35ca934d47b6ca97ab72f774aa8115729",
         ".hub/c-shorts-qa-gate/scripts/qa-gate.sh": "sha256:5b715db5737e4594ecb57170eb0a877ffc397b495c8d9d895aa59c0846af037b",
-        ".hub/c-typing-ui/SKILL.md": "sha256:2335e757b290e07aa245d739f1a93bb3f63afd73760965957a31cd9e89de5a18",
+        ".hub/c-typing-ui/SKILL.md": "sha256:bc8ae303d8e7410e9124fd56402f39429d8306f6cee5b3c6609f88236856f32b",
         ".hub/c-typing-ui/scripts/render-sample.sh": "sha256:6eb8449a08c5055f9ae99bd6a3a138b3db15a1d329aee54b1003b963139ef559",
         ".hub/c-typing-ui/templates/hook-scene.html": "sha256:01a16ade084a855035c03195be776e00e338029fcc17d9316cae42e6f8d66599",
         ".hub/c-typing-ui/templates/typing-scene.html": "sha256:97c618e8ae01932b1c4286407cc80c8faa940c560b413ffe123af6b2d871a3be",
@@ -1524,7 +1524,7 @@
     },
     "p-reels-faceless": {
       "version": "1.0.0",
-      "checksum": "sha256:139d3fbbc4be28bb070e1df3b9bb6383860e3e6fbf2fa114d4712139bb24fdc8",
+      "checksum": "sha256:b363a0cfdbeccb0d0a8e087b5bc45e4578a0d9908027556ee51717cd2f481110",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1687,7 +1687,7 @@
         ".hub/c-shorts-qa-gate/LEARNINGS.md": "sha256:c10d9ff913acd03c91a3c0243e0e3ce591ad33467435f355b3d06f009c50cdbc",
         ".hub/c-shorts-qa-gate/SKILL.md": "sha256:4d1859ea719170f7cf1268888f488bd35ca934d47b6ca97ab72f774aa8115729",
         ".hub/c-shorts-qa-gate/scripts/qa-gate.sh": "sha256:5b715db5737e4594ecb57170eb0a877ffc397b495c8d9d895aa59c0846af037b",
-        ".hub/c-typing-ui/SKILL.md": "sha256:48967f7b9d489575944afb10907c5a6f39864c4a81e76ea312034d0ed17fcc4b",
+        ".hub/c-typing-ui/SKILL.md": "sha256:c53077c0b874d4437d9cf0b0292e82068c703f35663f40275fbbfdc538c0927b",
         ".hub/c-typing-ui/scripts/render-sample.sh": "sha256:6eb8449a08c5055f9ae99bd6a3a138b3db15a1d329aee54b1003b963139ef559",
         ".hub/c-typing-ui/templates/hook-scene.html": "sha256:01a16ade084a855035c03195be776e00e338029fcc17d9316cae42e6f8d66599",
         ".hub/c-typing-ui/templates/typing-scene.html": "sha256:97c618e8ae01932b1c4286407cc80c8faa940c560b413ffe123af6b2d871a3be",
@@ -1773,7 +1773,7 @@
     },
     "p-reels-split": {
       "version": "1.0.0",
-      "checksum": "sha256:0129f5e2cc8c11faadab046dbd56e907840cdf381acfc88018b25679f3be0c35",
+      "checksum": "sha256:ebb914fe8868c7e479b824e49274531c45ae343f257cf99ba3c54a95bfc03e89",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1932,7 +1932,7 @@
         ".hub/c-shorts-qa-gate/LEARNINGS.md": "sha256:c10d9ff913acd03c91a3c0243e0e3ce591ad33467435f355b3d06f009c50cdbc",
         ".hub/c-shorts-qa-gate/SKILL.md": "sha256:4d1859ea719170f7cf1268888f488bd35ca934d47b6ca97ab72f774aa8115729",
         ".hub/c-shorts-qa-gate/scripts/qa-gate.sh": "sha256:5b715db5737e4594ecb57170eb0a877ffc397b495c8d9d895aa59c0846af037b",
-        ".hub/c-typing-ui/SKILL.md": "sha256:f8de99f2b7739c1cc1bc755ef9b342e439665def20b63b6c5e4a213d505b74b7",
+        ".hub/c-typing-ui/SKILL.md": "sha256:5e50be1b2fd5be85686f2d32fa59c17f5922fcd310f880a8ba37193061c17a1c",
         ".hub/c-typing-ui/scripts/render-sample.sh": "sha256:6eb8449a08c5055f9ae99bd6a3a138b3db15a1d329aee54b1003b963139ef559",
         ".hub/c-typing-ui/templates/hook-scene.html": "sha256:01a16ade084a855035c03195be776e00e338029fcc17d9316cae42e6f8d66599",
         ".hub/c-typing-ui/templates/typing-scene.html": "sha256:97c618e8ae01932b1c4286407cc80c8faa940c560b413ffe123af6b2d871a3be",
@@ -1995,7 +1995,7 @@
         "steps/01-prepare-footage.md": "sha256:e09809c6e8a587ac2ac037253c3a0f05ad5408b60cc62b1439f604823df13bd3",
         "steps/02-transcribe.md": "sha256:1b749e3ec6a0d6837868afe883c0286142f95186729a522ca950d2464bf65c05",
         "steps/03-plan-beats.md": "sha256:a6216d5dd9d0b09218f820dd7b8afe6f2baff63db18bbe51942ef8dca41cb5a9",
-        "steps/04-build-top.md": "sha256:3ed764b70a51a2f98dcfe5ea1083f7ded950a7524722057c66c6c813cfa3ddf7",
+        "steps/04-build-top.md": "sha256:68dd40c4f8d04006dbd0a923ab6f8ba8d5625e10ea2cb06eb4204546a7233435",
         "steps/05-build-bottom.md": "sha256:a7ab06dce0f9205906b4846d36b88c22a5dca6ee885efe973d1f90d6d8b6c172",
         "steps/06-composite.md": "sha256:4fba71fd4bda774651aa65712818446e96c0936d2d671ceaaac964e3c67b7790",
         "steps/07-final-checks.md": "sha256:8a029830cdc4de02c66fbe4e2021f27f1bb4982f2ffc6d85e9fd4fef1ad4b572",
@@ -2021,7 +2021,7 @@
     },
     "p-reels-pip-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:abb0ba22439b3a40eb385433a5482de895cfd85130d7854a7b61008f0749d98c",
+      "checksum": "sha256:abd76a0aeb4a5c75c8f32b9912cd79ee3ae5d0d1a97a4b4525467e456dd93924",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -2189,7 +2189,7 @@
         ".hub/c-shorts-qa-gate/LEARNINGS.md": "sha256:c10d9ff913acd03c91a3c0243e0e3ce591ad33467435f355b3d06f009c50cdbc",
         ".hub/c-shorts-qa-gate/SKILL.md": "sha256:4d1859ea719170f7cf1268888f488bd35ca934d47b6ca97ab72f774aa8115729",
         ".hub/c-shorts-qa-gate/scripts/qa-gate.sh": "sha256:5b715db5737e4594ecb57170eb0a877ffc397b495c8d9d895aa59c0846af037b",
-        ".hub/c-typing-ui/SKILL.md": "sha256:b98c8287ee6f24996ad6906d4c4509ae6208367b822ebc83f369e4413754ee44",
+        ".hub/c-typing-ui/SKILL.md": "sha256:c4b25e39f1f576b07de4c43805139dcfdf69355a65a35626222198d634ba7fe2",
         ".hub/c-typing-ui/scripts/render-sample.sh": "sha256:6eb8449a08c5055f9ae99bd6a3a138b3db15a1d329aee54b1003b963139ef559",
         ".hub/c-typing-ui/templates/hook-scene.html": "sha256:01a16ade084a855035c03195be776e00e338029fcc17d9316cae42e6f8d66599",
         ".hub/c-typing-ui/templates/typing-scene.html": "sha256:97c618e8ae01932b1c4286407cc80c8faa940c560b413ffe123af6b2d871a3be",
@@ -2246,7 +2246,7 @@
         ".hub/p-reels-pip/steps/01-prepare-footage.md": "sha256:2a3acaa0879ba307cd79fa03f09a185472b3628c17173c0d721776d2cdffbd3e",
         ".hub/p-reels-pip/steps/02-transcribe.md": "sha256:c9d356feedd28e033e4268fb1f3bdeea184d3fa01c5bcfa24c00d5f058ccf0ff",
         ".hub/p-reels-pip/steps/03-plan-beats.md": "sha256:f66a79cffd9ec11461a2f7bedf665d2abd72117d6d8dd73dafcc6b0ecf051d27",
-        ".hub/p-reels-pip/steps/04-build-background.md": "sha256:9db6fa203a45f70d98da8df63c2e6c115a84b2d45e85bc57c625dcbfc941d1fd",
+        ".hub/p-reels-pip/steps/04-build-background.md": "sha256:7b0226808e436cc2a05cbf6dd5f3056f7e0084fea8ca1f0ee87008d7c0b8b473",
         ".hub/p-reels-pip/steps/05-composite.md": "sha256:ff6d3d1e0e2e903446264955c9f40fdde3f3db2033d30ce4bea5ae2ab37dbabe",
         ".hub/p-reels-pip/steps/06-final-checks.md": "sha256:44589f5c49356e53f0b7ced0656bf794695a0917c2755bedcd0a9a609cbf2346",
         ".hub/p-reels-pip/steps/_shared.md": "sha256:b4d99efa23ad4da66eb8da17358bc8408975583041b363167031d6b7090a2340",
@@ -2257,7 +2257,7 @@
         "steps/01-prepare-footage.md": "sha256:d5e5376491a988ebd4969d5f7be6dfa6d66497bf9cae0958fc4b0f415eb05693",
         "steps/02-transcribe.md": "sha256:45bf6daa19d2f9a0eaa2cb4d6844bef75482545957677f2d8a7018d635aa0ab2",
         "steps/03-plan-beats.md": "sha256:f66a79cffd9ec11461a2f7bedf665d2abd72117d6d8dd73dafcc6b0ecf051d27",
-        "steps/04-build-background.md": "sha256:9db6fa203a45f70d98da8df63c2e6c115a84b2d45e85bc57c625dcbfc941d1fd",
+        "steps/04-build-background.md": "sha256:7b0226808e436cc2a05cbf6dd5f3056f7e0084fea8ca1f0ee87008d7c0b8b473",
         "steps/05-composite.md": "sha256:263b25589857f4385e5e3e95ba23d47bae2b4d968d0bc3153928c2c9d1d433eb",
         "steps/06-final-checks.md": "sha256:44589f5c49356e53f0b7ced0656bf794695a0917c2755bedcd0a9a609cbf2346",
         "steps/_shared.md": "sha256:161059454b3fea0ffe65c126407892e14b026a415c86f9e7b2b54afdb723207e"
@@ -2282,7 +2282,7 @@
     },
     "p-reels-spotlight-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:dffa64b5affcfb767bad270e6cf4112adcc82b6c11ff20eb838f58bbad53806f",
+      "checksum": "sha256:2b198a10abacbd56bb66f71c1b58ec9d4eb9967adfc64e1a0a5d9a6eecbe7797",
       "files": [
         ".hub/c-broll-sync/SCENE-PLAN.md",
         ".hub/c-broll-sync/SKILL.md",
@@ -2470,7 +2470,7 @@
         ".hub/c-shorts-qa-gate/LEARNINGS.md": "sha256:c10d9ff913acd03c91a3c0243e0e3ce591ad33467435f355b3d06f009c50cdbc",
         ".hub/c-shorts-qa-gate/SKILL.md": "sha256:4d1859ea719170f7cf1268888f488bd35ca934d47b6ca97ab72f774aa8115729",
         ".hub/c-shorts-qa-gate/scripts/qa-gate.sh": "sha256:5b715db5737e4594ecb57170eb0a877ffc397b495c8d9d895aa59c0846af037b",
-        ".hub/c-typing-ui/SKILL.md": "sha256:6f27673e474703f808090b42f919bb4c12e0aa95cb0bc52b7de4a8968438e06f",
+        ".hub/c-typing-ui/SKILL.md": "sha256:402fc9e1609e64b6d6ea1e59b2847aba0fb899ccc3aadd7e697793dfe58199f6",
         ".hub/c-typing-ui/scripts/render-sample.sh": "sha256:6eb8449a08c5055f9ae99bd6a3a138b3db15a1d329aee54b1003b963139ef559",
         ".hub/c-typing-ui/templates/hook-scene.html": "sha256:01a16ade084a855035c03195be776e00e338029fcc17d9316cae42e6f8d66599",
         ".hub/c-typing-ui/templates/typing-scene.html": "sha256:97c618e8ae01932b1c4286407cc80c8faa940c560b413ffe123af6b2d871a3be",
@@ -2580,7 +2580,7 @@
     },
     "p-reels-split-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:60ea55e8093f8e7b61ef74b7d334a22eb207bb30ec432d4cadcb5643e5b8ecaa",
+      "checksum": "sha256:e2d5679f2c6616ead86ba6bf85a658099ba17c21b5cc7137f0c658507aa8020a",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -2758,7 +2758,7 @@
         ".hub/c-shorts-qa-gate/LEARNINGS.md": "sha256:c10d9ff913acd03c91a3c0243e0e3ce591ad33467435f355b3d06f009c50cdbc",
         ".hub/c-shorts-qa-gate/SKILL.md": "sha256:4d1859ea719170f7cf1268888f488bd35ca934d47b6ca97ab72f774aa8115729",
         ".hub/c-shorts-qa-gate/scripts/qa-gate.sh": "sha256:5b715db5737e4594ecb57170eb0a877ffc397b495c8d9d895aa59c0846af037b",
-        ".hub/c-typing-ui/SKILL.md": "sha256:954d9c24742baaca8bb30540cd58cddd7d2198bacad775ae99d5de7701a24282",
+        ".hub/c-typing-ui/SKILL.md": "sha256:66b9ec2c8b49b9dbc539c71eef7d48c7dc007f86a3dba58367bd0e006d925735",
         ".hub/c-typing-ui/scripts/render-sample.sh": "sha256:6eb8449a08c5055f9ae99bd6a3a138b3db15a1d329aee54b1003b963139ef559",
         ".hub/c-typing-ui/templates/hook-scene.html": "sha256:01a16ade084a855035c03195be776e00e338029fcc17d9316cae42e6f8d66599",
         ".hub/c-typing-ui/templates/typing-scene.html": "sha256:97c618e8ae01932b1c4286407cc80c8faa940c560b413ffe123af6b2d871a3be",
@@ -2819,7 +2819,7 @@
         ".hub/p-reels-split/steps/01-prepare-footage.md": "sha256:e09809c6e8a587ac2ac037253c3a0f05ad5408b60cc62b1439f604823df13bd3",
         ".hub/p-reels-split/steps/02-transcribe.md": "sha256:1b749e3ec6a0d6837868afe883c0286142f95186729a522ca950d2464bf65c05",
         ".hub/p-reels-split/steps/03-plan-beats.md": "sha256:a6216d5dd9d0b09218f820dd7b8afe6f2baff63db18bbe51942ef8dca41cb5a9",
-        ".hub/p-reels-split/steps/04-build-top.md": "sha256:3ed764b70a51a2f98dcfe5ea1083f7ded950a7524722057c66c6c813cfa3ddf7",
+        ".hub/p-reels-split/steps/04-build-top.md": "sha256:68dd40c4f8d04006dbd0a923ab6f8ba8d5625e10ea2cb06eb4204546a7233435",
         ".hub/p-reels-split/steps/05-build-bottom.md": "sha256:a7ab06dce0f9205906b4846d36b88c22a5dca6ee885efe973d1f90d6d8b6c172",
         ".hub/p-reels-split/steps/06-composite.md": "sha256:4fba71fd4bda774651aa65712818446e96c0936d2d671ceaaac964e3c67b7790",
         ".hub/p-reels-split/steps/07-final-checks.md": "sha256:8a029830cdc4de02c66fbe4e2021f27f1bb4982f2ffc6d85e9fd4fef1ad4b572",
@@ -2835,7 +2835,7 @@
         "steps/01-prepare-footage.md": "sha256:60093a0b88c4ff9845b4d4b8076bcc62724f6f4f709033c92462ac0d9212f649",
         "steps/02-transcribe.md": "sha256:1b749e3ec6a0d6837868afe883c0286142f95186729a522ca950d2464bf65c05",
         "steps/03-plan-beats.md": "sha256:a6216d5dd9d0b09218f820dd7b8afe6f2baff63db18bbe51942ef8dca41cb5a9",
-        "steps/04-build-top.md": "sha256:3ed764b70a51a2f98dcfe5ea1083f7ded950a7524722057c66c6c813cfa3ddf7",
+        "steps/04-build-top.md": "sha256:68dd40c4f8d04006dbd0a923ab6f8ba8d5625e10ea2cb06eb4204546a7233435",
         "steps/05-build-bottom.md": "sha256:a7ab06dce0f9205906b4846d36b88c22a5dca6ee885efe973d1f90d6d8b6c172",
         "steps/06-composite.md": "sha256:4fba71fd4bda774651aa65712818446e96c0936d2d671ceaaac964e3c67b7790",
         "steps/07-final-checks.md": "sha256:8a029830cdc4de02c66fbe4e2021f27f1bb4982f2ffc6d85e9fd4fef1ad4b572",

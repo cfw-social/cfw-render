@@ -79,6 +79,11 @@ c-typing-ui typing-scene.html (all recipes, .hub copies included): typing ends
 0.6 s before the clip ends at any duration or speed, so the full prompt is on
 screen before the cut; its SKILL.md gotchas say so.
 
+WI2.80 apply_typing_render_usage() rewrites pip/split step 04 (all copies) to the real
+c-typing-ui render (fill the template, copy gsap.min.js, hyperframes lint + render) in place
+of a scripts/render.sh that never shipped, and makes every c-typing-ui SKILL.md describe the
+shipped typingWindow() timing and proxy counter (no #char-count element).
+
 Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
 and before list_files/hashing, same ordering guarantee:
   strip_brand_override_host_paths() nulls/drops the two host-path fields
@@ -2168,6 +2173,132 @@ def apply_typing_hold(directory: Path, recipe: str) -> int:
     return changed
 
 
+# WI2.80: step 04 of the pip (and split) recipes told the agent to run
+# `$TYPING_UI_DIR/scripts/render.sh --text ... --duration ...`. No c-typing-ui copy ships that
+# script (only scripts/render-sample.sh, which renders a fixed demo and takes just an output dir),
+# so every agent had to work the render out by hand. c-typing-ui is a template component: the real
+# usage is "fill templates/typing-scene.html (or hook-scene.html), copy gsap.min.js beside it, then
+# hyperframes lint + render", which is what its SKILL.md "standalone render" block shows. The step
+# files now say exactly that, and the c-typing-ui SKILL.md describes the shipped timing
+# (typingWindow(duration, speed), WI2.73) and the proxy counter instead of a #char-count element the
+# template never had. Its usage block also writes newlines as &#10; (a raw newline inside the
+# template's JS string literal is a syntax error), fills BOTTOM_TAG_DISPLAY and copies gsap.min.js.
+_STEP_TYPING_RENDER_EDITS = {
+    "04-build-background.md": (
+        "- **`graphics`, typing / hook scene** — `VARIANT=pip-safe` with `c-typing-ui`:\n"
+        "  `bash \"$TYPING_UI_DIR/scripts/render.sh\" --text \"<copy>\" --duration \"$DUR\" --brand work/brand.json"
+        " --variant pip-safe --out work/bg_beats/bg_beat$i.mp4` (see `$TYPING_UI_DIR/SKILL.md` for the exact flags).\n",
+        "- **`graphics`, typing / hook scene** — `c-typing-ui` ships templates, not a render script (its\n"
+        "  `scripts/render-sample.sh` only renders a fixed demo). Fill the template the way\n"
+        "  `$TYPING_UI_DIR/SKILL.md` \"Usage — standalone render (one beat)\" does: take\n"
+        "  `$TYPING_UI_DIR/templates/typing-scene.html` (typing) or `hook-scene.html` (hook), strip the\n"
+        "  `<template>` wrapper, fill every `{{FIELD}}` in it, wrap it in a full 1080×1920 document and\n"
+        "  write `work/gfx_$i/index.html`. Typing: `DURATION=$DUR`, `PROMPT` = the copy HTML-escaped with\n"
+        "  `&#10;` for each newline, `VARIANT=pip-safe`, `ACCENT` = `work/brand.json` accent without `#`,\n"
+        "  `LABEL`, `TYPING_SPEED` (`1.0`), `BOTTOM_TAG` and `BOTTOM_TAG_DISPLAY` (`display:none` when the\n"
+        "  tag is blank, else empty). Hook: `DURATION`, `EYEBROW`, `LINE1`–`LINE3`, `SUBHEAD`, `ACCENT` (the\n"
+        "  hook template has no `VARIANT`). Copy `$GSAP` in as `gsap.min.js`; then\n"
+        "  `( cd work/gfx_$i && npx hyperframes@0.7.5 lint && npx hyperframes@0.7.5 render --output"
+        " ../bg_beats/bg_beat$i.mp4 --quality high --fps 30 )`.\n",
+    ),
+    "04-build-top.md": (
+        "- **`graphics`, typing / hook scene** — `bash \"$TYPING_UI_DIR/scripts/render.sh\" --text \"<copy>\""
+        " --duration \"$DUR\" --brand work/brand.json --variant top-half --out work/top_beats/top_beat$i.mp4`"
+        " (see `$TYPING_UI_DIR/SKILL.md`); if `top-half` is unsupported, render `pip-safe` and crop:"
+        " `-vf crop=1080:960:0:0`.\n",
+        "- **`graphics`, typing / hook scene** — `c-typing-ui` ships templates, not a render script (its\n"
+        "  `scripts/render-sample.sh` only renders a fixed demo), and it has no `top-half` variant. Fill\n"
+        "  `$TYPING_UI_DIR/templates/typing-scene.html` (typing: `VARIANT=pip-safe`, `BOTTOM_TAG` blank —\n"
+        "  the pip-safe tag sits at y=980, below the crop) or `hook-scene.html` (hook) into\n"
+        "  `work/gfx_$i/index.html` exactly as `$TYPING_UI_DIR/SKILL.md` \"Usage — standalone render (one\n"
+        "  beat)\" shows, copy `$GSAP` in as `gsap.min.js`, render it at 1080×1920 with\n"
+        "  `( cd work/gfx_$i && npx hyperframes@0.7.5 lint && npx hyperframes@0.7.5 render --output"
+        " ../top_beats/_full$i.mp4 --quality high --fps 30 )`, then keep the top half:\n"
+        "  `ffmpeg -y -i work/top_beats/_full$i.mp4 -vf crop=1080:960:0:0,format=yuv420p -an -c:v libx264"
+        " -preset medium -crf 20 work/top_beats/top_beat$i.mp4`.\n",
+    ),
+}
+# (old, new) pairs for every c-typing-ui SKILL.md copy. Each pair is applied once: a copy that
+# already has `new` is left alone, a copy with neither fails fast.
+_TYPING_SKILL_RENDER_EDITS = (
+    (
+        "| `{{TYPING_SPEED}}` | No | `1.0` | Multiplier (0.5 = slow, 2.0 = fast). Characters typed ="
+        " `text.length × speed` per duration. |\n",
+        "| `{{TYPING_SPEED}}` | No | `1.0` | Multiplier (0.5 = slow, 2.0 = fast). The whole prompt is"
+        " always typed: `typingWindow(duration, speed)` starts at 0.5 s and ends at"
+        " `duration × 0.88 / speed`, never later than 0.6 s before the clip ends. |\n",
+    ),
+    (
+        "## Usage — standalone render (one beat)\n\n",
+        "## Usage — standalone render (one beat)\n\n"
+        "There is no per-beat render script: `scripts/render-sample.sh` renders a fixed demo only (it takes\n"
+        "just an output folder). To render a beat, fill the template, put `gsap.min.js` beside it, then lint\n"
+        "and render with HyperFrames:\n\n",
+    ),
+    (
+        "No fake compliments.\"),\n",
+        "No fake compliments.\").replace(\"\\n\", \"&#10;\"),  # newlines as &#10; (JS string literal)\n",
+    ),
+    (
+        "    \"BOTTOM_TAG\":   \"research · personalise · send\",\n",
+        "    \"BOTTOM_TAG\":   \"research · personalise · send\",\n"
+        "    \"BOTTOM_TAG_DISPLAY\": \"\",  # \"display:none\" when BOTTOM_TAG is blank\n",
+    ),
+    (
+        "cd \"$BEAT_DIR\" && npx hyperframes@0.7.5 lint",
+        "cp \"$SKILL_DIR/../f-gsap/vendor/gsap.min.js\" \"$BEAT_DIR/\"  # the template loads gsap.min.js from its folder\n"
+        "cd \"$BEAT_DIR\" && npx hyperframes@0.7.5 lint",
+    ),
+    (
+        "- Typing is driven by a **stepped GSAP counter** (not TextPlugin) for frame-stability under headless"
+        " chromium.\n"
+        "  Counter tween on `#char-count` from `0` to `text.length`, ease `none`, then sliced in a"
+        " `gsap.ticker.add`.\n"
+        "  A GSAP `ticker` is NOT used in final form — the count proxy is tweened and read at each GSAP scrub"
+        " position.\n",
+        "- Typing is driven by a **stepped GSAP counter** (not TextPlugin) for frame-stability under headless"
+        " chromium.\n"
+        "  A plain `proxy = { n: 0 }` object is tweened from `0` to the prompt length (ease `none`) over\n"
+        "  `typingWindow()`; its `onUpdate` writes `PROMPT_TEXT.slice(0, Math.round(n))` into `#ts-typed`.\n"
+        "  No `gsap.ticker` and no counter element are used.\n",
+    ),
+)
+
+
+def _apply_text_edits(path: Path, edits, recipe: str, what: str) -> bool:
+    text = path.read_text(encoding="utf-8")
+    new_text = text
+    for old, new in edits:
+        if new in new_text:
+            continue
+        if new_text.count(old) != 1:
+            raise SystemExit(f"sync-skills.py: ERROR - {what} anchor {old.splitlines()[0][:70]!r} found "
+                             f"{new_text.count(old)} time(s) in {path} ({recipe}); the WI2.80 transform cannot apply")
+        new_text = new_text.replace(old, new, 1)
+    if new_text != text:
+        path.write_text(new_text, encoding="utf-8")
+        return True
+    return False
+
+
+def apply_typing_render_usage(directory: Path, recipe: str) -> int:
+    """WI2.80: pip/split step 04 copies (top-level and .hub) describe the real c-typing-ui render
+    (fill the template + hyperframes render), and every c-typing-ui SKILL.md copy describes the
+    shipped timing. Idempotent; fails fast when a copy lost its anchor."""
+    changed = 0
+    if not directory.is_dir():
+        return 0
+    for name, (old, new) in _STEP_TYPING_RENDER_EDITS.items():
+        for step in sorted(p for p in directory.rglob(name) if p.is_file() and p.parent.name == "steps"):
+            if _apply_text_edits(step, [(old, new)], recipe, "typing render step"):
+                changed += 1
+    for comp in sorted(p for p in directory.rglob("c-typing-ui") if p.is_dir() and p.parent.name == ".hub"):
+        doc = comp / TYPING_SKILL_FILE
+        if doc.is_file() and _apply_text_edits(doc, _TYPING_SKILL_RENDER_EDITS, recipe, "c-typing-ui SKILL.md"):
+            changed += 1
+    return changed
+
+
 def git_head_sha(repo: Path) -> str | None:
     """Best-effort `git rev-parse HEAD` of `repo`. Returns None (never
     raises) when `repo` isn't a git checkout — e.g. a test fixture dir — so
@@ -2312,6 +2443,9 @@ def main():
 
         # WI2.73: the chat mock-up finishes typing before the cut (every c-typing-ui copy).
         apply_typing_hold(recipe_dest, recipe)
+
+        # WI2.80: step 04 names the real c-typing-ui render; its SKILL.md states the shipped timing.
+        apply_typing_render_usage(recipe_dest, recipe)
 
         files = list_files(recipe_dest)
         file_hashes = {f: sha256_file(recipe_dest / f) for f in files}
