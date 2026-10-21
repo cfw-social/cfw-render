@@ -87,7 +87,9 @@ shipped typingWindow() timing and proxy counter (no #char-count element).
 WI2.83 apply_spotlight_stat_fit() makes every p-reels-spotlight tk-stat.html copy (top-level
 and .hub) keep the stat on one line and fit it to the safe width: the page measures the stat
 and scales its font size down from the 340 px design size until it is no wider than 900 px
-(1080 minus the 72 px side padding, with room for the 1.03 breathe); it refits once fonts load.
+(900 = (1080 - 2x72) / 1.03 rounded down, so the 1.03 breathe stays inside the 72 px side
+padding); it refits once fonts load. WI2.85 (same transform) caps the slam-in start scale at
+min(2.4, 936 / fitted width), so a wide stat no longer starts at 2.4x and clips both edges.
 
 Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
 and before list_files/hashing, same ordering guarantee:
@@ -2308,7 +2310,7 @@ def apply_typing_render_usage(directory: Path, recipe: str) -> int:
 # "100,000" is ~1200 px wide at that size, so it ran past both frame edges (smoke 23b, 2026-10-21).
 # The stat now stays on one line and the page fits it: it measures the rendered width and scales the
 # font size down from the 340 px design size until the stat is no wider than STAT_MAX_W. 900 px =
-# 1080 minus the 72 px side padding (936), less room for the 1.03 breathe tween (936 / 1.03 ≈ 908).
+# (1080 - 2x72) / 1.03 rounded down: the 936 px padded width, less room for the 1.03 breathe.
 # A stat that already fits keeps the design size. It refits once web fonts finish loading, because
 # the first measurement can run on a fallback font.
 SPOTLIGHT_STAT_FILE = Path("templates") / "tk-stat.html"
@@ -2348,16 +2350,52 @@ SPOTLIGHT_STAT_FIT_JS = (
     "        }\n"
     "\n"
 )
+# WI2.85: the fitted stat still slammed in from a fixed scale 2.4, so a fitted "100,000" (~900 px)
+# started ~2160 px wide and clipped both frame edges in the first frames (final_checks refusal,
+# 2026-10-21). The slam now starts at min(2.4, 936 / fitted width): 936 px = 1080 - 2x72 side padding.
+# A short stat ("3X") keeps the full 2.4 slam. The start scale is a function value: GSAP reads it once
+# when the tween records its start (at build, after the WI2.83 fit). The WI2.83 fonts refit can change
+# the width, so a second fonts.ready handler (it runs after the refit) re-measures once and invalidates
+# the timeline, so the next seek re-records the slam from the final measurement. Seek-safe: no
+# per-frame layout read. These edits leave the WI2.83 text intact, so both stay idempotent.
+SPOTLIGHT_SLAM_SCALE = 2.4
+SPOTLIGHT_SLAM_MAX_W = 936
+_SPOTLIGHT_SLAM_OLD = (
+    "        // The slam: stat punches in oversized then settles with a soft breathe.\n"
+    "        tl.fromTo(scope + \".js-stat\", { scale: 2.4, opacity: 0 },\n"
+)
+SPOTLIGHT_SLAM_JS = (
+    "        // The slam: stat punches in oversized then settles with a soft breathe.\n"
+    "        // WI2.85: start at 2.4x, capped so the slam's first frame is no wider than SLAM_MAX_W\n"
+    "        // (1080 minus 2x72px side padding). A short stat (\"3X\") keeps the full 2.4x slam.\n"
+    "        var SLAM_SCALE = " + str(SPOTLIGHT_SLAM_SCALE) + ", SLAM_MAX_W = " + str(SPOTLIGHT_SLAM_MAX_W) + ";\n"
+    "        function slamCap() { return Math.min(SLAM_SCALE, SLAM_MAX_W / Math.max(1, statEl.scrollWidth)); }\n"
+    "        var slamFrom = slamCap();\n"
+    "        tl.fromTo(scope + \".js-stat\", { scale: function () { return slamFrom; }, opacity: 0 },\n"
+)
+_SPOTLIGHT_SLAM_REG_OLD = "        window.__timelines[\"{{ID}}\"] = tl;\n"
+SPOTLIGHT_SLAM_REFIT_JS = (
+    "        // WI2.85: after the fonts refit above, re-measure the fitted stat once and re-record the slam.\n"
+    "        if (document.fonts && document.fonts.ready) {\n"
+    "          document.fonts.ready.then(function () { slamFrom = slamCap(); tl.invalidate(); });\n"
+    "        }\n"
+    "\n"
+)
+_SPOTLIGHT_SLAM_EDITS = (
+    (_SPOTLIGHT_SLAM_OLD, SPOTLIGHT_SLAM_JS),
+    (_SPOTLIGHT_SLAM_REG_OLD, SPOTLIGHT_SLAM_REFIT_JS + _SPOTLIGHT_SLAM_REG_OLD),
+)
 _SPOTLIGHT_STAT_EDITS = (
     (_SPOTLIGHT_STAT_CSS_OLD, SPOTLIGHT_STAT_CSS),
     (_SPOTLIGHT_STAT_JS_OLD, SPOTLIGHT_STAT_FIT_JS + _SPOTLIGHT_STAT_JS_OLD),
-)
+) + _SPOTLIGHT_SLAM_EDITS
 
 
 def apply_spotlight_stat_fit(directory: Path, recipe: str) -> int:
     """WI2.83: every p-reels-spotlight tk-stat.html copy under `directory` (top-level or
-    .hub/p-reels-spotlight) fits the stat to the safe width. Idempotent; fails fast when a
-    copy lost its anchor, or when a spotlight recipe ships no tk-stat.html at all."""
+    .hub/p-reels-spotlight) fits the stat to the safe width, and (WI2.85) caps the slam-in start
+    scale so the slam stays inside it too. Idempotent; fails fast when a copy lost its anchor, or
+    when a spotlight recipe ships no tk-stat.html at all."""
     changed = 0
     if not directory.is_dir():
         return 0
@@ -2376,7 +2414,7 @@ def apply_spotlight_stat_fit(directory: Path, recipe: str) -> int:
             if new_text.count(old) != 1:
                 raise SystemExit(f"sync-skills.py: ERROR - tk-stat anchor {old.strip().splitlines()[0][:60]!r} "
                                  f"found {new_text.count(old)} time(s) in {tpl} ({recipe}); "
-                                 "the WI2.83 transform cannot apply")
+                                 "the WI2.83/WI2.85 transform cannot apply")
             new_text = new_text.replace(old, new, 1)
         if new_text != text:
             tpl.write_text(new_text, encoding="utf-8")
@@ -2532,10 +2570,11 @@ def main():
         # WI2.80: step 04 names the real c-typing-ui render; its SKILL.md states the shipped timing.
         apply_typing_render_usage(recipe_dest, recipe)
 
-        # WI2.83: the spotlight big-stat takeover fits its stat to the safe width (every copy).
+        # WI2.83: the spotlight big-stat takeover fits its stat to the safe width (every copy);
+        # WI2.85: its slam-in start scale is capped to the same safe width.
         apply_spotlight_stat_fit(recipe_dest, recipe)
 
-        files =list_files(recipe_dest)
+        files = list_files(recipe_dest)
         file_hashes = {f: sha256_file(recipe_dest / f) for f in files}
         agg_src = "\n".join(f"{f}={file_hashes[f]}" for f in sorted(files))
         checksum = "sha256:" + hashlib.sha256(agg_src.encode("utf-8")).hexdigest()

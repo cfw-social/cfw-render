@@ -1256,7 +1256,7 @@
     },
     "p-reels-spotlight": {
       "version": "1.0.0",
-      "checksum": "sha256:c57564691a990a2d36acd44b0e2dfb871ac701cbeefc0cdf977e0e212e1d3069",
+      "checksum": "sha256:5f43aa36e377ff4e7218986ef5d75041bde0077c4d0ba2e9812966c339a653f3",
       "files": [
         ".hub/c-broll-sync/SCENE-PLAN.md",
         ".hub/c-broll-sync/SKILL.md",
@@ -1503,7 +1503,7 @@
         "templates/tk-keyword.html": "sha256:2bf4db233e2756eb60bf3500c5761581306f14451e63abcfcfce846fca1429a0",
         "templates/tk-list.html": "sha256:79f149be9cdf876b6e314e2d42773902e5ca9c3c59b6d754cc13a49e8efdb5c7",
         "templates/tk-quote.html": "sha256:256ba1874637768165dcd639b79932d2abadaf07a9f342be65a68ee4abbd71a7",
-        "templates/tk-stat.html": "sha256:a26fc579a58d848111b432885f969d854e825c334789d76e290a2ed5b23b9ac2"
+        "templates/tk-stat.html": "sha256:af8bf5cc6be0f4664680037b0e74b8431679dce105ec4f02e829df50ade70478"
       },
       "providers": [],
       "systemRequires": [],
@@ -2282,7 +2282,7 @@
     },
     "p-reels-spotlight-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:99323a0dd797369d4ac5efc7cf0ba4193c5e8b03f56cf003baffc7e2f404a48b",
+      "checksum": "sha256:db137b852dd44e24a422f4c7be8fe3585c45fd422abd189d0f4b38f454da4798",
       "files": [
         ".hub/c-broll-sync/SCENE-PLAN.md",
         ".hub/c-broll-sync/SKILL.md",
@@ -2546,7 +2546,7 @@
         ".hub/p-reels-spotlight/templates/tk-keyword.html": "sha256:2bf4db233e2756eb60bf3500c5761581306f14451e63abcfcfce846fca1429a0",
         ".hub/p-reels-spotlight/templates/tk-list.html": "sha256:79f149be9cdf876b6e314e2d42773902e5ca9c3c59b6d754cc13a49e8efdb5c7",
         ".hub/p-reels-spotlight/templates/tk-quote.html": "sha256:256ba1874637768165dcd639b79932d2abadaf07a9f342be65a68ee4abbd71a7",
-        ".hub/p-reels-spotlight/templates/tk-stat.html": "sha256:a26fc579a58d848111b432885f969d854e825c334789d76e290a2ed5b23b9ac2",
+        ".hub/p-reels-spotlight/templates/tk-stat.html": "sha256:af8bf5cc6be0f4664680037b0e74b8431679dce105ec4f02e829df50ade70478",
         "SKILL.md": "sha256:2a3f7b070438d31423358438e441bd23c06e33e4463be061c513475b27219bf1",
         "manifest.json": "sha256:0cbdd4d1eba4238de11154c3a086e2601ae9d88b285793844ea65e978f92494b",
         "steps/00-generate-avatar.md": "sha256:eac770a046a182a5c561b349441b2087376a0387e3c20d53bafe97909cff80c6",

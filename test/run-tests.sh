@@ -10242,6 +10242,130 @@ else
 fi
 rm -rf "$wi283_root"
 
+echo "=== Case 60: WI2.85 — the spotlight big-stat slam-in starts inside the frame for a wide stat ==="
+# Observed 2026-10-21 (final_checks refused a spotlight smoke on Render 137765e): WI2.83 fits the
+# settled stat to <= 900 px, but the GSAP slam still started at scale 2.4, so a fitted "100,000"
+# (~900 px) began ~2100 px wide and clipped both frame edges around 0.33 s. Every p-reels-spotlight
+# tk-stat.html copy now starts the slam at min(2.4, 936 / fitted width) (936 = 1080 - 2x72), and
+# re-reads it after the fonts refit. The template script runs in node with a fake DOM (text width
+# grows with font size; a fallback font is wider until fonts load) and a fake GSAP that records the
+# slam's start scale the way GSAP does: at build, and again only if the timeline is invalidated.
+wi285_root="$(mktemp -d)"
+wi285_detail="$(python3 - "$REPO_DIR" "$wi285_root" <<'PY'
+import importlib.util, json, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+SIM = r"""
+const vm = require('vm'), fs = require('fs');
+const [tplPath, stat, emFallback, emLoaded] = process.argv.slice(2);
+const src = fs.readFileSync(tplPath, 'utf8');
+const scripts = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+if (scripts.length !== 1) { console.log(JSON.stringify({ error: 'inline scripts: ' + scripts.length })); process.exit(0); }
+const code = scripts[0].replace(/\{\{ID\}\}/g, 'tk0').replace(/\{\{DURATION\}\}/g, '3');
+let em = parseFloat(emFallback);  // the fallback font until fonts load
+function el(text) {
+  return { textContent: text, innerHTML: text, style: {},
+    get scrollWidth() { const fs = parseFloat(this.style.fontSize) || 340;
+      return Math.round(fs * em * this.textContent.length); } };
+}
+const els = { '.js-stat': el(stat), '.js-label': el('VIEWS IN 90 DAYS') };
+const slams = [];  // fromTo tweens on the stat: GSAP records a function value when the tween inits
+const tl = { invalidate() { slams.forEach(s => { s.start = undefined; }); return tl; } };
+const val = v => (typeof v === 'function' ? v(0, els['.js-stat'], [els['.js-stat']]) : v);
+tl.fromTo = (sel, from, to) => { if (String(sel).endsWith('.js-stat')) slams.push({ from, start: val(from.scale) }); return tl; };
+tl.to = () => tl;
+const readies = [];
+const ctx = { window: {}, gsap: { timeline: () => tl }, parseFloat, Math,
+  document: { querySelector: s => els[Object.keys(els).find(k => s.endsWith(k))] || el(''),
+              fonts: { ready: { then: f => { readies.push(f); } } } } };
+vm.runInNewContext(code, ctx);
+em = parseFloat(emLoaded);           // fonts finished loading
+readies.forEach(f => f());           // callbacks run in registration order, like a promise
+const s = slams[0];
+if (!s) { console.log(JSON.stringify({ error: 'no stat fromTo slam' })); process.exit(0); }
+const start = s.start === undefined ? val(s.from.scale) : s.start;  // next seek re-inits if invalidated
+const width = els['.js-stat'].scrollWidth;
+console.log(JSON.stringify({ start, width, startWidth: Math.round(start * width) }));
+"""
+(root / "sim.js").write_text(SIM, encoding="utf-8")
+def sim(tpl, stat, em_fallback, em_loaded):
+    out = subprocess.run(["node", str(root / "sim.js"), str(tpl), stat, str(em_fallback), str(em_loaded)],
+                         capture_output=True, text=True, timeout=60)
+    if out.returncode != 0:
+        return {"error": out.stderr.strip()[-200:]}
+    return json.loads(out.stdout)
+try:
+    skills = repo / "skills"
+    tpls = sorted(p for p in skills.rglob("tk-stat.html")
+                  if p.parent.name == "templates" and p.parent.parent.name == "p-reels-spotlight")
+    if len(tpls) != 2:
+        bad.append("expected 2 p-reels-spotlight tk-stat.html copies, found %d" % len(tpls))
+    if len({t.read_bytes() for t in tpls}) > 1:
+        bad.append("the tk-stat.html copies differ")
+    for tpl in tpls:
+        rel = tpl.relative_to(repo)
+        # (fallback em, loaded em): fonts that do not change width, a wider fallback, a narrower fallback.
+        for stat in ("100,000", "$1,234,567.8", "WWWWWWWWWWWW"):
+            for ems in ((0.55, 0.55), (0.70, 0.55), (0.45, 0.55)):
+                r = sim(tpl, stat, *ems)
+                if "error" in r:
+                    bad.append("%s: %s did not run: %s" % (rel, stat, r["error"])); continue
+                if r["startWidth"] > 936:
+                    bad.append("%s: %r slams in %dpx wide (scale %.2f x %dpx), past the 936px padded width (fonts %s)"
+                               % (rel, stat, r["startWidth"], r["start"], r["width"], ems))
+        for ems in ((0.55, 0.55), (0.70, 0.55)):
+            r = sim(tpl, "3X", *ems)
+            if r.get("start") != 2.4:
+                bad.append("%s: a short stat (3X) lost the full 2.4 slam: %r" % (rel, r))
+    spec = importlib.util.spec_from_file_location("ss285", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    slam_edits = getattr(ss, "_SPOTLIGHT_SLAM_EDITS", None)
+    if slam_edits is None or not all(e in ss._SPOTLIGHT_STAT_EDITS for e in slam_edits):
+        bad.append("sync-skills.py apply_spotlight_stat_fit does not carry the WI2.85 slam edits")
+    else:
+        # From the WI2.83 (137765e) template the transform adds only the slam cap, once, and its
+        # output is byte-identical to the committed bundle.
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        for t in up.rglob("tk-stat.html"):
+            text = t.read_text(encoding="utf-8")
+            for old, new in reversed(slam_edits):
+                text = text.replace(new, old)
+            t.write_text(text, encoding="utf-8")
+            r = sim(t, "100,000", 0.55, 0.55)
+            if r.get("startWidth", 0) <= 936:
+                bad.append("sanity: the restored WI2.83 template was not caught (%r)" % r)
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            n1 = ss.apply_spotlight_stat_fit(up / rec, rec); n2 = ss.apply_spotlight_stat_fit(up / rec, rec)
+            if (n1, n2) != (1, 0):
+                bad.append("transform on %s changed (%d, %d) file(s), expected (1, 0)" % (rec, n1, n2))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        t = up / "p-reels-spotlight" / "templates" / "tk-stat.html"
+        text = t.read_text(encoding="utf-8")
+        for old, new in reversed(slam_edits):
+            text = text.replace(new, old)
+        t.write_text(text.replace("{ scale: 2.4, opacity: 0 }", "{ scale: 2.2, opacity: 0 }"), encoding="utf-8")
+        try:
+            ss.apply_spotlight_stat_fit(up / "p-reels-spotlight", "fixture")
+            bad.append("transform did not fail on a drifted slam tween")
+        except SystemExit:
+            pass
+except Exception as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi285_detail" == "ok" ]]; then
+  pass "WI2.85 spotlight tk-stat slam starts at min(2.4, 936 / fitted width): wide stats stay inside, 3X keeps 2.4 (every copy)"
+else
+  fail "WI2.85 spotlight tk-stat slam starts inside the padded frame width" "$wi285_detail"
+fi
+rm -rf "$wi285_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then

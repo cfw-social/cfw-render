@@ -134,13 +134,23 @@
           { y: 0, opacity: 1, duration: 0.4, ease: "power3.out" }, 0.1);
 
         // The slam: stat punches in oversized then settles with a soft breathe.
-        tl.fromTo(scope + ".js-stat", { scale: 2.4, opacity: 0 },
+        // WI2.85: start at 2.4x, capped so the slam's first frame is no wider than SLAM_MAX_W
+        // (1080 minus 2x72px side padding). A short stat ("3X") keeps the full 2.4x slam.
+        var SLAM_SCALE = 2.4, SLAM_MAX_W = 936;
+        function slamCap() { return Math.min(SLAM_SCALE, SLAM_MAX_W / Math.max(1, statEl.scrollWidth)); }
+        var slamFrom = slamCap();
+        tl.fromTo(scope + ".js-stat", { scale: function () { return slamFrom; }, opacity: 0 },
           { scale: 1, opacity: 1, duration: 0.45, ease: "power4.out" }, 0.25);
         tl.to(scope + ".js-stat", { scale: 1.03, duration: 0.6, ease: "sine.inOut" }, 0.9);
         tl.to(scope + ".js-stat", { scale: 1.0, duration: Math.max(0.4, DUR - 2.0), ease: "sine.inOut" }, 1.55);
 
         tl.fromTo(scope + ".js-label .word", { yPercent: 110, opacity: 0 },
           { yPercent: 0, opacity: 1, duration: 0.5, ease: "back.out(1.6)", stagger: 0.07 }, 0.55);
+
+        // WI2.85: after the fonts refit above, re-measure the fitted stat once and re-record the slam.
+        if (document.fonts && document.fonts.ready) {
+          document.fonts.ready.then(function () { slamFrom = slamCap(); tl.invalidate(); });
+        }
 
         window.__timelines["{{ID}}"] = tl;
       })();
