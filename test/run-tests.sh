@@ -9317,6 +9317,160 @@ else
 fi
 rm -rf "$wi272_root"
 
+echo "=== Case 53: WI2.76 — caption groups keep phrases whole (no lone mid-clause fragment) ==="
+# Smoke 21b showed a caption "FLOUR STILL": the planner split "She approved them with flour
+# still on her hands," into three groups. The caption-planning step now writes
+# work/caption_phrases.py (shipped by scripts/sync-skills.py), regroups the plan so no group
+# ends on a preposition/article/conjunction/auxiliary and no 1-2 word mid-clause fragment is
+# left (timings kept), and the plan guard fails on a split phrase. A whole plan is unchanged.
+wi276_root="$(mktemp -d)"
+wi276_detail="$(python3 - "$REPO_DIR" "$wi276_root" <<'PY'
+import copy, hashlib, importlib.util, json, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+FILES = {"p-reels-spotlight": "steps/03-plan-edit.md", "p-reels-spotlight-heygen": "steps/03-plan-edit.md",
+         "p-reels-pip": "steps/05-composite.md", "p-reels-pip-heygen": "steps/05-composite.md"}
+OPEN = "cat > work/caption_phrases.py <<'PY'\n"
+def say(g):
+    return " ".join(w["w"] for w in g["words"])
+def closes(w):
+    t = re.sub(r"[\"')\]]+$", "", w["w"].strip())
+    return bool(t) and t[-1] in ".,!?;:"
+def fragments(groups):
+    return [say(g) for i, g in enumerate(groups) if 0 < i < len(groups) - 1 and len(g["words"]) <= 2
+            and not closes(groups[i - 1]["words"][-1]) and not closes(g["words"][-1])]
+try:
+    spec = importlib.util.spec_from_file_location("ss276", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    helpers = {}
+    for r, rel in FILES.items():
+        body = (repo / "skills" / r / rel).read_text(encoding="utf-8")
+        if OPEN not in body:
+            bad.append("%s: %s does not write work/caption_phrases.py" % (r, rel)); continue
+        helpers[r] = body.split(OPEN, 1)[1].split("\nPY\n", 1)[0] + "\n"
+        if "spotlight" in r:
+            run_at = body.find("python3 work/caption_phrases.py saves/edit_plan.json")
+            guard_at = body.find("Then run the mechanical guard")
+            if run_at < 0 or not (body.index(OPEN) < run_at < guard_at):
+                bad.append("%s: the plan is not regrouped after it is written and before the guard" % r)
+            if '"work/caption_phrases.py", "--check"' not in body.split("Then run the mechanical guard", 1)[1]:
+                bad.append("%s: the plan guard does not check for split phrases" % r)
+            if "never\n   leave a lone 1–2 word fragment" not in body:
+                bad.append("%s: rule 1 does not forbid a lone mid-clause fragment" % r)
+        else:
+            if 'python3 work/caption_phrases.py "$PW/plan.json"' not in body or \
+               'python3 work/caption_phrases.py --check "$PW/plan.json" || exit 1' not in body:
+                bad.append("%s: composite step does not regroup and check the premium plan" % r)
+    if set(helpers.values()) != {ss._CAPTION_PHRASES_PY}:
+        bad.append("helper differs across recipes or from sync-skills.py")
+    helper = root / "caption_phrases.py"; helper.write_text(ss._CAPTION_PHRASES_PY, encoding="utf-8")
+    fixture = json.loads((repo / "test" / "fixtures" / "wi276-smoke21b-caption-groups.json").read_text())
+    orig = fixture["caption_groups"]
+    plan = {"duration": fixture["duration"], "energy": "medium", "grade": "warm-amber", "cover_at": 20.0,
+            "brand": {"bg": "#0F172A", "accent": "#F97316", "fg": "#F1F5F9"}, "takeovers": [],
+            "caption_groups": orig, "sfx": []}
+    wd = root / "smoke21b"; (wd / "work").mkdir(parents=True); (wd / "saves").mkdir()
+    shutil.copy(helper, wd / "work" / "caption_phrases.py")
+    pp = wd / "saves" / "edit_plan.json"; pp.write_text(json.dumps(plan), encoding="utf-8")
+    guard = (repo / "skills" / "p-reels-spotlight" / "steps" / "03-plan-edit.md").read_text(encoding="utf-8")
+    guard = guard.split("python3 - saves/edit_plan.json \"$DUR\" <<'PY'\n", 1)[1].split("\nPY\n", 1)[0] + "\n"
+    (wd / "guard.py").write_text(guard, encoding="utf-8")
+    g0 = subprocess.run([sys.executable, "-I", "guard.py", "saves/edit_plan.json", str(fixture["duration"])],
+                        cwd=wd, capture_output=True, text=True)
+    if g0.returncode == 0:
+        bad.append("guard passed the smoke 21b plan with its FLOUR STILL fragment")
+    c0 = subprocess.run([sys.executable, "-I", str(helper), "--check", "saves/edit_plan.json"], cwd=wd, capture_output=True, text=True)
+    if c0.returncode == 0 or "'flour still'" not in c0.stderr:
+        bad.append("--check did not name the 'flour still' fragment (rc=%d)" % c0.returncode)
+    r = subprocess.run([sys.executable, "-I", str(helper), "saves/edit_plan.json"], cwd=wd, capture_output=True, text=True)
+    if r.returncode != 0:
+        bad.append("helper rc=%d %s" % (r.returncode, r.stderr.strip()[-300:]))
+    got = json.loads(pp.read_text())["caption_groups"]
+    print("REGROUPED " + " | ".join("[%s]" % say(g) for g in got), file=sys.stderr)
+    home = [g for g in got if "flour" in say(g)]
+    if len(home) != 1 or "flour still on her hands," not in say(home[0]):
+        bad.append("'flour still' is not in the same group as 'on her hands': %r" % [say(g) for g in home])
+    if any(say(g).lower() in ("flour still", "with flour still") for g in got):
+        bad.append("a lone flour-still group survived")
+    if fragments(got):
+        bad.append("mid-clause fragments left: %r" % fragments(got))
+    for i, g in enumerate(got[:-1]):
+        if g["words"][-1]["w"].lower() in ("with", "a", "the", "of", "to", "and", "is"):
+            bad.append("group ends on a phrase word: %r" % say(g))
+    flat = lambda gs: [(w["w"], w["s"], w["e"]) for g in gs for w in g["words"]]
+    if flat(got) != flat(orig):
+        bad.append("words or word timings changed")
+    if any(len(g["words"]) > 6 for g in got):
+        bad.append("a group has more than 6 words")
+    for a, b in zip(got, got[1:]):
+        if a["style"] == b["style"]:
+            bad.append("adjacent groups share style %s" % a["style"])
+        if a["end"] > b["start"] + 1e-9:
+            bad.append("groups overlap at %r" % say(b))
+    for g in got:
+        if sum(1 for w in g["words"] if w.get("em")) > 1:
+            bad.append("more than one em word in %r" % say(g))
+        if not (g["start"] <= g["words"][0]["s"] + 1e-9 and g["end"] >= g["words"][-1]["e"] - 1e-9):
+            bad.append("group span does not hold its words: %r" % say(g))
+    if got[0]["start"] != orig[0]["start"] or got[-1]["end"] != orig[-1]["end"]:
+        bad.append("coverage of the bed changed")
+    g1 = subprocess.run([sys.executable, "-I", "guard.py", "saves/edit_plan.json", str(fixture["duration"])],
+                        cwd=wd, capture_output=True, text=True)
+    if g1.returncode != 0 or "plan OK" not in g1.stdout:
+        bad.append("guard failed the regrouped plan: %s" % (g1.stderr.strip()[-300:]))
+    before = pp.read_bytes()
+    r2 = subprocess.run([sys.executable, "-I", str(helper), "saves/edit_plan.json"], cwd=wd, capture_output=True, text=True)
+    if r2.returncode != 0 or pp.read_bytes() != before:
+        bad.append("second run is not a no-op")
+    # a plan that already keeps phrases whole is left byte-for-byte unchanged
+    def mk(lines):
+        gs, t = [], 0.0
+        for k, line in enumerate(lines):
+            ws = []
+            for x in line.split():
+                ws.append({"w": x, "s": round(t, 3), "e": round(t + 0.3, 3), "em": False}); t += 0.32
+            gs.append({"start": ws[0]["s"], "end": ws[-1]["e"], "style": k % 3, "words": ws})
+        gs[1]["words"][0]["em"] = True
+        return gs
+    whole = dict(plan, caption_groups=mk(["She approved them", "with flour still on her hands,", "about 30 minutes",
+                                          "a week.", "Here's how it works.", "Once a week,", "she just types"]))
+    wp = wd / "saves" / "whole.json"; wp.write_text(json.dumps(whole, indent=2), encoding="utf-8")
+    wb = wp.read_bytes()
+    r3 = subprocess.run([sys.executable, "-I", str(helper), "saves/whole.json"], cwd=wd, capture_output=True, text=True)
+    if r3.returncode != 0 or wp.read_bytes() != wb or "unchanged" not in r3.stdout:
+        bad.append("a whole plan was changed (rc=%d %r)" % (r3.returncode, r3.stdout.strip()))
+    # the sync transform is idempotent on the committed files and fails fast on a drifted anchor
+    for rcp, rel in FILES.items():
+        cp = root / "copy" / rcp; shutil.copytree(repo / "skills" / rcp / "steps", cp / "steps")
+        if ss.apply_reel_caption_phrases(cp, rcp) != 0:
+            bad.append("%s: committed %s is not what sync-skills.py writes" % (rcp, rel))
+    drift = root / "drift" / "p-reels-spotlight"; (drift / "steps").mkdir(parents=True)
+    (drift / "steps" / "03-plan-edit.md").write_text("Then run the mechanical guard, differently\n", encoding="utf-8")
+    code = ("import importlib.util,sys\nfrom pathlib import Path\n"
+            "s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)\n"
+            "m.apply_reel_caption_phrases(Path(sys.argv[2]),'p-reels-spotlight')\n")
+    rr = subprocess.run([sys.executable, "-I", "-c", code, str(repo / "scripts" / "sync-skills.py"), str(drift)], capture_output=True, text=True)
+    if rr.returncode == 0 or "WI2.76 transform cannot apply" not in rr.stderr:
+        bad.append("sync transform did not fail fast on a missing anchor (rc=%d)" % rr.returncode)
+    # index.json hashes cover the edited files
+    idx = json.loads((repo / "skills" / "index.json").read_text(encoding="utf-8"))
+    for rcp, rel in FILES.items():
+        actual = "sha256:" + hashlib.sha256((repo / "skills" / rcp / rel).read_bytes()).hexdigest()
+        if idx["recipes"][rcp]["fileHashes"].get(rel) != actual:
+            bad.append("%s: index.json hash for %s is stale" % (rcp, rel))
+except Exception as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi276_detail" == "ok" ]]; then
+  pass "WI2.76 caption groups keep phrases whole: 'flour still' joins 'on her hands', a whole plan is unchanged"
+else
+  fail "WI2.76 caption groups keep phrases whole" "$wi276_detail"
+fi
+rm -rf "$wi276_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then

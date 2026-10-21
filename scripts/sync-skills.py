@@ -52,6 +52,12 @@ WI2.72 apply_reel_script_align() passes the known script to mlx_whisper as
 alignment, timings kept) in the top-level transcribe step of the four reel
 recipes. No script -> the transcript is left unchanged.
 
+WI2.76 apply_reel_caption_phrases() writes work/caption_phrases.py into the
+top-level caption-planning step of the four reel recipes (spotlight 03-plan-edit,
+pip 05-composite): it regroups caption_groups so no group ends on a preposition,
+article, conjunction or auxiliary and no 1-2 word mid-clause fragment is left
+(timings kept), and the plan guard fails on a split phrase.
+
 Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
 and before list_files/hashing, same ordering guarantee:
   strip_brand_override_host_paths() nulls/drops the two host-path fields
@@ -1567,6 +1573,300 @@ def apply_reel_script_align(directory: Path, recipe: str) -> int:
     return 0
 
 
+# WI2.76: smoke 21b showed a lone "FLOUR STILL" caption: the planner split "She approved
+# them with flour still on her hands" into three groups. Caption groups were only checked by
+# prose. These transforms write work/caption_phrases.py, which regroups the plan's
+# caption_groups so no group ends on a preposition/article/conjunction/auxiliary and no 1-2 word
+# group is a mid-clause fragment (word timings kept, styles and emphasis re-checked), then the
+# guard fails on a split phrase. Spotlight: top-level steps/03-plan-edit.md (saves/edit_plan.json).
+# Pip: top-level steps/05-composite.md (c-reel-premium P1 writes work/premium/plan.json there).
+_CAPTION_PHRASES_PY = r"""# WI2.76: keep caption phrases whole - never split a group mid-clause.
+# usage: python3 work/caption_phrases.py PLAN.json           (repair caption_groups in place)
+#        python3 work/caption_phrases.py --check PLAN.json   (exit 1 when a group splits a phrase)
+# A break never follows a preposition, article, conjunction or auxiliary (the trailing word
+# moves to the next group). A 1-2 word group from mid-clause (no punctuation before it or after
+# it) merges into a neighbour. Groups stay 2-4 words where they were; up to 6 to keep a phrase
+# whole (a longer one is split at punctuation or a clause start). Word timings never change.
+import json, re, sys
+
+MAX_WORDS = 6
+JOINERS = set((
+    "a an the my your our their its every each "
+    "and but or nor so yet if than because while "
+    "with of to in on at for from by into onto about as like through over under after before "
+    "between among during without within until upon via toward towards near against across "
+    "is am are was were be been being will would can could shall should may might must").split())
+CLOSERS = ".,!?;:—–…"
+CONTRACTION = re.compile(r"[a-z]('s|'re|'ve|'ll|'d|'m)$")
+
+def text(w):
+    return str(w.get("w", w.get("text", "")))
+
+def bare(w):
+    t = text(w).strip().lower().replace("’", "'")
+    return re.sub(r"^[^a-z0-9']+|[^a-z0-9']+$", "", t)
+
+def closes(w):
+    # the word ends a clause: trailing punctuation (quotes/brackets ignored)
+    t = re.sub(r"[\"'”’)\]]+$", "", text(w).strip())
+    return bool(t) and t[-1] in CLOSERS
+
+def joiner(w):
+    if closes(w):
+        return False
+    b = bare(w)
+    return b in JOINERS or bool(CONTRACTION.search(b))
+
+def fragment(groups, i):
+    # a 1-2 word group with no clause break before it and none after it
+    g = groups[i]["words"]
+    if not (0 < i < len(groups) - 1) or len(g) > 2:
+        return False
+    return not closes(groups[i - 1]["words"][-1]) and not closes(g[-1])
+
+def bad_break(groups, i):
+    # the break after group i falls inside a phrase
+    return i < len(groups) - 1 and joiner(groups[i]["words"][-1])
+
+def problems(groups):
+    out = []
+    for i, g in enumerate(groups):
+        ws = g.get("words") or []
+        say = " ".join(text(w) for w in ws)
+        if not ws:
+            out.append("group %d has no words" % i); continue
+        if len(ws) > MAX_WORDS + 1:
+            out.append("group %d has %d words: %r" % (i, len(ws), say))
+        if fragment(groups, i):
+            out.append("group %d is a mid-clause fragment: %r" % (i, say))
+        if bad_break(groups, i):
+            out.append("group %d ends inside a phrase: %r | %r" % (
+                i, say, " ".join(text(w) for w in groups[i + 1]["words"])))
+        if sum(1 for w in ws if w.get("em")) > 1:
+            out.append("group %d has more than one emphasis word" % i)
+        if i and g.get("style") == groups[i - 1].get("style"):
+            out.append("groups %d and %d share style %s" % (i - 1, i, g.get("style")))
+        if i and float(g["start"]) < float(groups[i - 1]["end"]) - 1e-6:
+            out.append("group %d overlaps group %d" % (i, i - 1))
+    return out
+
+def split_long(ws):
+    # best cut of an over-long group: after punctuation, else before a clause start,
+    # never leaving a phrase-ending word on the left, both sides >= 3 words
+    best = None
+    for k in range(3, len(ws) - 2):
+        left = ws[k - 1]
+        if joiner(left):
+            continue
+        score = (0 if closes(left) else 1 if bare(ws[k]) in JOINERS else 2, abs(len(ws) - 2 * k))
+        if best is None or score < best[0]:
+            best = (score, k)
+    return None if best is None else best[1]
+
+def repair(groups):
+    groups = [dict(g, words=[dict(w) for w in (g.get("words") or [])]) for g in groups]
+    changed = False
+    for _ in range(200):
+        moved = False
+        # fragments first, then phrase-ending breaks, then over-long groups
+        frag = [i for i in range(len(groups)) if fragment(groups, i)]
+        brk = [i for i in range(len(groups)) if bad_break(groups, i)]
+        order = frag[:1] or brk[:1] or range(len(groups))
+        for i in order:
+            if fragment(groups, i):
+                prev_n, next_n = len(groups[i - 1]["words"]), len(groups[i + 1]["words"])
+                j = i - 1 if prev_n < next_n else i + 1
+                lo, hi = min(i, j), max(i, j)
+                groups[lo]["words"] += groups[hi]["words"]
+                groups[lo]["_new"] = changed = True; del groups[hi]
+                moved = True; break
+            if bad_break(groups, i):
+                a, b = groups[i], groups[i + 1]
+                while a["words"] and joiner(a["words"][-1]):
+                    b["words"].insert(0, a["words"].pop())
+                a["_new"] = b["_new"] = changed = True
+                if not a["words"]:
+                    del groups[i]
+                moved = True; break
+            if len(groups[i]["words"]) > MAX_WORDS:
+                k = split_long(groups[i]["words"])
+                if k is None:
+                    continue
+                g = groups[i]
+                tail = dict(g, words=g["words"][k:]); g["words"] = g["words"][:k]
+                groups.insert(i + 1, tail); g["_new"] = tail["_new"] = changed = True
+                moved = True; break
+        if not moved:
+            break
+    if not changed:
+        return groups, False
+    for g in groups:
+        if g.pop("_new", False):
+            g["start"], g["end"] = g["words"][0]["s"], g["words"][-1]["e"]
+            seen = False
+            for w in g["words"]:  # at most one emphasis word per group
+                if w.get("em"):
+                    if seen:
+                        w["em"] = False
+                    seen = True
+    return groups, True
+
+def restyle(groups):
+    for i, g in enumerate(groups):
+        prev = groups[i - 1].get("style") if i else None
+        if g.get("style") == prev:
+            nxt = groups[i + 1].get("style") if i + 1 < len(groups) else None
+            g["style"] = next(s for s in (0, 1, 2) if s not in (prev, nxt))
+
+def run(plan):
+    orig = plan.get("caption_groups") or []
+    if not orig:
+        return plan, False
+    first_start, last_end = orig[0]["start"], orig[-1]["end"]
+    groups, changed = repair(orig)
+    if not changed:
+        return plan, False
+    groups[0]["start"] = min(float(groups[0]["start"]), float(first_start))
+    groups[-1]["end"] = max(float(groups[-1]["end"]), float(last_end))
+    for a, b in zip(groups, groups[1:]):
+        if float(a["end"]) > float(b["start"]):
+            a["end"] = b["start"]
+    restyle(groups)
+    plan = dict(plan, caption_groups=groups)
+    return plan, True
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    check = args[:1] == ["--check"]
+    path = args[-1]
+    plan = json.load(open(path))
+    if not check:
+        before = [" ".join(text(w) for w in g.get("words") or []) for g in plan.get("caption_groups") or []]
+        plan, changed = run(plan)
+        if changed:
+            json.dump(plan, open(path, "w"), indent=1)
+            after = [" ".join(text(w) for w in g["words"]) for g in plan["caption_groups"]]
+            print("[plan] caption phrases: regrouped %d -> %d groups" % (len(before), len(after)))
+            for line in sorted(set(after) - set(before), key=after.index):
+                print("  [%s]" % line)
+        else:
+            print("[plan] caption phrases: already whole, plan unchanged")
+    bad = problems(plan.get("caption_groups") or [])
+    for b in bad:
+        print("caption phrase check: " + b, file=sys.stderr)
+    sys.exit(1 if bad else 0)
+"""
+_CAPTION_PHRASES_WRITE = (
+    "```bash\nmkdir -p work saves\ncat > work/caption_phrases.py <<'PY'\n" + _CAPTION_PHRASES_PY + "PY\n```\n\n"
+)
+_CAPTION_PHRASES_SPOT_SECTION = (
+    "Keep caption phrases whole (WI2.76). Write the helper, then run it on the plan: it moves a\n"
+    "group-ending preposition, article, conjunction or auxiliary into the next group, merges a\n"
+    "1–2 word mid-clause fragment into a neighbour (up to 6 words to keep a phrase whole), keeps\n"
+    "every word timing, and re-checks styles and emphasis. A plan that is already whole is left\n"
+    "unchanged.\n\n" + _CAPTION_PHRASES_WRITE +
+    "```bash\npython3 work/caption_phrases.py saves/edit_plan.json || exit 1\n```\n\n"
+)
+_CAPTION_PHRASES_SPOT_GUARD_ANCHOR = "Then run the mechanical guard — fix the plan and rerun until it prints `plan OK`:\n"
+_CAPTION_PHRASES_RULE_OLD = (
+    "1. `caption_groups` cover the FULL duration, 2–4 words each, non-overlapping, breaking on sentence\n"
+    "   boundaries or pauses ≥ 150 ms. Words VERBATIM from the transcript.\n"
+)
+_CAPTION_PHRASES_RULE_NEW = (
+    "1. `caption_groups` cover the FULL duration, 2–4 words each (up to 6 to keep a phrase whole),\n"
+    "   non-overlapping, breaking at punctuation, clause starts or pauses ≥ 150 ms. Never break after a\n"
+    "   preposition, article, conjunction or auxiliary (`with`, `of`, `the`, `and`, `is`, …), and never\n"
+    "   leave a lone 1–2 word fragment from mid-clause (`She approved them` / `with flour still on her\n"
+    "   hands,` — not `She approved them with` / `FLOUR STILL` / `on her hands,`). Words VERBATIM from\n"
+    "   the transcript.\n"
+)
+_CAPTION_PHRASES_GUARD_OLD = "print(f\"plan OK: {len(p['caption_groups'])} groups, {len(tks)} takeovers"
+_CAPTION_PHRASES_GUARD_NEW = (
+    "import subprocess\n"
+    "assert subprocess.run([sys.executable, \"work/caption_phrases.py\", \"--check\", sys.argv[1]]).returncode == 0, \\\n"
+    "    \"a caption group splits a phrase mid-clause (WI2.76) — run python3 work/caption_phrases.py saves/edit_plan.json\"\n"
+)
+_CAPTION_PHRASES_HARNESS_OLD = ("  groups cover the bed to within 3 s, Latin script only, 6-digit brand hexes, every takeover\n"
+                                "  2.5–7 s, `cover_at ≥ 2 s`.\n")
+_CAPTION_PHRASES_HARNESS_NEW = ("  groups cover the bed to within 3 s and keep phrases whole, Latin script only, 6-digit brand\n"
+                                "  hexes, every takeover 2.5–7 s, `cover_at ≥ 2 s`.\n")
+_CAPTION_PHRASES_PIP_ANCHOR = "`drawtext` is a defect.\n\n"
+_CAPTION_PHRASES_PIP_SECTION = (
+    "Keep caption phrases whole (WI2.76). P1's plan may split a phrase (`She approved them with` /\n"
+    "`FLOUR STILL` / `on her hands,`). Write the helper below first; after P1 writes `$PW/plan.json`\n"
+    "and before P2 renders it, run `python3 work/caption_phrases.py \"$PW/plan.json\" || exit 1`. It\n"
+    "moves a group-ending preposition, article, conjunction or auxiliary into the next group, merges a\n"
+    "1–2 word mid-clause fragment into a neighbour, keeps every word timing and re-checks styles and\n"
+    "emphasis. The `--check` after P4 fails the step when a split phrase was rendered.\n\n"
+    + _CAPTION_PHRASES_WRITE
+)
+# Kept outside the WI2.64 hunk (_PIP_TAIL_PLAN_NEW) so that transform still inverts cleanly.
+_CAPTION_PHRASES_PIP_P1_ANCHOR = "# run P1 → P4 here; GSAP for the premium comp: cp \"$GSAP\" \"$PW/comp/gsap.min.js\" \"$PW/comp/compositions/\"\n"
+_CAPTION_PHRASES_PIP_P1_NOTE = "# WI2.76: after P1 and before P2: python3 work/caption_phrases.py \"$PW/plan.json\" || exit 1\n"
+_CAPTION_PHRASES_PIP_CHECK = ("# WI2.76: the rendered premium plan kept phrases whole\n"
+                              "python3 work/caption_phrases.py --check \"$PW/plan.json\" || exit 1\n")
+_CAPTION_PHRASES_PIP_PROSE_OLD = "`.words` (2–4 words per group, Latin script only, ≤ 1 emphasis word, no SFX in the first second;\n"
+_CAPTION_PHRASES_PIP_PROSE_NEW = ("`.words` (2–4 words per group, phrases kept whole, Latin script only, ≤ 1 emphasis word, no\n"
+                                  "SFX in the first second;\n")
+REEL_CAPTION_PHRASES_FILES = {
+    "p-reels-spotlight": "steps/03-plan-edit.md",
+    "p-reels-spotlight-heygen": "steps/03-plan-edit.md",
+    "p-reels-pip": "steps/05-composite.md",
+    "p-reels-pip-heygen": "steps/05-composite.md",
+}
+
+
+def _caption_phrases_insert(new: str, path: Path, recipe: str, anchor: str, add: str, after: bool) -> str:
+    if add in new:
+        return new
+    if anchor not in new:
+        raise SystemExit(f"sync-skills.py: ERROR - anchor {anchor[:40]!r} not found in {path} ({recipe}); "
+                         "the WI2.76 transform cannot apply")
+    return new.replace(anchor, (anchor + add) if after else (add + anchor), 1)
+
+
+def apply_reel_caption_phrases(directory: Path, recipe: str) -> int:
+    """WI2.76: keep caption phrases whole (no lone mid-clause fragment).
+    Top-level spotlight 03-plan-edit.md / pip 05-composite.md only (not .hub copies).
+    Idempotent; fails fast when an anchor drifted. Returns files changed."""
+    rel = REEL_CAPTION_PHRASES_FILES.get(recipe)
+    if rel is None:
+        return 0
+    path = directory / rel
+    if not path.is_file():
+        return 0
+    text = path.read_text(encoding="utf-8")
+    new = text
+    if rel.endswith("03-plan-edit.md"):
+        if "Then run the mechanical guard" not in text:
+            return 0  # a minimal fixture, not the real plan step
+        new = _caption_phrases_insert(new, path, recipe, _CAPTION_PHRASES_SPOT_GUARD_ANCHOR,
+                                      _CAPTION_PHRASES_SPOT_SECTION, after=False)
+        new = _caption_phrases_insert(new, path, recipe, _CAPTION_PHRASES_GUARD_OLD,
+                                      _CAPTION_PHRASES_GUARD_NEW, after=False)
+        if _CAPTION_PHRASES_RULE_NEW not in new:
+            if _CAPTION_PHRASES_RULE_OLD not in new:
+                raise SystemExit(f"sync-skills.py: ERROR - caption rule 1 not found in {path} ({recipe}); "
+                                 "the WI2.76 transform cannot apply")
+            new = new.replace(_CAPTION_PHRASES_RULE_OLD, _CAPTION_PHRASES_RULE_NEW, 1)
+        new = new.replace(_CAPTION_PHRASES_HARNESS_OLD, _CAPTION_PHRASES_HARNESS_NEW, 1)
+    else:
+        if "### 5. Kinetic captions" not in text:
+            return 0  # a minimal fixture, not the real composite step
+        new = _caption_phrases_insert(new, path, recipe, _CAPTION_PHRASES_PIP_ANCHOR,
+                                      _CAPTION_PHRASES_PIP_SECTION, after=True)
+        new = _caption_phrases_insert(new, path, recipe, _CAPTION_PHRASES_PIP_P1_ANCHOR,
+                                      _CAPTION_PHRASES_PIP_P1_NOTE, after=False)
+        new = _caption_phrases_insert(new, path, recipe, _PIP_TAIL_PLAN_NEW,
+                                      _CAPTION_PHRASES_PIP_CHECK, after=True)
+        if _CAPTION_PHRASES_PIP_PROSE_NEW not in new:
+            new = new.replace(_CAPTION_PHRASES_PIP_PROSE_OLD, _CAPTION_PHRASES_PIP_PROSE_NEW, 1)
+    if new != text:
+        path.write_text(new, encoding="utf-8")
+        return 1
+    return 0
+
+
 def git_head_sha(repo: Path) -> str | None:
     """Best-effort `git rev-parse HEAD` of `repo`. Returns None (never
     raises) when `repo` isn't a git checkout — e.g. a test fixture dir — so
@@ -1705,6 +2005,9 @@ def main():
 
         # WI2.72: captions are checked against the known script (top-level transcribe step).
         apply_reel_script_align(recipe_dest, recipe)
+
+        # WI2.76: caption groups keep phrases whole (top-level plan/composite step).
+        apply_reel_caption_phrases(recipe_dest, recipe)
 
         files = list_files(recipe_dest)
         file_hashes = {f: sha256_file(recipe_dest / f) for f in files}
