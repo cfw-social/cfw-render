@@ -64,9 +64,10 @@
       }
       #caption-overlay .cap-word.em {
         font-weight: 700;
-        color: {{ACCENT}};
-        /* breathing room — the scale pop must not eat the neighbor gaps */
-        margin: 0 0.06em;
+        /* WI2.88: until it is spoken the emphasis word is a plain word (same size, colour and dim as
+           its neighbours). Its pop grows its font size (--pop), never a transform scale, so the line
+           reflows and the space on both sides of it is kept: no tiny word, no wide or closed gap. */
+        font-size: calc(1em * var(--pop, 1));
       }
     </style>
 
@@ -131,14 +132,16 @@
           var wsel = "#cw-" + gi + "-" + wi;
           var at = Math.max(w.s, group.start + 0.02);
           if (w.em) {
-            // Emphasis word: accent pop + glow — clearly breaks the pattern.
-            tl.fromTo(wsel, { scale: 0.72, opacity: 0.42 },
-              { scale: 1.16, opacity: 1, duration: 0.26, ease: "back.out(2.2)" }, at);
+            // Emphasis word: accent pop + glow — clearly breaks the pattern. WI2.88: until its
+            // timestamp it is a plain dim word (scale 1, FG, like its neighbours); the pop tweens
+            // --pop (its font size), so the words beside it make room instead of being overlapped.
+            tl.fromTo(wsel, { "--pop": 1, opacity: 0.42, color: FG },
+              { "--pop": 1.16, opacity: 1, color: ACCENT, duration: 0.26, ease: "back.out(2.2)" }, at);
             tl.to(wsel, {
               textShadow: "0 0 26px " + ACCENT + "AA, 0 4px 24px rgba(0,0,0,0.75)",
               duration: 0.2, ease: "power2.out",
             }, at);
-            tl.to(wsel, { scale: 1.08, duration: 0.18, ease: "power2.inOut" }, at + 0.26);
+            tl.to(wsel, { "--pop": 1.08, duration: 0.18, ease: "power2.inOut" }, at + 0.26);
           } else {
             tl.to(wsel, { opacity: 1, duration: 0.14, ease: "power1.out" }, at);
           }

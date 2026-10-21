@@ -11671,6 +11671,301 @@ else
 fi
 rm -rf "$wi291_root"
 
+echo "=== Case 69: WI2.88 — the spotlight caption emphasis word is a plain word until spoken, and its pop keeps the space before it ==="
+# Observed 2026-10-21 (Director re-smokes of p-reels-spotlight on Render adb82fd): before it was spoken
+# the emphasis word showed much smaller and dim blue after a wide gap ("VOICE," ~29.8-31.2 s, "MONTH"
+# ~33 s, "MOMENTS" ~5 s; /tmp/cfw-smoke-20261021-115431/check/cap_strip.png), then popped; and on its pop
+# "EVERY PLATFORM." read "EVERYPLATFORM." (~35.8 s; /tmp/cfw-smoke-20261021-081902/frames/tail_captions.png).
+# Cause: c-reel-premium's caption-overlay.html fromTo'd the word from scale 0.72 (rendered immediately, so
+# it sat at 0.72 in the accent colour until spoken) to a transform scale of 1.16 + back.out overshoot,
+# which a transform cannot make room for: it ate the 0.06em margin and the column gap. This case runs
+# each spotlight caption-overlay.html copy's own script in node with a recording GSAP, evaluates the
+# emphasis word's tweens over time, and lays the line out (word width ~ font size x letters, transform
+# scale about the centre, the template's column gap, margin and --pop font size) to check: before its
+# timestamp the word is the same size, colour and dim as the other unspoken words with a normal gap;
+# through and after its pop the gap before it never closes; it still pops (bigger, accent, full opacity).
+# The sync transform (idempotent, fail-fast) is checked too.
+wi288c_root="$(mktemp -d)"
+wi288c_detail="$(python3 - "$REPO_DIR" "$wi288c_root" <<'PY'
+import importlib.util, json, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+SIM = r"""
+const vm = require('vm'), fs = require('fs');
+const [file, timesJson] = process.argv.slice(2);
+const src = fs.readFileSync(file, 'utf8');
+const inline = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+if (inline.length !== 1) { console.log(JSON.stringify({ error: 'inline scripts ' + inline.length })); process.exit(0); }
+const els = {};
+function el(id) { return els[id] || (els[id] = { id, className: '', style: {}, textContent: '', appendChild() {} }); }
+const tweens = [];
+let order = 0;
+const tl = {
+  fromTo(sel, from, to, pos) { tweens.push({ sel, from, to, pos, dur: to.duration || 0, ease: to.ease, n: order++ }); return tl; },
+  to(sel, to, pos) { tweens.push({ sel, from: null, to, pos, dur: to.duration || 0, ease: to.ease, n: order++ }); return tl; },
+  set(sel, to, pos) { tweens.push({ sel, from: null, to, pos, dur: 0, n: order++ }); return tl; },
+  seek() { return tl; },
+};
+const document = { getElementById: id => el(id), createElement: () => { const e = el('tmp' + order++); return e; } };
+const ctx = vm.createContext({ window: {}, document, gsap: { timeline: () => tl },
+  getComputedStyle: () => ({ opacity: '0', visibility: 'hidden' }), console, Math, JSON });
+try { vm.runInContext(inline[0], ctx); } catch (e) { console.log(JSON.stringify({ error: 'run: ' + e.message })); process.exit(0); }
+function ease(name, p) {
+  name = name || 'power1.out';
+  let m = /^back\.out\(([\d.]+)\)$/.exec(name);
+  if (m) { const s = +m[1], q = p - 1; return 1 + (s + 1) * q * q * q + s * q * q; }
+  m = /^power(\d)\.(in|out|inOut)$/.exec(name);
+  if (m) { const k = +m[1] + 1;
+    if (m[2] === 'in') return Math.pow(p, k);
+    if (m[2] === 'out') return 1 - Math.pow(1 - p, k);
+    return p < 0.5 ? Math.pow(2 * p, k) / 2 : 1 - Math.pow(2 * (1 - p), k) / 2; }
+  return p;
+}
+function value(sel, prop, t, base) {
+  const ts = tweens.filter(w => w.sel === sel && prop in w.to).sort((a, b) => a.pos - b.pos || a.n - b.n);
+  const ft = ts.find(w => w.from && prop in w.from);
+  let cur = ft ? ft.from[prop] : base;  // a fromTo renders its from-state immediately
+  for (const w of ts) {
+    if (w.pos > t) break;
+    const from = w.from && prop in w.from ? w.from[prop] : cur, to = w.to[prop];
+    const p = w.dur ? Math.min(1, (t - w.pos) / w.dur) : 1;
+    cur = typeof to === 'number' && typeof from === 'number' ? from + (to - from) * ease(w.ease, p) : (p > 0 ? to : from);
+  }
+  return cur;
+}
+const out = [];
+for (const t of JSON.parse(timesJson)) {
+  const s = {};
+  for (const id of ['cw-0-2', 'cw-0-3']) {
+    const sel = '#' + id;
+    s[id] = { scale: value(sel, 'scale', t, 1), pop: value(sel, '--pop', t, 1),
+              opacity: value(sel, 'opacity', t, null), color: value(sel, 'color', t, null) };
+  }
+  out.push(s);
+}
+console.log(JSON.stringify(out));
+"""
+(root / "sim.js").write_text(SIM, encoding="utf-8")
+FG, ACCENT = "#F1F5F9", "#3B82F6"
+GROUPS = [{"start": 0.3, "end": 3.6, "style": 0, "words": [
+    {"w": "FORMATTED", "s": 0.4, "e": 0.9, "em": False}, {"w": "FOR", "s": 0.9, "e": 1.1, "em": False},
+    {"w": "EVERY", "s": 1.1, "e": 1.5, "em": False}, {"w": "PLATFORM.", "s": 2.0, "e": 2.6, "em": True}]}]
+AT = 2.0
+PRE = [0.8, 1.2, 1.6, 1.95]
+POP = [round(AT + i * 0.02, 2) for i in range(70)]  # 2.00 .. 3.38: pop, overshoot, settle, hold
+def css_block(text, sel):
+    m = re.search(re.escape(sel) + r"\s*\{([^}]*)\}", text)
+    return m.group(1) if m else ""
+def em_num(block, prop):
+    m = re.search(r"(?<![-\w])" + prop + r"\s*:\s*([^;]+);", block)
+    if not m:
+        return 0.0
+    parts = [p for p in m.group(1).split() if p.endswith("em")]
+    if prop == "margin":
+        vals = m.group(1).split()
+        side = vals[1] if len(vals) > 1 else vals[0]
+        return float(side[:-2]) if side.endswith("em") else 0.0
+    return float(parts[0][:-2]) if parts else 0.0
+def check_copy(path):
+    rel = path.relative_to(repo) if str(path).startswith(str(repo)) else path
+    text = path.read_text(encoding="utf-8")
+    filled = (text.replace("{{FG}}", FG).replace("{{ACCENT}}", ACCENT).replace("{{CAP_TOP}}", "1180")
+              .replace("{{DURATION}}", "4").replace("{{GROUPS_JSON}}", json.dumps(GROUPS)))
+    f = root / ("filled-%d.html" % len(list(root.glob("filled-*"))))
+    f.write_text(filled, encoding="utf-8")
+    r = subprocess.run(["node", str(root / "sim.js"), str(f), json.dumps(PRE + POP)], capture_output=True, text=True, timeout=60)
+    got = json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else {"error": r.stderr[-300:]}
+    if isinstance(got, dict):
+        return ["%s: caption script did not run: %s" % (rel, got.get("error"))]
+    got = {str(t): s for t, s in zip(PRE + POP, got)}
+    out = []
+    word, em = css_block(filled, "#caption-overlay .cap-word"), css_block(filled, "#caption-overlay .cap-word.em")
+    group = css_block(filled, "#caption-overlay .cap-group")
+    F = 72.0                              # fitTextFontSize is absent here: the template's 72 px fallback
+    G = em_num(group, "column-gap") * F    # the gap between words
+    base_op = float(re.search(r"opacity:\s*([\d.]+)", word).group(1))
+    em_color = re.search(r"(?<![-\w])color:\s*([^;]+);", em)
+    css_color = (em_color or re.search(r"(?<![-\w])color:\s*([^;]+);", word)).group(1).strip()
+    pop_font = "var(--pop" in em
+    def lay(st):
+        ff = st["pop"] if pop_font else 1.0          # the word's font-size factor (layout)
+        w = F * ff * 0.5 * len("PLATFORM.")          # its layout width
+        margin = em_num(em, "margin") * F * ff
+        gap = G + margin + w * (1 - st["scale"]) / 2  # visual space between EVERY and the word
+        return gap, ff * st["scale"]
+    for t in PRE:
+        st = got[str(t)]["cw-0-3"]
+        gap, size = lay(st)
+        color = (st["color"] or css_color).lower()
+        op = st["opacity"] if st["opacity"] is not None else base_op
+        if abs(size - 1) > 0.03:
+            out.append("%s: before it is spoken (t=%.2f) the emphasis word is %.2fx the size of its neighbours" % (rel, t, size))
+        if gap > 1.25 * G or gap < 0.9 * G:
+            out.append("%s: before it is spoken (t=%.2f) the gap before it is %.0f px, a plain gap is %.0f px" % (rel, t, gap, G))
+        if color != FG.lower() or abs(op - base_op) > 0.01:
+            out.append("%s: before it is spoken (t=%.2f) it is %s at opacity %.2f, not like the other unspoken words (%s at %.2f)"
+                       % (rel, t, color, op, FG, base_op))
+    worst = min((lay(got[str(t)]["cw-0-3"])[0], t) for t in POP)
+    if worst[0] < 0.9 * G:
+        out.append("%s: on its pop the space before it closes to %.0f px at t=%.2f (a plain gap is %.0f px)" % (rel, worst[0], worst[1], G))
+    end = got[str(POP[-1])]["cw-0-3"]
+    if lay(end)[1] < 1.05 or (end["color"] or "").lower() != ACCENT.lower() or (end["opacity"] or 0) < 0.99:
+        out.append("%s: after its pop the word is not bigger, accent and fully on (%r)" % (rel, end))
+    return out
+try:
+    skills = repo / "skills"
+    copies = [skills / "p-reels-spotlight" / ".hub" / "c-reel-premium" / "templates" / "caption-overlay.html",
+              skills / "p-reels-spotlight" / "templates" / "caption-overlay.html",
+              skills / "p-reels-spotlight-heygen" / ".hub" / "c-reel-premium" / "templates" / "caption-overlay.html",
+              skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "templates" / "caption-overlay.html"]
+    for c in copies:
+        bad += check_copy(c)
+    spec = importlib.util.spec_from_file_location("ss288c", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    fn, edits = getattr(ss, "apply_spotlight_caption_pop", None), getattr(ss, "_SPOTLIGHT_CAP_EDITS", None)
+    if fn is None or edits is None:
+        bad.append("sync-skills.py has no apply_spotlight_caption_pop (WI2.88)")
+    else:
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        def revert(rec):
+            for p in ss.spotlight_caption_files(up / rec, rec):
+                t = p.read_text(encoding="utf-8")
+                for old, new in edits:
+                    t = t.replace(new, old)
+                p.write_text(t, encoding="utf-8")
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            revert(rec)
+            restored = ss.spotlight_caption_files(up / rec, rec)[0]
+            if not check_copy(restored):
+                bad.append("sanity: the restored adb82fd caption template of %s passes this check" % rec)
+            got = (fn(up / rec, rec), fn(up / rec, rec))
+            if got != (2, 0):
+                bad.append("transform on %s changed %r file(s), expected (2, 0)" % (rec, got))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        if fn(up / "p-reels-pip", "p-reels-pip") != 0:
+            bad.append("transform touched a non-spotlight recipe")
+        revert("p-reels-spotlight")
+        t = ss.spotlight_caption_files(up / "p-reels-spotlight", "p-reels-spotlight")[0]
+        t.write_text(t.read_text(encoding="utf-8").replace("scale: 0.72, opacity: 0.42", "scale: 0.7, opacity: 0.4"), encoding="utf-8")
+        try:
+            fn(up / "p-reels-spotlight", "p-reels-spotlight")
+            bad.append("transform did not fail on a drifted caption anchor")
+        except SystemExit:
+            pass
+        ss.spotlight_caption_files(up / "p-reels-spotlight-heygen", "p-reels-spotlight-heygen")[1].unlink()
+        try:
+            fn(up / "p-reels-spotlight-heygen", "p-reels-spotlight-heygen")
+            bad.append("transform did not fail on a missing .hub caption template")
+        except SystemExit:
+            pass
+except (Exception, SystemExit) as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad[:12]))
+PY
+)"
+if [[ "$wi288c_detail" == "ok" ]]; then
+  pass "WI2.88 spotlight caption emphasis word: plain until spoken, its pop keeps the space before it (every copy)"
+else
+  fail "WI2.88 spotlight caption emphasis word size, colour and spacing" "$wi288c_detail"
+fi
+rm -rf "$wi288c_root"
+
+echo "=== Case 70: WI2.88 — with no script file, a brief that is the spoken script corrects a mis-heard caption word ==="
+# Observed 2026-10-21 (Director re-smoke, p-reels-spotlight on Render adb82fd, an uploaded talking-head
+# clip): the caption at 17.04-18.72 s read "with flowers still"; the clip's script says "with flour
+# still". The WI2.72 check only reads a script FILE (inputs/script/*, prior/approved_script.md,
+# prior/script.md), which an uploaded-clip order never has, so nothing was checked. The helper now also
+# takes the order brief's intent (brief.json) as the script; the 60 % match guard keeps a brief that is
+# only a topic from changing anything. Runs the helper each spotlight transcribe step writes.
+wi288s_root="$(mktemp -d)"
+wi288s_detail="$(python3 - "$REPO_DIR" "$wi288s_root" <<'PY'
+import importlib.util, json, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+OPEN = "cat > work/script_align.py <<'PY'\n"
+SCRIPT = ("This is a real bakery's entire month of social media. Forty-five posts - daily specials, "
+          "behind-the-scenes, little community moments. All written, all scheduled. And the owner? She "
+          "didn't write a single one. She approved them with flour still on her hands... about thirty "
+          "minutes a week.")
+heard = [("She", 15.53, 15.64), ("approved", 15.65, 16.21), ("them", 16.21, 16.43), ("with", 17.04, 17.30),
+         ("flowers", 17.30, 17.90), ("still", 17.90, 18.72), ("on", 18.72, 18.80), ("her", 18.80, 18.95),
+         ("hands,", 18.95, 19.40), ("about", 19.50, 19.80), ("thirty", 19.80, 20.10), ("minutes", 20.10, 20.50),
+         ("a", 20.50, 20.60), ("week.", 20.60, 21.00)]
+words = [{"text": t, "start": s, "end": e} for t, s, e in heard]
+try:
+    for rcp in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+        body = (repo / "skills" / rcp / "steps" / "02-transcribe.md").read_text(encoding="utf-8")
+        if OPEN not in body:
+            bad.append("%s: transcribe step does not write work/script_align.py" % rcp); continue
+        helper = root / (rcp + "-script_align.py")
+        helper.write_text(body.split(OPEN, 1)[1].split("\nPY\n", 1)[0] + "\n", encoding="utf-8")
+        def run(name, intent=None, script_file=None):
+            wd = root / rcp / name; (wd / "work").mkdir(parents=True)
+            if intent is not None:
+                (wd / "brief.json").write_text(json.dumps({"intent": intent, "targets": ["instagram"]}), encoding="utf-8")
+            if script_file is not None:
+                (wd / "inputs" / "script").mkdir(parents=True)
+                (wd / "inputs" / "script" / "script.md").write_text(script_file, encoding="utf-8")
+            (wd / "work" / "words.json").write_text(json.dumps(words), encoding="utf-8")
+            r = subprocess.run([sys.executable, "-I", str(helper), "work/words.json"], cwd=wd, capture_output=True, text=True)
+            if r.returncode != 0:
+                bad.append("%s/%s: helper rc=%d %s" % (rcp, name, r.returncode, r.stderr.strip()[-200:]))
+            rep = wd / "work" / "script_align.json"
+            return (json.loads((wd / "work" / "words.json").read_text()), r.stdout,
+                    json.loads(rep.read_text()) if rep.is_file() else {})
+        want = [t for t, _, _ in heard]; want[4] = "flour"
+        got, out, rep = run("brief_is_script", intent=SCRIPT)
+        if [w["text"] for w in got] != want:
+            bad.append("%s: a brief that is the script left %r (want 'with flour still')" % (rcp, " ".join(w["text"] for w in got[3:6])))
+        if [(w["start"], w["end"]) for w in got] != [(s, e) for _, s, e in heard]:
+            bad.append("%s: brief case changed timings" % rcp)
+        if rep.get("source") != "brief" or ["flowers", "flour"] not in rep.get("fixed", []):
+            bad.append("%s: script_align.json does not record the brief fix (%r)" % (rcp, rep))
+        got, out, rep = run("brief_is_topic", intent="A 30-second spotlight reel on the one question every buyer forgets to ask.")
+        if got != words:
+            bad.append("%s: a topic brief changed the words" % rcp)
+        if "brief is not the spoken script" not in out:
+            bad.append("%s: a topic brief was not reported as not the script (%r)" % (rcp, out.strip()))
+        got, out, rep = run("file_wins", intent="Completely different words about a car dealership.", script_file=SCRIPT)
+        if [w["text"] for w in got] != want or rep.get("source") != "script":
+            bad.append("%s: a script file did not take priority over the brief (%r)" % (rcp, rep.get("source")))
+        got, out, _ = run("nothing")
+        if got != words or "no script" not in out:
+            bad.append("%s: with no script and no brief the words changed or it did not say so" % rcp)
+    # the WI2.77-era step (old prose + old helper) upgrades to the committed one, once
+    spec = importlib.util.spec_from_file_location("ss288s", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    if not hasattr(ss, "_SCRIPT_ALIGN_NOSCRIPT_WI277"):
+        bad.append("sync-skills.py does not upgrade the WI2.77 script-check prose (WI2.88)")
+    else:
+        for rcp in ss.REEL_SCRIPT_ALIGN_RECIPES:
+            cur = (repo / "skills" / rcp / "steps" / "02-transcribe.md").read_text(encoding="utf-8")
+            h, rest = cur.split(ss._SCRIPT_ALIGN_OPEN, 1)
+            old = (h + ss._SCRIPT_ALIGN_OPEN + "# WI2.77 helper\nprint('old')\nPY\n" + rest.split("\nPY\n", 1)[1])
+            old = old.replace(ss._SCRIPT_ALIGN_NOSCRIPT, ss._SCRIPT_ALIGN_NOSCRIPT_WI277)
+            d = root / "up" / rcp; (d / "steps").mkdir(parents=True)
+            (d / "steps" / "02-transcribe.md").write_text(old, encoding="utf-8")
+            n = (ss.apply_reel_script_align(d, rcp), ss.apply_reel_script_align(d, rcp))
+            if (d / "steps" / "02-transcribe.md").read_text(encoding="utf-8") != cur or n != (1, 0):
+                bad.append("%s: the WI2.77 step did not upgrade to the committed one once (%r)" % (rcp, n))
+except (Exception, SystemExit) as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad[:12]))
+PY
+)"
+if [[ "$wi288s_detail" == "ok" ]]; then
+  pass "WI2.88 a brief that is the spoken script corrects 'with flowers still' to 'with flour still'; a topic brief changes nothing"
+else
+  fail "WI2.88 brief as the script for the caption word check" "$wi288s_detail"
+fi
+rm -rf "$wi288s_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then

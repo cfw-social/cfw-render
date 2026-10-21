@@ -34,8 +34,10 @@ Captions come from these words, so a mis-heard word would be burned into the ree
 order carries the script the voice was made from — `inputs/script/*` (`script.json` `{"text"}`
 or a `.txt`/`.md`), else `prior/approved_script.md`, else `prior/script.md` — the helper below
 passes it to `mlx_whisper` as `--initial-prompt` and, in step 2b, corrects the recognised
-words against it. With no script (an uploaded talking-head clip) the words are left exactly as
-recognised and the helper says so.
+words against it. An uploaded talking-head clip has no script file, so step 2b checks the words
+against the order brief's `intent` instead (WI2.88): when the owner pasted the script there, a
+mis-heard word is fixed the same way; a brief that is only a topic matches under 60 % and
+changes nothing. With neither, the words are left exactly as recognised and the helper says so.
 
 ```bash
 mkdir -p work saves
@@ -44,7 +46,9 @@ cat > work/script_align.py <<'PY'
 # usage: python3 work/script_align.py words.json   (fix words.json in place)
 #        python3 work/script_align.py --prompt     (print the script text, or nothing)
 # The script is the first of: inputs/script/* (script.json {"text"} or .txt/.md),
-# prior/approved_script.md, prior/script.md. No script -> the words are left unchanged.
+# prior/approved_script.md, prior/script.md. WI2.88: with no script file (an uploaded clip) the
+# order brief's intent (brief.json) is checked as the script; a brief that is only a topic matches
+# under 60 % and changes nothing. Neither -> the words are left unchanged.
 import difflib, glob, json, os, re, sys
 
 def script_text():
@@ -61,6 +65,16 @@ def script_text():
         if raw:
             return raw
     return ''
+
+def brief_script():
+    # WI2.88: an uploaded clip's order has no script file; the owner may have pasted the script
+    # as the brief. It is only a candidate: align() leaves the words alone unless 60 % match.
+    try:
+        brief = json.load(open('brief.json', encoding='utf-8'))
+    except (OSError, ValueError):
+        return ''
+    intent = brief.get('intent') if isinstance(brief, dict) else None
+    return intent.strip() if isinstance(intent, str) else ''
 
 def norm(t):
     return re.sub(r"[^0-9a-z]", "", t.lower())
@@ -146,17 +160,22 @@ if __name__ == '__main__':
     if sys.argv[1:] == ['--prompt']:
         print(script_text()); sys.exit(0)
     path = sys.argv[1]
-    text = script_text()
+    text, source = script_text(), "script"
+    if not text:  # WI2.88: no script file -> the brief, when it is the spoken script
+        text, source = brief_script(), "brief"
     if not text:
         print("[transcribe] no script text: words left as recognised (an uploaded clip has no script)")
         sys.exit(0)
     words = json.load(open(path))
     out, rep = align(words, text)
+    rep["source"] = source
+    if source == "brief" and rep.get("note"):
+        rep["note"] = "the brief is not the spoken script; words left as recognised"
     assert out, "script check removed every word"
     json.dump(out, open(path, 'w'))
     json.dump(rep, open(os.path.join(os.path.dirname(path) or '.', 'script_align.json'), 'w'), indent=1)
-    print("[transcribe] script check: match %.2f, fixed %d, dropped %d, left %d%s" % (
-        rep["match"], len(rep["fixed"]), len(rep["dropped"]), len(rep["left"]),
+    print("[transcribe] script check (%s): match %.2f, fixed %d, dropped %d, left %d%s" % (
+        source, rep["match"], len(rep["fixed"]), len(rep["dropped"]), len(rep["left"]),
         (" - " + rep["note"]) if rep.get("note") else ""))
 PY
 ```

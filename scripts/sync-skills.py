@@ -124,6 +124,13 @@ the reason when under 1.0 s of bed is left after the last word, instead of silen
 card, and makes SKILL.md (both full copies) read the order's cta_card into CTA_CARD (default on), so
 cta_card: off adds no Step 2 tail and Step 8 renders no card.
 
+WI2.88 apply_spotlight_caption_pop() makes every caption-overlay.html copy in a p-reels-spotlight
+bundle (the vendored c-reel-premium one that step 06 renders, and the recipe's own template) show the
+emphasis word as a plain word (same size, FG colour, same dim) until it is spoken, then pop it by
+growing its font size (--pop) instead of a transform scale, so the line reflows and the space before
+it is never closed. The WI2.72 script check (apply_reel_script_align) also takes the order brief's
+intent as the script when no script file exists (a 60 % match guard keeps a topic brief out).
+
 Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
 and before list_files/hashing, same ordering guarantee:
   strip_brand_override_host_paths() nulls/drops the two host-path fields
@@ -1477,7 +1484,9 @@ _SCRIPT_ALIGN_PY = r"""# WI2.72: check recognised words against the known script
 # usage: python3 work/script_align.py words.json   (fix words.json in place)
 #        python3 work/script_align.py --prompt     (print the script text, or nothing)
 # The script is the first of: inputs/script/* (script.json {"text"} or .txt/.md),
-# prior/approved_script.md, prior/script.md. No script -> the words are left unchanged.
+# prior/approved_script.md, prior/script.md. WI2.88: with no script file (an uploaded clip) the
+# order brief's intent (brief.json) is checked as the script; a brief that is only a topic matches
+# under 60 % and changes nothing. Neither -> the words are left unchanged.
 import difflib, glob, json, os, re, sys
 
 def script_text():
@@ -1494,6 +1503,16 @@ def script_text():
         if raw:
             return raw
     return ''
+
+def brief_script():
+    # WI2.88: an uploaded clip's order has no script file; the owner may have pasted the script
+    # as the brief. It is only a candidate: align() leaves the words alone unless 60 % match.
+    try:
+        brief = json.load(open('brief.json', encoding='utf-8'))
+    except (OSError, ValueError):
+        return ''
+    intent = brief.get('intent') if isinstance(brief, dict) else None
+    return intent.strip() if isinstance(intent, str) else ''
 
 def norm(t):
     return re.sub(r"[^0-9a-z]", "", t.lower())
@@ -1579,27 +1598,41 @@ if __name__ == '__main__':
     if sys.argv[1:] == ['--prompt']:
         print(script_text()); sys.exit(0)
     path = sys.argv[1]
-    text = script_text()
+    text, source = script_text(), "script"
+    if not text:  # WI2.88: no script file -> the brief, when it is the spoken script
+        text, source = brief_script(), "brief"
     if not text:
         print("[transcribe] no script text: words left as recognised (an uploaded clip has no script)")
         sys.exit(0)
     words = json.load(open(path))
     out, rep = align(words, text)
+    rep["source"] = source
+    if source == "brief" and rep.get("note"):
+        rep["note"] = "the brief is not the spoken script; words left as recognised"
     assert out, "script check removed every word"
     json.dump(out, open(path, 'w'))
     json.dump(rep, open(os.path.join(os.path.dirname(path) or '.', 'script_align.json'), 'w'), indent=1)
-    print("[transcribe] script check: match %.2f, fixed %d, dropped %d, left %d%s" % (
-        rep["match"], len(rep["fixed"]), len(rep["dropped"]), len(rep["left"]),
+    print("[transcribe] script check (%s): match %.2f, fixed %d, dropped %d, left %d%s" % (
+        source, rep["match"], len(rep["fixed"]), len(rep["dropped"]), len(rep["left"]),
         (" - " + rep["note"]) if rep.get("note") else ""))
 """
+# WI2.88: smoke 2026-10-21 (an uploaded clip, no script file) burned "with flowers still" where the
+# voice said "with flour still": nothing reached the check. The brief's intent is now the fallback.
+_SCRIPT_ALIGN_NOSCRIPT_WI277 = (
+    "words against it. With no script (an uploaded talking-head clip) the words are left exactly as\n"
+    "recognised and the helper says so.\n")
+_SCRIPT_ALIGN_NOSCRIPT = (
+    "words against it. An uploaded talking-head clip has no script file, so step 2b checks the words\n"
+    "against the order brief's `intent` instead (WI2.88): when the owner pasted the script there, a\n"
+    "mis-heard word is fixed the same way; a brief that is only a topic matches under 60 % and\n"
+    "changes nothing. With neither, the words are left exactly as recognised and the helper says so.\n")
 _SCRIPT_ALIGN_SECTION = (
     "### 0. Known script (WI2.72)\n\n"
     "Captions come from these words, so a mis-heard word would be burned into the reel. When the\n"
     "order carries the script the voice was made from — `inputs/script/*` (`script.json` `{\"text\"}`\n"
     "or a `.txt`/`.md`), else `prior/approved_script.md`, else `prior/script.md` — the helper below\n"
     "passes it to `mlx_whisper` as `--initial-prompt` and, in step 2b, corrects the recognised\n"
-    "words against it. With no script (an uploaded talking-head clip) the words are left exactly as\n"
-    "recognised and the helper says so.\n\n"
+    + _SCRIPT_ALIGN_NOSCRIPT + "\n"
     "```bash\nmkdir -p work saves\ncat > work/script_align.py <<'PY'\n" + _SCRIPT_ALIGN_PY + "PY\n```\n\n"
 )
 _SCRIPT_ALIGN_CHECK = (
@@ -1661,7 +1694,7 @@ def apply_reel_script_align(directory: Path, recipe: str) -> int:
         # Not a full transcribe step (a minimal fixture): left alone. A real step that
         # has this section but lost another anchor fails fast below.
         return 0
-    new = text
+    new = text.replace(_SCRIPT_ALIGN_NOSCRIPT_WI277, _SCRIPT_ALIGN_NOSCRIPT)  # WI2.88 prose
     if _SCRIPT_ALIGN_SECTION not in new and _SCRIPT_ALIGN_OPEN in new:
         # WI2.77: an older helper (WI2.72) is in place: swap in the current one.
         head, rest = new.split(_SCRIPT_ALIGN_OPEN, 1)
@@ -3584,6 +3617,89 @@ def apply_spotlight_typing_prompt(directory: Path, recipe: str) -> int:
     return changed
 
 
+# WI2.88: spotlight caption emphasis word. Smoke 2026-10-21: before it was spoken the emphasis word
+# showed small (scale 0.72, the fromTo's immediate render) and dim in the accent colour after a wide
+# gap ("VOICE," ~29.8-31.2 s, "MONTH" ~33 s, "MOMENTS" ~5 s); on its pop the transform scale (1.16 plus
+# the back.out overshoot) grew past its 0.06em margin and the column gap, so "EVERY PLATFORM." read
+# "EVERYPLATFORM." (~35.8 s). A transform never moves the neighbours. Now the word is a plain word
+# (scale 1, FG colour, the same 0.42 dim) until its timestamp, then turns the accent colour and pops by
+# tweening --pop, its font size: the line reflows, so the space on both sides of it is always kept.
+_SPOTLIGHT_CAP_CSS_OLD = """      #caption-overlay .cap-word.em {
+        font-weight: 700;
+        color: {{ACCENT}};
+        /* breathing room — the scale pop must not eat the neighbor gaps */
+        margin: 0 0.06em;
+      }
+"""
+SPOTLIGHT_CAP_CSS = """      #caption-overlay .cap-word.em {
+        font-weight: 700;
+        /* WI2.88: until it is spoken the emphasis word is a plain word (same size, colour and dim as
+           its neighbours). Its pop grows its font size (--pop), never a transform scale, so the line
+           reflows and the space on both sides of it is kept: no tiny word, no wide or closed gap. */
+        font-size: calc(1em * var(--pop, 1));
+      }
+"""
+_SPOTLIGHT_CAP_JS_OLD = """            // Emphasis word: accent pop + glow — clearly breaks the pattern.
+            tl.fromTo(wsel, { scale: 0.72, opacity: 0.42 },
+              { scale: 1.16, opacity: 1, duration: 0.26, ease: "back.out(2.2)" }, at);
+"""
+SPOTLIGHT_CAP_JS = """            // Emphasis word: accent pop + glow — clearly breaks the pattern. WI2.88: until its
+            // timestamp it is a plain dim word (scale 1, FG, like its neighbours); the pop tweens
+            // --pop (its font size), so the words beside it make room instead of being overlapped.
+            tl.fromTo(wsel, { "--pop": 1, opacity: 0.42, color: FG },
+              { "--pop": 1.16, opacity: 1, color: ACCENT, duration: 0.26, ease: "back.out(2.2)" }, at);
+"""
+_SPOTLIGHT_CAP_SETTLE_OLD = """            tl.to(wsel, { scale: 1.08, duration: 0.18, ease: "power2.inOut" }, at + 0.26);
+"""
+SPOTLIGHT_CAP_SETTLE = """            tl.to(wsel, { "--pop": 1.08, duration: 0.18, ease: "power2.inOut" }, at + 0.26);
+"""
+_SPOTLIGHT_CAP_EDITS = ((_SPOTLIGHT_CAP_CSS_OLD, SPOTLIGHT_CAP_CSS), (_SPOTLIGHT_CAP_JS_OLD, SPOTLIGHT_CAP_JS),
+                        (_SPOTLIGHT_CAP_SETTLE_OLD, SPOTLIGHT_CAP_SETTLE))
+SPOTLIGHT_CAP_TEMPLATE = Path("templates") / "caption-overlay.html"
+
+
+def spotlight_caption_files(directory: Path, recipe: str) -> list:
+    """WI2.88: the caption-overlay.html copies in a p-reels-spotlight bundle: the vendored c-reel-premium
+    template (step 06 renders the p-reels-spotlight one), the recipe's own template, and the heygen
+    .hub/p-reels-spotlight copy. [] for any other recipe."""
+    if not recipe.startswith("p-reels-spotlight"):
+        return []
+    files = [directory / ".hub" / "c-reel-premium" / SPOTLIGHT_CAP_TEMPLATE]
+    if (directory / "templates").is_dir() or recipe == "p-reels-spotlight":
+        files.append(directory / SPOTLIGHT_CAP_TEMPLATE)
+    hub = directory / ".hub" / "p-reels-spotlight"
+    if hub.is_dir():
+        files.append(hub / SPOTLIGHT_CAP_TEMPLATE)
+    return files
+
+
+def apply_spotlight_caption_pop(directory: Path, recipe: str) -> int:
+    """WI2.88: every caption-overlay.html copy in a p-reels-spotlight bundle shows the emphasis word at
+    full size, FG colour and the common dim until it is spoken, then pops it by growing its font size
+    (--pop) so the space before it is never closed. Idempotent; fails fast when a copy is missing or
+    lost its anchor."""
+    changed = 0
+    if not directory.is_dir():
+        return 0
+    for path in spotlight_caption_files(directory, recipe):
+        if not path.is_file():
+            raise SystemExit(f"sync-skills.py: ERROR - {path} is missing ({recipe}); the WI2.88 transform cannot apply")
+        text = path.read_text(encoding="utf-8")
+        new_text = text
+        for old, new in _SPOTLIGHT_CAP_EDITS:
+            if new in new_text:
+                continue
+            if new_text.count(old) != 1:
+                raise SystemExit(f"sync-skills.py: ERROR - caption pop anchor {old.strip().splitlines()[0][:60]!r} "
+                                 f"found {new_text.count(old)} time(s) in {path} ({recipe}); "
+                                 "the WI2.88 transform cannot apply")
+            new_text = new_text.replace(old, new, 1)
+        if new_text != text:
+            path.write_text(new_text, encoding="utf-8")
+            changed += 1
+    return changed
+
+
 def git_head_sha(repo: Path) -> str | None:
     """Best-effort `git rev-parse HEAD` of `repo`. Returns None (never
     raises) when `repo` isn't a git checkout — e.g. a test fixture dir — so
@@ -3759,6 +3875,9 @@ def main():
 
         # WI2.91: the typing takeover's prompt is a JSON-encoded JS literal; its card label is CARD_LABEL (every copy).
         apply_spotlight_typing_prompt(recipe_dest, recipe)
+
+        # WI2.88: the caption emphasis word is a plain word until spoken; its pop keeps the space before it.
+        apply_spotlight_caption_pop(recipe_dest, recipe)
 
         files = list_files(recipe_dest)
         file_hashes = {f: sha256_file(recipe_dest / f) for f in files}
