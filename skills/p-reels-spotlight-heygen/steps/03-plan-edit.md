@@ -86,7 +86,9 @@ cat > work/caption_phrases.py <<'PY'
 # whole (a longer one is split at punctuation or a clause start). Word timings never change.
 # WI2.78: repair mode also fixes adjacent equal styles, a group overlap and a second emphasis
 # word on a plan that is already whole; a possessive ("her", "his") joins the next word.
-import json, re, sys
+# WI2.79: both modes refuse a group whose end is not after its start, or whose start is not
+# after the previous group's start - an overlap is clamped only when the groups are in order.
+import json, os, re, sys
 
 MAX_WORDS = 6
 JOINERS = set((
@@ -121,6 +123,38 @@ def empty_groups(groups):
     return ["group %d has no words - every caption group needs at least one word" % i
             for i, g in enumerate(groups) if not g.get("words")]
 
+def num(v):
+    try:
+        return None if isinstance(v, bool) else float(v)
+    except (TypeError, ValueError):
+        return None
+
+def timing_problems(groups):
+    # WI2.79: clamping an overlap is only safe when every group runs forward in time and
+    # the groups are in order; otherwise say so plainly (no clamp to end <= start)
+    out, prev = [], None
+    for i, g in enumerate(groups):
+        s, e = num(g.get("start")), num(g.get("end"))
+        if s is None or e is None:
+            out.append("group %d has no start/end time (start=%r, end=%r) - every caption group "
+                       "needs numeric start and end" % (i, g.get("start"), g.get("end")))
+            prev = None
+            continue
+        if e <= s:
+            out.append("group %d ends at %s, not after its start %s - a group must end after it starts"
+                       % (i, g.get("end"), g.get("start")))
+        if prev is not None and s <= prev:
+            out.append("group %d starts at %s, not after group %d (starts at %s) - caption groups "
+                       "must be in time order" % (i, g.get("start"), i - 1, groups[i - 1].get("start")))
+        prev = s
+    return out
+
+def structure_problems(groups):
+    # a plan these cannot be checked or repaired safely: no words, no/bad timings
+    if not isinstance(groups, list) or not all(isinstance(g, dict) for g in groups):
+        return ["caption_groups is not a list of groups"]
+    return empty_groups(groups) or timing_problems(groups)
+
 def fragment(groups, i):
     # a 1-2 word group with no clause break before it and none after it
     g = groups[i]["words"]
@@ -133,7 +167,7 @@ def bad_break(groups, i):
     return i < len(groups) - 1 and joiner(groups[i]["words"][-1])
 
 def problems(groups):
-    out = empty_groups(groups)
+    out = structure_problems(groups)
     if out:
         return out
     for i, g in enumerate(groups):
@@ -234,7 +268,7 @@ def run(plan):
     orig = plan.get("caption_groups") or []
     if not orig:
         return plan, False
-    bad = empty_groups(orig)
+    bad = structure_problems(orig)
     if bad:
         raise ValueError("; ".join(bad))
     first_start, last_end = orig[0]["start"], orig[-1]["end"]
@@ -248,14 +282,27 @@ def run(plan):
     plan = dict(plan, caption_groups=groups)
     return plan, True
 
+def stop(msg):
+    print("caption phrase check: " + msg, file=sys.stderr)
+    sys.exit(1)
+
 if __name__ == "__main__":
     args = sys.argv[1:]
     check = args[:1] == ["--check"]
+    if len(args) != (2 if check else 1):
+        stop("usage: caption_phrases.py [--check] PLAN.json (WI2.79)")
     path = args[-1]
-    plan = json.load(open(path))
-    empty = empty_groups(plan.get("caption_groups") or [])
-    if empty:
-        for b in empty:
+    if not os.path.isfile(path):
+        stop("plan not found: %s - write the plan before this step (WI2.79)" % path)
+    try:
+        plan = json.load(open(path))
+    except ValueError as exc:
+        stop("plan is not valid JSON: %s (%s) (WI2.79)" % (path, exc))
+    if not isinstance(plan, dict):
+        stop("plan is not a JSON object: %s (WI2.79)" % path)
+    structural = structure_problems(plan.get("caption_groups") or [])
+    if structural:
+        for b in structural:
             print("caption phrase check: " + b, file=sys.stderr)
         sys.exit(1)
     if not check:

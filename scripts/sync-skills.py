@@ -65,6 +65,12 @@ the pip step runs the repair as a command between P1 and P2 and skips the
 repair and the check when CAPTIONS=off; and the pip c-reel-premium P1 prompt
 states the same grouping rule.
 
+WI2.79 (same transform): both helper modes refuse a group whose end is not
+after its start or whose start is not after the previous start (the overlap
+clamp no longer hides an out-of-order plan); a missing plan, bad JSON or a group
+without start/end is a clear message, not a traceback; and the pip P1 note
+replaces the WI2.64 "run P1 → P4 here" line (its inverse gives that line back).
+
 Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
 and before list_files/hashing, same ordering guarantee:
   strip_brand_override_host_paths() nulls/drops the two host-path fields
@@ -1596,7 +1602,9 @@ _CAPTION_PHRASES_PY = r"""# WI2.76: keep caption phrases whole - never split a g
 # whole (a longer one is split at punctuation or a clause start). Word timings never change.
 # WI2.78: repair mode also fixes adjacent equal styles, a group overlap and a second emphasis
 # word on a plan that is already whole; a possessive ("her", "his") joins the next word.
-import json, re, sys
+# WI2.79: both modes refuse a group whose end is not after its start, or whose start is not
+# after the previous group's start - an overlap is clamped only when the groups are in order.
+import json, os, re, sys
 
 MAX_WORDS = 6
 JOINERS = set((
@@ -1631,6 +1639,38 @@ def empty_groups(groups):
     return ["group %d has no words - every caption group needs at least one word" % i
             for i, g in enumerate(groups) if not g.get("words")]
 
+def num(v):
+    try:
+        return None if isinstance(v, bool) else float(v)
+    except (TypeError, ValueError):
+        return None
+
+def timing_problems(groups):
+    # WI2.79: clamping an overlap is only safe when every group runs forward in time and
+    # the groups are in order; otherwise say so plainly (no clamp to end <= start)
+    out, prev = [], None
+    for i, g in enumerate(groups):
+        s, e = num(g.get("start")), num(g.get("end"))
+        if s is None or e is None:
+            out.append("group %d has no start/end time (start=%r, end=%r) - every caption group "
+                       "needs numeric start and end" % (i, g.get("start"), g.get("end")))
+            prev = None
+            continue
+        if e <= s:
+            out.append("group %d ends at %s, not after its start %s - a group must end after it starts"
+                       % (i, g.get("end"), g.get("start")))
+        if prev is not None and s <= prev:
+            out.append("group %d starts at %s, not after group %d (starts at %s) - caption groups "
+                       "must be in time order" % (i, g.get("start"), i - 1, groups[i - 1].get("start")))
+        prev = s
+    return out
+
+def structure_problems(groups):
+    # a plan these cannot be checked or repaired safely: no words, no/bad timings
+    if not isinstance(groups, list) or not all(isinstance(g, dict) for g in groups):
+        return ["caption_groups is not a list of groups"]
+    return empty_groups(groups) or timing_problems(groups)
+
 def fragment(groups, i):
     # a 1-2 word group with no clause break before it and none after it
     g = groups[i]["words"]
@@ -1643,7 +1683,7 @@ def bad_break(groups, i):
     return i < len(groups) - 1 and joiner(groups[i]["words"][-1])
 
 def problems(groups):
-    out = empty_groups(groups)
+    out = structure_problems(groups)
     if out:
         return out
     for i, g in enumerate(groups):
@@ -1744,7 +1784,7 @@ def run(plan):
     orig = plan.get("caption_groups") or []
     if not orig:
         return plan, False
-    bad = empty_groups(orig)
+    bad = structure_problems(orig)
     if bad:
         raise ValueError("; ".join(bad))
     first_start, last_end = orig[0]["start"], orig[-1]["end"]
@@ -1758,14 +1798,27 @@ def run(plan):
     plan = dict(plan, caption_groups=groups)
     return plan, True
 
+def stop(msg):
+    print("caption phrase check: " + msg, file=sys.stderr)
+    sys.exit(1)
+
 if __name__ == "__main__":
     args = sys.argv[1:]
     check = args[:1] == ["--check"]
+    if len(args) != (2 if check else 1):
+        stop("usage: caption_phrases.py [--check] PLAN.json (WI2.79)")
     path = args[-1]
-    plan = json.load(open(path))
-    empty = empty_groups(plan.get("caption_groups") or [])
-    if empty:
-        for b in empty:
+    if not os.path.isfile(path):
+        stop("plan not found: %s - write the plan before this step (WI2.79)" % path)
+    try:
+        plan = json.load(open(path))
+    except ValueError as exc:
+        stop("plan is not valid JSON: %s (%s) (WI2.79)" % (path, exc))
+    if not isinstance(plan, dict):
+        stop("plan is not a JSON object: %s (WI2.79)" % path)
+    structural = structure_problems(plan.get("caption_groups") or [])
+    if structural:
+        for b in structural:
             print("caption phrase check: " + b, file=sys.stderr)
         sys.exit(1)
     if not check:
@@ -1834,14 +1887,27 @@ _CAPTION_PHRASES_PIP_SECTION = (
     "split phrase was rendered. `CAPTIONS=off` renders no captions, so both are skipped.\n\n"
     + _CAPTION_PHRASES_WRITE
 )
-# Kept outside the WI2.64 hunk (_PIP_TAIL_PLAN_NEW) so that transform still inverts cleanly.
+# The P1 anchor is the first line of the WI2.64 hunk (_PIP_TAIL_PLAN_NEW). WI2.79: the note
+# REPLACES that line, so no "run P1" line follows the repair (an engine re-running P1 would
+# overwrite the repaired plan). Inverse: _CAPTION_PHRASES_PIP_P1_NOTE -> _CAPTION_PHRASES_PIP_P1_ANCHOR
+# gives back the WI2.64 hunk, so that transform still inverts cleanly (test Case WI2.64).
 _CAPTION_PHRASES_PIP_P1_ANCHOR = "# run P1 → P4 here; GSAP for the premium comp: cp \"$GSAP\" \"$PW/comp/gsap.min.js\" \"$PW/comp/compositions/\"\n"
-_CAPTION_PHRASES_PIP_P1_NOTE = (
+_CAPTION_PHRASES_PIP_P1_NOTE_WI278 = (
     "# 1) run P1 (plan) here: it writes \"$PW/plan.json\"\n"
     "# 2) WI2.76/WI2.78: keep caption phrases whole before P2 renders them (captions off: nothing to render)\n"
     "if [ \"$CAPTIONS\" != off ]; then python3 work/caption_phrases.py \"$PW/plan.json\" || exit 1; fi\n"
     "# 3) then P2 → P4 (P1 is done above; do not plan again):\n"
 )
+_CAPTION_PHRASES_PIP_P1_NOTE = (
+    "# 1) run P1 (plan) here: it writes \"$PW/plan.json\"\n"
+    "# 2) WI2.76/WI2.78: keep caption phrases whole before P2 renders them (captions off: nothing to render)\n"
+    "if [ \"$CAPTIONS\" != off ]; then python3 work/caption_phrases.py \"$PW/plan.json\" || exit 1; fi\n"
+    "# 3) now run P2 → P4 only (P1 is done above; planning again would undo the repair); GSAP for the\n"
+    "#    premium comp: cp \"$GSAP\" \"$PW/comp/gsap.min.js\" \"$PW/comp/compositions/\"\n"
+)
+# The rest of the WI2.64 hunk after its first line: the --check goes after it.
+_CAPTION_PHRASES_PIP_TAIL_ANCHOR = _PIP_TAIL_PLAN_NEW[len(_CAPTION_PHRASES_PIP_P1_ANCHOR):]
+assert _PIP_TAIL_PLAN_NEW.startswith(_CAPTION_PHRASES_PIP_P1_ANCHOR)
 _CAPTION_PHRASES_PIP_CHECK = ("# WI2.76: the rendered premium plan kept phrases whole (captions off: no caption groups rendered)\n"
                               "if [ \"$CAPTIONS\" != off ]; then python3 work/caption_phrases.py --check \"$PW/plan.json\" || exit 1; fi\n")
 # WI2.78: the pip P1 prompt (vendored c-reel-premium) states the helper's grouping rule. Plain
@@ -1870,19 +1936,37 @@ REEL_CAPTION_PHRASES_FILES = {
 }
 
 
-def _caption_phrases_insert(new: str, path: Path, recipe: str, anchor: str, add: str, after: bool) -> str:
+def _caption_phrases_insert(new: str, path: Path, recipe: str, anchor: str, add: str, after: bool,
+                            wi: str = "WI2.76") -> str:
     if add in new:
         return new
     if anchor not in new:
         raise SystemExit(f"sync-skills.py: ERROR - anchor {anchor[:40]!r} not found in {path} ({recipe}); "
-                         "the WI2.76 transform cannot apply")
+                         f"the {wi} transform cannot apply")
     return new.replace(anchor, (anchor + add) if after else (add + anchor), 1)
+
+
+_CAPTION_PHRASES_HELPER_RE = re.compile(r"cat > work/caption_phrases\.py <<'PY'\n.*?\nPY\n", re.S)
+
+
+def _caption_phrases_refresh_helper(text: str, path: Path, recipe: str) -> str:
+    """An earlier helper body already in the step is replaced by the current one (WI2.79),
+    so the section insert below stays idempotent across helper changes."""
+    found = _CAPTION_PHRASES_HELPER_RE.findall(text)
+    if not found:
+        return text
+    if len(found) != 1:
+        raise SystemExit(f"sync-skills.py: ERROR - {len(found)} caption_phrases.py helpers in {path} ({recipe}); "
+                         "the WI2.79 transform cannot apply")
+    current = "cat > work/caption_phrases.py <<'PY'\n" + _CAPTION_PHRASES_PY + "PY\n"
+    return text.replace(found[0], current, 1)
 
 
 def apply_reel_caption_phrases(directory: Path, recipe: str) -> int:
     """WI2.76: keep caption phrases whole (no lone mid-clause fragment).
     Top-level spotlight 03-plan-edit.md / pip 05-composite.md only (not .hub copies), plus the
-    pip .hub/c-reel-premium P1 caption rule (WI2.78).
+    pip .hub/c-reel-premium P1 caption rule (WI2.78). WI2.79: the pip P1 note replaces the
+    WI2.64 "run P1 → P4" line, so nothing after the repair invites a second P1.
     Idempotent; fails fast when an anchor drifted. Returns files changed."""
     rel = REEL_CAPTION_PHRASES_FILES.get(recipe)
     if rel is None:
@@ -1891,7 +1975,7 @@ def apply_reel_caption_phrases(directory: Path, recipe: str) -> int:
     if not path.is_file():
         return 0
     text = path.read_text(encoding="utf-8")
-    new = text
+    new = _caption_phrases_refresh_helper(text, path, recipe)
     if rel.endswith("03-plan-edit.md"):
         if "Then run the mechanical guard" not in text:
             return 0  # a minimal fixture, not the real plan step
@@ -1910,10 +1994,19 @@ def apply_reel_caption_phrases(directory: Path, recipe: str) -> int:
             return 0  # a minimal fixture, not the real composite step
         new = _caption_phrases_insert(new, path, recipe, _CAPTION_PHRASES_PIP_ANCHOR,
                                       _CAPTION_PHRASES_PIP_SECTION, after=True)
-        new = _caption_phrases_insert(new, path, recipe, _CAPTION_PHRASES_PIP_P1_ANCHOR,
-                                      _CAPTION_PHRASES_PIP_P1_NOTE, after=False)
-        new = _caption_phrases_insert(new, path, recipe, _PIP_TAIL_PLAN_NEW,
-                                      _CAPTION_PHRASES_PIP_CHECK, after=True)
+        # the --check first, while the WI2.64 hunk is still whole (WI2.78)
+        if _CAPTION_PHRASES_PIP_CHECK not in new:
+            new = _caption_phrases_insert(new, path, recipe, _PIP_TAIL_PLAN_NEW,
+                                          _CAPTION_PHRASES_PIP_CHECK, after=True, wi="WI2.78")
+        # WI2.79: the note replaces the "run P1 → P4" line (also over a WI2.78 note + that line)
+        if _CAPTION_PHRASES_PIP_P1_NOTE not in new:
+            old = _CAPTION_PHRASES_PIP_P1_NOTE_WI278 + _CAPTION_PHRASES_PIP_P1_ANCHOR
+            if old not in new:
+                old = _CAPTION_PHRASES_PIP_P1_ANCHOR
+            if new.count(old) != 1 or (old + _CAPTION_PHRASES_PIP_TAIL_ANCHOR) not in new:
+                raise SystemExit(f"sync-skills.py: ERROR - P1 line {old[:40]!r} not found once before the "
+                                 f"WI2.64 plan clamp in {path} ({recipe}); the WI2.79 transform cannot apply")
+            new = new.replace(old, _CAPTION_PHRASES_PIP_P1_NOTE, 1)
         if _CAPTION_PHRASES_PIP_PROSE_NEW not in new:
             new = new.replace(_CAPTION_PHRASES_PIP_PROSE_OLD, _CAPTION_PHRASES_PIP_PROSE_NEW, 1)
     changed = 0

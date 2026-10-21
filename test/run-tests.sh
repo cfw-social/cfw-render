@@ -8149,9 +8149,14 @@ try:
     spec = importlib.util.spec_from_file_location("sync_skills_wi264", repo / "scripts/sync-skills.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    inverted = pip_md
-    invert_bad = ""
+    # WI2.79: the caption-phrase P1 note replaces the hunk's first line; its inverse gives it back
+    note_count = pip_md.count(mod._CAPTION_PHRASES_PIP_P1_NOTE)
+    base_md = pip_md.replace(mod._CAPTION_PHRASES_PIP_P1_NOTE, mod._CAPTION_PHRASES_PIP_P1_ANCHOR, 1)
+    inverted = base_md
+    invert_bad = "" if note_count == 1 else "WI2.79 P1 note count %d" % note_count
     for old, new in reversed(mod.P_REELS_PIP_TAIL_PAIRS):
+        if invert_bad:
+            break
         count = inverted.count(new)
         if count != 1:
             invert_bad = "hunk count %d for %r" % (count, new[:80])
@@ -8172,11 +8177,11 @@ try:
             got = target.read_text(encoding="utf-8")
             mod.apply_p_reels_pip_tail(recipe)
             again = target.read_text(encoding="utf-8")
-            if got != pip_md:
-                pos = next((i for i, (a, b) in enumerate(zip(got, pip_md)) if a != b), min(len(got), len(pip_md)))
+            if got != base_md:
+                pos = next((i for i, (a, b) in enumerate(zip(got, base_md)) if a != b), min(len(got), len(base_md)))
                 add("WI2.64 sync transform reproduces the bundled composite",
-                    "at %d got %r want %r lens %d/%d" % (pos, got[max(0, pos-60):pos+60], pip_md[max(0, pos-60):pos+60], len(got), len(pip_md)))
-            elif again != pip_md:
+                    "at %d got %r want %r lens %d/%d" % (pos, got[max(0, pos-60):pos+60], base_md[max(0, pos-60):pos+60], len(got), len(base_md)))
+            elif again != base_md:
                 add("WI2.64 sync transform reproduces the bundled composite", "second apply changed bytes")
             else:
                 add("WI2.64 sync transform reproduces the bundled composite")
@@ -8214,9 +8219,11 @@ try:
                 if proc.returncode != 0:
                     bad_sync.append("rc %s %s" % (proc.returncode, (proc.stderr or proc.stdout or "")[-400:]))
                 for path in paths:
+                    # top-level steps also get the WI2.76+ caption-phrase note; the hub copy does not
+                    want = base_md if ".hub" in path.parts else pip_md
                     if not path.is_file():
                         bad_sync.append("missing %s" % path.name)
-                    elif path.read_text(encoding="utf-8") != pip_md:
+                    elif path.read_text(encoding="utf-8") != want:
                         bad_sync.append("diff %s" % path.relative_to(out))
                 if bad_sync:
                     add("WI2.64 sync-skills.sh re-applies the pip tail on both recipes and the hub copy", "; ".join(bad_sync))
@@ -9575,7 +9582,7 @@ try:
     for rcp in ("p-reels-pip", "p-reels-pip-heygen"):
         body = (repo / "skills" / rcp / "steps" / "05-composite.md").read_text(encoding="utf-8")
         p1_at, rep_at = body.find("# 1) run P1 (plan) here"), body.find(REPAIR)
-        p2_at = body.find("# 3) then P2 → P4")
+        p2_at = body.find("# 3) now run P2 → P4 only")
         if not (0 <= p1_at < rep_at < p2_at) or body.count(REPAIR) != 1:
             bad.append("%s: the repair is not a command between P1 and P2" % rcp)
         if body.count(CHECK) != 1 or body.find(CHECK) < p2_at:
@@ -9621,6 +9628,147 @@ else
   fail "WI2.78 caption-phrase repair always restyles and clamps" "$wi278_detail"
 fi
 rm -rf "$wi278_root"
+
+echo "=== Case 55: WI2.79 — caption repair refuses bad timings; pip step 05 no longer invites a second P1 ==="
+# Review of WI2.78: tidy() clamped every overlap, so a plan with groups out of order (or two
+# groups with one start) became a group with end <= start (start 1, end 0.5) and --check passed.
+# Pip step 05 kept the WI2.64 line "# run P1 -> P4 here" right after "then P2 -> P4", so an
+# engine could re-run P1 and overwrite the repaired plan. Missing plan.json or a group without
+# start/end was a traceback.
+wi279_root="$(mktemp -d)"
+wi279_detail="$(python3 - "$REPO_DIR" "$wi279_root" <<'PY'
+import importlib.util, json, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+def mk(lines):
+    gs, t = [], 0.0
+    for k, line in enumerate(lines):
+        ws = []
+        for x in line.split():
+            ws.append({"w": x, "s": round(t, 3), "e": round(t + 0.3, 3), "em": False}); t += 0.32
+        gs.append({"start": ws[0]["s"], "end": ws[-1]["e"], "style": k % 3, "words": ws})
+    return gs
+def run(helper, wd, *args):
+    return subprocess.run([sys.executable, "-I", str(helper), *args], cwd=wd, capture_output=True, text=True)
+def refused(helper, wd, name, body, want, label):
+    # both modes exit 1 with a clear message, no traceback, and repair leaves the file alone
+    pf = wd / name
+    raw = json.dumps({"caption_groups": body}) if body is not None else None
+    for args in ([name], ["--check", name]):
+        if raw is not None:
+            pf.write_text(raw, encoding="utf-8")
+        elif pf.exists():
+            pf.unlink()
+        r = run(helper, wd, *args)
+        if r.returncode != 1 or want not in r.stderr or "Traceback" in r.stderr:
+            bad.append("%s %s: rc=%d %r" % (label, args[0], r.returncode, r.stderr.strip()[-240:]))
+        if raw is not None and pf.read_text(encoding="utf-8") != raw:
+            bad.append("%s %s: the refused plan was rewritten" % (label, args[0]))
+try:
+    spec = importlib.util.spec_from_file_location("ss279", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    pip = (repo / "skills" / "p-reels-pip" / "steps" / "05-composite.md").read_text(encoding="utf-8")
+    marker = "cat > work/caption_phrases.py <<'PY'\n"
+    shipped = pip[pip.index(marker) + len(marker):pip.index("\nPY\n", pip.index(marker)) + 1]
+    if shipped != ss._CAPTION_PHRASES_PY:
+        bad.append("the helper in pip step 05 is not the sync-skills.py helper")
+    helper = root / "caption_phrases.py"; helper.write_text(shipped, encoding="utf-8")
+    wd = root / "wd"; wd.mkdir()
+    lines = ["She approved them", "with flour still on her hands,", "about 30 minutes", "a week."]
+    # 1. a group that ends at or before its start is refused
+    g = mk(lines); g[2]["end"] = g[2]["start"]
+    refused(helper, wd, "zero.json", g, "group 2 ends at", "end<=start")
+    # 2. starts that go backwards are refused (the review's start 1 / end 0.5 case)
+    g = mk(lines); g[1], g[2] = g[2], g[1]
+    refused(helper, wd, "back.json", g, "must be in time order", "backwards starts")
+    g = mk(lines); g[2]["start"] = g[1]["start"]
+    refused(helper, wd, "same.json", g, "group 2 starts at", "equal starts")
+    # 3. a group without start/end, and a missing plan, are clear errors
+    g = mk(lines); del g[1]["end"]
+    refused(helper, wd, "noend.json", g, "group 1 has no start/end time", "missing end")
+    g = mk(lines); g[0].pop("start")
+    refused(helper, wd, "nostart.json", g, "group 0 has no start/end time", "missing start")
+    refused(helper, wd, "plan.json", None, "plan not found", "missing plan.json")
+    # 4. a clean plan stays byte-identical in repair mode and passes --check
+    clean = mk(lines)
+    pc = wd / "clean.json"; raw = json.dumps({"caption_groups": clean, "x": 1}, indent=3) + "\n"
+    pc.write_bytes(raw.encode("utf-8"))
+    r = run(helper, wd, "clean.json")
+    if r.returncode != 0 or pc.read_bytes() != raw.encode("utf-8") or "plan unchanged" not in r.stdout:
+        bad.append("clean plan: rc=%d byte-identical=%s %r" % (r.returncode, pc.read_bytes() == raw.encode("utf-8"), (r.stdout + r.stderr)[-200:]))
+    if run(helper, wd, "--check", "clean.json").returncode != 0:
+        bad.append("clean plan: --check failed")
+    # 5. an in-order overlap is still clamped (WI2.78 kept), never to end <= start
+    lap = mk(lines); lap[1]["end"] = round(lap[2]["start"] + 0.05, 3)
+    pl = wd / "lap.json"; pl.write_text(json.dumps({"caption_groups": lap}), encoding="utf-8")
+    r = run(helper, wd, "lap.json")
+    got = json.loads(pl.read_text())["caption_groups"]
+    if r.returncode != 0 or any(x["end"] <= x["start"] or x["end"] > y["start"] for x, y in zip(got, got[1:])):
+        bad.append("in-order overlap: rc=%d %r" % (r.returncode, [(x["start"], x["end"]) for x in got]))
+    # 6. pip step 05: nothing after the repair asks for P1 again; P2 -> P4 follows it
+    REPAIR = 'if [ "$CAPTIONS" != off ]; then python3 work/caption_phrases.py "$PW/plan.json" || exit 1; fi\n'
+    CHECK = 'if [ "$CAPTIONS" != off ]; then python3 work/caption_phrases.py --check "$PW/plan.json" || exit 1; fi\n'
+    for rcp in ("p-reels-pip", "p-reels-pip-heygen"):
+        body = (repo / "skills" / rcp / "steps" / "05-composite.md").read_text(encoding="utf-8")
+        at = body.find(REPAIR)
+        if ss._CAPTION_PHRASES_PIP_P1_ANCHOR in body:
+            bad.append("%s: the WI2.64 'run P1 -> P4 here' line is still there" % rcp)
+        if at < 0 or "run P1" in body[at:] or body.count(ss._CAPTION_PHRASES_PIP_P1_NOTE) != 1:
+            bad.append("%s: a P1 instruction follows the repair" % rcp)
+        if not body.find(ss._CAPTION_PHRASES_PIP_P1_NOTE + ss._CAPTION_PHRASES_PIP_TAIL_ANCHOR + ss._CAPTION_PHRASES_PIP_CHECK) >= 0:
+            bad.append("%s: note, WI2.64 plan clamp and --check are not in order" % rcp)
+    # 7. the transform rebuilds the committed file from the WI2.78 state and from the bare
+    #    WI2.64 line, replaces an older helper body, and is idempotent
+    base = pip.replace(ss._CAPTION_PHRASES_PIP_P1_NOTE, ss._CAPTION_PHRASES_PIP_P1_ANCHOR, 1)
+    wi278 = pip.replace(ss._CAPTION_PHRASES_PIP_P1_NOTE, ss._CAPTION_PHRASES_PIP_P1_NOTE_WI278 + ss._CAPTION_PHRASES_PIP_P1_ANCHOR, 1)
+    older = pip.replace(shipped, shipped.replace("import json, os, re, sys", "import json, re, sys"), 1)
+    for label, start in (("bare WI2.64 line", base), ("WI2.78 note", wi278), ("older helper", older)):
+        cp = root / "tx" / label.replace(" ", "-"); (cp / "steps").mkdir(parents=True)
+        (cp / "steps" / "05-composite.md").write_text(start, encoding="utf-8")
+        ss.apply_reel_caption_phrases(cp, "p-reels-pip")
+        once = (cp / "steps" / "05-composite.md").read_text(encoding="utf-8")
+        n = ss.apply_reel_caption_phrases(cp, "p-reels-pip")
+        if once != pip or n != 0:
+            bad.append("transform from %s: equal=%s second-apply=%d" % (label, once == pip, n))
+    cp = root / "tx" / "drift"; (cp / "steps").mkdir(parents=True)
+    (cp / "steps" / "05-composite.md").write_text(base.replace(ss._CAPTION_PHRASES_PIP_P1_ANCHOR, "# drifted\n"), encoding="utf-8")
+    try:
+        ss.apply_reel_caption_phrases(cp, "p-reels-pip"); bad.append("a drifted P1 line did not fail the sync")
+    except SystemExit as exc:
+        if "WI2.79" not in str(exc) or "WI2.76" in str(exc):
+            bad.append("drifted P1 line error does not name WI2.79: %s" % exc)
+    # 8. the CAPTIONS guard lines run under zsh as well as bash
+    shells = [s for s in ("bash", "zsh") if shutil.which(s)]
+    if "zsh" not in shells and sys.platform == "darwin":
+        bad.append("zsh not found on macOS")
+    plan = json.dumps({"caption_groups": mk(["She approved them with", "flour still", "on her hands,"])})
+    for sh in shells:
+        for caps, has_plan, want_rc, want_changed in (("off", True, 0, False), ("on", True, 0, True),
+                                                      ("on", False, 1, False), ("off", False, 0, False)):
+            sd = root / ("%s-%s-%s" % (sh, caps, has_plan)); (sd / "work" / "premium").mkdir(parents=True)
+            shutil.copy(helper, sd / "work" / "caption_phrases.py")
+            pp = sd / "work" / "premium" / "plan.json"
+            if has_plan:
+                pp.write_text(plan, encoding="utf-8")
+            r = subprocess.run([sh, "-c", "PW=work/premium; CAPTIONS=%s\n%s%s" % (caps, REPAIR, CHECK)],
+                               cwd=sd, capture_output=True, text=True)
+            changed = has_plan and pp.read_text(encoding="utf-8") != plan
+            if r.returncode != want_rc or changed != want_changed or "Traceback" in r.stderr:
+                bad.append("%s CAPTIONS=%s plan=%s: rc=%d changed=%s %r" % (sh, caps, has_plan, r.returncode, changed, r.stderr.strip()[-160:]))
+            if not has_plan and caps == "on" and "plan not found" not in r.stderr:
+                bad.append("%s: missing plan is not a clear message" % sh)
+except Exception as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi279_detail" == "ok" ]]; then
+  pass "WI2.79 caption repair refuses end<=start and backwards starts, clear errors, pip has no second P1, zsh guard"
+else
+  fail "WI2.79 caption repair refuses bad timings; pip step 05 no longer invites a second P1" "$wi279_detail"
+fi
+rm -rf "$wi279_root"
 
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"

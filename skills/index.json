@@ -1023,7 +1023,7 @@
     },
     "p-reels-pip": {
       "version": "1.0.0",
-      "checksum": "sha256:002ec872c8170597a54f2593c6a6f1438df5e131588a1d96cc4bce159031f6af",
+      "checksum": "sha256:c623d7be73f3ac7e5c4d362b3a89d970180f2191c89c43189d2518f5df948d51",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1233,7 +1233,7 @@
         "steps/02-transcribe.md": "sha256:b48afcfd76a08db5a2f718c604caba241d2918c49e0c2de74b7985850df08420",
         "steps/03-plan-beats.md": "sha256:f66a79cffd9ec11461a2f7bedf665d2abd72117d6d8dd73dafcc6b0ecf051d27",
         "steps/04-build-background.md": "sha256:9db6fa203a45f70d98da8df63c2e6c115a84b2d45e85bc57c625dcbfc941d1fd",
-        "steps/05-composite.md": "sha256:cdf24e13ff69b9986d0ce673927892f9af6e1a1e16709dd1cdd9485af8cf0ef1",
+        "steps/05-composite.md": "sha256:263b25589857f4385e5e3e95ba23d47bae2b4d968d0bc3153928c2c9d1d433eb",
         "steps/06-final-checks.md": "sha256:44589f5c49356e53f0b7ced0656bf794695a0917c2755bedcd0a9a609cbf2346",
         "steps/_shared.md": "sha256:0d2cafc6bfcc51ec80194d2d1c30144c166c8bcad3223832a043aa209d5f6a20",
         "templates/motion-card.html": "sha256:81f0a62270ed98a5d5e75e26b715562c24d681fb72406cbdf75ffb4c9c44bd60"
@@ -1256,7 +1256,7 @@
     },
     "p-reels-spotlight": {
       "version": "1.0.0",
-      "checksum": "sha256:a3b4804dcf81fd97b50bd7c71707abd4a8565e7f3498ba0f78893a216f5f1e17",
+      "checksum": "sha256:68495314b4a1accfbffd632b88b49adac08e5b345e6a96206b203041ac875405",
       "files": [
         ".hub/c-broll-sync/SCENE-PLAN.md",
         ".hub/c-broll-sync/SKILL.md",
@@ -1492,7 +1492,7 @@
         "scripts/cta-card.py": "sha256:96a26f0df369ad4f1952de26227f0eb2136a8595c24d8e0386d9aaaabfb378c0",
         "steps/01-prepare-footage.md": "sha256:d863bbc843575370c18a13c31e0e1dbcdc8a2227f1adcc2b08114d48eb239dba",
         "steps/02-transcribe.md": "sha256:0497ef711fde3b2238a20c57d31a2d167b56e672d801a9322042b0fe30ff04b7",
-        "steps/03-plan-edit.md": "sha256:29b5b2ef7de36d6a53f9876ac5054a1ed6f2c3b9c8e393cfa3103e644a491d2d",
+        "steps/03-plan-edit.md": "sha256:5f7c9e57e5b6fc8a719f76b5b4fc3c02a418a70aa4729a1fbb10b2ca35a4bd8e",
         "steps/04-plan-broll.md": "sha256:9fbdd196fabb70023b487ec165f48a608aaa2dc4cd23393ad1a407e56f582d58",
         "steps/05-render-scenes.md": "sha256:1f0fc2820b252317ff015ddef09d82e1893ae1b9e76bc19b911948b6515c5d48",
         "steps/06-assemble.md": "sha256:abd4f0e83e53173bfec4951a2194bb463aa65994966df976b8da1e390dae8430",
@@ -2021,7 +2021,7 @@
     },
     "p-reels-pip-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:635ae463741d87615aabff5ddb01769860157fd63b31a8db70fabac035dc4bc4",
+      "checksum": "sha256:c3803409a7951fa7273d86183709b5c1903e9e48a22d4e007cbdd3c4be1eaaa2",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -2258,7 +2258,7 @@
         "steps/02-transcribe.md": "sha256:b48afcfd76a08db5a2f718c604caba241d2918c49e0c2de74b7985850df08420",
         "steps/03-plan-beats.md": "sha256:f66a79cffd9ec11461a2f7bedf665d2abd72117d6d8dd73dafcc6b0ecf051d27",
         "steps/04-build-background.md": "sha256:9db6fa203a45f70d98da8df63c2e6c115a84b2d45e85bc57c625dcbfc941d1fd",
-        "steps/05-composite.md": "sha256:cdf24e13ff69b9986d0ce673927892f9af6e1a1e16709dd1cdd9485af8cf0ef1",
+        "steps/05-composite.md": "sha256:263b25589857f4385e5e3e95ba23d47bae2b4d968d0bc3153928c2c9d1d433eb",
         "steps/06-final-checks.md": "sha256:44589f5c49356e53f0b7ced0656bf794695a0917c2755bedcd0a9a609cbf2346",
         "steps/_shared.md": "sha256:161059454b3fea0ffe65c126407892e14b026a415c86f9e7b2b54afdb723207e"
       },
@@ -2282,7 +2282,7 @@
     },
     "p-reels-spotlight-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:90bfc923bc08a6d73ee7d1e44afa8daaa7dadb076a1b72836a318c9277bb5862",
+      "checksum": "sha256:0fab12eaa48613c3302488d0a5c32ba197e03bd3043aa3c81865be9a6eaaeafa",
       "files": [
         ".hub/c-broll-sync/SCENE-PLAN.md",
         ".hub/c-broll-sync/SKILL.md",
@@ -2552,7 +2552,7 @@
         "steps/00-generate-avatar.md": "sha256:eac770a046a182a5c561b349441b2087376a0387e3c20d53bafe97909cff80c6",
         "steps/01-prepare-footage.md": "sha256:9fe918b8151a1feb404c18732750bd4cd4f509bffa7890c153e634a89fb9e3d0",
         "steps/02-transcribe.md": "sha256:0497ef711fde3b2238a20c57d31a2d167b56e672d801a9322042b0fe30ff04b7",
-        "steps/03-plan-edit.md": "sha256:29b5b2ef7de36d6a53f9876ac5054a1ed6f2c3b9c8e393cfa3103e644a491d2d",
+        "steps/03-plan-edit.md": "sha256:5f7c9e57e5b6fc8a719f76b5b4fc3c02a418a70aa4729a1fbb10b2ca35a4bd8e",
         "steps/04-plan-broll.md": "sha256:9fbdd196fabb70023b487ec165f48a608aaa2dc4cd23393ad1a407e56f582d58",
         "steps/05-render-scenes.md": "sha256:1f0fc2820b252317ff015ddef09d82e1893ae1b9e76bc19b911948b6515c5d48",
         "steps/06-assemble.md": "sha256:abd4f0e83e53173bfec4951a2194bb463aa65994966df976b8da1e390dae8430",
