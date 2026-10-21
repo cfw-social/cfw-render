@@ -84,6 +84,7 @@ def align(words, script, max_block=4, min_ratio=0.6):
     ratio = sum(m.size for m in sm.get_matching_blocks()) / max(len(a), 1)
     report = {"script_words": len(scr), "recognised_words": len(a), "match": round(ratio, 3),
               "fixed": [], "dropped": [], "left": []}
+    spans = []  # (first, last) entry of each fewer-words fix
     if not scr or ratio < min_ratio:
         report["note"] = "the script does not match this voice; words left as recognised"
         return words, report
@@ -98,6 +99,16 @@ def align(words, script, max_block=4, min_ratio=0.6):
             for k in range(i1, i2):
                 report["dropped"].append(toks[k][1]); toks[k][1] = None
             continue
+        if n > m:  # WI2.77: fewer script words than heard ('New York' -> 'NYC'): one caption
+            joined = " ".join(scr[j1:j2])  # from the start of the first heard word to the end of the last
+            core = re.sub(r"^\W+|\W+$", "", joined) or joined
+            new = re.match(r"^\W*", toks[i1][1]).group(0) + core + re.search(r"\W*$", toks[i2 - 1][1]).group(0)
+            report["fixed"].append([" ".join(t for _, t in toks[i1:i2]), new])
+            toks[i1][1] = new
+            for k in range(i1 + 1, i2):
+                toks[k][1] = None
+            spans.append((toks[i1][0], toks[i2 - 1][0]))
+            continue
         for k in range(n):  # replace: spread the script words over the recognised slots
             s0, s1 = round(k * m / n), round((k + 1) * m / n)
             new = " ".join(dress(toks[i1 + k][1], t) for t in scr[j1 + s0:j1 + s1]) or None
@@ -108,14 +119,27 @@ def align(words, script, max_block=4, min_ratio=0.6):
         texts.setdefault(i, [])
         if t:
             texts[i].append(t)
-    out = []
+    head = list(range(len(words)))  # WI2.77: entries a fewer-words fix spans fold into their first
+    for first, last in spans:
+        for i in range(first + 1, last + 1):
+            head[i] = head[first]
+    out, kept = [], {}
     for i, w in enumerate(words):
+        if head[i] != i and head[i] in kept:
+            o = kept[head[i]]
+            more = " ".join(texts[i]) if i in texts else str(w.get('text', '')).strip()
+            if more:
+                o['text'] = (str(o.get('text', '')).strip() + " " + more).strip()
+            if 'end' in w:
+                o['end'] = w['end']
+            continue
         if i in texts and not texts[i]:
             continue  # every token of this entry was not in the script
         new = dict(w)
         if i in texts:
             new['text'] = " ".join(texts[i])
         out.append(new)
+        kept[i] = new
     return out, report
 
 if __name__ == '__main__':
@@ -166,7 +190,12 @@ if [ "$GEMINI_KEY_SET" = "yes" ] && command -v cfw-transcribe >/dev/null 2>&1; t
 elif command -v mlx_whisper >/dev/null 2>&1; then
   echo "[spotlight] local transcription: mlx_whisper"
   SCRIPT_PROMPT=$(python3 work/script_align.py --prompt)
-  mlx_whisper prior/voice_track.mp4 --model mlx-community/whisper-small-mlx --output-dir work --output-format json ${SCRIPT_PROMPT:+--initial-prompt "$SCRIPT_PROMPT"}
+  # WI2.77: an explicit branch, so the prompt is two arguments in bash, sh and zsh
+  if [ -n "$SCRIPT_PROMPT" ]; then
+    mlx_whisper prior/voice_track.mp4 --model mlx-community/whisper-small-mlx --output-dir work --output-format json --initial-prompt "$SCRIPT_PROMPT"
+  else
+    mlx_whisper prior/voice_track.mp4 --model mlx-community/whisper-small-mlx --output-dir work --output-format json
+  fi
   python3 -c "import json; d=json.load(open('work/voice_track.json')); json.dump([{'text':s['text'],'start':s['start'],'end':s['end']} for s in d.get('segments',[])], open('work/words.json','w'))"
 elif command -v whisper >/dev/null 2>&1; then
   echo "[spotlight] local transcription: whisper CLI"
@@ -206,7 +235,10 @@ PY
 
 Align the cleaned words to the script (difflib on lower-cased letters and digits). A short
 mismatch (4 words or fewer) is fixed: a mis-heard word takes the script word, a recognised word
-that is not in the script is dropped. Timings are never edited. When under 60 % of the words
+that is not in the script is dropped. No time is left without a caption: when the script says it
+in fewer words than were heard (heard "New York", script "NYC"), those script words become one
+caption from the start of the first heard word to the end of the last (WI2.77); otherwise
+timings are not edited. When under 60 % of the words
 match, the script is not what was spoken and the words are left as recognised. What changed is
 in `work/script_align.json`.
 

@@ -50,7 +50,10 @@ steps and SKILL.md (not .hub copies).
 WI2.72 apply_reel_script_align() passes the known script to mlx_whisper as
 --initial-prompt and corrects mis-heard transcript words against it (difflib
 alignment, timings kept) in the top-level transcribe step of the four reel
-recipes. No script -> the transcript is left unchanged.
+recipes. No script -> the transcript is left unchanged. WI2.77: the prompt is passed
+through an explicit if branch (two arguments in bash, sh and zsh), and a script phrase
+shorter than what was heard becomes one caption over the whole heard time. The
+transform upgrades the WI2.72 text in place.
 
 WI2.76 apply_reel_caption_phrases() writes work/caption_phrases.py into the
 top-level caption-planning step of the four reel recipes (spotlight 03-plan-edit,
@@ -1464,6 +1467,7 @@ def align(words, script, max_block=4, min_ratio=0.6):
     ratio = sum(m.size for m in sm.get_matching_blocks()) / max(len(a), 1)
     report = {"script_words": len(scr), "recognised_words": len(a), "match": round(ratio, 3),
               "fixed": [], "dropped": [], "left": []}
+    spans = []  # (first, last) entry of each fewer-words fix
     if not scr or ratio < min_ratio:
         report["note"] = "the script does not match this voice; words left as recognised"
         return words, report
@@ -1478,6 +1482,16 @@ def align(words, script, max_block=4, min_ratio=0.6):
             for k in range(i1, i2):
                 report["dropped"].append(toks[k][1]); toks[k][1] = None
             continue
+        if n > m:  # WI2.77: fewer script words than heard ('New York' -> 'NYC'): one caption
+            joined = " ".join(scr[j1:j2])  # from the start of the first heard word to the end of the last
+            core = re.sub(r"^\W+|\W+$", "", joined) or joined
+            new = re.match(r"^\W*", toks[i1][1]).group(0) + core + re.search(r"\W*$", toks[i2 - 1][1]).group(0)
+            report["fixed"].append([" ".join(t for _, t in toks[i1:i2]), new])
+            toks[i1][1] = new
+            for k in range(i1 + 1, i2):
+                toks[k][1] = None
+            spans.append((toks[i1][0], toks[i2 - 1][0]))
+            continue
         for k in range(n):  # replace: spread the script words over the recognised slots
             s0, s1 = round(k * m / n), round((k + 1) * m / n)
             new = " ".join(dress(toks[i1 + k][1], t) for t in scr[j1 + s0:j1 + s1]) or None
@@ -1488,14 +1502,27 @@ def align(words, script, max_block=4, min_ratio=0.6):
         texts.setdefault(i, [])
         if t:
             texts[i].append(t)
-    out = []
+    head = list(range(len(words)))  # WI2.77: entries a fewer-words fix spans fold into their first
+    for first, last in spans:
+        for i in range(first + 1, last + 1):
+            head[i] = head[first]
+    out, kept = [], {}
     for i, w in enumerate(words):
+        if head[i] != i and head[i] in kept:
+            o = kept[head[i]]
+            more = " ".join(texts[i]) if i in texts else str(w.get('text', '')).strip()
+            if more:
+                o['text'] = (str(o.get('text', '')).strip() + " " + more).strip()
+            if 'end' in w:
+                o['end'] = w['end']
+            continue
         if i in texts and not texts[i]:
             continue  # every token of this entry was not in the script
         new = dict(w)
         if i in texts:
             new['text'] = " ".join(texts[i])
         out.append(new)
+        kept[i] = new
     return out, report
 
 if __name__ == '__main__':
@@ -1534,16 +1561,37 @@ _SCRIPT_ALIGN_CHECK = (
     "in `work/script_align.json`.\n\n"
     "```bash\npython3 work/script_align.py work/words.json || exit 1\n```\n\n"
 )
+_SCRIPT_ALIGN_CHECK_WI272 = _SCRIPT_ALIGN_CHECK
+_SCRIPT_ALIGN_CHECK = _SCRIPT_ALIGN_CHECK_WI272.replace(
+    "that is not in the script is dropped. Timings are never edited. When under 60 % of the words\n",
+    "that is not in the script is dropped. No time is left without a caption: when the script says it\n"
+    "in fewer words than were heard (heard \"New York\", script \"NYC\"), those script words become one\n"
+    "caption from the start of the first heard word to the end of the last (WI2.77); otherwise\n"
+    "timings are not edited. When under 60 % of the words\n")
 _SCRIPT_ALIGN_MLX_OLD = ("  mlx_whisper prior/voice_track.mp4 --model mlx-community/whisper-small-mlx "
                          "--output-dir work --output-format json\n")
+# WI2.72 wrote ${SCRIPT_PROMPT:+--initial-prompt "$SCRIPT_PROMPT"}: zsh (the engine's shell) keeps
+# that as ONE argument, mlx_whisper takes it for a second audio file, skips it and exits 0, so
+# the prompt was dropped silently. WI2.77: an explicit if branch (not an array: arrays differ
+# between sh and zsh) gives two arguments in bash, sh and zsh alike.
+_SCRIPT_ALIGN_MLX_WI272 = ("  SCRIPT_PROMPT=$(python3 work/script_align.py --prompt)\n"
+                           "  mlx_whisper prior/voice_track.mp4 --model mlx-community/whisper-small-mlx "
+                           "--output-dir work --output-format json ${SCRIPT_PROMPT:+--initial-prompt \"$SCRIPT_PROMPT\"}\n")
 _SCRIPT_ALIGN_MLX_NEW = ("  SCRIPT_PROMPT=$(python3 work/script_align.py --prompt)\n"
-                         "  mlx_whisper prior/voice_track.mp4 --model mlx-community/whisper-small-mlx "
-                         "--output-dir work --output-format json ${SCRIPT_PROMPT:+--initial-prompt \"$SCRIPT_PROMPT\"}\n")
+                         "  # WI2.77: an explicit branch, so the prompt is two arguments in bash, sh and zsh\n"
+                         "  if [ -n \"$SCRIPT_PROMPT\" ]; then\n"
+                         "    mlx_whisper prior/voice_track.mp4 --model mlx-community/whisper-small-mlx "
+                         "--output-dir work --output-format json --initial-prompt \"$SCRIPT_PROMPT\"\n"
+                         "  else\n"
+                         "    mlx_whisper prior/voice_track.mp4 --model mlx-community/whisper-small-mlx "
+                         "--output-dir work --output-format json\n"
+                         "  fi\n")
 _SCRIPT_ALIGN_PIP_OLD = ("entries and canonicalise the key (`word` → `text`). When `prior/script.md` exists, align the\n"
                          "recognised words to the script text (same count → replace texts in order; otherwise fix obvious\n"
                          "misrecognitions only). Timings are never edited.\n")
 _SCRIPT_ALIGN_PIP_NEW = ("entries and canonicalise the key (`word` → `text`). Step 2b then checks the words against the\n"
                          "script. Timings are never edited.\n")
+_SCRIPT_ALIGN_OPEN = "cat > work/script_align.py <<'PY'\n"
 _SCRIPT_ALIGN_H1 = "### 1. Transcribe the bed with word timestamps\n"
 _SCRIPT_ALIGN_H3 = "### 3. B-roll cue transcripts (only when `inputs/broll/` exists)\n"
 REEL_SCRIPT_ALIGN_RECIPES = ("p-reels-spotlight", "p-reels-spotlight-heygen", "p-reels-pip", "p-reels-pip-heygen")
@@ -1564,6 +1612,18 @@ def apply_reel_script_align(directory: Path, recipe: str) -> int:
         # has this section but lost another anchor fails fast below.
         return 0
     new = text
+    if _SCRIPT_ALIGN_SECTION not in new and _SCRIPT_ALIGN_OPEN in new:
+        # WI2.77: an older helper (WI2.72) is in place: swap in the current one.
+        head, rest = new.split(_SCRIPT_ALIGN_OPEN, 1)
+        if "\nPY\n" not in rest:
+            raise SystemExit(f"sync-skills.py: ERROR - script_align.py heredoc not closed in {path} ({recipe}); "
+                             "the WI2.77 transform cannot apply")
+        new = head + _SCRIPT_ALIGN_OPEN + _SCRIPT_ALIGN_PY + "PY\n" + rest.split("\nPY\n", 1)[1]
+        if _SCRIPT_ALIGN_SECTION not in new:
+            raise SystemExit(f"sync-skills.py: ERROR - script-align section text drifted in {path} ({recipe}); "
+                             "the WI2.77 transform cannot apply")
+    new = new.replace(_SCRIPT_ALIGN_CHECK_WI272, _SCRIPT_ALIGN_CHECK)
+    new = new.replace(_SCRIPT_ALIGN_MLX_WI272, _SCRIPT_ALIGN_MLX_NEW)
     if _SCRIPT_ALIGN_SECTION not in new:
         if _SCRIPT_ALIGN_H1 not in new:
             raise SystemExit(f"sync-skills.py: ERROR - transcribe heading not found in {path} ({recipe}); "

@@ -9770,6 +9770,126 @@ else
 fi
 rm -rf "$wi279_root"
 
+echo "=== Case 56: WI2.77 — the script prompt reaches mlx_whisper as two arguments; a fewer-words fix keeps caption time ==="
+# Review of WI2.72: ${SCRIPT_PROMPT:+--initial-prompt "$SCRIPT_PROMPT"} stays ONE argument under
+# zsh (the engine's shell), so mlx_whisper took it for a second audio file and the prompt was
+# dropped with exit 0. And a replace with fewer script words than heard (heard "New York",
+# script "NYC") dropped the first entry, leaving its time with no caption.
+wi277_root="$(mktemp -d)"
+wi277_detail="$(python3 - "$REPO_DIR" "$wi277_root" <<'PY'
+import importlib.util, json, os, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+RECIPES = ("p-reels-spotlight", "p-reels-spotlight-heygen", "p-reels-pip", "p-reels-pip-heygen")
+try:
+    spec = importlib.util.spec_from_file_location("ss277", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    helper = root / "script_align.py"; helper.write_text(ss._SCRIPT_ALIGN_PY, encoding="utf-8")
+    # 1. the mlx_whisper block, run as written, under bash, sh and zsh with a stub that prints argv
+    stub = root / "bin"; stub.mkdir()
+    (stub / "mlx_whisper").write_text('#!/bin/sh\nfor a in "$@"; do printf \'<%s>\\n\' "$a"; done\n', encoding="utf-8")
+    os.chmod(stub / "mlx_whisper", 0o755)
+    base = ["prior/voice_track.mp4", "--model", "mlx-community/whisper-small-mlx", "--output-dir", "work",
+            "--output-format", "json"]
+    script = "She approved them with flour still on her hands, about thirty minutes a week."
+    shells = [sh for sh in ("bash", "sh", "zsh") if shutil.which(sh)]
+    if "bash" not in shells or "sh" not in shells:
+        bad.append("bash and sh must both be present (found %r)" % shells)
+    def argv_of(shell, block, with_script):
+        wd = root / ("run-%s-%d" % (shell, with_script)); shutil.rmtree(wd, ignore_errors=True)
+        (wd / "work").mkdir(parents=True); shutil.copy(helper, wd / "work" / "script_align.py")
+        if with_script:
+            (wd / "inputs" / "script").mkdir(parents=True)
+            (wd / "inputs" / "script" / "script.txt").write_text(script, encoding="utf-8")
+        env = dict(os.environ, PATH=str(stub) + os.pathsep + os.environ.get("PATH", ""))
+        r = subprocess.run([shell, "-c", block], cwd=wd, env=env, capture_output=True, text=True)
+        if r.returncode != 0:
+            bad.append("%s: block rc=%d %s" % (shell, r.returncode, r.stderr.strip()[-200:]))
+        return [ln[1:-1] for ln in r.stdout.splitlines() if ln.startswith("<")]
+    for rcp in RECIPES:
+        body = (repo / "skills" / rcp / "steps" / "02-transcribe.md").read_text(encoding="utf-8")
+        if "${SCRIPT_PROMPT:+" in body:
+            bad.append("%s: the one-word ${SCRIPT_PROMPT:+...} form is still in the step" % rcp)
+        if ss._SCRIPT_ALIGN_MLX_NEW not in body:
+            bad.append("%s: the explicit-branch mlx_whisper block is not in the step" % rcp); continue
+        block = ss._SCRIPT_ALIGN_MLX_NEW
+        for shell in shells:
+            got = argv_of(shell, block, True)
+            if got != base + ["--initial-prompt", script]:
+                bad.append("%s/%s: with a script mlx_whisper got %r" % (rcp, shell, got))
+            got0 = argv_of(shell, block, False)
+            if got0 != base:
+                bad.append("%s/%s: with no script mlx_whisper got %r" % (rcp, shell, got0))
+    if "zsh" in shells:  # the stub really tells the old form apart: zsh gave it one argument
+        old = argv_of("zsh", ss._SCRIPT_ALIGN_MLX_WI272, True)
+        if old != base + ["--initial-prompt " + script]:
+            bad.append("stub check: the old form under zsh gave %r, expected one joined argument" % old)
+    # 2. script_align: fewer, more and equal script words
+    def run(name, heard, script_text):
+        wd = root / name; (wd / "work").mkdir(parents=True); (wd / "inputs" / "script").mkdir(parents=True)
+        (wd / "inputs" / "script" / "script.txt").write_text(script_text, encoding="utf-8")
+        words = [{"text": t, "start": s, "end": e} for t, s, e in heard]
+        (wd / "work" / "words.json").write_text(json.dumps(words), encoding="utf-8")
+        r = subprocess.run([sys.executable, "-I", str(helper), "work/words.json"], cwd=wd, capture_output=True, text=True)
+        if r.returncode != 0:
+            bad.append("%s: rc=%d %s" % (name, r.returncode, r.stderr.strip()[-200:]))
+        return [(w["text"], w["start"], w["end"]) for w in json.loads((wd / "work" / "words.json").read_text())]
+    pre = [("I", 0.0, 0.2), ("moved", 0.2, 0.5), ("to", 0.5, 0.6)]
+    post = [("last", 1.4, 1.7), ("summer", 1.7, 2.1), ("with", 2.1, 2.3), ("my", 2.3, 2.4), ("family.", 2.4, 2.9)]
+    tail = "last summer with my family."
+    got = run("fewer", pre + [("New", 0.6, 0.9), ("York", 0.9, 1.3)] + post, "I moved to NYC " + tail)
+    if got != pre + [("NYC", 0.6, 1.3)] + post:
+        bad.append("fewer words (word entries): %r" % got)
+    got = run("fewer_punct", pre + [("New", 0.6, 0.9), ("York,", 0.9, 1.3)] + post, "I moved to NYC, " + tail)
+    if got != pre + [("NYC,", 0.6, 1.3)] + post:
+        bad.append("fewer words keeps trailing punctuation: %r" % got)
+    got = run("fewer_three", pre + [("the", 0.6, 0.7), ("big", 0.7, 0.9), ("apple", 0.9, 1.3)] + post,
+              "I moved to NYC " + tail)
+    if got != pre + [("NYC", 0.6, 1.3)] + post:
+        bad.append("three heard words for one script word: %r" % got)
+    segs = [(" I moved to New", 0.0, 0.9), (" York last summer", 0.9, 2.1), (" with my family.", 2.1, 2.9)]
+    got = run("fewer_segments", segs, "I moved to NYC " + tail)
+    if got != [("I moved to NYC last summer", 0.0, 2.1), ("with my family.", 2.1, 2.9)]:
+        bad.append("fewer words across segments: %r" % got)
+    got = run("more", pre + [("NYC", 0.6, 1.3)] + post, "I moved to New York " + tail)
+    if got != pre + [("New York", 0.6, 1.3)] + post:
+        bad.append("more words: %r" % got)
+    got = run("equal", pre + [("flower", 0.6, 0.9), ("steel", 0.9, 1.3)] + post, "I moved to flour still " + tail)
+    if got != pre + [("flour", 0.6, 0.9), ("still", 0.9, 1.3)] + post:
+        bad.append("equal words: %r" % got)
+    # 3. the transform upgrades the WI2.72 text and the pre-WI2.72 text to the committed step, idempotently
+    for rcp in RECIPES:
+        cur = (repo / "skills" / rcp / "steps" / "02-transcribe.md").read_text(encoding="utf-8")
+        cc = root / "committed" / rcp; shutil.copytree(repo / "skills" / rcp / "steps", cc / "steps")
+        if ss.apply_reel_script_align(cc, rcp) != 0:
+            bad.append("%s: committed step is not what sync-skills.py writes" % rcp); continue
+        h, rest = cur.split(ss._SCRIPT_ALIGN_OPEN, 1)
+        wi272 = (h + ss._SCRIPT_ALIGN_OPEN + "# WI2.72 helper\nprint('old')\nPY\n" + rest.split("\nPY\n", 1)[1])
+        wi272 = wi272.replace(ss._SCRIPT_ALIGN_MLX_NEW, ss._SCRIPT_ALIGN_MLX_WI272).replace(
+            ss._SCRIPT_ALIGN_CHECK, ss._SCRIPT_ALIGN_CHECK_WI272)
+        before = (cur.replace(ss._SCRIPT_ALIGN_SECTION, "").replace(ss._SCRIPT_ALIGN_CHECK, "")
+                  .replace(ss._SCRIPT_ALIGN_MLX_NEW, ss._SCRIPT_ALIGN_MLX_OLD))
+        for label, text in (("WI2.72", wi272), ("pre-WI2.72", before)):
+            if text == cur:
+                bad.append("%s: %s fixture equals the current text" % (rcp, label)); continue
+            d = root / "up" / label / rcp; (d / "steps").mkdir(parents=True)
+            (d / "steps" / "02-transcribe.md").write_text(text, encoding="utf-8")
+            n1 = ss.apply_reel_script_align(d, rcp); n2 = ss.apply_reel_script_align(d, rcp)
+            if (d / "steps" / "02-transcribe.md").read_text(encoding="utf-8") != cur or (n1, n2) != (1, 0):
+                bad.append("%s: %s text did not upgrade to the committed step once (%d, %d)" % (rcp, label, n1, n2))
+except Exception as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi277_detail" == "ok" ]]; then
+  pass "WI2.77 script prompt is two arguments in bash/sh/zsh; a fewer-words fix keeps one caption over the heard time"
+else
+  fail "WI2.77 script prompt and caption timing" "$wi277_detail"
+fi
+rm -rf "$wi277_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
