@@ -1256,7 +1256,7 @@
     },
     "p-reels-spotlight": {
       "version": "1.0.0",
-      "checksum": "sha256:272771a6ae7d853bb98c00d6590ae0a46c4ba6fb8ac507925fb59eb10fcdfdfe",
+      "checksum": "sha256:6d844130b9b2016e78d686025235141e711c6dfad4b23a96bb494c4287cb4912",
       "files": [
         ".hub/c-broll-sync/SCENE-PLAN.md",
         ".hub/c-broll-sync/SKILL.md",
@@ -1500,10 +1500,10 @@
         "steps/_shared.md": "sha256:a35ca1b7d618a5796971fdbbd834668e4f54050f04c15e640b3bcf589c6af3cb",
         "templates/caption-overlay.html": "sha256:5c840d82302d8fbd44690a99217065751ee54ae2c636b72e076c8cb6c110d5f8",
         "templates/root-shell.html": "sha256:ff739b2f48093d8070e2c9f484560d4861dab830c9a38d3532798e1af6a387ca",
-        "templates/tk-keyword.html": "sha256:2bf4db233e2756eb60bf3500c5761581306f14451e63abcfcfce846fca1429a0",
-        "templates/tk-list.html": "sha256:79f149be9cdf876b6e314e2d42773902e5ca9c3c59b6d754cc13a49e8efdb5c7",
-        "templates/tk-quote.html": "sha256:256ba1874637768165dcd639b79932d2abadaf07a9f342be65a68ee4abbd71a7",
-        "templates/tk-stat.html": "sha256:af8bf5cc6be0f4664680037b0e74b8431679dce105ec4f02e829df50ade70478"
+        "templates/tk-keyword.html": "sha256:90165bc0c36d481f7f79324e0709e26d229552c6c25a147a044890d408f82777",
+        "templates/tk-list.html": "sha256:e3c4e3d61d3647e7dd79955de2450c02db56f33a82956d61d67e32b9b07a640d",
+        "templates/tk-quote.html": "sha256:82ef191dc26c1bbf956fa1baa93890166d9cf8c572c35de295127ca26da3e306",
+        "templates/tk-stat.html": "sha256:308084d23ae3e3b822e035dcfc3f72f7264dd9e938fd49cb2aa69012a987ebd5"
       },
       "providers": [],
       "systemRequires": [],
@@ -2282,7 +2282,7 @@
     },
     "p-reels-spotlight-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:a4e5487d9d8a25b0cf2de87c22a8084d0b1ee1dfb2a151ef05af5f343462fb70",
+      "checksum": "sha256:595bfca51bf26d154aeee6ddec2dd85b950303761107a4303c1efcbb805d4413",
       "files": [
         ".hub/c-broll-sync/SCENE-PLAN.md",
         ".hub/c-broll-sync/SKILL.md",
@@ -2543,10 +2543,10 @@
         ".hub/p-reels-spotlight/steps/_shared.md": "sha256:2ad670cbc4a2fc13b63ad0a1df54d30154111380042b53ac2a7a309d5085c6cb",
         ".hub/p-reels-spotlight/templates/caption-overlay.html": "sha256:5c840d82302d8fbd44690a99217065751ee54ae2c636b72e076c8cb6c110d5f8",
         ".hub/p-reels-spotlight/templates/root-shell.html": "sha256:ff739b2f48093d8070e2c9f484560d4861dab830c9a38d3532798e1af6a387ca",
-        ".hub/p-reels-spotlight/templates/tk-keyword.html": "sha256:2bf4db233e2756eb60bf3500c5761581306f14451e63abcfcfce846fca1429a0",
-        ".hub/p-reels-spotlight/templates/tk-list.html": "sha256:79f149be9cdf876b6e314e2d42773902e5ca9c3c59b6d754cc13a49e8efdb5c7",
-        ".hub/p-reels-spotlight/templates/tk-quote.html": "sha256:256ba1874637768165dcd639b79932d2abadaf07a9f342be65a68ee4abbd71a7",
-        ".hub/p-reels-spotlight/templates/tk-stat.html": "sha256:af8bf5cc6be0f4664680037b0e74b8431679dce105ec4f02e829df50ade70478",
+        ".hub/p-reels-spotlight/templates/tk-keyword.html": "sha256:90165bc0c36d481f7f79324e0709e26d229552c6c25a147a044890d408f82777",
+        ".hub/p-reels-spotlight/templates/tk-list.html": "sha256:e3c4e3d61d3647e7dd79955de2450c02db56f33a82956d61d67e32b9b07a640d",
+        ".hub/p-reels-spotlight/templates/tk-quote.html": "sha256:82ef191dc26c1bbf956fa1baa93890166d9cf8c572c35de295127ca26da3e306",
+        ".hub/p-reels-spotlight/templates/tk-stat.html": "sha256:308084d23ae3e3b822e035dcfc3f72f7264dd9e938fd49cb2aa69012a987ebd5",
         "SKILL.md": "sha256:2a3f7b070438d31423358438e441bd23c06e33e4463be061c513475b27219bf1",
         "manifest.json": "sha256:0cbdd4d1eba4238de11154c3a086e2601ae9d88b285793844ea65e978f92494b",
         "steps/00-generate-avatar.md": "sha256:eac770a046a182a5c561b349441b2087376a0387e3c20d53bafe97909cff80c6",

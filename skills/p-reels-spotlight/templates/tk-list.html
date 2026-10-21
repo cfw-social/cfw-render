@@ -47,6 +47,7 @@
         box-sizing: border-box;
       }
       #{{ID}} .title {
+        white-space: nowrap; max-width: 900px;  /* WI2.94: one line; the script fits it to the safe width */
         font-weight: 700; font-size: 96px; line-height: 0.95;
         letter-spacing: -0.01em; text-transform: uppercase;
         color: {{FG}};
@@ -69,6 +70,7 @@
         will-change: transform;
       }
       #{{ID}} .item-text {
+        white-space: nowrap; max-width: 786px;  /* WI2.94: one line; the script fits it to the safe width */
         font-family: 'Inter', sans-serif;
         font-weight: 700; font-size: 52px; line-height: 1.12;
         color: {{FG}};
@@ -115,6 +117,26 @@
           { scale: 1, duration: 0.4, ease: "back.out(2.4)", stagger: 0.3 }, 0.68);
 
         window.__timelines["{{ID}}"] = tl;
+
+        // WI2.94: keep each takeover text line on ONE line. A line starts at its design size and,
+        // when wider than its safe width (>= 80px from both frame edges), its font is scaled down
+        // until it fits; the text is never cut. Refit once fonts load.
+        function fitLine(el, base, maxW) {
+          if (!el) return base;
+          el.style.fontSize = base + "px";
+          var w = el.scrollWidth;
+          if (w <= maxW) return base;
+          var size = Math.floor(base * maxW / w);
+          el.style.fontSize = size + "px";
+          while (size > 8 && el.scrollWidth > maxW) { size -= 1; el.style.fontSize = size + "px"; }
+          return size;
+        }
+        var LINE_FITS = [[document.querySelector(scope + ".js-title"), 96, 900]].concat(
+          Array.prototype.map.call(document.querySelectorAll(scope + ".item-text"),
+            function (el) { return [el, 52, 786]; }));
+        function fitLines() { LINE_FITS.forEach(function (f) { fitLine(f[0], f[1], f[2]); }); }
+        fitLines();
+        if (document.fonts && document.fonts.ready) { document.fonts.ready.then(fitLines); }
       })();
     </script>
   </div>

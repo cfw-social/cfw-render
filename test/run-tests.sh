@@ -11133,6 +11133,185 @@ else
 fi
 rm -rf "$wi292_root"
 
+echo "=== Case 66: WI2.94 — every spotlight takeover text line fits on one line inside the safe width ==="
+# Observed 2026-10-21 (smoke 25, p-reels-spotlight on Render 69bc5ce): the tk-stat label
+# "POSTS · SPECIALS · MOMENTS" showed on two lines (~4.6-9.6 s), and the tk-list title "CFW WRITES THE
+# MONTH" and item 3 "FORMATTED FOR EVERY PLATFORM" wrapped (~30.4-36.3 s). WI2.83/WI2.85 fit only the big
+# stat. Every p-reels-spotlight takeover template copy now keeps each single-line text on one line
+# (white-space: nowrap) and shrinks its font from the design size until it fits its safe width (900 px;
+# 786 px for list items; 880 px for the keyword word/support), so it stays >= 80 px from both frame edges;
+# the text itself is never cut. Each template's own script runs in node with a fake DOM whose text width
+# grows with font size (a fallback font until fonts load), so the old wrapping templates fail this case.
+wi294_root="$(mktemp -d)"
+wi294_detail="$(python3 - "$REPO_DIR" "$wi294_root" <<'PY'
+import importlib.util, json, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+SIM = r"""
+const vm = require('vm'), fs = require('fs');
+const [tplPath, fillJson, emFallback, emLoaded] = process.argv.slice(2);
+const fill = JSON.parse(fillJson);
+let src = fs.readFileSync(tplPath, 'utf8');
+for (const [k, v] of Object.entries(fill)) src = src.split('{{' + k + '}}').join(v);
+const scripts = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+if (scripts.length !== 1) { console.log(JSON.stringify({ error: 'inline scripts: ' + scripts.length })); process.exit(0); }
+const code = scripts[0].replace(/\{\{ID\}\}/g, 'tk0').replace(/\{\{DURATION\}\}/g, '4');
+// Each line's design size and em/char (Oswald caps ~0.5, Inter 700 caps ~0.68, JetBrains Mono + tracking ~0.8).
+const LINES = {
+  '.js-eyebrow': [30, 0.8], '.js-label': [84, 0.5], '.js-title': [96, 0.5], '.item-text': [52, 0.68],
+  '.js-word': [340, 0.5], '.js-support': [52, 0.68], '.js-attr': [34, 0.8], '.js-stat': [340, 0.5],
+};
+let scale = parseFloat(emFallback) / parseFloat(emLoaded);  // the fallback font until fonts load
+function el(text, kind) {
+  const [design, em] = LINES[kind] || [40, 0.5];
+  return { kind, textContent: text, innerHTML: text, style: {}, childNodes: [], classList: { add() {} },
+    appendChild() {},
+    get scrollWidth() { const fs = parseFloat(this.style.fontSize) || design;
+      return Math.round(fs * em * scale * this.textContent.length); } };
+}
+const text = k => (src.match(new RegExp('class="[^"]*' + k.replace(/^\./, '') + '[^"]*"[^>]*>([^<]*)')) || [, ''])[1];
+const els = {};
+for (const k of Object.keys(LINES)) els[k] = k === '.item-text'
+  ? [...src.matchAll(/class="item-text">([^<]*)</g)].map(m => el(m[1], k)) : el(text(k), k);
+const tl = new Proxy({}, { get: () => () => tl });
+const readies = [];
+const pick = s => Object.keys(els).find(k => s.endsWith(k));
+const ctx = { window: {}, gsap: { timeline: () => tl }, parseFloat, Math, Array,
+  document: {
+    querySelector: s => { const k = pick(s); return k ? (Array.isArray(els[k]) ? els[k][0] : els[k]) : el('', ''); },
+    querySelectorAll: s => { const k = pick(s); return k ? [].concat(els[k]) : []; },
+    getElementById: id => (id.endsWith('-word') ? els['.js-word'] : el('', '')),
+    createElement: () => el('', ''), createTextNode: t => ({ textContent: t }),
+    fonts: { ready: { then: f => { readies.push(f); } } } } };
+vm.runInNewContext(code, ctx);
+scale = 1;                      // fonts finished loading
+readies.forEach(f => f());
+const out = {};
+for (const k of ['.js-eyebrow', '.js-label', '.js-title', '.item-text', '.js-word', '.js-support', '.js-attr'])
+  if (src.includes(k.slice(1) + '"') || src.includes(k.slice(1) + ' '))
+    [].concat(els[k]).forEach((e, i) => { if (e.textContent) out[k + (Array.isArray(els[k]) ? i + 1 : '')] =
+      { text: e.textContent, size: parseFloat(e.style.fontSize) || null, width: e.scrollWidth }; });
+console.log(JSON.stringify(out));
+"""
+(root / "sim.js").write_text(SIM, encoding="utf-8")
+BRAND = {"BG": "#111111", "ACCENT": "#3B82F6", "FG": "#F4F4F4"}
+# The smoke-25 strings, plus longer lines and short lines that already fit.
+CASES = {
+    "tk-stat.html": [({"EYEBROW": "A FULL MONTH", "STAT": "45", "LABEL": "POSTS · SPECIALS · MOMENTS"},
+                      {".js-label": 900, ".js-eyebrow": 900}),
+                     ({"EYEBROW": "WHAT ONE BUSY OWNER GETS EVERY SINGLE MONTH", "STAT": "3X",
+                       "LABEL": "MORE REPLIES FROM PEOPLE WHO ACTUALLY BUY"}, {".js-label": 900, ".js-eyebrow": 900})],
+    "tk-list.html": [({"TITLE": "CFW WRITES THE MONTH", "ITEM1": "LEARNED HER VOICE", "ITEM2": "WRITES THE WHOLE MONTH",
+                       "ITEM3": "FORMATTED FOR EVERY PLATFORM"},
+                      {".js-title": 900, ".item-text1": 786, ".item-text2": 786, ".item-text3": 786})],
+    "tk-keyword.html": [({"WORD": "TRANSFORMATIONAL", "SUPPORT": "ABOUT 30 MINUTES A WEEK, START TO FINISH"},
+                         {".js-word": 880, ".js-support": 880})],
+    "tk-quote.html": [({"QUOTE": "IT SOUNDS LIKE ME", "ATTR": "MARIA SANTOS, OWNER OF THE CORNER BAKERY CAFE"},
+                       {".js-attr": 900})],
+}
+def sim(tpl, fill, ems):
+    out = subprocess.run(["node", str(root / "sim.js"), str(tpl), json.dumps(dict(BRAND, **fill)), str(ems[0]), str(ems[1])],
+                         capture_output=True, text=True, timeout=60)
+    if out.returncode != 0:
+        return {"error": out.stderr.strip()[-300:]}
+    return json.loads(out.stdout)
+def check(tpl, label):
+    found = []
+    for fill, limits in CASES[tpl.name]:
+        for ems in ((0.5, 0.5), (0.6, 0.5), (0.4, 0.5)):  # same, wider and narrower fallback font
+            r = sim(tpl, fill, ems)
+            if "error" in r:
+                found.append("%s: did not run: %s" % (label, r["error"])); break
+            for key, lim in limits.items():
+                line = r.get(key)
+                if line is None:
+                    found.append("%s: no %s line measured" % (label, key)); continue
+                if line["width"] > lim:
+                    found.append("%s: %r is %dpx wide, past its %dpx one-line safe width (fonts %s)"
+                                 % (label, line["text"], line["width"], lim, ems))
+            want = [v for k, v in fill.items() if k not in ("STAT", "QUOTE", "WORD")]
+            got = [v["text"] for v in r.values() if isinstance(v, dict)]
+            for v in want:
+                if v not in got:
+                    found.append("%s: line %r was cut or changed (%r)" % (label, v, got))
+    # a line that already fits keeps its design size
+    r = sim(tpl, {"EYEBROW": "A", "STAT": "1", "LABEL": "VIEWS", "TITLE": "THREE", "ITEM1": "ONE", "ITEM2": "TWO",
+                  "ITEM3": "SIX", "WORD": "YES", "SUPPORT": "OK", "QUOTE": "HI", "ATTR": "ME"}, (0.5, 0.5))
+    for key, size in ((".js-label", 84), (".js-eyebrow", 30), (".js-title", 96), (".item-text1", 52),
+                      (".js-support", 52), (".js-attr", 34)):
+        if key in r and r[key]["size"] not in (None, size):
+            found.append("%s: a short %s line lost its %dpx design size (%r)" % (label, key, size, r[key]))
+    body = tpl.read_text(encoding="utf-8")
+    for cls in {"tk-stat.html": (".eyebrow", ".label"), "tk-list.html": (".title", ".item-text"),
+                "tk-keyword.html": (".word", ".support"), "tk-quote.html": (".attr",)}[tpl.name]:
+        if not re.search(r"\{\{ID\}\} " + re.escape(cls) + r" \{[^}]*white-space: nowrap", body):
+            found.append("%s: %s is not kept on one line (white-space: nowrap)" % (label, cls))
+    return found
+try:
+    skills = repo / "skills"
+    tpls = sorted(p for p in skills.rglob("tk-*.html")
+                  if p.parent.name == "templates" and p.parent.parent.name == "p-reels-spotlight" and p.name in CASES)
+    tpls.sort(key=lambda p: list(CASES).index(p.name))  # report the smoke-25 templates (tk-stat, tk-list) first
+    if len(tpls) != 8:
+        bad.append("expected 8 p-reels-spotlight takeover template copies (4 x 2), found %d" % len(tpls))
+    for name in CASES:
+        if len({t.read_bytes() for t in tpls if t.name == name}) > 1:
+            bad.append("the %s copies differ" % name)
+    for tpl in tpls:
+        bad += check(tpl, str(tpl.relative_to(repo)))
+    spec = importlib.util.spec_from_file_location("ss294", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    fn, edits = getattr(ss, "apply_spotlight_takeover_line_fit", None), getattr(ss, "_SPOTLIGHT_LINE_EDITS", None)
+    if fn is None or edits is None:
+        bad.append("sync-skills.py has no apply_spotlight_takeover_line_fit transform (WI2.94)")
+    else:
+        # Restore the d9ec65d templates in a copy; the transform upgrades all four once, then is a no-op,
+        # and its output is byte-identical to the committed bundle.
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        def revert(t):
+            text = t.read_text(encoding="utf-8")
+            for old, new in reversed(edits[t.name]):
+                text = text.replace(new, old)
+            t.write_text(text, encoding="utf-8")
+        for t in up.rglob("tk-*.html"):
+            if t.name in edits:
+                revert(t)
+        if not check(up / "p-reels-spotlight" / "templates" / "tk-list.html", "restored"):
+            bad.append("sanity: the restored d9ec65d tk-list.html was not caught")
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            n1 = fn(up / rec, rec); n2 = fn(up / rec, rec)
+            if (n1, n2) != (4, 0):
+                bad.append("transform on %s changed (%d, %d) file(s), expected (4, 0)" % (rec, n1, n2))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        t = up / "p-reels-spotlight" / "templates" / "tk-list.html"
+        revert(t)
+        t.write_text(t.read_text(encoding="utf-8").replace("#{{ID}} .item-text {", "#{{ID}} .item-label {"), encoding="utf-8")
+        try:
+            fn(up / "p-reels-spotlight", "fixture"); bad.append("transform did not fail on a drifted tk-list.html")
+        except SystemExit:
+            pass
+        t.unlink()
+        try:
+            fn(up / "p-reels-spotlight", "p-reels-spotlight"); bad.append("transform did not fail on a missing tk-list.html")
+        except SystemExit:
+            pass
+except (Exception, SystemExit) as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad[:12]))
+PY
+)"
+if [[ "$wi294_detail" == "ok" ]]; then
+  pass "WI2.94 spotlight takeover lines (tk-stat label, tk-list title/items, keyword, attribution) fit on one line (every copy)"
+else
+  fail "WI2.94 spotlight takeover text lines fit on one line inside the safe width" "$wi294_detail"
+fi
+rm -rf "$wi294_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then

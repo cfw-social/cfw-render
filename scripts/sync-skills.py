@@ -114,6 +114,11 @@ WI2.92 apply_spotlight_takeover_render_fail_loud() makes step 05 of every p-reel
 (and SKILL.md Step 5, the Step 10.6 gate and the old Fallback assembly section) fail with the
 hyperframes error when the takeover render fails; the still-card (PNG / ffmpeg overlay) fallback is gone.
 
+WI2.94 apply_spotlight_takeover_line_fit() makes every p-reels-spotlight takeover template copy
+(tk-stat eyebrow/label, tk-list title/items, tk-keyword word/support, tk-quote attribution) keep each
+line on one line: white-space: nowrap, and the page shrinks the font from its design size until the
+line fits its safe width (>= 80 px from both frame edges); it refits once fonts load. Never truncated.
+
 Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
 and before list_files/hashing, same ordering guarantee:
   strip_brand_override_host_paths() nulls/drops the two host-path fields
@@ -3249,6 +3254,126 @@ def apply_spotlight_takeover_render_fail_loud(directory: Path, recipe: str) -> i
     return changed
 
 
+# WI2.94: smoke 25 (Render 69bc5ce) showed spotlight takeover text breaking the one-line rule: the
+# tk-stat label "POSTS · SPECIALS · MOMENTS" wrapped to two lines, and the tk-list title "CFW WRITES THE
+# MONTH" and item 3 "FORMATTED FOR EVERY PLATFORM" wrapped too. WI2.83/WI2.85 fit only the big stat.
+# Every single-line takeover text (tk-stat eyebrow + label, tk-list title + three items, tk-keyword word +
+# support line, tk-quote attribution) is now kept on one line (white-space: nowrap, its box capped at its
+# safe width) and the page fits it: it measures the line and scales the font down from the design size
+# until the line is no wider than its safe width; text is never truncated. It refits once fonts load.
+# Safe widths keep every line >= 80 px from both frame edges (1080 px):
+#   900 px  tk-stat eyebrow/label (centred: >= 90 px margins), tk-list title (left 84: right margin 96),
+#           tk-quote attribution (left 90: right margin 90).
+#   786 px  tk-list item text = 900 - 84 px number box - 30 px gap (right edge 984, margin 96).
+#   880 px  tk-keyword word (its 1.04 breathe: 915 px, margins 82) and support line (centred, margins 100).
+# The tk-quote QUOTE stays a wrapping multi-line quote by design. The fit runs after the timeline is
+# registered, so the WI2.83/WI2.85 tk-stat edits (and their timing) are untouched; scrollWidth ignores
+# GSAP transforms, so the measurement is the settled layout width.
+SPOTLIGHT_LINE_MAX_W = 900
+SPOTLIGHT_LIST_ITEM_MAX_W = SPOTLIGHT_LINE_MAX_W - 84 - 30
+SPOTLIGHT_KEYWORD_MAX_W = 880
+
+
+def _line_css(selector: str, max_w: int | None) -> tuple:
+    old = "      #{{ID}} " + selector + " {\n"
+    cap = f" max-width: {max_w}px;" if max_w else ""
+    return (old, old + f"        white-space: nowrap;{cap}  /* WI2.94: one line; the script fits it to the safe width */\n")
+
+
+def _line_fit_js(targets: str) -> str:
+    return (
+        "\n"
+        "        // WI2.94: keep each takeover text line on ONE line. A line starts at its design size and,\n"
+        "        // when wider than its safe width (>= 80px from both frame edges), its font is scaled down\n"
+        "        // until it fits; the text is never cut. Refit once fonts load.\n"
+        "        function fitLine(el, base, maxW) {\n"
+        "          if (!el) return base;\n"
+        "          el.style.fontSize = base + \"px\";\n"
+        "          var w = el.scrollWidth;\n"
+        "          if (w <= maxW) return base;\n"
+        "          var size = Math.floor(base * maxW / w);\n"
+        "          el.style.fontSize = size + \"px\";\n"
+        "          while (size > 8 && el.scrollWidth > maxW) { size -= 1; el.style.fontSize = size + \"px\"; }\n"
+        "          return size;\n"
+        "        }\n"
+        "        var LINE_FITS = " + targets + ";\n"
+        "        function fitLines() { LINE_FITS.forEach(function (f) { fitLine(f[0], f[1], f[2]); }); }\n"
+        "        fitLines();\n"
+        "        if (document.fonts && document.fonts.ready) { document.fonts.ready.then(fitLines); }\n"
+    )
+
+
+_SPOTLIGHT_LINE_REG_OLD = "        window.__timelines[\"{{ID}}\"] = tl;\n"
+_SPOTLIGHT_LINE_EDITS = {
+    "tk-stat.html": (
+        _line_css(".eyebrow", SPOTLIGHT_LINE_MAX_W),
+        _line_css(".label", None),  # already max-width: 900px
+        (_SPOTLIGHT_LINE_REG_OLD, _SPOTLIGHT_LINE_REG_OLD + _line_fit_js(
+            "[\n"
+            f"          [document.querySelector(scope + \".js-eyebrow\"), 30, {SPOTLIGHT_LINE_MAX_W}],\n"
+            f"          [document.querySelector(scope + \".js-label\"), 84, {SPOTLIGHT_LINE_MAX_W}]\n"
+            "        ]")),
+    ),
+    "tk-list.html": (
+        _line_css(".title", SPOTLIGHT_LINE_MAX_W),
+        _line_css(".item-text", SPOTLIGHT_LIST_ITEM_MAX_W),
+        (_SPOTLIGHT_LINE_REG_OLD, _SPOTLIGHT_LINE_REG_OLD + _line_fit_js(
+            f"[[document.querySelector(scope + \".js-title\"), 96, {SPOTLIGHT_LINE_MAX_W}]].concat(\n"
+            "          Array.prototype.map.call(document.querySelectorAll(scope + \".item-text\"),\n"
+            f"            function (el) {{ return [el, 52, {SPOTLIGHT_LIST_ITEM_MAX_W}]; }}))")),
+    ),
+    "tk-keyword.html": (
+        _line_css(".word", SPOTLIGHT_KEYWORD_MAX_W),
+        _line_css(".support", None),  # already max-width: 880px
+        (_SPOTLIGHT_LINE_REG_OLD, _SPOTLIGHT_LINE_REG_OLD + _line_fit_js(
+            "[\n"
+            f"          [wordEl, fit.fontSize, {SPOTLIGHT_KEYWORD_MAX_W}],\n"
+            f"          [document.querySelector(scope + \".js-support\"), 52, {SPOTLIGHT_KEYWORD_MAX_W}]\n"
+            "        ]")),
+    ),
+    "tk-quote.html": (
+        _line_css(".attr", SPOTLIGHT_LINE_MAX_W),
+        (_SPOTLIGHT_LINE_REG_OLD, _SPOTLIGHT_LINE_REG_OLD + _line_fit_js(
+            f"[[document.querySelector(scope + \".js-attr\"), 34, {SPOTLIGHT_LINE_MAX_W}]]")),
+    ),
+}
+
+
+def apply_spotlight_takeover_line_fit(directory: Path, recipe: str) -> int:
+    """WI2.94: every p-reels-spotlight takeover template copy under `directory` (top-level or
+    .hub/p-reels-spotlight: tk-stat, tk-list, tk-keyword, tk-quote) keeps each single-line text on one
+    line and fits its font to the line's safe width. Idempotent; fails fast when a copy lost a template
+    or an anchor, or when a spotlight recipe ships no takeover templates at all."""
+    changed = 0
+    if not directory.is_dir():
+        return 0
+    roots = [directory] if directory.name == "p-reels-spotlight" else []
+    roots += sorted(p for p in directory.rglob("p-reels-spotlight") if p.is_dir() and p.parent.name == ".hub")
+    roots = [r for r in roots if (r / "templates").is_dir()]
+    if recipe.startswith("p-reels-spotlight") and not roots:
+        raise SystemExit(f"sync-skills.py: ERROR - no p-reels-spotlight templates/ under {directory} "
+                         f"({recipe}); the WI2.94 transform cannot apply")
+    for root in roots:
+        for name, edits in _SPOTLIGHT_LINE_EDITS.items():
+            tpl = root / "templates" / name
+            if not tpl.is_file():
+                raise SystemExit(f"sync-skills.py: ERROR - {tpl} is missing ({recipe}); the WI2.94 transform cannot apply")
+            text = tpl.read_text(encoding="utf-8")
+            new_text = text
+            for old, new in edits:
+                if new in new_text:
+                    continue
+                if new_text.count(old) != 1:
+                    raise SystemExit(f"sync-skills.py: ERROR - {name} anchor {old.strip().splitlines()[0][:60]!r} "
+                                     f"found {new_text.count(old)} time(s) in {tpl} ({recipe}); "
+                                     "the WI2.94 transform cannot apply")
+                new_text = new_text.replace(old, new, 1)
+            if new_text != text:
+                tpl.write_text(new_text, encoding="utf-8")
+                changed += 1
+    return changed
+
+
 def git_head_sha(repo: Path) -> str | None:
     """Best-effort `git rev-parse HEAD` of `repo`. Returns None (never
     raises) when `repo` isn't a git checkout — e.g. a test fixture dir — so
@@ -3415,6 +3540,9 @@ def main():
 
         # WI2.92: a failed takeover render fails step 05 with the hyperframes error; no still cards (every copy).
         apply_spotlight_takeover_render_fail_loud(recipe_dest, recipe)
+
+        # WI2.94: every single-line takeover text (tk-stat label, tk-list title/items, ...) fits on one line.
+        apply_spotlight_takeover_line_fit(recipe_dest, recipe)
 
         files = list_files(recipe_dest)
         file_hashes = {f: sha256_file(recipe_dest / f) for f in files}
