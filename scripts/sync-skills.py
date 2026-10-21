@@ -41,6 +41,10 @@ mlx-community/whisper-small to mlx-community/whisper-small-mlx in every
 p-reels-* recipe after every copy, including .hub copies. Idempotent: an
 already-correct id is left alone.
 
+WI2.71 apply_reel_fill_frame() crops flat bars baked into the face clip
+(any side, any colour) and makes the pip card scale-to-fill + crop instead of
+scale-to-fit + pad, on the top-level spotlight/pip steps (not .hub copies).
+
 Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
 and before list_files/hashing, same ordering guarantee:
   strip_brand_override_host_paths() nulls/drops the two host-path fields
@@ -1102,6 +1106,138 @@ def apply_whisper_small_mlx(directory: Path) -> int:
     return changed
 
 
+# WI2.71: reel face clips (HeyGen renders) arrive as 1080x1920 with a 16:9 picture
+# baked between flat light/mint bars. The old side-band check never looked at the
+# top/bottom, and the pip card used scale-to-fit + pad, so the bars stayed on screen.
+# These transforms detect flat bars on every side, crop them away, then fill + crop.
+_REEL_BARS_PY = r"""# WI2.71: find flat bars baked into the clip (any colour, any side) and print an ffmpeg crop.
+import json, subprocess, sys
+SRC, TOL, MIN_BAR = sys.argv[1], 12, 8
+m = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+    "stream=width,height:format=duration", "-of", "json", SRC], capture_output=True, text=True, check=True).stdout)
+W, H = int(m["streams"][0]["width"]), int(m["streams"][0]["height"])
+DUR = float(m.get("format", {}).get("duration") or 1.0)
+def grab(t):
+    return subprocess.run(["ffmpeg", "-v", "error", "-ss", "%.2f" % t, "-i", SRC, "-frames:v", "1",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+def px(fr, x, y):
+    i = (y * W + x) * 3
+    return fr[i:i + 3]
+def bar(fr, lines, pts):
+    ref, n = None, 0
+    for ln in lines:
+        row = [px(fr, *p(ln)) for p in pts]
+        ref = ref or row[0]
+        if any(max(abs(c[k] - ref[k]) for k in range(3)) > TOL for c in row):
+            break
+        n += 1
+    return n
+sides = []
+for t in (DUR * 0.2, DUR * 0.5, DUR * 0.8):
+    fr = grab(t)
+    if len(fr) < W * H * 3:
+        continue
+    xs = [lambda y, x=x: (x, y) for x in range(0, W, 4)]
+    ys = [lambda x, y=y: (x, y) for y in range(0, H, 4)]
+    sides.append((bar(fr, range(H // 2), xs), bar(fr, range(H - 1, H // 2, -1), xs),
+                  bar(fr, range(W // 2), ys), bar(fr, range(W - 1, W // 2, -1), ys)))
+if not sides:
+    print(""); sys.exit(0)
+top, bot, left, right = (min(s[i] for s in sides) for i in range(4))
+top, bot, left, right = ((v + 2 if v >= MIN_BAR else 0) for v in (top, bot, left, right))
+cw, ch = W - left - right, H - top - bot
+cw, ch = cw - cw % 2, ch - ch % 2
+if (top or bot or left or right) and cw >= W // 4 and ch >= H // 4:
+    print("crop=%d:%d:%d:%d," % (cw, ch, left, top))
+else:
+    print("")
+"""
+_REEL_BARS_WRITE = "cat > work/bars.py <<'PY'\n" + _REEL_BARS_PY + "PY\n"
+_SPOT_BARS_NEW = (
+    "### 2. Detect & crop baked-in bars on every side (BEFORE anything else)\n\n"
+    "Reused HeyGen / studio renders often carry a 16:9 picture baked between flat white, cream or\n"
+    "mint bars (top/bottom or left/right). WI2.71: `work/bars.py` samples three frames, finds rows\n"
+    "and columns that are one flat colour from each edge inwards, and prints `crop=W:H:X:Y,` (or\n"
+    "nothing). A row with any face or picture in it is never flat, so the head is never cut.\n\n"
+    "```bash\n" + _REEL_BARS_WRITE +
+    "CROP=$(python3 work/bars.py \"$AVATAR\") || exit 1\n"
+    "echo \"[spotlight] bar crop: '${CROP:-none}'\"\n"
+    "AVATAR_CLEAN=\"$AVATAR\"\n"
+    "```\n"
+)
+_SPOT_BARS_RE = re.compile(
+    r"### 2\. Detect & crop white side bands \(BEFORE anything else\)\n.*?  AVATAR_CLEAN=\"\$AVATAR\"\nfi\n```\n",
+    re.S)
+_SPOT_FILL_PAIRS = (
+    ('  -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30" \\\n',
+     '  -vf "${CROP}scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30" \\\n'),
+    ("`avatar_layout: letterbox` → replace the `-vf` with\n`scale=1080:-2,",
+     "`avatar_layout: letterbox` → replace the `-vf` with\n`${CROP}scale=1080:-2,"),
+)
+_PIP_BARS_NEW = (
+    "### 2. Detect + crop baked-in bars on every side (BEFORE anything else)\n\n"
+    "Reused HeyGen / studio renders often carry a 16:9 picture baked between flat white, cream or\n"
+    "mint bars (top/bottom or left/right). WI2.71: `work/bars.py` samples three frames, finds rows\n"
+    "and columns that are one flat colour from each edge inwards, and prints `crop=W:H:X:Y,` (or\n"
+    "nothing). A row with any face or picture in it is never flat, so the head is never cut.\n\n"
+    "```bash\n" + _REEL_BARS_WRITE +
+    "CROP=$(python3 work/bars.py \"$TH\") || exit 1\n"
+    "echo \"[pip] bar crop: '${CROP:-none}'\"\n"
+    "```\n"
+)
+_PIP_BARS_RE = re.compile(
+    r"### 2\. Detect \+ crop white side-bands \(BEFORE anything else\)\n.*?echo \"\[pip\] side-band crop: '\$\{CROP:-none\}'\"\n```\n",
+    re.S)
+_PIP_FILL_PAIRS = (
+    ("### 2. Composite — scale-to-FIT (face never cropped), bottom-centre, audio = the bed",
+     "### 2. Composite — scale-to-FILL (centre crop, no bars), bottom-centre, audio = the bed"),
+    ("identical dims, hence the `pad`.",
+     "identical dims, hence the `crop`. WI2.71: fill + crop, never fit + pad — padding showed bars in the card."),
+    ("force_original_aspect_ratio=decrease,pad=${CARD_W}:${CARD_H}:(ow-iw)/2:0,setsar=1",
+     "force_original_aspect_ratio=increase,crop=${CARD_W}:${CARD_H},setsar=1"),
+    ("[1:v]scale=${CARD_W}:${CARD_H}:force_original_aspect_ratio=decrease,setsar=1[thfit]",
+     "[1:v]scale=${CARD_W}:${CARD_H}:force_original_aspect_ratio=increase,crop=${CARD_W}:${CARD_H},setsar=1[thfit]"),
+)
+REEL_FILL_FRAME_FILES = {
+    "p-reels-spotlight": "spotlight", "p-reels-spotlight-heygen": "spotlight",
+    "p-reels-pip": "pip", "p-reels-pip-heygen": "pip",
+}
+
+
+def _apply_pairs(text, pairs):
+    for old, new in pairs:
+        if new not in text:
+            text = text.replace(old, new)
+    return text
+
+
+def apply_reel_fill_frame(directory: Path, recipe: str) -> int:
+    """WI2.71: crop baked-in bars and fill the frame / pip card. Top-level steps
+    only (the .hub copies are left as synced). Idempotent. Returns files changed."""
+    kind = REEL_FILL_FRAME_FILES.get(recipe)
+    if not kind:
+        return 0
+    if kind == "spotlight":
+        jobs = (("steps/01-prepare-footage.md", _SPOT_BARS_RE, _SPOT_BARS_NEW, _SPOT_FILL_PAIRS),)
+    else:
+        jobs = (("steps/01-prepare-footage.md", _PIP_BARS_RE, _PIP_BARS_NEW, ()),
+                ("steps/05-composite.md", None, None, _PIP_FILL_PAIRS))
+    changed = 0
+    for rel, rx, new_block, pairs in jobs:
+        path = directory / rel
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        new = text
+        if rx is not None and "work/bars.py" not in new:
+            new = rx.sub(lambda _m: new_block, new, count=1)
+        new = _apply_pairs(new, pairs)
+        if new != text:
+            path.write_text(new, encoding="utf-8")
+            changed += 1
+    return changed
+
+
 def git_head_sha(repo: Path) -> str | None:
     """Best-effort `git rev-parse HEAD` of `repo`. Returns None (never
     raises) when `repo` isn't a git checkout — e.g. a test fixture dir — so
@@ -1234,6 +1370,9 @@ def main():
         # faceless and heygen wrappers) plus .hub copies get the real MLX model id.
         if recipe.startswith("p-reels-"):
             apply_whisper_small_mlx(recipe_dest)
+
+        # WI2.71: reel face clips fill the frame and the pip card (no bars).
+        apply_reel_fill_frame(recipe_dest, recipe)
 
         files = list_files(recipe_dest)
         file_hashes = {f: sha256_file(recipe_dest / f) for f in files}

@@ -8909,6 +8909,102 @@ else
 fi
 rm -rf "$wi270_root"
 
+echo "=== Case 49: WI2.71 — reel face clip fills the spotlight frame and the pip card (no pad bars) ==="
+# The owner's HeyGen clip is 1080x1920 with a 16:9 picture between flat light bars.
+# For wide, tall, light-barred and mint-barred clips, the bar helper and fill
+# filters taken from the step docs must leave no flat bar on any edge.
+wi271_root="$(mktemp -d)"
+wi271_detail="$(python3 - "$REPO_DIR" "$wi271_root" <<'PY'
+import importlib.util, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+def ff(*a):
+    subprocess.run(["ffmpeg", "-v", "error", "-y", *a], check=True)
+def frame(src, vf, w, h):
+    out = subprocess.run(["ffmpeg", "-v", "error", "-i", str(src), "-frames:v", "1", "-vf", vf,
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+    if len(out) != w * h * 3:
+        raise RuntimeError("frame size %d != %dx%d" % (len(out), w, h))
+    return out
+def flat(fr, w, pts):
+    ref = None
+    for x, y in pts:
+        i = (y * w + x) * 3; c = fr[i:i + 3]; ref = ref or c
+        if max(abs(c[k] - ref[k]) for k in range(3)) > 12:
+            return False
+    return True
+def edges(fr, w, h):
+    sides = {"top": [(x, 1) for x in range(w)], "bottom": [(x, h - 2) for x in range(w)],
+             "left": [(1, y) for y in range(h)], "right": [(w - 2, y) for y in range(h)]}
+    return [k for k, pts in sides.items() if flat(fr, w, pts)]
+try:
+    clips = {}
+    # noise gives every picture row and column texture; the pad bars stay flat.
+    for name, src, vf in (("wide", "testsrc2=s=1920x1080:d=1:r=5", "noise=alls=60:allf=t"),
+                          ("tall", "testsrc2=s=1080x1920:d=1:r=5", "noise=alls=60:allf=t"),
+                          ("light", "testsrc2=s=1080x608:d=1:r=5", "noise=alls=60:allf=t,pad=1080:1920:0:656:color=0xF4F6FA"),
+                          ("mint", "testsrc2=s=1080x608:d=1:r=5", "noise=alls=60:allf=t,pad=1080:1920:0:656:color=0x9FE2BF")):
+        clips[name] = root / (name + ".mp4")
+        ff("-f", "lavfi", "-i", src, "-vf", vf, "-pix_fmt", "yuv420p", str(clips[name]))
+    docs = {r: (repo / "skills" / r / "steps" / "01-prepare-footage.md").read_text(encoding="utf-8")
+            for r in ("p-reels-spotlight", "p-reels-spotlight-heygen", "p-reels-pip", "p-reels-pip-heygen")}
+    helpers = set()
+    for r, text in docs.items():
+        m = re.search(r"cat > work/bars\.py <<'PY'\n(.*?\n)PY\n", text, re.S)
+        if not m:
+            bad.append("%s: no bars.py helper" % r); continue
+        helpers.add(m.group(1))
+    if len(helpers) != 1:
+        bad.append("bars.py helpers differ across recipes: %d" % len(helpers))
+    helper = root / "bars.py"; helper.write_text(sorted(helpers)[0] if helpers else "", encoding="utf-8")
+    m = re.search(r'-vf "(\$\{CROP\}scale=1080:1920:[^"]*)"', docs["p-reels-spotlight"])
+    spot_vf = m.group(1) if m else ""
+    if "increase,crop=1080:1920" not in spot_vf:
+        bad.append("spotlight bed vf is not fill+crop: %r" % spot_vf)
+    comp = {r: (repo / "skills" / r / "steps" / "05-composite.md").read_text(encoding="utf-8")
+            for r in ("p-reels-pip", "p-reels-pip-heygen")}
+    card = []
+    for r, text in comp.items():
+        heads = re.findall(r'FC="\[1:v\](scale=\$\{CARD_W\}[^\[]*)\[thfit\]', text)
+        if len(heads) != 3 or any("pad=" in h or "decrease" in h or "increase,crop=${CARD_W}:${CARD_H}" not in h for h in heads):
+            bad.append("%s card filters not fill+crop: %r" % (r, heads))
+        card += heads
+    card_vf = (card[-1] if card else "").replace("${CARD_W}", "364").replace("${CARD_H}", "504")
+    for name, clip in clips.items():
+        crop = subprocess.run([sys.executable, "-I", str(helper), str(clip)], capture_output=True, text=True, check=True).stdout.strip()
+        if name in ("light", "mint") and not crop.startswith("crop="):
+            bad.append("%s: bars not found" % name)
+        if name in ("wide", "tall") and crop:
+            bad.append("%s: false bar crop %r" % (name, crop))
+        fr = frame(clip, spot_vf.replace("${CROP}", crop), 1080, 1920)
+        e = edges(fr, 1080, 1920)
+        if e:
+            bad.append("%s spotlight flat edges %s (crop %r)" % (name, e, crop))
+        bed = root / ("bed-" + name + ".mp4")
+        ff("-i", str(clip), "-vf", crop + "fps=30,setsar=1,format=yuv420p", str(bed))
+        fr = frame(bed, card_vf, 364, 504)
+        e = edges(fr, 364, 504)
+        if e:
+            bad.append("%s pip card flat edges %s (crop %r)" % (name, e, crop))
+    spec = importlib.util.spec_from_file_location("wi271_sync", repo / "scripts" / "sync-skills.py")
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    for r in docs:
+        tmp = root / "sync" / r; shutil.copytree(repo / "skills" / r / "steps", tmp / "steps")
+        if mod.apply_reel_fill_frame(tmp, r) != 0:
+            bad.append("%s: sync transform not idempotent" % r)
+except Exception as exc:
+    bad.append("error: %s" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi271_detail" == "ok" ]]; then
+  pass "WI2.71 spotlight frame and pip card are filled for wide, tall and barred clips"
+else
+  fail "WI2.71 reel fill frame" "$wi271_detail"
+fi
+rm -rf "$wi271_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then

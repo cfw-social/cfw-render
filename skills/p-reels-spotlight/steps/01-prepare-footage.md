@@ -31,44 +31,74 @@ ffmpeg -hide_banner -i "$AVATAR" -af "silencedetect=noise=-35dB:d=0.5" -f null -
   | grep -E "silence_(start|end)" || echo "narration continuous"
 ```
 
-### 2. Detect & crop white side bands (BEFORE anything else)
+### 2. Detect & crop baked-in bars on every side (BEFORE anything else)
 
-Reused 16:9 studio renders often carry baked-in white/cream bands down the left and right. Measure
-thin edge columns against the centre and, if bands exist, crop LEFT/RIGHT only — **never the top**
-(the head must not be cut). `crop=W:H:X:0` — the y-offset `0` guarantees the top edge is kept.
+Reused HeyGen / studio renders often carry a 16:9 picture baked between flat white, cream or
+mint bars (top/bottom or left/right). WI2.71: `work/bars.py` samples three frames, finds rows
+and columns that are one flat colour from each edge inwards, and prints `crop=W:H:X:Y,` (or
+nothing). A row with any face or picture in it is never flat, so the head is never cut.
 
 ```bash
-W_SRC=$(ffprobe -v error -select_streams v -show_entries stream=width -of csv=p=0 "$AVATAR")
-H_SRC=$(ffprobe -v error -select_streams v -show_entries stream=height -of csv=p=0 "$AVATAR")
-col_luma () {
-  v=$(ffmpeg -hide_banner -loglevel error -ss 13 -i "$AVATAR" -vframes 1 \
-        -vf "crop=2:$H_SRC:$1:0,scale=1:1,format=gray" -f rawvideo - 2>/dev/null | xxd -p)
-  echo $((16#$v))
-}
-LEFT=0;  for x in $(seq 0 5 $((W_SRC/2)));    do [ "$(col_luma $x)" -lt 245 ] && { LEFT=$x;  break; }; done
-RIGHT=$W_SRC; for x in $(seq $((W_SRC-2)) -5 $((W_SRC/2))); do [ "$(col_luma $x)" -lt 245 ] && { RIGHT=$((x+2)); break; }; done
-CW=$(( RIGHT - LEFT )); CW=$(( CW - CW % 2 ))
-if [ "$LEFT" -gt 4 ] || [ "$RIGHT" -lt $((W_SRC-4)) ]; then
-  ffmpeg -y -i "$AVATAR" -vf "crop=$CW:$H_SRC:$LEFT:0,setsar=1" \
-    -c:v libx264 -pix_fmt yuv420p -c:a copy work/avatar-clean.mp4
-  AVATAR_CLEAN=work/avatar-clean.mp4
-else
-  AVATAR_CLEAN="$AVATAR"
-fi
+cat > work/bars.py <<'PY'
+# WI2.71: find flat bars baked into the clip (any colour, any side) and print an ffmpeg crop.
+import json, subprocess, sys
+SRC, TOL, MIN_BAR = sys.argv[1], 12, 8
+m = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+    "stream=width,height:format=duration", "-of", "json", SRC], capture_output=True, text=True, check=True).stdout)
+W, H = int(m["streams"][0]["width"]), int(m["streams"][0]["height"])
+DUR = float(m.get("format", {}).get("duration") or 1.0)
+def grab(t):
+    return subprocess.run(["ffmpeg", "-v", "error", "-ss", "%.2f" % t, "-i", SRC, "-frames:v", "1",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+def px(fr, x, y):
+    i = (y * W + x) * 3
+    return fr[i:i + 3]
+def bar(fr, lines, pts):
+    ref, n = None, 0
+    for ln in lines:
+        row = [px(fr, *p(ln)) for p in pts]
+        ref = ref or row[0]
+        if any(max(abs(c[k] - ref[k]) for k in range(3)) > TOL for c in row):
+            break
+        n += 1
+    return n
+sides = []
+for t in (DUR * 0.2, DUR * 0.5, DUR * 0.8):
+    fr = grab(t)
+    if len(fr) < W * H * 3:
+        continue
+    xs = [lambda y, x=x: (x, y) for x in range(0, W, 4)]
+    ys = [lambda x, y=y: (x, y) for y in range(0, H, 4)]
+    sides.append((bar(fr, range(H // 2), xs), bar(fr, range(H - 1, H // 2, -1), xs),
+                  bar(fr, range(W // 2), ys), bar(fr, range(W - 1, W // 2, -1), ys)))
+if not sides:
+    print(""); sys.exit(0)
+top, bot, left, right = (min(s[i] for s in sides) for i in range(4))
+top, bot, left, right = ((v + 2 if v >= MIN_BAR else 0) for v in (top, bot, left, right))
+cw, ch = W - left - right, H - top - bot
+cw, ch = cw - cw % 2, ch - ch % 2
+if (top or bot or left or right) and cw >= W // 4 and ch >= H // 4:
+    print("crop=%d:%d:%d:%d," % (cw, ch, left, top))
+else:
+    print("")
+PY
+CROP=$(python3 work/bars.py "$AVATAR") || exit 1
+echo "[spotlight] bar crop: '${CROP:-none}'"
+AVATAR_CLEAN="$AVATAR"
 ```
 
 ### 3. Build the bed — full length, scale-to-cover, loudnormed ONCE
 
 ```bash
 ffmpeg -y -i "$AVATAR_CLEAN" \
-  -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30" \
+  -vf "${CROP}scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30" \
   -af "loudnorm=I=-16:TP=-1.5:LRA=11" \
   -c:v libx264 -pix_fmt yuv420p -c:a aac -ar 48000 -ac 2 work/base.mp4
 DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 work/base.mp4)
 ```
 
 `avatar_layout: letterbox` → replace the `-vf` with
-`scale=1080:-2,pad=1080:1920:0:(1920-ih)/2:color=0x0F172A,setsar=1,fps=30` (use the brand `bg` hex
+`${CROP}scale=1080:-2,pad=1080:1920:0:(1920-ih)/2:color=0x0F172A,setsar=1,fps=30` (use the brand `bg` hex
 from `brief.json` when known). **Do not slice the bed** — one unbroken audio track. Loudnorm
 happens here and never again in any later step.
 
