@@ -9205,6 +9205,118 @@ else
 fi
 rm -rf "$wi275_root"
 
+echo "=== Case 52: WI2.72 — a mis-heard caption word is corrected to the script word (timings kept) ==="
+# Owner report on WI2.9: captions come from the Whisper transcript and nothing checked those
+# words against the script the voice was made from. The transcribe step now writes
+# work/script_align.py (shipped by scripts/sync-skills.py), passes the script as the
+# mlx_whisper --initial-prompt and fixes mis-heard words to the script words, keeping timings.
+# No script (an uploaded clip) leaves the words unchanged.
+wi272_root="$(mktemp -d)"
+wi272_detail="$(python3 - "$REPO_DIR" "$wi272_root" <<'PY'
+import hashlib, importlib.util, json, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+RECIPES = ("p-reels-spotlight", "p-reels-spotlight-heygen", "p-reels-pip", "p-reels-pip-heygen")
+OPEN = "cat > work/script_align.py <<'PY'\n"
+try:
+    spec = importlib.util.spec_from_file_location("ss272", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    helpers = {}
+    for r in RECIPES:
+        body = (repo / "skills" / r / "steps" / "02-transcribe.md").read_text(encoding="utf-8")
+        if OPEN not in body:
+            bad.append("%s: transcribe step does not write work/script_align.py" % r); continue
+        helpers[r] = body.split(OPEN, 1)[1].split("\nPY\n", 1)[0] + "\n"
+        if "--initial-prompt \"$SCRIPT_PROMPT\"" not in body:
+            bad.append("%s: mlx_whisper is not given the script as --initial-prompt" % r)
+        if body.index(OPEN) > body.index("mlx_whisper prior/voice_track.mp4"):
+            bad.append("%s: helper is written after mlx_whisper runs" % r)
+        if "python3 work/script_align.py work/words.json" not in body:
+            bad.append("%s: transcribe step never runs the script check" % r)
+    if set(helpers.values()) != {ss._SCRIPT_ALIGN_PY}:
+        bad.append("helper differs across recipes or from sync-skills.py")
+    helper = root / "script_align.py"; helper.write_text(ss._SCRIPT_ALIGN_PY, encoding="utf-8")
+    heard = [("She", 15.53, 15.64), ("approved", 15.65, 16.21), ("them", 16.21, 16.43), ("with", 16.50, 16.77),
+             ("flower", 16.90, 17.30), ("steel", 17.30, 17.66), ("on", 17.66, 17.75), ("her", 17.90, 18.00),
+             ("hands,", 18.00, 18.42), ("about", 18.53, 18.90), ("30", 18.90, 19.40), ("minutes", 19.40, 20.03)]
+    words = [{"text": t, "start": s, "end": e} for t, s, e in heard]
+    def run_in(name, script=None, script_file="script.json"):
+        wd = root / name; (wd / "work").mkdir(parents=True)
+        if script is not None:
+            (wd / "inputs" / "script").mkdir(parents=True)
+            body = json.dumps({"text": script}) if script_file.endswith(".json") else script
+            (wd / "inputs" / "script" / script_file).write_text(body, encoding="utf-8")
+        (wd / "work" / "words.json").write_text(json.dumps(words), encoding="utf-8")
+        r = subprocess.run([sys.executable, "-I", str(helper), "work/words.json"], cwd=wd, capture_output=True, text=True)
+        if r.returncode != 0:
+            bad.append("%s: helper rc=%d %s" % (name, r.returncode, r.stderr.strip()[-300:]))
+        p = subprocess.run([sys.executable, "-I", str(helper), "--prompt"], cwd=wd, capture_output=True, text=True)
+        return json.loads((wd / "work" / "words.json").read_text()), r.stdout, p.stdout.strip()
+    script = "She approved them with flour still on her hands... about thirty minutes a week."
+    got, out, prompt = run_in("with_script", script)
+    texts = [w["text"] for w in got]
+    want = ["She", "approved", "them", "with", "flour", "still", "on", "her", "hands,", "about", "thirty", "minutes"]
+    if texts != want:
+        bad.append("script case: words %r, want %r" % (texts, want))
+    if [(w["start"], w["end"]) for w in got] != [(s, e) for _, s, e in heard]:
+        bad.append("script case: timings changed")
+    if "FLOWER" in " ".join(texts).upper() or "STEEL" in " ".join(texts).upper():
+        bad.append("script case: a mis-heard word survived")
+    if prompt != script:
+        bad.append("--prompt printed %r, want the script text" % prompt)
+    # a .md script (prior-style plain text) works the same way
+    got_md, _, _ = run_in("md_script", script, "script.md")
+    if [w["text"] for w in got_md] != want:
+        bad.append("plain-text script was not used")
+    # a recognised word that is not in the script is not burned in
+    words.insert(9, {"text": "um", "start": 18.42, "end": 18.50})
+    got_um, _, _ = run_in("extra_word", script)
+    if [w["text"] for w in got_um] != want:
+        bad.append("extra word case: %r" % [w["text"] for w in got_um])
+    del words[9]
+    # no script: unchanged, and the helper says so
+    got0, out0, prompt0 = run_in("no_script")
+    if got0 != words:
+        bad.append("no-script case changed the words")
+    if "no script" not in out0 or prompt0 != "":
+        bad.append("no-script case did not say so (%r, prompt %r)" % (out0.strip(), prompt0))
+    # a script that is not what was spoken: unchanged
+    got_x, out_x, _ = run_in("other_script", "Completely different words about a car dealership opening downtown next spring.")
+    if got_x != words:
+        bad.append("unrelated-script case changed the words")
+    # the sync transform is idempotent on the committed files and fails fast on a drifted anchor
+    for r in RECIPES:
+        cp = root / "copy" / r; shutil.copytree(repo / "skills" / r / "steps", cp / "steps")
+        if ss.apply_reel_script_align(cp, r) != 0:
+            bad.append("%s: committed transcribe step is not what sync-skills.py writes" % r)
+    drift = root / "drift" / "p-reels-pip"; (drift / "steps").mkdir(parents=True)
+    (drift / "steps" / "02-transcribe.md").write_text("### 1. Something else\n### 2. Quality check + normalise\n", encoding="utf-8")
+    code = ("import importlib.util,sys\nfrom pathlib import Path\n"
+            "s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)\n"
+            "m.apply_reel_script_align(Path(sys.argv[2]),'p-reels-pip')\n")
+    rr = subprocess.run([sys.executable, "-I", "-c", code, str(repo / "scripts" / "sync-skills.py"), str(drift)], capture_output=True, text=True)
+    if rr.returncode == 0 or "WI2.72 transform cannot apply" not in rr.stderr:
+        bad.append("sync transform did not fail fast on a missing anchor (rc=%d)" % rr.returncode)
+    # index.json hashes cover the edited files
+    idx = json.loads((repo / "skills" / "index.json").read_text(encoding="utf-8"))
+    for r in RECIPES:
+        f = repo / "skills" / r / "steps" / "02-transcribe.md"
+        actual = "sha256:" + hashlib.sha256(f.read_bytes()).hexdigest()
+        if idx["recipes"][r]["fileHashes"].get("steps/02-transcribe.md") != actual:
+            bad.append("%s: index.json hash for steps/02-transcribe.md is stale" % r)
+except Exception as exc:
+    bad.append("error: %s" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi272_detail" == "ok" ]]; then
+  pass "WI2.72 mis-heard caption words are corrected to the script, timings kept; no script = unchanged"
+else
+  fail "WI2.72 caption words checked against the script" "$wi272_detail"
+fi
+rm -rf "$wi272_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then

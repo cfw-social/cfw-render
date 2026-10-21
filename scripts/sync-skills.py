@@ -47,6 +47,11 @@ the face clip (top+bottom or left+right, same size and colour, leaving ~16:9 or
 top-biased crop instead of scale-to-fit + pad, on the top-level spotlight/pip
 steps and SKILL.md (not .hub copies).
 
+WI2.72 apply_reel_script_align() passes the known script to mlx_whisper as
+--initial-prompt and corrects mis-heard transcript words against it (difflib
+alignment, timings kept) in the top-level transcribe step of the four reel
+recipes. No script -> the transcript is left unchanged.
+
 Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
 and before list_files/hashing, same ordering guarantee:
   strip_brand_override_host_paths() nulls/drops the two host-path fields
@@ -1389,6 +1394,179 @@ def apply_reel_fill_frame(directory: Path, recipe: str) -> int:
     return changed
 
 
+# WI2.72: reel captions come from the Whisper transcript of the voice bed, and
+# nothing checked those words against the script the voice was made from. These
+# transforms (top-level 02-transcribe.md of the four reel recipes) write
+# work/script_align.py, pass the script as the mlx_whisper --initial-prompt, and
+# after normalising align the recognised words to the script with difflib: a
+# mis-heard word becomes the script word, a word not in the script is dropped,
+# timings are kept. No script (an uploaded clip) -> words left unchanged.
+_SCRIPT_ALIGN_PY = r"""# WI2.72: check recognised words against the known script and fix mis-heard ones.
+# usage: python3 work/script_align.py words.json   (fix words.json in place)
+#        python3 work/script_align.py --prompt     (print the script text, or nothing)
+# The script is the first of: inputs/script/* (script.json {"text"} or .txt/.md),
+# prior/approved_script.md, prior/script.md. No script -> the words are left unchanged.
+import difflib, glob, json, os, re, sys
+
+def script_text():
+    for p in sorted(glob.glob('inputs/script/*')) + ['prior/approved_script.md', 'prior/script.md']:
+        if not os.path.isfile(p):
+            continue
+        raw = open(p, encoding='utf-8').read()
+        if p.endswith('.json'):
+            try:
+                raw = str((json.loads(raw) or {}).get('text') or '')
+            except (ValueError, AttributeError):
+                raw = ''
+        raw = raw.strip()
+        if raw:
+            return raw
+    return ''
+
+def norm(t):
+    return re.sub(r"[^0-9a-z]", "", t.lower())
+
+def dress(rec, scr):
+    # the script's word, wearing the recognised token's leading/trailing punctuation
+    core = re.sub(r"^\W+|\W+$", "", scr) or scr
+    lead = re.match(r"^\W*", rec).group(0)
+    tail = re.search(r"\W*$", rec).group(0)
+    return lead + core + tail
+
+def align(words, script, max_block=4, min_ratio=0.6):
+    toks = []  # (entry index, token)
+    for i, w in enumerate(words):
+        for t in str(w['text']).split():
+            if norm(t):
+                toks.append([i, t])
+    scr = [t for t in script.split() if norm(t)]
+    a, b = [norm(t) for _, t in toks], [norm(t) for t in scr]
+    sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    ratio = sum(m.size for m in sm.get_matching_blocks()) / max(len(a), 1)
+    report = {"script_words": len(scr), "recognised_words": len(a), "match": round(ratio, 3),
+              "fixed": [], "dropped": [], "left": []}
+    if not scr or ratio < min_ratio:
+        report["note"] = "the script does not match this voice; words left as recognised"
+        return words, report
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op == 'equal' or op == 'insert':
+            continue
+        n, m = i2 - i1, j2 - j1
+        if max(n, m) > max_block:
+            report["left"].append(" ".join(t for _, t in toks[i1:i2]))
+            continue
+        if op == 'delete':
+            for k in range(i1, i2):
+                report["dropped"].append(toks[k][1]); toks[k][1] = None
+            continue
+        for k in range(n):  # replace: spread the script words over the recognised slots
+            s0, s1 = round(k * m / n), round((k + 1) * m / n)
+            new = " ".join(dress(toks[i1 + k][1], t) for t in scr[j1 + s0:j1 + s1]) or None
+            report["fixed"].append([toks[i1 + k][1], new])
+            toks[i1 + k][1] = new
+    texts = {}
+    for i, t in toks:
+        texts.setdefault(i, [])
+        if t:
+            texts[i].append(t)
+    out = []
+    for i, w in enumerate(words):
+        if i in texts and not texts[i]:
+            continue  # every token of this entry was not in the script
+        new = dict(w)
+        if i in texts:
+            new['text'] = " ".join(texts[i])
+        out.append(new)
+    return out, report
+
+if __name__ == '__main__':
+    if sys.argv[1:] == ['--prompt']:
+        print(script_text()); sys.exit(0)
+    path = sys.argv[1]
+    text = script_text()
+    if not text:
+        print("[transcribe] no script text: words left as recognised (an uploaded clip has no script)")
+        sys.exit(0)
+    words = json.load(open(path))
+    out, rep = align(words, text)
+    assert out, "script check removed every word"
+    json.dump(out, open(path, 'w'))
+    json.dump(rep, open(os.path.join(os.path.dirname(path) or '.', 'script_align.json'), 'w'), indent=1)
+    print("[transcribe] script check: match %.2f, fixed %d, dropped %d, left %d%s" % (
+        rep["match"], len(rep["fixed"]), len(rep["dropped"]), len(rep["left"]),
+        (" - " + rep["note"]) if rep.get("note") else ""))
+"""
+_SCRIPT_ALIGN_SECTION = (
+    "### 0. Known script (WI2.72)\n\n"
+    "Captions come from these words, so a mis-heard word would be burned into the reel. When the\n"
+    "order carries the script the voice was made from — `inputs/script/*` (`script.json` `{\"text\"}`\n"
+    "or a `.txt`/`.md`), else `prior/approved_script.md`, else `prior/script.md` — the helper below\n"
+    "passes it to `mlx_whisper` as `--initial-prompt` and, in step 2b, corrects the recognised\n"
+    "words against it. With no script (an uploaded talking-head clip) the words are left exactly as\n"
+    "recognised and the helper says so.\n\n"
+    "```bash\nmkdir -p work saves\ncat > work/script_align.py <<'PY'\n" + _SCRIPT_ALIGN_PY + "PY\n```\n\n"
+)
+_SCRIPT_ALIGN_CHECK = (
+    "### 2b. Check the words against the script (WI2.72)\n\n"
+    "Align the cleaned words to the script (difflib on lower-cased letters and digits). A short\n"
+    "mismatch (4 words or fewer) is fixed: a mis-heard word takes the script word, a recognised word\n"
+    "that is not in the script is dropped. Timings are never edited. When under 60 % of the words\n"
+    "match, the script is not what was spoken and the words are left as recognised. What changed is\n"
+    "in `work/script_align.json`.\n\n"
+    "```bash\npython3 work/script_align.py work/words.json || exit 1\n```\n\n"
+)
+_SCRIPT_ALIGN_MLX_OLD = ("  mlx_whisper prior/voice_track.mp4 --model mlx-community/whisper-small-mlx "
+                         "--output-dir work --output-format json\n")
+_SCRIPT_ALIGN_MLX_NEW = ("  SCRIPT_PROMPT=$(python3 work/script_align.py --prompt)\n"
+                         "  mlx_whisper prior/voice_track.mp4 --model mlx-community/whisper-small-mlx "
+                         "--output-dir work --output-format json ${SCRIPT_PROMPT:+--initial-prompt \"$SCRIPT_PROMPT\"}\n")
+_SCRIPT_ALIGN_PIP_OLD = ("entries and canonicalise the key (`word` → `text`). When `prior/script.md` exists, align the\n"
+                         "recognised words to the script text (same count → replace texts in order; otherwise fix obvious\n"
+                         "misrecognitions only). Timings are never edited.\n")
+_SCRIPT_ALIGN_PIP_NEW = ("entries and canonicalise the key (`word` → `text`). Step 2b then checks the words against the\n"
+                         "script. Timings are never edited.\n")
+_SCRIPT_ALIGN_H1 = "### 1. Transcribe the bed with word timestamps\n"
+_SCRIPT_ALIGN_H3 = "### 3. B-roll cue transcripts (only when `inputs/broll/` exists)\n"
+REEL_SCRIPT_ALIGN_RECIPES = ("p-reels-spotlight", "p-reels-spotlight-heygen", "p-reels-pip", "p-reels-pip-heygen")
+
+
+def apply_reel_script_align(directory: Path, recipe: str) -> int:
+    """WI2.72: correct mis-heard caption words against the known script.
+    Top-level steps/02-transcribe.md only. Idempotent; fails fast when an anchor
+    drifted instead of silently skipping. Returns files changed."""
+    if recipe not in REEL_SCRIPT_ALIGN_RECIPES:
+        return 0
+    path = directory / "steps" / "02-transcribe.md"
+    if not path.is_file():
+        return 0
+    text = path.read_text(encoding="utf-8")
+    if "### 2. Quality check" not in text:
+        # Not a full transcribe step (a minimal fixture): left alone. A real step that
+        # has this section but lost another anchor fails fast below.
+        return 0
+    new = text
+    if _SCRIPT_ALIGN_SECTION not in new:
+        if _SCRIPT_ALIGN_H1 not in new:
+            raise SystemExit(f"sync-skills.py: ERROR - transcribe heading not found in {path} ({recipe}); "
+                             "the WI2.72 transform cannot apply")
+        new = new.replace(_SCRIPT_ALIGN_H1, _SCRIPT_ALIGN_SECTION + _SCRIPT_ALIGN_H1, 1)
+    if _SCRIPT_ALIGN_CHECK not in new:
+        if _SCRIPT_ALIGN_H3 not in new:
+            raise SystemExit(f"sync-skills.py: ERROR - b-roll heading not found in {path} ({recipe}); "
+                             "the WI2.72 transform cannot apply")
+        new = new.replace(_SCRIPT_ALIGN_H3, _SCRIPT_ALIGN_CHECK + _SCRIPT_ALIGN_H3, 1)
+    if _SCRIPT_ALIGN_MLX_NEW not in new:
+        if _SCRIPT_ALIGN_MLX_OLD not in new:
+            raise SystemExit(f"sync-skills.py: ERROR - mlx_whisper line not found in {path} ({recipe}); "
+                             "the WI2.72 transform cannot apply")
+        new = new.replace(_SCRIPT_ALIGN_MLX_OLD, _SCRIPT_ALIGN_MLX_NEW, 1)
+    new = new.replace(_SCRIPT_ALIGN_PIP_OLD, _SCRIPT_ALIGN_PIP_NEW)
+    if new != text:
+        path.write_text(new, encoding="utf-8")
+        return 1
+    return 0
+
+
 def git_head_sha(repo: Path) -> str | None:
     """Best-effort `git rev-parse HEAD` of `repo`. Returns None (never
     raises) when `repo` isn't a git checkout — e.g. a test fixture dir — so
@@ -1524,6 +1702,9 @@ def main():
 
         # WI2.71: reel face clips fill the frame and the pip card (no bars).
         apply_reel_fill_frame(recipe_dest, recipe)
+
+        # WI2.72: captions are checked against the known script (top-level transcribe step).
+        apply_reel_script_align(recipe_dest, recipe)
 
         files = list_files(recipe_dest)
         file_hashes = {f: sha256_file(recipe_dest / f) for f in files}
