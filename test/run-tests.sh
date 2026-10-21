@@ -12208,6 +12208,222 @@ else
 fi
 rm -rf "$wi296_root"
 
+echo "=== Case 72: WI2.95 — spotlight takeover text names the order's brand or quotes the speech ==="
+# Observed 2026-10-21: smoke 25 (p-reels-spotlight, order brand "Test Brand", a CFW promo talking-head)
+# showed the tk-list title "CFW WRITES THE MONTH"; re-smoke 26 (Render 48ef94d) showed "CFW knows her
+# voice" at 30.5-36.5 s while the clip says "CFW already learned her voice". plan_edit reworded the speech
+# and kept the clip's brand. Every plan step copy (steps/03-plan-edit.md x3, SKILL.md Step 4 x2) now writes
+# work/takeover_brand.py and runs it: a word-for-word quote stays; any other line's spoken acronym /
+# CamelCase name the order does not own becomes the order's brand (or is dropped when it has none). The
+# step's own plan guard runs its --check. The real helper and guard run on the smoke-26 plan.
+wi295_root="$(mktemp -d)"
+wi295_detail="$(python3 - "$REPO_DIR" "$wi295_root" <<'PY'
+import importlib.util, json, os, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+SAID = ("Most bakers post once a month. They run out of ideas. CFW already learned her voice, so it writes "
+        "the month for her. It posts on Instagram every week. Sarah approved them with flour still on her "
+        "hands. Follow for more.").split()
+WORDS = [{"text": w, "start": round(i * 1.2, 2), "end": round(i * 1.2 + 1.0, 2)} for i, w in enumerate(SAID)]
+DUR = round(len(SAID) * 1.2 + 3.0, 2)
+CFW_AT = SAID.index("CFW") * 1.2
+SMOKE = {   # re-smoke 26: the tk-list card at 30.5-36.5 s reworded the speech and kept the clip's brand
+    "takeovers": [
+        {"start": round(CFW_AT, 2), "end": round(CFW_AT + 5, 2), "template": "tk-list",
+         "fill": {"TITLE": "CFW <span class=\"accent\">WRITES</span> THE MONTH", "ITEM1": "CFW knows her voice",
+                  "ITEM2": "Posts on Instagram", "ITEM3": "Every week"}},
+        {"start": round(CFW_AT + 10, 2), "end": round(CFW_AT + 14, 2), "template": "tk-quote",
+         "fill": {"QUOTE": "CFW already learned her <span class=\"accent\">voice</span>", "ATTR": "Sarah, baker"}},
+        {"start": round(CFW_AT + 19, 2), "end": round(CFW_AT + 23, 2), "template": "tk-typing-ui",
+         "fill": {"LABEL": "claude.ai", "PROMPT": "Write a month of posts", "TYPING_SPEED": 1, "BOTTOM_TAG": "Done in minutes"}}]}
+def groups():
+    out, i, style = [], 0, 0
+    while i < len(WORDS):
+        j = i + 1
+        while j < len(WORDS) and j - i < 4 and not WORDS[j - 1]["text"].endswith((".", ",")):
+            j += 1
+        ws = WORDS[i:j]
+        out.append({"start": ws[0]["start"], "end": ws[-1]["end"], "style": style,
+                    "words": [{"w": w["text"], "s": w["start"], "e": w["end"], "em": False} for w in ws]})
+        style, i = (style + 1) % 3, j
+    out[-1]["end"] = DUR - 1.0
+    return out
+def full_plan():
+    return dict(SMOKE, duration=DUR, energy="high", grade="clean-bright", cover_at=round(CFW_AT - 4, 2),
+                brand={"bg": "#111111", "accent": "#3B82F6", "fg": "#F4F4F4"}, caption_groups=groups(), sfx=[])
+HELPER_RE = re.compile(r"cat > (?:work/|\"\$W/)takeover_brand\.py\"? <<'PY'\n(.*?\n)PY\n", re.S)
+def helper_of(text):
+    found = HELPER_RE.findall(text)
+    return found[0] if len(found) == 1 else None
+def run(helper, args, cwd):
+    return subprocess.run([sys.executable, str(helper)] + args, cwd=cwd, capture_output=True, text=True, timeout=60)
+def fills(path):
+    return [t["fill"] for t in json.load(open(path))["takeovers"]]
+def behave(helper, label):
+    found = []
+    wd = root / ("wd-" + label.replace("/", "_"))
+    shutil.rmtree(wd, ignore_errors=True); (wd / "work").mkdir(parents=True); (wd / "saves").mkdir()
+    (wd / "work" / "words.json").write_text(json.dumps(WORDS))
+    plan = wd / "saves" / "edit_plan.json"
+    def fresh():
+        plan.write_text(json.dumps(SMOKE))
+    fresh()
+    r = run(helper, ["--check", "saves/edit_plan.json", "work/words.json", "Test Brand"], wd)
+    if r.returncode != 1 or "CFW" not in r.stderr:
+        found.append("%s: --check passed the smoke plan's foreign brand (rc %s)" % (label, r.returncode))
+    r = run(helper, ["saves/edit_plan.json", "work/words.json", "Test Brand"], wd)
+    f = fills(plan) if r.returncode == 0 else None
+    if f is None:
+        found.append("%s: repair failed: %s" % (label, (r.stdout + r.stderr)[-200:]))
+        return found
+    want = [("TITLE", 0, "TEST BRAND <span class=\"accent\">WRITES</span> THE MONTH"), ("ITEM1", 0, "Test Brand knows her voice"),
+            ("ITEM2", 0, "Posts on Instagram"), ("QUOTE", 1, "CFW already learned her <span class=\"accent\">voice</span>"),
+            ("ATTR", 1, "Sarah, baker"), ("LABEL", 2, "claude.ai")]
+    for key, i, val in want:
+        if f[i].get(key) != val:
+            found.append("%s: takeover %d %s is %r, wanted %r" % (label, i + 1, key, f[i].get(key), val))
+    once = plan.read_bytes()
+    r2 = run(helper, ["saves/edit_plan.json", "work/words.json", "Test Brand"], wd)
+    if r2.returncode != 0 or plan.read_bytes() != once:
+        found.append("%s: a second repair run changed the plan (not idempotent)" % label)
+    if run(helper, ["--check", "saves/edit_plan.json", "work/words.json", "Test Brand"], wd).returncode != 0:
+        found.append("%s: --check fails on the repaired plan" % label)
+    # no order brand: the foreign name is dropped, no brand is invented
+    fresh()
+    r = run(helper, ["saves/edit_plan.json", "work/words.json", ""], wd)
+    f = fills(plan) if r.returncode == 0 else [{}, {}, {}]
+    if r.returncode != 0 or f[0].get("ITEM1") != "knows her voice" or "CFW" in json.dumps(f[0]) \
+            or "Test Brand" in plan.read_text() or f[1].get("QUOTE") != SMOKE["takeovers"][1]["fill"]["QUOTE"]:
+        found.append("%s: with no order brand the name was not dropped cleanly: %r" % (label, f[:2]))
+    # the order's own brand is kept
+    fresh()
+    r = run(helper, ["saves/edit_plan.json", "work/words.json", "CFW"], wd)
+    if r.returncode != 0 or json.loads(plan.read_text()) != SMOKE:
+        found.append("%s: the order's own brand CFW was changed" % label)
+    # no BRAND argument: the step workdir's order brand (cta.json brandName, else brief.json brand.name)
+    (wd / "brief.json").write_text(json.dumps({"brand": {"slug": "x", "name": "Other Co"}}))
+    (wd / "inputs" / "cta").mkdir(parents=True)
+    (wd / "inputs" / "cta" / "cta.json").write_text(json.dumps({"brandName": "Test Brand"}))
+    fresh(); run(helper, ["saves/edit_plan.json", "work/words.json"], wd)
+    if fills(plan)[0].get("ITEM1") != "Test Brand knows her voice":
+        found.append("%s: without BRAND the cta.json brandName was not used: %r" % (label, fills(plan)[0].get("ITEM1")))
+    (wd / "inputs" / "cta" / "cta.json").unlink()
+    fresh(); run(helper, ["saves/edit_plan.json", "work/words.json"], wd)
+    if fills(plan)[0].get("ITEM1") != "Other Co knows her voice":
+        found.append("%s: without BRAND or cta.json the brief brand.name was not used: %r" % (label, fills(plan)[0].get("ITEM1")))
+    return found
+def guard_runs(text, helper, label):
+    """the step's own blocks: the repair line exists, and the guard fails the smoke plan and passes once repaired"""
+    found = []
+    if "python3 work/takeover_brand.py saves/edit_plan.json work/words.json || exit 1" not in text:
+        return ["%s: the step does not run the takeover brand repair on the plan" % label]
+    g = re.findall(r"python3 - saves/edit_plan.json \"\$DUR\" <<'PY'\n(.*?\n)PY\n", text, re.S)
+    if len(g) != 1:
+        return ["%s: plan guard not found once" % label]
+    wd = root / ("guard-" + label.replace("/", "_"))
+    shutil.rmtree(wd, ignore_errors=True); (wd / "work").mkdir(parents=True); (wd / "saves").mkdir()
+    (wd / "work" / "takeover_brand.py").write_text(helper)
+    cp = re.findall(r"cat > work/caption_phrases\.py <<'PY'\n(.*?\n)PY\n", text, re.S)
+    if cp:
+        (wd / "work" / "caption_phrases.py").write_text(cp[0])
+    (wd / "work" / "words.json").write_text(json.dumps(WORDS))
+    (wd / "work" / "guard.py").write_text(g[0])
+    (wd / "brief.json").write_text(json.dumps({"brand": {"name": "Test Brand"}}))
+    (wd / "saves" / "edit_plan.json").write_text(json.dumps(full_plan()))
+    if cp:  # the fixture's caption groups go through the step's own WI2.76 repair first
+        subprocess.run([sys.executable, "work/caption_phrases.py", "saves/edit_plan.json"], cwd=wd, capture_output=True, timeout=60)
+    r = subprocess.run([sys.executable, "work/guard.py", "saves/edit_plan.json", str(DUR)], cwd=wd, capture_output=True, text=True, timeout=60)
+    if r.returncode == 0 or "WI2.95" not in (r.stdout + r.stderr):
+        found.append("%s: the plan guard passed the smoke plan's foreign brand (rc %s: %s)" % (label, r.returncode, (r.stdout + r.stderr)[-160:]))
+    subprocess.run([sys.executable, "work/takeover_brand.py", "saves/edit_plan.json", "work/words.json"], cwd=wd, capture_output=True, timeout=60)
+    r = subprocess.run([sys.executable, "work/guard.py", "saves/edit_plan.json", str(DUR)], cwd=wd, capture_output=True, text=True, timeout=60)
+    if r.returncode != 0 or "plan OK" not in r.stdout:
+        found.append("%s: the plan guard fails the repaired plan: %s" % (label, (r.stdout + r.stderr)[-200:]))
+    return found
+try:
+    skills = repo / "skills"
+    steps = sorted(skills.rglob("03-plan-edit.md"))
+    steps = [p for p in steps if "p-reels-spotlight" in p.parent.parent.name]
+    skill_mds = [skills / "p-reels-spotlight" / "SKILL.md", skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "SKILL.md"]
+    if len(steps) != 3:
+        bad.append("expected 3 spotlight 03-plan-edit.md copies, found %d" % len(steps))
+    helpers = {}
+    for p in steps + skill_mds:
+        h = helper_of(p.read_text(encoding="utf-8"))
+        if h is None:
+            bad.append("%s writes no takeover_brand.py helper (WI2.95)" % p.relative_to(repo))
+        else:
+            helpers[p] = h
+    if len(set(helpers.values())) > 1:
+        bad.append("the takeover_brand.py helper copies differ")
+    if helpers:
+        hp = root / "takeover_brand.py"
+        hp.write_text(next(iter(helpers.values())))
+        bad += behave(hp, "helper")
+    for p in steps:
+        if p in helpers:
+            bad += guard_runs(p.read_text(encoding="utf-8"), helpers[p], str(p.relative_to(repo)))
+    for p in skill_mds:
+        t = p.read_text(encoding="utf-8")
+        if p in helpers and ('python3 "$W/takeover_brand.py" "$W/plan.json" "$W/words.json" "$BRAND_NAME" || exit 1' not in t
+                             or '"takeover_brand.py"), "--check"' not in t):
+            bad.append("%s: Step 4 does not run the takeover brand repair and its --check" % p.relative_to(repo))
+    for p in steps + skill_mds:
+        if "Takeover text names only the order's brand" not in p.read_text(encoding="utf-8"):
+            bad.append("%s: rule 5 does not tell the planner to keep the order's brand" % p.relative_to(repo))
+    spec = importlib.util.spec_from_file_location("ss295", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    fn, files = getattr(ss, "apply_spotlight_takeover_brand", None), getattr(ss, "_SPOTLIGHT_TK_BRAND_FILES", None)
+    if fn is None or files is None:
+        bad.append("sync-skills.py has no apply_spotlight_takeover_brand transform (WI2.95)")
+    else:
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        def revert(t, edits):
+            text = t.read_text(encoding="utf-8")
+            for old, new, before in reversed(edits):
+                text = text.replace(new + old, old) if before else text.replace(new, old)
+            t.write_text(text, encoding="utf-8")
+        for rel, full_only, edits in files:
+            for t in up.rglob(str(rel)):
+                if "p-reels-spotlight" in t.parents[len(rel.parts) - 1].name:
+                    revert(t, edits)
+        if helper_of((up / "p-reels-spotlight" / "steps" / "03-plan-edit.md").read_text(encoding="utf-8")):
+            bad.append("sanity: the restored step still writes the helper")
+        for rec, want in (("p-reels-spotlight", 2), ("p-reels-spotlight-heygen", 3)):
+            got = (fn(up / rec, rec), fn(up / rec, rec))
+            if got != (want, 0):
+                bad.append("transform on %s changed %r file(s), expected (%d, 0)" % (rec, got, want))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        t = up / "p-reels-spotlight" / "steps" / "03-plan-edit.md"
+        revert(t, files[0][2])
+        t.write_text(t.read_text(encoding="utf-8").replace("Then run the mechanical guard", "Then run the guard"), encoding="utf-8")
+        try:
+            fn(up / "p-reels-spotlight", "p-reels-spotlight"); bad.append("transform did not fail on a drifted plan step")
+        except SystemExit:
+            pass
+        (up / "p-reels-spotlight" / "SKILL.md").unlink()
+        try:
+            fn(up / "p-reels-spotlight-heygen", "x"); fn(up / "p-reels-spotlight", "p-reels-spotlight")
+            bad.append("transform did not fail on a missing SKILL.md")
+        except SystemExit:
+            pass
+except (Exception, SystemExit) as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad[:12]))
+PY
+)"
+if [[ "$wi295_detail" == "ok" ]]; then
+  pass "WI2.95 spotlight takeover text names only the order's brand unless it quotes the speech (every plan copy, guard enforced)"
+else
+  fail "WI2.95 spotlight takeover text names the order's brand or quotes the speech" "$wi295_detail"
+fi
+rm -rf "$wi295_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then

@@ -3967,6 +3967,320 @@ def apply_spotlight_end_card_fit(directory: Path, recipe: str) -> int:
     return changed
 
 
+# WI2.95: spotlight takeover text names a different brand. Smoke 25 (p-reels-spotlight, order brand
+# "Test Brand", a CFW promo talking-head) showed the tk-list title "CFW WRITES THE MONTH"; re-smoke 26
+# (Render 48ef94d) showed "CFW knows her voice" at 30.5-36.5 s while the clip says "CFW already learned
+# her voice". The plan_edit step writes that text: it reworded the speech and kept the clip's brand.
+# Step 03 (and SKILL.md Step 4) now write work/takeover_brand.py and run it on the plan: a takeover line
+# that is an exact run of transcript words is a quote and stays; any other line that carries a spoken
+# acronym / CamelCase name (or a CamelCase word) the order does not own gets the order's brand
+# (inputs/cta/cta.json brandName, else brief.json brand.name, as on the end card) or, with no order
+# brand, loses the name. The plan guard runs its --check, and rule 5 states the rule to the planner.
+SPOTLIGHT_TK_BRAND_PY = r'''# WI2.95: takeover text names only the order's brand, unless it quotes the speech word for word.
+# usage: python3 work/takeover_brand.py PLAN.json WORDS.json [BRAND]          (repair takeovers in place)
+#        python3 work/takeover_brand.py --check PLAN.json WORDS.json [BRAND]  (exit 1 on a foreign name)
+# BRAND is the order's brand name ("" = the order has none). Without it the brand comes from the
+# step workdir: inputs/cta/cta.json brandName, else brief.json brand.name (as the end card does).
+# A takeover line that is an exact run of transcript words (case and punctuation aside) is a quote
+# and is kept. Any other line may not carry a brand-like name the order does not own: an acronym or
+# CamelCase word the speech says (CFW, HubSpot) or a CamelCase word in the line. With an order brand
+# the name becomes that brand; with none it is dropped. A brand is never invented. Generic acronyms
+# (AI, CEO, ...) and the channels a reel talks about (Instagram, TikTok, ...) are not brands here.
+import html, json, os, re, sys
+
+TOKEN = re.compile(r"[A-Za-z0-9]+(?:['’.&-][A-Za-z0-9]+)*")
+TAG = re.compile(r"(<[^>]*>)")
+POSS = re.compile(r"['’]s$", re.I)
+SKIP = {"tk-typing-ui": {"LABEL", "TYPING_SPEED"}}
+HTML_KEYS = {"TITLE", "QUOTE"}
+# Generic acronyms and the channels / tools a reel talks about: never a competing brand.
+GENERIC = set("""i ai api apis ceo cto cfo coo cmo diy faq seo roi kpi kpis crm saas b2b b2c dm dms pr hr it ui ux
+url pdf ok tv usa uk eu us am pm mvp llm llms gpt cta ctas asap fyi q1 q2 q3 q4 ugc ar vr id ip sms
+instagram ig tiktok youtube yt linkedin facebook fb threads pinterest reddit x twitter whatsapp snapchat google
+chatgpt claude gemini openai anthropic""".split())
+
+
+def norm(t):
+    return re.sub(r"[^a-z0-9']", "", t.lower().replace("’", "'"))
+
+
+def base(t):
+    return norm(POSS.sub("", t))
+
+
+def shaped(t):
+    # an acronym (2+ capitals, no lower case) or CamelCase word, by its own spelling
+    b = POSS.sub("", t)
+    letters = re.sub(r"[^A-Za-z]", "", b)
+    if len(letters) >= 2 and letters.isupper():
+        return True
+    return bool(re.search(r"[a-z][A-Z]", b))
+
+
+def plain(v):
+    return html.unescape(TAG.sub(" ", v))
+
+
+def stop(msg):
+    print("takeover brand check: " + msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def order_brand():
+    cta = {}
+    if os.path.isfile("inputs/cta/cta.json"):
+        cta = json.load(open("inputs/cta/cta.json"))
+    if not os.path.isfile("brief.json") and not cta:
+        stop("no order brand: pass BRAND, or run in the step workdir with brief.json (WI2.95)")
+    brief = json.load(open("brief.json")) if os.path.isfile("brief.json") else {}
+    b = (brief.get("brand") or {}) if isinstance(brief, dict) else {}
+    return str((cta.get("brandName") if isinstance(cta, dict) else "") or b.get("name") or "").strip()
+
+
+def transcript(words):
+    """the transcript's plain tokens, and the brand-like names it speaks (acronyms, CamelCase)"""
+    toks, names = [], set()
+    for w in words:
+        t = str(w.get("text", w.get("w", w.get("word", "")))) if isinstance(w, dict) else str(w)
+        for m in TOKEN.finditer(t):
+            toks.append(norm(m.group(0)))
+            if shaped(m.group(0)):
+                names.add(base(m.group(0)))
+    return toks, names
+
+
+def all_caps(value):
+    letters = re.sub(r"[^A-Za-z]", "", plain(value))
+    return bool(letters) and letters.isupper()
+
+
+def foreign(value, names, own):
+    """the names in this line that the order does not own"""
+    out = []
+    for m in TOKEN.finditer(plain(value)):
+        tok, b = m.group(0), base(m.group(0))
+        if not b or b in own or b in GENERIC or not re.search(r"[a-z]", b):
+            continue
+        if b in names or re.search(r"[a-z][A-Z]", POSS.sub("", tok)):
+            out.append(tok)
+    return out
+
+
+def quoted(value, said):
+    toks = [norm(t) for t in TOKEN.findall(plain(value))]
+    toks = [t for t in toks if t]
+    return bool(toks) and (" " + " ".join(toks) + " ") in (" " + " ".join(said) + " ")
+
+
+def fix_text(seg, names_hit, brand, is_html, caps):
+    hit = {base(t) for t in names_hit}
+    toks = list(TOKEN.finditer(seg))
+    out, pos, i = [], 0, 0
+    while i < len(toks):
+        m = toks[i]
+        if base(m.group(0)) not in hit:
+            i += 1
+            continue
+        j = i  # a run of adjacent names ("Acme Labs") is one name
+        while j + 1 < len(toks) and base(toks[j + 1].group(0)) in hit and seg[toks[j].end():toks[j + 1].start()].strip() == "":
+            j += 1
+        last = toks[j].group(0)
+        poss = POSS.search(last)
+        out.append(seg[pos:m.start()])
+        if brand:
+            name = brand.upper() if caps else brand
+            if is_html:
+                name = html.escape(name)
+            out.append(name + (poss.group(0) if poss else ""))
+            pos = toks[j].end()
+        else:
+            pos = toks[j].end()
+            # drop the name and the space after it (or before it at the end)
+            rest = seg[pos:]
+            if rest[:1] == " ":
+                pos += 1
+            elif out and out[-1].endswith(" "):
+                out[-1] = out[-1][:-1]
+        i = j + 1
+    out.append(seg[pos:])
+    return "".join(out)
+
+
+def fix_value(value, names_hit, brand, is_html):
+    caps = all_caps(value)
+    if not is_html:
+        return re.sub(r"\s{2,}", " ", fix_text(value, names_hit, brand, False, caps)).strip()
+    parts = TAG.split(value)
+    parts = [p if TAG.fullmatch(p) else fix_text(p, names_hit, brand, True, caps) for p in parts]
+    new = "".join(parts)
+    new = re.sub(r"<span[^>]*>\s*</span>", "", new)
+    return re.sub(r"[ \t]{2,}", " ", new).strip()
+
+
+def problems(plan, said, names, own):
+    bad = []
+    for i, tk in enumerate(plan.get("takeovers") or []):
+        fill = tk.get("fill") if isinstance(tk, dict) else None
+        if not isinstance(fill, dict):
+            continue
+        skip = SKIP.get(tk.get("template"), set())
+        for key, v in fill.items():
+            if key in skip or not isinstance(v, str):
+                continue
+            hits = foreign(v, names, own)
+            if hits and not quoted(v, said):
+                bad.append((i, key, v, hits))
+    return bad
+
+
+def main(argv):
+    check = argv[:1] == ["--check"]
+    args = argv[1:] if check else argv
+    if len(args) not in (2, 3):
+        stop("usage: takeover_brand.py [--check] PLAN.json WORDS.json [BRAND] (WI2.95)")
+    path, wpath = args[0], args[1]
+    brand = args[2].strip() if len(args) == 3 else order_brand()
+    for p in (path, wpath):
+        if not os.path.isfile(p):
+            stop("file not found: %s (WI2.95)" % p)
+    try:
+        plan, words = json.load(open(path)), json.load(open(wpath))
+    except ValueError as exc:
+        stop("not valid JSON: %s (WI2.95)" % exc)
+    if isinstance(words, dict):
+        words = words.get("words") or []
+    if not isinstance(plan, dict) or not isinstance(words, list):
+        stop("plan must be a JSON object and words a JSON list (WI2.95)")
+    said, names = transcript(words)
+    own = {base(t) for t in TOKEN.findall(brand)}
+    bad = problems(plan, said, names, own)
+    if check:
+        for i, key, v, hits in bad:
+            print("takeover brand check: takeover %d %s %r names %s, not the order brand %r, and is not a word-for-word "
+                  "quote of the speech - quote the speech or use the order brand (WI2.95)"
+                  % (i + 1, key, v, "/".join(hits), brand or "(none)"), file=sys.stderr)
+        sys.exit(1 if bad else 0)
+    for i, key, v, hits in bad:
+        tk = plan["takeovers"][i]
+        new = fix_value(v, hits, brand, key in HTML_KEYS)
+        if not re.search(r"[A-Za-z0-9]", plain(new)):
+            stop("takeover %d %s %r is only a foreign name; rewrite it from the speech (WI2.95)" % (i + 1, key, v))
+        tk["fill"][key] = new
+        print("[plan] takeover %d %s: %r -> %r (names %s; order brand %r)" % (i + 1, key, v, new, "/".join(hits), brand or "(none)"))
+    if bad:
+        json.dump(plan, open(path, "w"), indent=2)
+    else:
+        print("[plan] takeover brand: no foreign brand names, plan unchanged")
+    left = problems(plan, said, names, own)
+    for i, key, v, hits in left:
+        print("takeover brand check: takeover %d %s %r still names %s (WI2.95)" % (i + 1, key, v, "/".join(hits)), file=sys.stderr)
+    sys.exit(1 if left else 0)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
+'''
+_SPOTLIGHT_TK_BRAND_RULE_OLD = (
+    "   in that window. Use `tk-typing-ui` only when the content involves AI / prompts / terminal work.\n"
+)
+SPOTLIGHT_TK_BRAND_RULE = (
+    "   in that window. Use `tk-typing-ui` only when the content involves AI / prompts / terminal work.\n"
+    "   Takeover text names only the order's brand (WI2.95): quote the speech word for word, or write the\n"
+    "   order's brand in place of any other brand or product the clip names; never invent a brand.\n"
+)
+_SPOTLIGHT_TK_BRAND_GUARD_ANCHOR = "Then run the mechanical guard — fix the plan and rerun until it prints `plan OK`:\n"
+SPOTLIGHT_TK_BRAND_SECTION = (
+    "Keep takeover text on the order's brand (WI2.95). A clip may name another brand or product (a CFW\n"
+    "promo cut for a `Test Brand` order says `CFW already learned her voice`). A takeover line that quotes\n"
+    "the speech word for word keeps it. Any other line that carries a spoken acronym or CamelCase name\n"
+    "(`CFW`, `HubSpot`) the order does not own gets the order's brand instead (`inputs/cta/cta.json`\n"
+    "`brandName`, else `brief.json` `brand.name`, as on the end card), or loses the name when the order\n"
+    "has no brand. Write the helper, then run it on the plan; it prints each line it changed.\n\n"
+    "```bash\nmkdir -p work saves\ncat > work/takeover_brand.py <<'PY'\n" + SPOTLIGHT_TK_BRAND_PY + "PY\n```\n\n"
+    "```bash\npython3 work/takeover_brand.py saves/edit_plan.json work/words.json || exit 1\n```\n\n"
+)
+_SPOTLIGHT_TK_BRAND_PRINT = "print(f\"plan OK: {len(p['caption_groups'])} groups, {len(tks)} takeovers"
+SPOTLIGHT_TK_BRAND_GUARD = (
+    "import subprocess\n"
+    "assert subprocess.run([sys.executable, \"work/takeover_brand.py\", \"--check\", sys.argv[1], \"work/words.json\"]).returncode == 0, \\\n"
+    "    \"takeover text names a brand the order does not own (WI2.95) — run python3 work/takeover_brand.py saves/edit_plan.json work/words.json\"\n"
+)
+_SPOTLIGHT_TK_BRAND_SKILL_RULE_OLD = (
+    "   SAID in that window. Use tk-typing-ui only when the content involves AI/prompts/terminal workflows.\n"
+)
+SPOTLIGHT_TK_BRAND_SKILL_RULE = (
+    "   SAID in that window. Use tk-typing-ui only when the content involves AI/prompts/terminal workflows.\n"
+    "   Takeover text names only the order's brand ($BRAND_NAME, WI2.95): quote the speech word for word,\n"
+    "   or write the order's brand in place of any other brand or product the clip names; never invent one.\n"
+)
+_SPOTLIGHT_TK_BRAND_SKILL_GUARD_OLD = "python3 - \"$W/plan.json\" \"$DUR\" <<'PY'\n"
+SPOTLIGHT_TK_BRAND_SKILL_GUARD = (
+    "# WI2.95: takeover text names only the order's brand unless it quotes the speech word for word.\n"
+    "cat > \"$W/takeover_brand.py\" <<'PY'\n" + SPOTLIGHT_TK_BRAND_PY + "PY\n"
+    "python3 \"$W/takeover_brand.py\" \"$W/plan.json\" \"$W/words.json\" \"$BRAND_NAME\" || exit 1\n"
+    "BRAND_NAME=\"$BRAND_NAME\" python3 - \"$W/plan.json\" \"$DUR\" <<'PY'\n"
+)
+_SPOTLIGHT_TK_BRAND_SKILL_PRINT = "print(f\"plan OK: {len(p['caption_groups'])} groups, {len(p.get('takeovers',[]))} takeovers, \"\n"
+SPOTLIGHT_TK_BRAND_SKILL_CHECK = (
+    "import os, subprocess\n"
+    "_d = os.path.dirname(sys.argv[1])\n"
+    "assert subprocess.run([sys.executable, os.path.join(_d, \"takeover_brand.py\"), \"--check\", sys.argv[1],\n"
+    "                       os.path.join(_d, \"words.json\"), os.environ.get(\"BRAND_NAME\", \"\")]).returncode == 0, \\\n"
+    "    \"takeover text names a brand the order does not own (WI2.95) — run python3 $W/takeover_brand.py\"\n"
+)
+_SPOTLIGHT_TK_BRAND_FILES = (
+    # (file under a spotlight root, only in a full p-reels-spotlight copy, edits as (anchor, new, insert-before))
+    (Path("steps") / "03-plan-edit.md", False,
+     ((_SPOTLIGHT_TK_BRAND_RULE_OLD, SPOTLIGHT_TK_BRAND_RULE, False),
+      (_SPOTLIGHT_TK_BRAND_GUARD_ANCHOR, SPOTLIGHT_TK_BRAND_SECTION, True),
+      (_SPOTLIGHT_TK_BRAND_PRINT, SPOTLIGHT_TK_BRAND_GUARD, True))),
+    (Path("SKILL.md"), True,
+     ((_SPOTLIGHT_TK_BRAND_SKILL_RULE_OLD, SPOTLIGHT_TK_BRAND_SKILL_RULE, False),
+      (_SPOTLIGHT_TK_BRAND_SKILL_GUARD_OLD, SPOTLIGHT_TK_BRAND_SKILL_GUARD, False),
+      (_SPOTLIGHT_TK_BRAND_SKILL_PRINT, SPOTLIGHT_TK_BRAND_SKILL_CHECK, True))),
+)
+
+
+def apply_spotlight_takeover_brand(directory: Path, recipe: str) -> int:
+    """WI2.95: every p-reels-spotlight copy under `directory` (the top-level p-reels-spotlight /
+    p-reels-spotlight-heygen steps/03-plan-edit.md, .hub/p-reels-spotlight, and SKILL.md Step 4 of each
+    full copy) writes work/takeover_brand.py and runs it on the plan, so takeover text names only the
+    order's brand unless it quotes the speech word for word; the plan guard runs its --check and rule 5
+    states it. Idempotent; fails fast when a copy lost its anchor or file, or when a spotlight recipe
+    ships no plan-edit step."""
+    changed = 0
+    if not directory.is_dir():
+        return 0
+    plan_step = Path("steps") / "03-plan-edit.md"
+    roots = [directory] if directory.name.startswith("p-reels-spotlight") else []
+    roots += sorted(p for p in directory.rglob("p-reels-spotlight") if p.is_dir() and p.parent.name == ".hub")
+    roots = [r for r in roots if (r / plan_step).is_file()]
+    if recipe.startswith("p-reels-spotlight") and not roots:
+        raise SystemExit(f"sync-skills.py: ERROR - no p-reels-spotlight {plan_step} under {directory} "
+                         f"({recipe}); the WI2.95 transform cannot apply")
+    for root in roots:
+        for rel, full_only, edits in _SPOTLIGHT_TK_BRAND_FILES:
+            if full_only and root.name != "p-reels-spotlight":
+                continue
+            path = root / rel
+            if not path.is_file():
+                raise SystemExit(f"sync-skills.py: ERROR - {path} is missing ({recipe}); the WI2.95 transform cannot apply")
+            text = path.read_text(encoding="utf-8")
+            new_text = text
+            for old, new, before in edits:
+                if new in new_text:
+                    continue
+                if new_text.count(old) != 1:
+                    raise SystemExit(f"sync-skills.py: ERROR - takeover brand anchor {old.strip().splitlines()[0][:60]!r} "
+                                     f"found {new_text.count(old)} time(s) in {path} ({recipe}); "
+                                     "the WI2.95 transform cannot apply")
+                new_text = new_text.replace(old, (new + old) if before else new, 1)
+            if new_text != text:
+                path.write_text(new_text, encoding="utf-8")
+                changed += 1
+    return changed
+
+
 def git_head_sha(repo: Path) -> str | None:
     """Best-effort `git rev-parse HEAD` of `repo`. Returns None (never
     raises) when `repo` isn't a git checkout — e.g. a test fixture dir — so
@@ -4148,6 +4462,9 @@ def main():
 
         # WI2.96: the end-card headline keeps the brand name on one line, balanced and fitted (every copy).
         apply_spotlight_end_card_fit(recipe_dest, recipe)
+
+        # WI2.95: takeover text names only the order's brand unless it quotes the speech (every copy).
+        apply_spotlight_takeover_brand(recipe_dest, recipe)
 
         files = list_files(recipe_dest)
         file_hashes = {f: sha256_file(recipe_dest / f) for f in files}
