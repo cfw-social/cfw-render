@@ -64,6 +64,7 @@
       }
       #{{ID}} .stat {
         font-weight: 700; font-size: 340px; line-height: 0.9;
+        white-space: nowrap;  /* WI2.83: one line; the script fits it to the safe width */
         letter-spacing: -0.02em; text-transform: uppercase;
         color: {{ACCENT}};
         text-shadow: 0 0 60px {{ACCENT}}73;
@@ -101,6 +102,25 @@
         var label = document.querySelector(scope + ".js-label");
         label.innerHTML = label.textContent.split(/\s+/).filter(Boolean)
           .map(function (w) { return '<span class="word">' + w + "</span>"; }).join(" ");
+
+        // WI2.83: fit the stat to the safe width. 340px is the design size; a long stat
+        // ("100,000") is scaled down until it is no wider than STAT_MAX_W (1080 minus the
+        // 72px side padding, with room for the 1.03 breathe). Refit once fonts load.
+        var STAT_SIZE = 340, STAT_MAX_W = 900;
+        function fitStat(el, base, maxW) {
+          el.style.fontSize = base + "px";
+          var w = el.scrollWidth;
+          if (w <= maxW) return base;
+          var size = Math.floor(base * maxW / w);
+          el.style.fontSize = size + "px";
+          while (size > 8 && el.scrollWidth > maxW) { size -= 2; el.style.fontSize = size + "px"; }
+          return size;
+        }
+        var statEl = document.querySelector(scope + ".js-stat");
+        fitStat(statEl, STAT_SIZE, STAT_MAX_W);
+        if (document.fonts && document.fonts.ready) {
+          document.fonts.ready.then(function () { fitStat(statEl, STAT_SIZE, STAT_MAX_W); });
+        }
 
         var tl = gsap.timeline({ paused: true });
 

@@ -84,6 +84,11 @@ c-typing-ui render (fill the template, copy gsap.min.js, hyperframes lint + rend
 of a scripts/render.sh that never shipped, and makes every c-typing-ui SKILL.md describe the
 shipped typingWindow() timing and proxy counter (no #char-count element).
 
+WI2.83 apply_spotlight_stat_fit() makes every p-reels-spotlight tk-stat.html copy (top-level
+and .hub) keep the stat on one line and fit it to the safe width: the page measures the stat
+and scales its font size down from the 340 px design size until it is no wider than 900 px
+(1080 minus the 72 px side padding, with room for the 1.03 breathe); it refits once fonts load.
+
 Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
 and before list_files/hashing, same ordering guarantee:
   strip_brand_override_host_paths() nulls/drops the two host-path fields
@@ -2299,6 +2304,86 @@ def apply_typing_render_usage(directory: Path, recipe: str) -> int:
     return changed
 
 
+# WI2.83: the spotlight takeover "big stat" card set the stat at a fixed 340 px. A stat such as
+# "100,000" is ~1200 px wide at that size, so it ran past both frame edges (smoke 23b, 2026-10-21).
+# The stat now stays on one line and the page fits it: it measures the rendered width and scales the
+# font size down from the 340 px design size until the stat is no wider than STAT_MAX_W. 900 px =
+# 1080 minus the 72 px side padding (936), less room for the 1.03 breathe tween (936 / 1.03 ≈ 908).
+# A stat that already fits keeps the design size. It refits once web fonts finish loading, because
+# the first measurement can run on a fallback font.
+SPOTLIGHT_STAT_FILE = Path("templates") / "tk-stat.html"
+SPOTLIGHT_STAT_MAX_W = 900
+_SPOTLIGHT_STAT_CSS_OLD = (
+    "      #{{ID}} .stat {\n"
+    "        font-weight: 700; font-size: 340px; line-height: 0.9;\n"
+)
+SPOTLIGHT_STAT_CSS = (
+    "      #{{ID}} .stat {\n"
+    "        font-weight: 700; font-size: 340px; line-height: 0.9;\n"
+    "        white-space: nowrap;  /* WI2.83: one line; the script fits it to the safe width */\n"
+)
+_SPOTLIGHT_STAT_JS_OLD = (
+    "        var tl = gsap.timeline({ paused: true });\n"
+    "\n"
+    "        // Ambient — glow breathes; ring expands and fades out once. Nothing static.\n"
+)
+SPOTLIGHT_STAT_FIT_JS = (
+    "        // WI2.83: fit the stat to the safe width. 340px is the design size; a long stat\n"
+    "        // (\"100,000\") is scaled down until it is no wider than STAT_MAX_W (1080 minus the\n"
+    "        // 72px side padding, with room for the 1.03 breathe). Refit once fonts load.\n"
+    "        var STAT_SIZE = 340, STAT_MAX_W = " + str(SPOTLIGHT_STAT_MAX_W) + ";\n"
+    "        function fitStat(el, base, maxW) {\n"
+    "          el.style.fontSize = base + \"px\";\n"
+    "          var w = el.scrollWidth;\n"
+    "          if (w <= maxW) return base;\n"
+    "          var size = Math.floor(base * maxW / w);\n"
+    "          el.style.fontSize = size + \"px\";\n"
+    "          while (size > 8 && el.scrollWidth > maxW) { size -= 2; el.style.fontSize = size + \"px\"; }\n"
+    "          return size;\n"
+    "        }\n"
+    "        var statEl = document.querySelector(scope + \".js-stat\");\n"
+    "        fitStat(statEl, STAT_SIZE, STAT_MAX_W);\n"
+    "        if (document.fonts && document.fonts.ready) {\n"
+    "          document.fonts.ready.then(function () { fitStat(statEl, STAT_SIZE, STAT_MAX_W); });\n"
+    "        }\n"
+    "\n"
+)
+_SPOTLIGHT_STAT_EDITS = (
+    (_SPOTLIGHT_STAT_CSS_OLD, SPOTLIGHT_STAT_CSS),
+    (_SPOTLIGHT_STAT_JS_OLD, SPOTLIGHT_STAT_FIT_JS + _SPOTLIGHT_STAT_JS_OLD),
+)
+
+
+def apply_spotlight_stat_fit(directory: Path, recipe: str) -> int:
+    """WI2.83: every p-reels-spotlight tk-stat.html copy under `directory` (top-level or
+    .hub/p-reels-spotlight) fits the stat to the safe width. Idempotent; fails fast when a
+    copy lost its anchor, or when a spotlight recipe ships no tk-stat.html at all."""
+    changed = 0
+    if not directory.is_dir():
+        return 0
+    roots = [directory] if directory.name == "p-reels-spotlight" else []
+    roots += sorted(p for p in directory.rglob("p-reels-spotlight") if p.is_dir() and p.parent.name == ".hub")
+    tpls = [r / SPOTLIGHT_STAT_FILE for r in roots if (r / SPOTLIGHT_STAT_FILE).is_file()]
+    if recipe.startswith("p-reels-spotlight") and not tpls:
+        raise SystemExit(f"sync-skills.py: ERROR - no p-reels-spotlight {SPOTLIGHT_STAT_FILE} under {directory} "
+                         f"({recipe}); the WI2.83 transform cannot apply")
+    for tpl in tpls:
+        text = tpl.read_text(encoding="utf-8")
+        new_text = text
+        for old, new in _SPOTLIGHT_STAT_EDITS:
+            if new in new_text:
+                continue
+            if new_text.count(old) != 1:
+                raise SystemExit(f"sync-skills.py: ERROR - tk-stat anchor {old.strip().splitlines()[0][:60]!r} "
+                                 f"found {new_text.count(old)} time(s) in {tpl} ({recipe}); "
+                                 "the WI2.83 transform cannot apply")
+            new_text = new_text.replace(old, new, 1)
+        if new_text != text:
+            tpl.write_text(new_text, encoding="utf-8")
+            changed += 1
+    return changed
+
+
 def git_head_sha(repo: Path) -> str | None:
     """Best-effort `git rev-parse HEAD` of `repo`. Returns None (never
     raises) when `repo` isn't a git checkout — e.g. a test fixture dir — so
@@ -2447,7 +2532,10 @@ def main():
         # WI2.80: step 04 names the real c-typing-ui render; its SKILL.md states the shipped timing.
         apply_typing_render_usage(recipe_dest, recipe)
 
-        files = list_files(recipe_dest)
+        # WI2.83: the spotlight big-stat takeover fits its stat to the safe width (every copy).
+        apply_spotlight_stat_fit(recipe_dest, recipe)
+
+        files =list_files(recipe_dest)
         file_hashes = {f: sha256_file(recipe_dest / f) for f in files}
         agg_src = "\n".join(f"{f}={file_hashes[f]}" for f in sorted(files))
         checksum = "sha256:" + hashlib.sha256(agg_src.encode("utf-8")).hexdigest()

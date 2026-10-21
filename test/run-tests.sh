@@ -10124,6 +10124,124 @@ else
 fi
 rm -rf "$wi280_root"
 
+echo "=== Case 59: WI2.83 — the spotlight big-stat takeover fits its stat inside the safe width ==="
+# Observed 2026-10-21 (smoke 23b, p-reels-spotlight on Render 12bd5e0): the tk-stat takeover set
+# "100,000" at a fixed 340 px; it was wider than the 1080 px frame and clipped on both edges. Every
+# p-reels-spotlight tk-stat.html copy now keeps the stat on one line and scales it down to <= 900 px
+# (keeping 340 px when it already fits). The template's own script runs here in node with a fake
+# DOM whose text width grows with font size, so the old fixed-size template fails this case.
+wi283_root="$(mktemp -d)"
+wi283_detail="$(python3 - "$REPO_DIR" "$wi283_root" <<'PY'
+import importlib.util, json, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+SIM = r"""
+const vm = require('vm'), fs = require('fs');
+const [tplPath, stat, emPerChar] = process.argv.slice(2);
+const src = fs.readFileSync(tplPath, 'utf8');
+const scripts = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+if (scripts.length !== 1) { console.log(JSON.stringify({ error: 'inline scripts: ' + scripts.length })); process.exit(0); }
+const code = scripts[0].replace(/\{\{ID\}\}/g, 'tk0').replace(/\{\{DURATION\}\}/g, '3');
+const DESIGN = 340;  // the template's CSS size: what a page shows when no script sets one
+function el(text) {
+  return { textContent: text, innerHTML: text, style: {},
+    get scrollWidth() { const fs = parseFloat(this.style.fontSize) || DESIGN;
+      return Math.round(fs * parseFloat(emPerChar) * this.textContent.length); } };
+}
+const els = { '.js-stat': el(stat), '.js-label': el('VIEWS IN 90 DAYS') };
+const tl = new Proxy({}, { get: () => () => tl });
+let ready = null;
+const ctx = { window: {}, gsap: { timeline: () => tl }, parseFloat, Math,
+  document: { querySelector: s => els[Object.keys(els).find(k => s.endsWith(k))] || el(''),
+              fonts: { ready: { then: f => { ready = f; } } } } };
+vm.runInNewContext(code, ctx);
+if (ready) ready();  // fonts finished loading: the page may refit
+const s = els['.js-stat'];
+console.log(JSON.stringify({ size: parseFloat(s.style.fontSize) || DESIGN, width: s.scrollWidth }));
+"""
+(root / "sim.js").write_text(SIM, encoding="utf-8")
+def sim(tpl, stat, em):
+    out = subprocess.run(["node", str(root / "sim.js"), str(tpl), stat, str(em)],
+                         capture_output=True, text=True, timeout=60)
+    if out.returncode != 0:
+        return {"error": out.stderr.strip()[-200:]}
+    return json.loads(out.stdout)
+try:
+    skills = repo / "skills"
+    tpls = sorted(p for p in skills.rglob("tk-stat.html")
+                  if p.parent.name == "templates" and p.parent.parent.name == "p-reels-spotlight")
+    if len(tpls) != 2:
+        bad.append("expected 2 p-reels-spotlight tk-stat.html copies, found %d" % len(tpls))
+    if len({t.read_bytes() for t in tpls}) > 1:
+        bad.append("the tk-stat.html copies differ")
+    # 0.55 em/char ~ Oswald 700 digits ("100,000" at 340px ~ 1300px, as observed); 0.75 = wide caps.
+    for tpl in tpls:
+        rel = tpl.relative_to(repo)
+        for stat, em in (("100,000", 0.55), ("$1,234,567.8", 0.55), ("WWWWWWWWWWWW", 0.75), ("1", 0.55)):
+            r = sim(tpl, stat, em)
+            if "error" in r:
+                bad.append("%s: %s did not run: %s" % (rel, stat, r["error"])); continue
+            if r["width"] > 900:
+                bad.append("%s: %r is %dpx wide at %spx, past the 900px safe width" % (rel, stat, r["width"], r["size"]))
+        r = sim(tpl, "3X", 0.55)
+        if r.get("size") != 340:
+            bad.append("%s: a stat that fits (3X) did not keep the 340px design size: %r" % (rel, r))
+        body = tpl.read_text(encoding="utf-8")
+        if not re.search(r"\.stat \{[^}]*white-space: nowrap", body):
+            bad.append("%s: .stat is not kept on one line (white-space: nowrap)" % rel)
+    spec = importlib.util.spec_from_file_location("ss283", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    fit = getattr(ss, "apply_spotlight_stat_fit", None)
+    if fit is None:
+        bad.append("sync-skills.py has no apply_spotlight_stat_fit transform")
+    else:
+        # Restore the old fixed-size template in a copy; the transform upgrades it once, then is a no-op,
+        # and its output is byte-identical to the committed bundle.
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        for t in up.rglob("tk-stat.html"):
+            text = t.read_text(encoding="utf-8")
+            for old, new in reversed(ss._SPOTLIGHT_STAT_EDITS):
+                text = text.replace(new, old)
+            t.write_text(text, encoding="utf-8")
+            r = sim(t, "100,000", 0.55)
+            if r.get("width", 0) <= 900:
+                bad.append("sanity: the restored old template was not caught (%r)" % r)
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            n1 = fit(up / rec, rec); n2 = fit(up / rec, rec)
+            if (n1, n2) != (1, 0):
+                bad.append("transform on %s changed (%d, %d) file(s), expected (1, 0)" % (rec, n1, n2))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        t = up / "p-reels-spotlight" / "templates" / "tk-stat.html"
+        text = t.read_text(encoding="utf-8")
+        for old, new in reversed(ss._SPOTLIGHT_STAT_EDITS):
+            text = text.replace(new, old)
+        t.write_text(text.replace("font-size: 340px", "font-size: 300px"), encoding="utf-8")
+        try:
+            fit(up / "p-reels-spotlight", "fixture"); bad.append("transform did not fail on a drifted tk-stat.html")
+        except SystemExit:
+            pass
+        t.unlink()
+        try:
+            fit(up / "p-reels-spotlight", "p-reels-spotlight"); bad.append("transform did not fail on a missing tk-stat.html")
+        except SystemExit:
+            pass
+except Exception as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi283_detail" == "ok" ]]; then
+  pass "WI2.83 spotlight tk-stat fits stats up to 12 characters inside the 900px safe width (every copy)"
+else
+  fail "WI2.83 spotlight tk-stat fits the stat inside the safe width" "$wi283_detail"
+fi
+rm -rf "$wi283_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
