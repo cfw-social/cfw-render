@@ -18,9 +18,45 @@ import { test } from 'node:test';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SUITE_SCRIPT = path.join('test', 'run-tests.sh');
-// The suite takes about 7 minutes; the runner allows 30 for the whole test.
-const SUITE_TIMEOUT_MS = 25 * 60 * 1000;
+// Idle runs finish in about 9 minutes. A loaded Mac can take 30 or more.
+// The cap is 60 minutes unless CFW_SUITE_TIMEOUT_MIN is a positive whole
+// number of minutes. Any other value, including one setTimeout cannot
+// schedule, stays at 60. The failure text below names that cap.
+const DEFAULT_SUITE_TIMEOUT_MIN = 60;
+const SUITE_TIMEOUT_MAX_MS = 2147483647;
+
+function suiteTimeoutMsFrom(raw) {
+  const fallback = DEFAULT_SUITE_TIMEOUT_MIN * 60 * 1000;
+  if (typeof raw !== 'string' || !/^[1-9][0-9]*$/.test(raw)) return fallback;
+  const minutes = Number(raw);
+  const ms = minutes * 60 * 1000;
+  if (!Number.isSafeInteger(ms) || ms <= 0 || ms > SUITE_TIMEOUT_MAX_MS) return fallback;
+  return ms;
+}
+
+const SUITE_TIMEOUT_MS = suiteTimeoutMsFrom(process.env.CFW_SUITE_TIMEOUT_MIN);
 const KILL_GRACE_MS = 10 * 1000;
+
+const timeoutChecks = [
+  [undefined, 60],
+  ['', 60],
+  ['0', 60],
+  ['-4', 60],
+  ['1.5', 60],
+  ['60min', 60],
+  [' 60', 60],
+  ['08', 60],
+  ['999999999', 60],
+  ['1', 1],
+  ['60', 60],
+  ['90', 90],
+];
+for (const [raw, minutes] of timeoutChecks) {
+  const got = suiteTimeoutMsFrom(raw);
+  if (got !== minutes * 60 * 1000) {
+    throw new Error(`CFW_SUITE_TIMEOUT_MIN ${JSON.stringify(raw)} resolved to ${got} ms, want ${minutes} minutes`);
+  }
+}
 
 // "  PASS  name" and "  FAIL  name — why" (test/run-tests.sh pass()/fail(),
 // plus the same shape printed by its python blocks). The final
@@ -51,7 +87,7 @@ function uniqueName(seen, name) {
   return n === 1 ? name : `${name} (${n})`;
 }
 
-test(`bash ${SUITE_SCRIPT}`, async (t) => {
+test(`bash ${SUITE_SCRIPT}`, { timeout: SUITE_TIMEOUT_MS + KILL_GRACE_MS + 60 * 1000 }, async (t) => {
   const child = spawn('bash', [SUITE_SCRIPT], {
     cwd: REPO_ROOT,
     env: process.env,

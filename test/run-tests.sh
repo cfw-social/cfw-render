@@ -3868,7 +3868,8 @@ c21_worker() {
     export CFW_RENDER_CAPACITY_LOAD=0
     export CFW_RENDER_SECURITY_CMD=/usr/bin/false   # [M3-08b] no Keychain keys unless a case adds a stub
     for kv in "$@"; do export "${kv?}"; done
-    "$REPO_DIR/bin/cfw-render.sh" "$mode" > "$dir/worker.out" 2>&1
+    # Test seam: one case points this at a scratch copy of the worker.
+    "${CFW_RENDER_WORKER_BIN:-$REPO_DIR/bin/cfw-render.sh}" "$mode" > "$dir/worker.out" 2>&1
   )
 }
 # c21_claims <dir> — "running/max" per claim call, space-separated, in order
@@ -3951,6 +3952,44 @@ rm -rf "$c23"
 # 23b: --loop with the floor breached from the 2nd round on: round 1 claims
 # normally (teaches the worker the server honours capacity), later rounds
 # make only the full ask (2/2) and o2 stays queued.
+#
+# c23b_wait_past_round1 <dir>
+# Round 1's claims are "0/2 1/2 2/2". The next round starts when that work
+# winds down. A fixed sleep 3 stopped the worker first on a busy Mac, so the
+# log never showed "normal claims skipped, urgent only" and no later ask was
+# recorded. Poll every 0.5s for up to 60s. The skip line is written just
+# before the full ask, so the line alone is not a reason to stop. Stop once
+# that later ask is on disk and the line is too, or once a later ask is not
+# a full one (the strict check below then fails). Time running out still
+# falls through to that same check.
+c23b_wait_past_round1() {
+  local dir="$1" deadline now tail uniq
+  deadline=$((SECONDS + 60))
+  while (( SECONDS < deadline )); do
+    now="$(c21_claims "$dir")"
+    if [[ "$now" == 0/2\ 1/2\ 2/2\ * ]]; then
+      tail="$(sed -E 's/^0\/2 1\/2 2\/2 ?//' <<< "$now")"
+      uniq="$(tr ' ' '\n' <<< "$tail" | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+      if [[ "$uniq" == "2/2" ]] && grep -q "normal claims skipped, urgent only" "$dir/cr-state/cfw-render.log" 2>/dev/null; then
+        return 0
+      fi
+      if [[ -n "$uniq" && "$uniq" != "2/2" ]]; then
+        return 0
+      fi
+    elif grep -q "normal claims skipped, urgent only" "$dir/cr-state/cfw-render.log" 2>/dev/null; then
+      : # floor path started; the ask that follows the line is not in the log yet
+    fi
+    sleep 0.5
+  done
+}
+# c23b_floor_held <dir> — strict: round 1, then only full asks, and the skip line.
+c23b_floor_held() {
+  local dir="$1" claims tail uniq
+  claims="$(c21_claims "$dir")"
+  tail="$(sed -E 's/^0\/2 1\/2 2\/2 ?//' <<< "$claims")"
+  uniq="$(tr ' ' '\n' <<< "$tail" | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+  [[ "$claims" == 0/2\ 1/2\ 2/2* && "$uniq" == "2/2" ]] && grep -q "normal claims skipped, urgent only" "$dir/cr-state/cfw-render.log"
+}
 c23b="$(mktemp -d)"
 c21_setup "$c23b" $((MOCK_PORT_BASE + 923)) harness-3step '[{"id":"o1"},{"id":"o2"}]' CFW_MOCK_ORDERS_ARRAY=1 CFW_MOCK_MAX_PER_CLAIM=1
 c23b_floor="$c23b/floor"; : > "$c23b_floor"
@@ -3958,19 +3997,67 @@ c21_worker "$c23b" $((MOCK_PORT_BASE + 923)) --loop CFW_RENDER_CONCURRENCY=2 CFW
 c23b_w=$!
 for _ in $(seq 1 100); do grep -q '"tool": "claim_render_order"' "$c23b/mockstate/calls.jsonl" 2>/dev/null && break; sleep 0.1; done
 printf '1000' > "$c23b_floor"
-sleep 3
+c23b_wait_past_round1 "$c23b"
 stop_test_tree "$c23b_w" || { fail "loop cleanup" "could not stop owned tree"; exit 1; }
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 c23b_claims="$(c21_claims "$c23b")"
 # Round 1 fills the computer one order per reply (0/2, 1/2, then the full
 # ask 2/2); once the floor is breached every later ask is the full one.
-c23b_tail="$(sed -E 's/^0\/2 1\/2 2\/2 ?//' <<< "$c23b_claims")"
-if [[ "$c23b_claims" == 0/2\ 1/2\ 2/2* && "$(tr ' ' '\n' <<< "$c23b_tail" | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//')" == "2/2" ]] && grep -q "normal claims skipped, urgent only" "$c23b/cr-state/cfw-render.log"; then
+if c23b_floor_held "$c23b"; then
   pass "capacity: floor breached after round 1 → only full asks (2/2) afterwards; logged"
 else
   fail "capacity: floor (loop)" "claims='$c23b_claims' (want '0/2 1/2 2/2' then only '2/2'); log: $(grep capacity "$c23b/cr-state/cfw-render.log" | tail -3)"
 fi
 rm -rf "$c23b"
+# Scratch copy: cr_capacity_ok always says the host is free, so normal claims
+# continue after floor=1000. The same check must still fail. The broken copy
+# lives only in this temp dir.
+c23s_bin="$(mktemp -d)"
+mkdir -p "$c23s_bin/bin"
+cp -R "$REPO_DIR/bin/." "$c23s_bin/bin/"
+if ! python3 - "$c23s_bin/bin/cfw-render-lib.sh" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+start = text.find("cr_capacity_ok() {")
+end = text.find("\n}\n", start)
+if start < 0 or end < 0:
+    raise SystemExit(1)
+broken = (
+    "cr_capacity_ok() {\n"
+    "  # Scratch break: ignore the free-memory floor and the load ceiling.\n"
+    "  return 0\n"
+    "}"
+)
+path.write_text(text[:start] + broken + text[end + 2:])
+needle = "cr_capacity_ok() {\n  # Scratch break:"
+if needle not in path.read_text():
+    raise SystemExit(1)
+PY
+then
+  fail "capacity: floor (scratch)" "could not break cr_capacity_ok on the scratch copy"
+  rm -rf "$c23s_bin"
+else
+  c23s="$(mktemp -d)"
+  c21_setup "$c23s" $((MOCK_PORT_BASE + 1100)) harness-3step '[{"id":"o1"},{"id":"o2"}]' CFW_MOCK_ORDERS_ARRAY=1 CFW_MOCK_MAX_PER_CLAIM=1
+  c23s_floor="$c23s/floor"; : > "$c23s_floor"
+  c21_worker "$c23s" $((MOCK_PORT_BASE + 1100)) --loop CFW_RENDER_CONCURRENCY=2 CFW_RENDER_CAPACITY_UNIT_SECS=0.05 CFW_RENDER_CAPACITY_FREE_MB_FILE="$c23s_floor" CFW_RENDER_WORKER_BIN="$c23s_bin/bin/cfw-render.sh" &
+  c23s_w=$!
+  for _ in $(seq 1 100); do grep -q '"tool": "claim_render_order"' "$c23s/mockstate/calls.jsonl" 2>/dev/null && break; sleep 0.1; done
+  printf '1000' > "$c23s_floor"
+  c23b_wait_past_round1 "$c23s"
+  stop_test_tree "$c23s_w" || { fail "loop cleanup" "could not stop owned tree"; exit 1; }
+  kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+  c23s_claims="$(c21_claims "$c23s")"
+  c23s_tail="$(sed -E 's/^0\/2 1\/2 2\/2 ?//' <<< "$c23s_claims")"
+  c23s_uniq="$(tr ' ' '\n' <<< "$c23s_tail" | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+  if ! c23b_floor_held "$c23s" && [[ -n "$c23s_uniq" && "$c23s_uniq" != "2/2" ]] && ! grep -q "normal claims skipped, urgent only" "$c23s/cr-state/cfw-render.log"; then
+    pass "capacity: scratch worker ignores the floor and keeps normal claims → the floor check still fails (claims='$c23s_claims')"
+  else
+    fail "capacity: floor (scratch)" "expected continued normal claims to fail the check; claims='$c23s_claims' tail='$c23s_uniq'"
+  fi
+  rm -rf "$c23s" "$c23s_bin"
+fi
 
 echo "=== Case 25: stop_after_step → step finishes, uploads, attempt_released revoked, folder gone (M2-04, D76) ==="
 c24="$(mktemp -d)"
@@ -5362,11 +5449,16 @@ echo '{"order":["zai","codex","claude-code"]}' > "$m8c/cr-state/engines.json"
 c21_worker "$m8c" $((MOCK_PORT_BASE + 991)) --once CFW_RENDER_SECURITY_CMD="$m8c/security" FAKE_ENGINE_LIMIT_ENGINE=zai FAKE_ENGINE_LIMIT_STEP=a
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 m8c_started="$(m3b_started "$m8c" o1)"
+# Window length is CR_ENGINE_LIMIT_WINDOW_MIN (15) from the write, not the
+# minutes still left. A loaded Mac can spend minutes in the rest of --once
+# after zai is limited; until-minus-now then reads 10 and the 14/15 check flakes.
 m8c_min="$(python3 -c '
-import json, sys, datetime
-u = json.load(open(sys.argv[1]))["zai"]["until"]
+import json, os, sys, datetime
+p = sys.argv[1]
+u = json.load(open(p))["zai"]["until"]
 t = datetime.datetime.fromisoformat(u.replace("Z", "+00:00"))
-print(round((t - datetime.datetime.now(datetime.timezone.utc)).total_seconds() / 60))' "$m8c/cr-state/engine-limits.json" 2>/dev/null)"
+wrote = datetime.datetime.fromtimestamp(os.stat(p).st_mtime, datetime.timezone.utc)
+print(round((t - wrote).total_seconds() / 60))' "$m8c/cr-state/engine-limits.json" 2>/dev/null)"
 if [[ "$m8c_started" == "a:zai a:codex "* && "$m8c_min" =~ ^1[45]$ ]]; then
   pass "apikey 429: zai limited ${m8c_min} min, failover a:zai → a:codex"
 else
@@ -9383,6 +9475,19 @@ try:
     guard = (repo / "skills" / "p-reels-spotlight" / "steps" / "03-plan-edit.md").read_text(encoding="utf-8")
     guard = guard.split("python3 - saves/edit_plan.json \"$DUR\" <<'PY'\n", 1)[1].split("\nPY\n", 1)[0] + "\n"
     (wd / "guard.py").write_text(guard, encoding="utf-8")
+    # WI2.95: this guard shells out to work/takeover_brand.py --check. The
+    # regrouped plan has no takeovers; stage the helper, the transcript and an
+    # order brand so a missing file is not reported as a foreign brand.
+    tb_open = "cat > work/takeover_brand.py <<'PY'\n"
+    step_md = (repo / "skills" / "p-reels-spotlight" / "steps" / "03-plan-edit.md").read_text(encoding="utf-8")
+    if tb_open not in step_md:
+        bad.append("spotlight plan step does not write work/takeover_brand.py")
+    else:
+        (wd / "work" / "takeover_brand.py").write_text(
+            step_md.split(tb_open, 1)[1].split("\nPY\n", 1)[0] + "\n", encoding="utf-8")
+        words = [{"text": w["w"], "start": w["s"], "end": w["e"]} for g in orig for w in g["words"]]
+        (wd / "work" / "words.json").write_text(json.dumps(words), encoding="utf-8")
+        (wd / "brief.json").write_text(json.dumps({"brand": {"name": "Test Brand"}}), encoding="utf-8")
     g0 = subprocess.run([sys.executable, "-I", "guard.py", "saves/edit_plan.json", str(fixture["duration"])],
                         cwd=wd, capture_output=True, text=True)
     if g0.returncode == 0:
