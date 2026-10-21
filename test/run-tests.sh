@@ -10856,6 +10856,154 @@ else
 fi
 rm -rf "$wi287_root"
 
+echo "=== Case 64: WI2.93 — the spotlight end card renders through hyperframes from a project dir, or the step fails ==="
+# Observed 2026-10-21 (smoke 25, p-reels-spotlight, Render 69bc5ce): the end card (42.6-45.6 s) was
+# completely still. Step 06 ran `npx hyperframes@0.7.5 render work/cta-card.json`; hyperframes 0.7.5
+# `render` takes a project DIRECTORY holding index.html, so it stopped with "Not a directory" and the
+# step's ffmpeg drawtext fallback made a still card ("CTA fallback rendered", assemble.log). Every
+# p-reels-spotlight step 06 copy now has cta-card.py write work/cta-card/ (index.html + gsap.min.js,
+# an animated composition), renders that directory and has no still fallback: a failed render exits
+# non-zero. The section-4 bash block of each copy runs under bash with a stub ffmpeg and a stub npx
+# that refuses a non-directory exactly as hyperframes 0.7.5 does; the SKILL.md Step 8 copies,
+# cta-card.py copies and the sync transform (idempotent, fail-fast) are checked too.
+wi293_root="$(mktemp -d)"
+wi293_detail="$(python3 - "$REPO_DIR" "$wi293_root" <<'PY'
+import importlib.util, json, os, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+FF = "#!/bin/sh\nprintf 'ffmpeg %s\\n' \"$*\" >> \"$WI293_LOG\"\nfor a; do last=$a; done\ncase \"$last\" in *.mp4) : > \"$last\";; esac\nexit 0\n"
+# npx hyperframes@0.7.5 render <dir> ...: like resolveProjectOrThrow() in hyperframes 0.7.5.
+NPX = ("#!/bin/sh\nprintf 'npx %s\\n' \"$*\" >> \"$WI293_LOG\"\n[ \"$2\" = render ] || exit 0\n"
+       "if [ ! -d \"$3\" ]; then echo \"Not a directory: $3\" >&2; exit 1; fi\n"
+       "if [ ! -f \"$3/index.html\" ]; then echo \"No composition found in $3\" >&2; exit 1; fi\n"
+       "if [ -n \"${WI293_FAIL:-}\" ]; then echo 'Composition has zero duration (stub)' >&2; exit 1; fi\n"
+       "for a; do last=$a; done\n: > \"$last\"\nexit 0\n")
+bin_dir = root / "bin"; bin_dir.mkdir()
+for tool, body in (("ffmpeg", FF), ("npx", NPX)):
+    (bin_dir / tool).write_text(body); (bin_dir / tool).chmod(0o755)
+def block(step):
+    sec = step.read_text(encoding="utf-8").split("### 4. CTA end card", 1)[1].split("### 5.", 1)[0]
+    m = re.search(r"```bash\n(.*?)```", sec, re.S)
+    return m.group(1) if m else None
+def run(step, case, fail_render=False):
+    work = root / case; shutil.rmtree(work, ignore_errors=True); (work / "work").mkdir(parents=True)
+    (work / "work" / "words.json").write_text(json.dumps([{"text": "you.", "start": 41.3, "end": 41.6}]))
+    (work / "work" / "plan.json").write_text(json.dumps({"brand": {"bg": "#0F172A", "accent": "#F97316", "fg": "#F1F5F9"},
+        "caption_groups": [{"start": 41.3, "end": 41.6, "words": [{"w": "you.", "s": 41.3, "e": 41.6}]}]}))
+    (work / "work" / "polished.mp4").write_bytes(b"x" * 10)
+    (work / "brief.json").write_text(json.dumps({"brand": {"name": "Test Brand", "handle": "@test", "cta": "Follow Test Brand"}}))
+    code = block(step)
+    if code is None:
+        return {"error": "no bash block in section 4"}
+    (work / "s4.sh").write_text("set -u\nCTA_CARD=on; CTA_DURATION=3.0; BED_DUR=45.0\nSKILL_DIR=%s\n%s"
+                                % (repo / "skills" / "p-reels-spotlight", code))
+    log = work / "calls.log"
+    env = dict(os.environ, PATH="%s:%s" % (bin_dir, os.environ["PATH"]), WI293_LOG=str(log))
+    env.pop("WI293_FAIL", None)
+    if fail_render:
+        env["WI293_FAIL"] = "1"
+    p = subprocess.run(["bash", "s4.sh"], cwd=work, env=env, capture_output=True, text=True, timeout=60)
+    calls = log.read_text().splitlines() if log.exists() else []
+    renders = [c.split()[3] for c in calls if c.startswith("npx ") and len(c.split()) > 3 and c.split()[2] == "render"]
+    return {"rc": p.returncode, "out": (p.stdout + p.stderr)[-300:], "work": work, "renders": renders,
+            "still": [c for c in calls if c.startswith("ffmpeg ") and ("color=c=" in c or "drawtext" in c)],
+            "overlay": [c for c in calls if "overlay=enable" in c]}
+try:
+    skills = repo / "skills"
+    steps = sorted(p for p in skills.rglob("06-assemble.md")
+                   if p.parent.name == "steps" and p.parent.parent.name.startswith("p-reels-spotlight"))
+    if len(steps) != 3:
+        bad.append("expected 3 p-reels-spotlight steps/06-assemble.md copies, found %d" % len(steps))
+    if len({s.read_bytes() for s in steps}) > 1:
+        bad.append("the 06-assemble.md copies differ")
+    for step in steps:
+        rel = step.relative_to(repo)
+        code = block(step) or ""
+        if "cta-card.json --output" in code or "drawtext=" in code:
+            bad.append("%s: section 4 still renders the .json spec or keeps a drawtext still card" % rel)
+        r = run(step, "ok")
+        if "error" in r:
+            bad.append("%s: %s" % (rel, r["error"])); continue
+        if r["rc"] != 0 or not r["renders"] or r["still"] or not r["overlay"]:
+            bad.append("%s: hyperframes end-card render did not go through (rc %s, renders %r, still card %r, overlay %d): %s"
+                       % (rel, r["rc"], r["renders"], r["still"][:1], len(r["overlay"]), r["out"]))
+        else:
+            proj = r["work"] / r["renders"][0]
+            index = (proj / "index.html").read_text(encoding="utf-8") if (proj / "index.html").is_file() else ""
+            m = re.search(r'data-composition-id="cta-card"[^>]*data-duration="([0-9.]+)"', index, re.S)
+            if not m or abs(float(m.group(1)) - 3.0) > 0.01:
+                bad.append("%s: work/cta-card/index.html has no 3.0 s cta-card composition" % rel)
+            if '__timelines["cta-card"]' not in index or "tl.fromTo(\"#cta-card .card\"" not in index \
+                    or 'class="word"' not in index or "Test Brand".upper() not in index:
+                bad.append("%s: the end-card composition has no timeline, entry pop, words or kicker" % rel)
+            if not (proj / "gsap.min.js").is_file() or "cdn" in index.lower():
+                bad.append("%s: gsap.min.js not vendored into the end-card project" % rel)
+        r = run(step, "fail", fail_render=True)
+        if r.get("rc") == 0 or r.get("still") or r.get("overlay") or "end card" not in r.get("out", ""):
+            bad.append("%s: a failed hyperframes end-card render did not stop the step loudly (rc %s, still card %r): %s"
+                       % (rel, r.get("rc"), (r.get("still") or [])[:1], r.get("out")))
+    ctas = [skills / "p-reels-spotlight" / "scripts" / "cta-card.py",
+            skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "scripts" / "cta-card.py"]
+    if len({p.read_bytes() for p in ctas}) != 1:
+        bad.append("the cta-card.py copies differ")
+    for doc in (skills / "p-reels-spotlight" / "SKILL.md",
+                skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "SKILL.md"):
+        t = doc.read_text(encoding="utf-8")
+        s8 = t.split("### Step 8", 1)[1].split("\n### ", 1)[0] if "### Step 8" in t else ""
+        if 'render "$W/cta-card.json"' in s8 or "drawtext=" in s8 or 'render "$W/cta-card" ' not in s8:
+            bad.append("%s: Step 8 still renders the .json spec or keeps the drawtext still card" % doc.relative_to(repo))
+    spec = importlib.util.spec_from_file_location("ss293", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    fn, files = getattr(ss, "apply_spotlight_end_card_render", None), getattr(ss, "_SPOTLIGHT_CTA_HF_FILES", None)
+    if fn is None or files is None:
+        bad.append("sync-skills.py has no apply_spotlight_end_card_render (WI2.93)")
+    else:
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        def revert(base):
+            for rel, full_only, edits in files:
+                if full_only and base.name != "p-reels-spotlight":
+                    continue
+                t = (base / rel).read_text(encoding="utf-8")
+                for old, new in reversed(edits):
+                    t = t.replace(new, old)
+                (base / rel).write_text(t, encoding="utf-8")
+        for base in (up / "p-reels-spotlight", up / "p-reels-spotlight-heygen",
+                     up / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight"):
+            revert(base)
+        r = run(up / "p-reels-spotlight" / "steps" / "06-assemble.md", "restored")
+        if r.get("rc") == 0 and not r.get("still"):
+            bad.append("sanity: the restored 69bc5ce step was not caught (%r)" % {k: r.get(k) for k in ("rc", "renders")})
+        for rec, want in (("p-reels-spotlight", (3, 0)), ("p-reels-spotlight-heygen", (4, 0))):
+            got = (fn(up / rec, rec), fn(up / rec, rec))
+            if got != want:
+                bad.append("transform on %s changed %r file(s), expected %r" % (rec, got, want))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        revert(up / "p-reels-spotlight")
+        t = up / "p-reels-spotlight" / "steps" / "06-assemble.md"
+        t.write_text(t.read_text(encoding="utf-8").replace("work/cta-card.json --output work/cta-card.mp4",
+                                                           "work/cta-card.json -o work/cta-card.mp4"), encoding="utf-8")
+        try:
+            fn(up / "p-reels-spotlight", "fixture")
+            bad.append("transform did not fail on a drifted step 06 anchor")
+        except SystemExit:
+            pass
+except (Exception, SystemExit) as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad[:12]))
+PY
+)"
+if [[ "$wi293_detail" == "ok" ]]; then
+  pass "WI2.93 spotlight end card renders through hyperframes from work/cta-card/ (index.html + gsap), and a failed render fails the step (every copy)"
+else
+  fail "WI2.93 spotlight end card renders through hyperframes or fails loudly" "$wi293_detail"
+fi
+rm -rf "$wi293_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then

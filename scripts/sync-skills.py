@@ -105,6 +105,11 @@ SKILL.md Step 5) slot the c-typing-ui scene as a real sub-composition: <template
 id = the slot id (tk<i>), ts-* ids/classes and its script scoped to the slot. Stripped, HyperFrames
 never got ready and every takeover fell back to a still card with no entry motion.
 
+WI2.93 apply_spotlight_end_card_render() makes step 06 of every p-reels-spotlight copy (and
+SKILL.md Step 8 and scripts/cta-card.py) render the end card with hyperframes from a project directory
+(cta-card.py writes index.html + gsap.min.js), never the .json spec ("Not a directory"); there is no
+still ffmpeg fallback card, so a failed render fails the step.
+
 Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
 and before list_files/hashing, same ordering guarantee:
   strip_brand_override_host_paths() nulls/drops the two host-path fields
@@ -2832,6 +2837,258 @@ def apply_spotlight_typing_takeover(directory: Path, recipe: str) -> int:
     return changed
 
 
+# WI2.93: spotlight end card. Step 06 (and SKILL.md Step 8) ran `hyperframes render work/cta-card.json`,
+# but hyperframes 0.7.5 `render` takes a project DIRECTORY with an index.html; it stopped with "Not a
+# directory" and the step's ffmpeg drawtext fallback put in a completely still card (smoke 25, Render
+# 69bc5ce, 2026-10-21: the end card 42.6-45.6 s never moved). scripts/cta-card.py now also writes the
+# card as a HyperFrames project (index.html + vendored gsap.min.js; scale-pop entry, staggered words,
+# arrow draw and bob, drifting glow), step 06 renders that directory, and the still fallback is gone:
+# a failed render exits non-zero with the reason.
+_SPOTLIGHT_CTA_HF_STEP_RENDER_OLD = r"""    python3 "$SKILL_DIR/scripts/cta-card.py" work/plan.json work/cta-card.json   # omits the handle layer when empty
+  npx hyperframes@0.7.5 render work/cta-card.json --output work/cta-card.mp4 || {
+    BG_HEX=$(python3 -c "import json; print(json.load(open('work/plan.json'))['brand']['bg'].lstrip('#'))")
+    ACCENT_HEX=$(python3 -c "import json; print(json.load(open('work/plan.json'))['brand']['accent'].lstrip('#'))")
+    FG_HEX=$(python3 -c "import json; print(json.load(open('work/plan.json'))['brand']['fg'].lstrip('#'))")
+    CTA_VF="drawtext=text='${CTA_TEXT}':fontcolor=#${FG_HEX}:fontsize=64:x=(w-text_w)/2:y=760:font=Oswald"
+    [ -n "$CTA_HANDLE" ] && CTA_VF="${CTA_VF},drawtext=text='${CTA_HANDLE}':fontcolor=#${ACCENT_HEX}:fontsize=48:x=(w-text_w)/2:y=900:font=Inter"
+    ffmpeg -y -f lavfi -i "color=c=#${BG_HEX}:s=1080x1920:r=30:d=${CTA_DURATION}" -vf "$CTA_VF" \
+      -c:v libx264 -pix_fmt yuv420p -r 30 work/cta-card.mp4
+  }
+"""
+SPOTLIGHT_CTA_HF_STEP_RENDER = r"""    python3 "$SKILL_DIR/scripts/cta-card.py" work/plan.json work/cta-card.json \
+      work/cta-card "$SKILL_DIR/.hub/f-gsap/vendor/gsap.min.js" || exit 1   # omits the handle layer when empty
+  # WI2.93: hyperframes 0.7.5 renders a project DIRECTORY (work/cta-card/index.html), never the .json
+  # spec ("Not a directory"). The card must animate, so there is no still FFmpeg card: a failed
+  # render stops the step with the reason.
+  npx hyperframes@0.7.5 render work/cta-card --fps 30 --quality high --output work/cta-card.mp4 && [ -f work/cta-card.mp4 ] \
+    || { echo "end card: hyperframes render of work/cta-card failed; no still fallback card (WI2.93)" >&2; exit 1; }
+"""
+_SPOTLIGHT_CTA_HF_STEP_FAIL_OLD = r"""SFX file, a failed premium pass or a card render that fails even on the drawtext fallback is a
+failure: exit non-zero with one plain line.
+"""
+SPOTLIGHT_CTA_HF_STEP_FAIL = r"""SFX file, a failed premium pass or a failed HyperFrames end-card render is a failure: exit
+non-zero with one plain line. There is no still FFmpeg end card to fall back to (WI2.93).
+"""
+_SPOTLIGHT_CTA_HF_SKILL_RENDER_OLD = r"""  python3 "$SKILL_DIR/scripts/cta-card.py" "$W/plan.json" "$W/cta-card.json"
+
+hyperframes render "$W/cta-card.json" "$W/cta-card.mp4" 2>/dev/null || {
+  # Fallback: ffmpeg drawtext CTA card.
+  # BUG FIX (bake-off #2 2026-06-12): drawtext fontsize=80 clips text at the left edge
+  # on a 1080px canvas. Fix: fontsize=64 with x=(w-text_w)/2 centering.
+  # NOTE: a proper HTML CTA composition is the long-term fix; this drawtext path is
+  # the emergency fallback only (used when hyperframes render fails after doctor check).
+  CTA_VF="drawtext=text='${CTA_TEXT}':fontcolor=#${FG_HEX}:fontsize=64:x=(w-text_w)/2:y=760:font=Oswald:fontweight=800"
+  if [[ -n "${CTA_HANDLE:-}" ]]; then
+    CTA_VF="${CTA_VF},drawtext=text='${CTA_HANDLE}':fontcolor=#${ACCENT_HEX}:fontsize=48:x=(w-text_w)/2:y=900:font=Inter"
+  fi
+  ffmpeg -y -f lavfi \
+    -i "color=c=#${BG_HEX}:s=1080x1920:r=30:d=${CTA_DURATION}" \
+    -vf "$CTA_VF" \
+    -c:v libx264 -pix_fmt yuv420p -r 30 \
+    "$W/cta-card.mp4"
+}
+"""
+SPOTLIGHT_CTA_HF_SKILL_RENDER = r"""  python3 "$SKILL_DIR/scripts/cta-card.py" "$W/plan.json" "$W/cta-card.json" \
+    "$W/cta-card" "$SKILL_DIR/.hub/f-gsap/vendor/gsap.min.js" || exit 1
+
+# WI2.93: hyperframes 0.7.5 renders a project DIRECTORY ($W/cta-card/index.html, written by
+# cta-card.py), never the .json spec ("Not a directory"). The card must animate, so there is no
+# still ffmpeg drawtext card: a failed render stops the step with the reason.
+npx hyperframes@0.7.5 render "$W/cta-card" --fps 30 --quality high --output "$W/cta-card.mp4" && [ -f "$W/cta-card.mp4" ] \
+  || { echo "end card: hyperframes render of $W/cta-card failed; no still fallback card (WI2.93)" >&2; exit 1; }
+"""
+_SPOTLIGHT_CTA_HF_SKILL_NA_OLD = r"""- **(CTA fallback N/A here.)** The Step 8 CTA fallback is an ffmpeg `drawtext` card, not a HyperFrames
+  composition — so the "proper HyperFrames standalone" CTA patch does not apply to this core.
+"""
+SPOTLIGHT_CTA_HF_SKILL_NA = r"""- **(CTA end card is a HyperFrames project, WI2.93.)** Step 8 renders `$W/cta-card/` (index.html +
+  gsap.min.js written by `scripts/cta-card.py`) with `hyperframes render <dir>`; there is no ffmpeg
+  `drawtext` fallback card, so a failed render fails the step.
+"""
+_SPOTLIGHT_CTA_HF_CTA_USAGE_OLD = r"""  python3 cta-card.py <plan.json> <out cta-card.json>
+"""
+SPOTLIGHT_CTA_HF_CTA_USAGE = r"""  python3 cta-card.py <plan.json> <out cta-card.json> [<project dir> <gsap.min.js>]
+  With a project dir, also writes <dir>/index.html + gsap.min.js: an animated HyperFrames
+  composition of the card that `hyperframes render <dir>` renders (WI2.93).
+"""
+_SPOTLIGHT_CTA_HF_CTA_ARGS_OLD = r"""    if len(argv) != 3:
+        print("usage: cta-card.py <plan.json> <out cta-card.json>", file=sys.stderr)
+        return 2
+    plan_path, out_path = argv[1], argv[2]
+"""
+SPOTLIGHT_CTA_HF_CTA_ARGS = r"""    if len(argv) not in (3, 5):
+        print("usage: cta-card.py <plan.json> <out cta-card.json> [<project dir> <gsap.min.js>]", file=sys.stderr)
+        return 2
+    plan_path, out_path = argv[1], argv[2]
+"""
+_SPOTLIGHT_CTA_HF_CTA_TAIL_OLD = r"""    for layer in layers:
+        print(f"[spotlight] cta-card layer: {layer['type']}")
+    return 0
+"""
+SPOTLIGHT_CTA_HF_CTA_TAIL = r"""    if len(argv) == 5:
+        write_project(card, argv[3], argv[4])
+        print(f"[spotlight] cta-card project: {argv[3]}/index.html ({card['duration']:.3f}s)")
+    for layer in layers:
+        print(f"[spotlight] cta-card layer: {layer['type']}")
+    return 0
+"""
+_SPOTLIGHT_CTA_HF_CTA_FN_OLD = r"""
+
+def main(argv: list[str]) -> int:
+"""
+SPOTLIGHT_CTA_HF_CTA_FN = r"""
+
+# WI2.93: hyperframes 0.7.5 `render` takes a project DIRECTORY holding index.html; handed
+# cta-card.json it stops with "Not a directory" and the step used to fall back to a still FFmpeg
+# card. The spec above is now also written out as a real HyperFrames project: one full-frame
+# composition whose GSAP timeline plays the scale-pop entry, staggers the kicker, hero words and
+# handle in, draws the arrow at appearAt and keeps the glow and arrow moving to the last frame.
+def write_project(card: dict, project_dir: str, gsap_src: str) -> None:
+    import html
+    import shutil
+    if not os.path.isfile(gsap_src):
+        raise SystemExit(f"cta-card.py: vendored gsap.min.js not found at {gsap_src}; never fall back to a CDN")
+    os.makedirs(project_dir, exist_ok=True)
+    shutil.copy(gsap_src, os.path.join(project_dir, "gsap.min.js"))
+    dur = round(float(card["duration"]), 3)
+    w, h = card["size"]
+    entry = card.get("entry") or {}
+    pop_from, pop_dur = float(entry.get("from", 0.92)), float(entry.get("duration", 0.35))
+    parts, css = [], []
+    for n, layer in enumerate(card["layers"]):
+        kind, cls = layer["type"], f"l{n}"
+        if kind == "arrow":
+            (x0, y0), (x1, y1) = layer["from"], layer["to"]
+            css.append(f"#cta-card .{cls}{{left:{x0 - 40}px;top:{y0}px;width:80px;height:{y1 - y0 + 40}px;}}"
+                       f"#cta-card .{cls} .shaft{{left:36px;top:0;width:8px;height:{y1 - y0}px;background:{layer['color']};"
+                       f"border-radius:4px;transform-origin:50% 0;}}"
+                       f"#cta-card .{cls} .head{{left:12px;top:{y1 - y0 - 24}px;width:56px;height:56px;"
+                       f"border-right:8px solid {layer['color']};border-bottom:8px solid {layer['color']};"
+                       f"border-radius:4px;transform:rotate(45deg);}}")
+            parts.append(f'<div class="layer arrow {cls}"><div class="shaft"></div><div class="head"></div></div>')
+            continue
+        size = int(layer.get("fontSize", 52 if kind == "kicker" else 80))
+        font = "'Oswald', sans-serif" if kind in ("hero", "kicker") else "'Inter', sans-serif"
+        weight = int(layer.get("weight", 700))
+        css.append(f"#cta-card .{cls}{{top:{int(layer['y'])}px;color:{layer['color']};font-family:{font};font-size:{size}px;"
+                   f"font-weight:{weight};opacity:{float(layer.get('opacity', 1.0))};"
+                   + ("letter-spacing:0.18em;" if kind == "kicker" else "")
+                   + ("text-transform:uppercase;line-height:1.0;" if kind == "hero" else "") + "}")
+        if kind == "hero":
+            words = " ".join(f'<span class="word">{html.escape(t)}</span>' for t in layer["text"].split())
+            parts.append(f'<div class="layer hero {cls}">{words}</div>')
+        else:
+            parts.append(f'<div class="layer {kind} {cls}">{html.escape(layer["text"])}</div>')
+    accent = next((l["color"] for l in card["layers"] if l["type"] == "arrow"), "#ffffff")
+    arrow_at = next((float(l.get("appearAt", 0.5)) for l in card["layers"] if l["type"] == "arrow"), 0.5)
+    bobs = max(0, int((dur - arrow_at - 0.6) / 0.5) * 2 - 1)
+    css_text, body_text = "".join(css), "\n        ".join(parts)
+    doc = f'''<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width={w}, height={h}" />
+    <script src="gsap.min.js"></script>
+    <style>
+      * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+      html, body {{ width: {w}px; height: {h}px; overflow: hidden; background: {card['background']}; }}
+      #cta-card {{ position: relative; width: {w}px; height: {h}px; overflow: hidden; background: {card['background']}; }}
+      #cta-card .glow {{ position: absolute; left: -260px; top: 260px; width: 1100px; height: 1100px;
+        background: radial-gradient(circle, {accent}33 0%, transparent 62%); }}
+      #cta-card .card {{ position: absolute; inset: 0; transform-origin: 50% 45%; }}
+      #cta-card .layer {{ position: absolute; left: 60px; right: 60px; text-align: center; }}
+      #cta-card .hero {{ display: flex; flex-wrap: wrap; justify-content: center; gap: 0 0.28em; }}
+      #cta-card .word {{ display: inline-block; }}
+      #cta-card .arrow, #cta-card .arrow div {{ position: absolute; right: auto; }}
+      {css_text}
+    </style>
+  </head>
+  <body>
+    <div id="cta-card" data-composition-id="cta-card" data-start="0" data-duration="{dur}"
+         data-width="{w}" data-height="{h}">
+      <div class="glow"></div>
+      <div class="card">
+        {body_text}
+      </div>
+    </div>
+    <script>
+      window.__timelines = window.__timelines || {{}};
+      (function () {{
+        var DUR = {dur};
+        var tl = gsap.timeline({{ paused: true }});
+        tl.fromTo("#cta-card .glow", {{ x: -120, y: 80, opacity: 0.4 }},
+          {{ x: 360, y: -140, opacity: 1, duration: DUR, ease: "sine.inOut" }}, 0);
+        tl.fromTo("#cta-card .card", {{ scale: {pop_from}, opacity: 0 }},
+          {{ scale: 1, opacity: 1, duration: {pop_dur}, ease: "back.out(2)" }}, 0);
+        tl.from("#cta-card .kicker", {{ y: -40, opacity: 0, duration: 0.4, ease: "power3.out" }}, 0.08);
+        tl.from("#cta-card .word", {{ y: 90, opacity: 0, duration: 0.45, ease: "power4.out", stagger: 0.07 }}, 0.14);
+        tl.to("#cta-card .hero", {{ scale: 1.04, duration: Math.max(0.5, DUR - 0.9), ease: "sine.inOut" }}, 0.8);
+        tl.from("#cta-card .handle", {{ y: 40, opacity: 0, duration: 0.4, ease: "power3.out" }}, 0.42);
+        tl.from("#cta-card .arrow .shaft", {{ scaleY: 0, duration: 0.3, ease: "power2.out" }}, {arrow_at});
+        tl.from("#cta-card .arrow .head", {{ opacity: 0, y: -30, duration: 0.25, ease: "back.out(3)" }}, {arrow_at + 0.2});
+        tl.to("#cta-card .arrow", {{ y: 24, duration: 0.25, ease: "sine.inOut", yoyo: true, repeat: {bobs} }}, {arrow_at + 0.5});
+        window.__timelines["cta-card"] = tl;
+      }})();
+    </script>
+  </body>
+</html>
+'''
+    with open(os.path.join(project_dir, "index.html"), "w", encoding="utf-8") as fh:
+        fh.write(doc)
+
+
+def main(argv: list[str]) -> int:
+"""
+_SPOTLIGHT_CTA_HF_FILES = (
+    # (file under a spotlight root, only in a full p-reels-spotlight copy (not the heygen wrapper), edits)
+    (SPOTLIGHT_ASSEMBLE_FILE, False, ((_SPOTLIGHT_CTA_HF_STEP_RENDER_OLD, SPOTLIGHT_CTA_HF_STEP_RENDER),
+                                      (_SPOTLIGHT_CTA_HF_STEP_FAIL_OLD, SPOTLIGHT_CTA_HF_STEP_FAIL))),
+    (Path("SKILL.md"), True, ((_SPOTLIGHT_CTA_HF_SKILL_RENDER_OLD, SPOTLIGHT_CTA_HF_SKILL_RENDER),
+                              (_SPOTLIGHT_CTA_HF_SKILL_NA_OLD, SPOTLIGHT_CTA_HF_SKILL_NA))),
+    (Path("scripts") / "cta-card.py", True, ((_SPOTLIGHT_CTA_HF_CTA_USAGE_OLD, SPOTLIGHT_CTA_HF_CTA_USAGE),
+                                             (_SPOTLIGHT_CTA_HF_CTA_ARGS_OLD, SPOTLIGHT_CTA_HF_CTA_ARGS),
+                                             (_SPOTLIGHT_CTA_HF_CTA_TAIL_OLD, SPOTLIGHT_CTA_HF_CTA_TAIL),
+                                             (_SPOTLIGHT_CTA_HF_CTA_FN_OLD, SPOTLIGHT_CTA_HF_CTA_FN))),
+)
+
+
+def apply_spotlight_end_card_render(directory: Path, recipe: str) -> int:
+    """WI2.93: every p-reels-spotlight copy under `directory` (the top-level p-reels-spotlight /
+    p-reels-spotlight-heygen step 06, .hub/p-reels-spotlight, SKILL.md Step 8 and scripts/cta-card.py
+    of each full copy) renders the end card through HyperFrames from a real project directory, with
+    no still ffmpeg fallback card. Idempotent; fails fast when a copy lost its anchor or file, or when
+    a spotlight recipe ships no assemble step."""
+    changed = 0
+    if not directory.is_dir():
+        return 0
+    roots = [directory] if directory.name.startswith("p-reels-spotlight") else []
+    roots += sorted(p for p in directory.rglob("p-reels-spotlight") if p.is_dir() and p.parent.name == ".hub")
+    roots = [r for r in roots if (r / SPOTLIGHT_ASSEMBLE_FILE).is_file()]
+    if recipe.startswith("p-reels-spotlight") and not roots:
+        raise SystemExit(f"sync-skills.py: ERROR - no p-reels-spotlight {SPOTLIGHT_ASSEMBLE_FILE} under {directory} "
+                         f"({recipe}); the WI2.93 transform cannot apply")
+    for root in roots:
+        for rel, full_only, edits in _SPOTLIGHT_CTA_HF_FILES:
+            if full_only and root.name != "p-reels-spotlight":
+                continue
+            path = root / rel
+            if not path.is_file():
+                raise SystemExit(f"sync-skills.py: ERROR - {path} is missing ({recipe}); the WI2.93 transform cannot apply")
+            text = path.read_text(encoding="utf-8")
+            new_text = text
+            for old, new in edits:
+                if new in new_text:
+                    continue
+                if new_text.count(old) != 1:
+                    raise SystemExit(f"sync-skills.py: ERROR - end-card render anchor {old.strip().splitlines()[0][:60]!r} "
+                                     f"found {new_text.count(old)} time(s) in {path} ({recipe}); "
+                                     "the WI2.93 transform cannot apply")
+                new_text = new_text.replace(old, new, 1)
+            if new_text != text:
+                path.write_text(new_text, encoding="utf-8")
+                changed += 1
+    return changed
+
+
 def git_head_sha(repo: Path) -> str | None:
     """Best-effort `git rev-parse HEAD` of `repo`. Returns None (never
     raises) when `repo` isn't a git checkout — e.g. a test fixture dir — so
@@ -2992,6 +3249,9 @@ def main():
 
         # WI2.87: the typing takeover is a real sub-composition, so the HyperFrames render runs (every copy).
         apply_spotlight_typing_takeover(recipe_dest, recipe)
+
+        # WI2.93: the end card renders through hyperframes from a project dir, or the step fails (every copy).
+        apply_spotlight_end_card_render(recipe_dest, recipe)
 
         files = list_files(recipe_dest)
         file_hashes = {f: sha256_file(recipe_dest / f) for f in files}

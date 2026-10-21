@@ -897,24 +897,14 @@ python3 -c "import sys; sys.exit(0 if ${CTA_DURATION} >= 1.0 else 'end card: onl
 # scripts/cta-card.py OMITS the kicker/handle layer when its variable is empty — a brand with no
 # known handle gets a card with no handle line, never a placeholder or another brand's handle.
 CTA_DURATION="$CTA_DURATION" CTA_TEXT="$CTA_TEXT" CTA_HANDLE="${CTA_HANDLE:-}" BRAND_NAME="${BRAND_NAME:-}" \
-  python3 "$SKILL_DIR/scripts/cta-card.py" "$W/plan.json" "$W/cta-card.json"
+  python3 "$SKILL_DIR/scripts/cta-card.py" "$W/plan.json" "$W/cta-card.json" \
+    "$W/cta-card" "$SKILL_DIR/.hub/f-gsap/vendor/gsap.min.js" || exit 1
 
-hyperframes render "$W/cta-card.json" "$W/cta-card.mp4" 2>/dev/null || {
-  # Fallback: ffmpeg drawtext CTA card.
-  # BUG FIX (bake-off #2 2026-06-12): drawtext fontsize=80 clips text at the left edge
-  # on a 1080px canvas. Fix: fontsize=64 with x=(w-text_w)/2 centering.
-  # NOTE: a proper HTML CTA composition is the long-term fix; this drawtext path is
-  # the emergency fallback only (used when hyperframes render fails after doctor check).
-  CTA_VF="drawtext=text='${CTA_TEXT}':fontcolor=#${FG_HEX}:fontsize=64:x=(w-text_w)/2:y=760:font=Oswald:fontweight=800"
-  if [[ -n "${CTA_HANDLE:-}" ]]; then
-    CTA_VF="${CTA_VF},drawtext=text='${CTA_HANDLE}':fontcolor=#${ACCENT_HEX}:fontsize=48:x=(w-text_w)/2:y=900:font=Inter"
-  fi
-  ffmpeg -y -f lavfi \
-    -i "color=c=#${BG_HEX}:s=1080x1920:r=30:d=${CTA_DURATION}" \
-    -vf "$CTA_VF" \
-    -c:v libx264 -pix_fmt yuv420p -r 30 \
-    "$W/cta-card.mp4"
-}
+# WI2.93: hyperframes 0.7.5 renders a project DIRECTORY ($W/cta-card/index.html, written by
+# cta-card.py), never the .json spec ("Not a directory"). The card must animate, so there is no
+# still ffmpeg drawtext card: a failed render stops the step with the reason.
+npx hyperframes@0.7.5 render "$W/cta-card" --fps 30 --quality high --output "$W/cta-card.mp4" && [ -f "$W/cta-card.mp4" ] \
+  || { echo "end card: hyperframes render of $W/cta-card failed; no still fallback card (WI2.93)" >&2; exit 1; }
 
 # BED_DUR, CTA_START and CTA_DURATION were set above (WI2.86/WI2.89): the card follows the last word.
 
@@ -1206,5 +1196,6 @@ way as Step 6b. The cover rule (Step 10) still runs.
 - **(ffprobe csv N/A here.)** Spotlight reads width/height with single-field `-of csv=p=0` calls (one
   value each), which parse identically on Ubuntu — no `awk` rework needed. The multi-field `width,height`
   ffprobe in Steps 5/6 is a diagnostic echo, not parsed into shell vars.
-- **(CTA fallback N/A here.)** The Step 8 CTA fallback is an ffmpeg `drawtext` card, not a HyperFrames
-  composition — so the "proper HyperFrames standalone" CTA patch does not apply to this core.
+- **(CTA end card is a HyperFrames project, WI2.93.)** Step 8 renders `$W/cta-card/` (index.html +
+  gsap.min.js written by `scripts/cta-card.py`) with `hyperframes render <dir>`; there is no ffmpeg
+  `drawtext` fallback card, so a failed render fails the step.

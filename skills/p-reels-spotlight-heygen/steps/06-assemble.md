@@ -148,16 +148,13 @@ PY
 fi
 if [ "$CTA_CARD" = "on" ]; then
   CTA_DURATION="$CTA_DURATION" CTA_TEXT="$CTA_TEXT" CTA_HANDLE="$CTA_HANDLE" BRAND_NAME="$BRAND_NAME" \
-    python3 "$SKILL_DIR/scripts/cta-card.py" work/plan.json work/cta-card.json   # omits the handle layer when empty
-  npx hyperframes@0.7.5 render work/cta-card.json --output work/cta-card.mp4 || {
-    BG_HEX=$(python3 -c "import json; print(json.load(open('work/plan.json'))['brand']['bg'].lstrip('#'))")
-    ACCENT_HEX=$(python3 -c "import json; print(json.load(open('work/plan.json'))['brand']['accent'].lstrip('#'))")
-    FG_HEX=$(python3 -c "import json; print(json.load(open('work/plan.json'))['brand']['fg'].lstrip('#'))")
-    CTA_VF="drawtext=text='${CTA_TEXT}':fontcolor=#${FG_HEX}:fontsize=64:x=(w-text_w)/2:y=760:font=Oswald"
-    [ -n "$CTA_HANDLE" ] && CTA_VF="${CTA_VF},drawtext=text='${CTA_HANDLE}':fontcolor=#${ACCENT_HEX}:fontsize=48:x=(w-text_w)/2:y=900:font=Inter"
-    ffmpeg -y -f lavfi -i "color=c=#${BG_HEX}:s=1080x1920:r=30:d=${CTA_DURATION}" -vf "$CTA_VF" \
-      -c:v libx264 -pix_fmt yuv420p -r 30 work/cta-card.mp4
-  }
+    python3 "$SKILL_DIR/scripts/cta-card.py" work/plan.json work/cta-card.json \
+      work/cta-card "$SKILL_DIR/.hub/f-gsap/vendor/gsap.min.js" || exit 1   # omits the handle layer when empty
+  # WI2.93: hyperframes 0.7.5 renders a project DIRECTORY (work/cta-card/index.html), never the .json
+  # spec ("Not a directory"). The card must animate, so there is no still FFmpeg card: a failed
+  # render stops the step with the reason.
+  npx hyperframes@0.7.5 render work/cta-card --fps 30 --quality high --output work/cta-card.mp4 && [ -f work/cta-card.mp4 ] \
+    || { echo "end card: hyperframes render of work/cta-card failed; no still fallback card (WI2.93)" >&2; exit 1; }
   # CTA_START and CTA_DURATION were set above (WI2.86): the card starts after the last word.
   ffmpeg -y -i work/polished.mp4 -itsoffset "$CTA_START" -i work/cta-card.mp4 \
     -filter_complex "[0:v][1:v]overlay=enable='between(t,${CTA_START},${BED_DUR})':eof_action=pass[v]" \
@@ -186,8 +183,8 @@ a,b=d('saves/assembled_video.mp4'),d('prior/voice_track.mp4'); assert abs(a-b)<0
 ## If you cannot proceed
 
 This step has no `canAsk` (`cta` defaults to the brand). Never write `needs_input.json`. A missing
-SFX file, a failed premium pass or a card render that fails even on the drawtext fallback is a
-failure: exit non-zero with one plain line.
+SFX file, a failed premium pass or a failed HyperFrames end-card render is a failure: exit
+non-zero with one plain line. There is no still FFmpeg end card to fall back to (WI2.93).
 
 ## Checks the harness runs
 
