@@ -9125,6 +9125,86 @@ else
 fi
 rm -rf "$wi271b_root"
 
+echo "=== Case 51: WI2.75 — a thin flat seam next to a reel bar is trimmed (7+ rows is kept) ==="
+# Review of WI2.71: the owner's clip has a 4-row mid-grey seam between the face picture and
+# the bottom bar. bars.py stopped at the seam and the grey line showed as a band. A flat run
+# of 6 rows or fewer beside a bar now counts as bar; 7 rows or more is picture. Also: the
+# sync transform must fail fast (non-zero) when its anchor text is missing.
+wi275_root="$(mktemp -d)"
+wi275_detail="$(python3 - "$REPO_DIR" "$wi275_root" <<'PY'
+import re, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+RECIPES = ("p-reels-spotlight", "p-reels-spotlight-heygen", "p-reels-pip", "p-reels-pip-heygen")
+def ff(*a):
+    subprocess.run(["ffmpeg", "-v", "error", "-y", *a], check=True)
+try:
+    helpers = {re.search(r"cat > work/bars\.py <<'PY'\n(.*?\n)PY\n",
+               (repo / "skills" / r / "steps" / "01-prepare-footage.md").read_text(encoding="utf-8"), re.S).group(1) for r in RECIPES}
+    for r in ("p-reels-spotlight", "p-reels-pip"):
+        helpers.add(re.search(r"cat > \"\$W/bars\.py\" <<'PY'\n(.*?\n)PY\n",
+                    (repo / "skills" / r / "SKILL.md").read_text(encoding="utf-8"), re.S).group(1))
+    if len(helpers) != 1:
+        bad.append("bars.py helpers differ across recipes: %d" % len(helpers))
+    helper = root / "bars.py"; helper.write_text(sorted(helpers)[0], encoding="utf-8")
+    def clip(name, pic_h, seam_h, seam_top=False):
+        # 1080x1920 lossless: top bar 656 rows, picture, grey seam, bottom bar
+        out = root / (name + ".mkv")
+        seam_y = 656 + pic_h
+        # the seam is mid-grey with +-12 of speckle, like the owner's compressed clip
+        # planar RGB so an odd overlay row is exact (yuv420 would round it to even)
+        fc = ("[0:v]format=gbrp[b];[1:v]format=gbrp[p];[2:v]format=gbrp[s];"
+              "[b][p]overlay=0:656[a];[a][s]overlay=0:%d,format=rgb24" % seam_y)
+        ff("-f", "lavfi", "-i", "color=c=0xF4F6FA:s=1080x1920:d=1:r=5",
+           "-f", "lavfi", "-i", "testsrc2=s=1080x%d:d=1:r=5,noise=alls=60:allf=t" % pic_h,
+           "-f", "lavfi", "-i", "color=c=0x727272:s=1080x%d:d=1:r=5,noise=alls=3:allf=t" % seam_h,
+           "-filter_complex", fc, "-frames:v", "5", "-c:v", "ffv1", str(out))
+        return out
+    def crop_of(c):
+        return subprocess.run([sys.executable, "-I", str(helper), str(c)], capture_output=True, text=True, check=True).stdout.strip()
+    # 4-row seam (the owner's clip): picture 656..1259, seam 1260..1263 is swallowed
+    got = crop_of(clip("seam4", 604, 4))
+    if got != "crop=1080:604:0:656,":
+        bad.append("4-row seam: crop %r, want crop=1080:604:0:656," % got)
+    # 6-row seam is the limit and is still swallowed
+    got = crop_of(clip("seam6", 604, 6))
+    if got != "crop=1080:604:0:656,":
+        bad.append("6-row seam: crop %r, want crop=1080:604:0:656," % got)
+    # 7-row band is picture, not seam: kept (crop stops at the bar)
+    got = crop_of(clip("band7", 602, 7))
+    if got != "crop=1080:608:0:656,":
+        bad.append("7-row band: crop %r, want crop=1080:608:0:656," % got)
+    # no flat row at the cropped picture's bottom edge for the 4-row seam
+    c4 = crop_of(root / "seam4.mkv")
+    ch = int(c4[5:-1].split(":")[1]); y0 = int(c4[5:-1].split(":")[3])
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(root / "seam4.mkv"), "-frames:v", "1", "-vf", c4 + "format=rgb24",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+    last = [raw[((ch - 1) * 1080 + x) * 3:((ch - 1) * 1080 + x) * 3 + 3] for x in range(0, 1080, 4)]
+    if all(max(abs(c[k] - last[0][k]) for k in range(3)) <= 12 for c in last):
+        bad.append("cropped 4-row-seam clip still ends on a flat row")
+    # sync transform fails fast when the anchor text is gone
+    src = root / "src"; (src / "p-reels-spotlight" / "steps").mkdir(parents=True)
+    (src / "p-reels-spotlight" / "steps" / "01-prepare-footage.md").write_text("### 2. Detect something else (BEFORE anything else)\nno matching anchor\n", encoding="utf-8")
+    code = ("import importlib.util,sys\nfrom pathlib import Path\n"
+            "s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)\n"
+            "m.apply_reel_fill_frame(Path(sys.argv[2]),'p-reels-spotlight')\n")
+    r = subprocess.run([sys.executable, "-I", "-c", code, str(repo / "scripts" / "sync-skills.py"), str(src / "p-reels-spotlight")],
+                       capture_output=True, text=True)
+    if r.returncode == 0 or "anchor text not found" not in r.stderr:
+        bad.append("sync transform did not fail fast on a missing anchor (rc=%d)" % r.returncode)
+except Exception as exc:
+    bad.append("error: %s" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi275_detail" == "ok" ]]; then
+  pass "WI2.75 thin seam beside a reel bar is trimmed, a 7-row band is kept, sync fails fast"
+else
+  fail "WI2.75 thin seam beside a reel bar" "$wi275_detail"
+fi
+rm -rf "$wi275_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then

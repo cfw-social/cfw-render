@@ -181,6 +181,8 @@ top+bottom (or left+right) bars of about the same size and the same flat colour 
 picture within 5 % of 16:9 or 9:16. Anything else (a speaker on a plain backdrop, a one-sided
 margin) prints nothing and nothing is cropped, so the head is never cut. It measures frames the
 way ffmpeg shows them (rotation applied), so a rotated phone clip is read on the right axes.
+WI2.75: a flat seam of 6 rows or fewer (another flat colour) right beside a bar counts as part
+of that bar, so no grey line is left at the picture's edge; a band of 7 rows or more is kept.
 
 ```bash
 cat > "$W/bars.py" <<'PY'
@@ -188,7 +190,7 @@ cat > "$W/bars.py" <<'PY'
 # Crops only top+bottom (or left+right) bars of about the same size and the same flat
 # colour, and only when what is left is within 5% of 16:9 or 9:16. Anything else: no crop.
 import subprocess, sys
-SRC, TOL, MIN_BAR, ASPECT_TOL = sys.argv[1], 12, 8, 0.05
+SRC, TOL, MIN_BAR, ASPECT_TOL, SEAM, SEAM_TOL = sys.argv[1], 12, 8, 0.05, 6, 32
 def grab(t):
     # One frame as PPM. Its header gives the size ffmpeg shows after autorotation, so a
     # rotated phone clip is measured on the same axes the later -vf crop sees.
@@ -213,27 +215,37 @@ def duration():
         return float(r)
     except ValueError:
         return 1.0
-def close(a, b):
-    return max(abs(a[k] - b[k]) for k in range(3)) <= TOL
-def run(fr, w, lines, pts):
+def close(a, b, tol=TOL):
+    return max(abs(a[k] - b[k]) for k in range(3)) <= tol
+def run(fr, w, lines, pts, tol=TOL):
     # how many lines from this edge inwards are one flat colour -> (count, colour)
     ref, n = None, 0
     for ln in lines:
         row = [fr[(y * w + x) * 3:(y * w + x) * 3 + 3] for x, y in pts(ln)]
-        ref = ref or row[0]
-        if not all(close(c, ref) for c in row):
+        ref = ref or sorted(row)[len(row) // 2]    # median pixel: robust to a noisy first pixel
+        if not all(close(c, ref, tol) for c in row):
             break
         n += 1
+    return n, ref
+def bar(fr, w, lines, pts):
+    # WI2.75: a bar run also swallows ONE short flat seam (SEAM rows or fewer, another flat
+    # colour, within SEAM_TOL because video compression speckles it) right next to its inner edge, so no flat seam row stays at the picture's edge.
+    lines = list(lines)
+    n, ref = run(fr, w, lines, pts)
+    if n >= MIN_BAR:
+        m, _ = run(fr, w, lines[n:], pts, SEAM_TOL)   # a compressed seam is a bit noisy
+        if 1 <= m <= SEAM and n + m < len(lines):
+            n += m
     return n, ref
 D = duration()
 frames = [f for f in (grab(D * p) for p in (0.2, 0.5, 0.8)) if f]
 if not frames or len({(f[0], f[1]) for f in frames}) != 1:
     print(""); sys.exit(0)
 W, H = frames[0][0], frames[0][1]
-sides = [(run(fr, W, range(H // 2), lambda y: [(x, y) for x in range(0, W, 4)]),
-          run(fr, W, range(H - 1, H // 2, -1), lambda y: [(x, y) for x in range(0, W, 4)]),
-          run(fr, W, range(W // 2), lambda x: [(x, y) for y in range(0, H, 4)]),
-          run(fr, W, range(W - 1, W // 2, -1), lambda x: [(x, y) for y in range(0, H, 4)]))
+sides = [(bar(fr, W, range(H // 2), lambda y: [(x, y) for x in range(0, W, 4)]),
+          bar(fr, W, range(H - 1, H // 2, -1), lambda y: [(x, y) for x in range(0, W, 4)]),
+          bar(fr, W, range(W // 2), lambda x: [(x, y) for y in range(0, H, 4)]),
+          bar(fr, W, range(W - 1, W // 2, -1), lambda x: [(x, y) for y in range(0, H, 4)]))
          for _, _, fr in frames]
 def edge(i):
     # bar size = the smallest run over the sampled frames; its colour must hold in every frame
