@@ -10702,6 +10702,160 @@ else
 fi
 rm -rf "$wi289_root"
 
+echo "=== Case 63: WI2.87 — the spotlight typing takeover is a real sub-composition, so takeovers animate ==="
+# Observed 2026-10-21 (re-smoke 24, order R-VW59, Render 503d906): all four spotlight takeovers hard-cut
+# to their final layout (no stat slam-in, no typing). Step 05 stripped the <template> wrapper from
+# c-typing-ui's typing-scene.html and left its composition id "typing-scene" while the root slot loads
+# it as data-composition-src with id "tk<i>". HyperFrames 0.7.5 never got ready ("Composition has zero
+# duration. Runtime ready: false"), the render failed, and the still-card fallback composited every
+# takeover as a static PNG. This case runs the real step 05 Part B assembler of every copy on a plan
+# with a stat and two typing takeovers, checks each typing file is a <template> slotted under its own
+# id, then runs both typing scripts in one shared page (fake DOM + GSAP) to prove each types its own
+# prompt; the SKILL.md Step 5 copies and the sync transform (idempotent, fail-fast) are checked too.
+wi287_root="$(mktemp -d)"
+wi287_detail="$(python3 - "$REPO_DIR" "$wi287_root" <<'PY'
+import importlib.util, json, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+SIM = r"""
+const vm = require('vm'), fs = require('fs');
+const files = process.argv.slice(2);
+const els = {};
+function el(id) { return els[id] || (els[id] = { id, textContent: '', style: {}, classList: { add() {} } }); }
+const decode = s => s.replace(/&#10;/g, '\n').replace(/&quot;/g, '"').replace(/&#x27;/g, "'")
+                     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+const tweens = [];
+function timeline() { const tl = { to(t, v) { tweens.push({ tl, t, v }); return tl; }, fromTo() { return tl; } }; return tl; }
+const document = { getElementById: el, querySelector: () => null,
+  createElement: () => { const o = { value: '' }; Object.defineProperty(o, 'innerHTML', { set(s) { o.value = decode(s); } }); return o; } };
+const ctx = vm.createContext({ window: {}, document, gsap: { timeline }, parseFloat, Math });
+for (const f of files) {
+  const src = fs.readFileSync(f, 'utf8');
+  const inline = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+  if (inline.length !== 1) { console.log(JSON.stringify({ error: f + ': inline scripts ' + inline.length })); process.exit(0); }
+  vm.runInContext(inline[0], ctx);
+}
+// Seek every typing tween to its end, the way the render's last frame does.
+for (const tw of tweens) if (tw.v && typeof tw.v.onUpdate === 'function') { tw.t.n = tw.v.n; tw.v.onUpdate(); }
+const typed = {};
+for (const id of Object.keys(els)) if (/-ts-typed$/.test(id)) typed[id] = els[id].textContent;
+console.log(JSON.stringify({ timelines: Object.keys(ctx.window.__timelines || {}), typed }));
+"""
+(root / "sim.js").write_text(SIM, encoding="utf-8")
+def part_b(step):
+    m = re.search(r'^python3 - work "\$SKILL_DIR" "\$TYPING_DIR" <<\'PY\'\n(.*?)^PY$', step.read_text(encoding="utf-8"), re.S | re.M)
+    return m.group(1) if m else None
+PROMPTS = ['What\'s "happening" this week?', "Plan my posts\nfor Friday"]
+plan = {"duration": 12.0, "brand": {"bg": "#111111", "accent": "#3B82F6", "fg": "#F4F4F4"}, "takeovers": [
+    {"start": 1.0, "end": 3.5, "template": "tk-stat", "fill": {"EYEBROW": "A month", "STAT": "45", "LABEL": "posts"}},
+    {"start": 4.0, "end": 7.5, "template": "tk-typing-ui",
+     "fill": {"LABEL": "CFW", "PROMPT": PROMPTS[0], "TYPING_SPEED": 0.8, "BOTTOM_TAG": "Once a week"}},
+    {"start": 8.0, "end": 11.0, "template": "tk-typing-ui", "fill": {"LABEL": "CFW", "PROMPT": PROMPTS[1]}}]}
+try:
+    skills = repo / "skills"
+    roots = [skills / "p-reels-spotlight", skills / "p-reels-spotlight-heygen",
+             skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight"]
+    for r in roots:
+        step = r / "steps" / "05-render-scenes.md"
+        rel = step.relative_to(repo)
+        code = part_b(step)
+        if code is None:
+            bad.append("%s: no step 05 Part B assembler block" % rel); continue
+        # Every copy's step names SKILL_DIR="$CFW_RENDER_SKILLS_DIR/p-reels-spotlight", TYPING_DIR under its .hub.
+        skill = skills / "p-reels-spotlight"
+        typing = skill / ".hub" / "c-typing-ui"
+        w = root / ("w-" + r.name + ("-hub" if r.parent.name == ".hub" else ""))
+        w.mkdir()
+        (w / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+        (w / "base.mp4").write_bytes(b"")
+        (root / "partb.py").write_text(code, encoding="utf-8")
+        out = subprocess.run([sys.executable, str(root / "partb.py"), str(w), str(skill), str(typing)],
+                             capture_output=True, text=True, timeout=60)
+        if out.returncode != 0:
+            bad.append("%s: assembler failed: %s" % (rel, out.stderr.strip()[-200:])); continue
+        index = (w / "comp" / "index.html").read_text(encoding="utf-8")
+        typing_files = []
+        for i, tk in enumerate(plan["takeovers"]):
+            f = w / "comp" / "compositions" / ("tk%d.html" % i)
+            text = f.read_text(encoding="utf-8")
+            if ('data-composition-id="tk%d" data-composition-src="compositions/tk%d.html"' % (i, i)) not in index:
+                bad.append("%s: root slot for tk%d missing" % (rel, i))
+            if not text.lstrip().startswith('<template id="tk%d-template">' % i) or not text.rstrip().endswith("</template>"):
+                bad.append("%s: tk%d (%s) is not a <template id=\"tk%d-template\"> file (stripped wrapper)"
+                           % (rel, i, tk["template"], i))
+            if not re.search(r'<div\s+(id="tk%d"\s+)?data-composition-id="tk%d"' % (i, i), text):
+                bad.append("%s: tk%d's root element does not carry the slot id tk%d" % (rel, i, i))
+            if '__timelines["tk%d"]' % i not in text:
+                bad.append("%s: tk%d does not register window.__timelines[\"tk%d\"]" % (rel, i, i))
+            if "typing-scene" in text:
+                bad.append("%s: tk%d still names the composition \"typing-scene\"" % (rel, i))
+            if "##" in text or re.search(r"\{\{[A-Z_]+\}\}", text):
+                bad.append("%s: tk%d has a doubled '#' or an unfilled {{KEY}}" % (rel, i))
+            if tk["template"] == "tk-typing-ui":
+                typing_files.append((i, f))
+        if len(typing_files) == 2 and not bad:
+            sim = subprocess.run(["node", str(root / "sim.js")] + [str(f) for _, f in typing_files],
+                                 capture_output=True, text=True, timeout=60)
+            r_ = json.loads(sim.stdout) if sim.returncode == 0 and sim.stdout.strip() else {"error": sim.stderr[-200:]}
+            if "error" in r_:
+                bad.append("%s: typing scripts did not run: %s" % (rel, r_["error"]))
+            else:
+                for (i, _), prompt in zip(typing_files, PROMPTS):
+                    got = r_["typed"].get("tk%d-ts-typed" % i)
+                    if got != prompt:
+                        bad.append("%s: tk%d typed %r, expected its own prompt %r" % (rel, i, got, prompt))
+                    if "tk%d" % i not in r_["timelines"]:
+                        bad.append("%s: timeline tk%d not registered (%r)" % (rel, i, r_["timelines"]))
+    for doc in (skills / "p-reels-spotlight" / "SKILL.md",
+                skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "SKILL.md"):
+        text = doc.read_text(encoding="utf-8")
+        if "re_mod.sub(r'<template" in text or 'tpl_src.index(\'<template id="typing-scene-template">\')' not in text:
+            bad.append("%s: Step 5 still strips the typing <template> wrapper" % doc.relative_to(repo))
+    spec = importlib.util.spec_from_file_location("ss287", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    fn = getattr(ss, "apply_spotlight_typing_takeover", None)
+    if fn is None:
+        bad.append("sync-skills.py has no apply_spotlight_typing_takeover (WI2.87)")
+    else:
+        # From the pre-fix (32549b7) text the transform makes the committed bundle, once.
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        for f in list(up.rglob("05-render-scenes.md")) + list(up.rglob("SKILL.md")):
+            text = f.read_text(encoding="utf-8")
+            for old, new in ss._SPOTLIGHT_TYPING_EDITS_STEP + ss._SPOTLIGHT_TYPING_EDITS_SKILL:
+                text = text.replace(new, old)
+            f.write_text(text, encoding="utf-8")
+        for rec, want in (("p-reels-spotlight", (2, 0)), ("p-reels-spotlight-heygen", (3, 0))):
+            got = (fn(up / rec, rec), fn(up / rec, rec))
+            if got != want:
+                bad.append("transform on %s changed %r file(s), expected %r" % (rec, got, want))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        step = up / "p-reels-spotlight" / "steps" / "05-render-scenes.md"
+        text = step.read_text(encoding="utf-8")
+        for old, new in ss._SPOTLIGHT_TYPING_EDITS_STEP:
+            text = text.replace(new, old)
+        step.write_text(text.replace("src = re.sub(r'<template[^>]*>\\s*', '', src)", "src = src.strip()"), encoding="utf-8")
+        try:
+            fn(up / "p-reels-spotlight", "fixture")
+            bad.append("transform did not fail on a drifted step 05 anchor")
+        except SystemExit:
+            pass
+except (Exception, SystemExit) as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad[:12]))
+PY
+)"
+if [[ "$wi287_detail" == "ok" ]]; then
+  pass "WI2.87 spotlight typing takeover keeps its <template> and the slot id tk<i>, scoped per slot, so HyperFrames renders every takeover's motion (every copy)"
+else
+  fail "WI2.87 spotlight typing takeover is a real sub-composition" "$wi287_detail"
+fi
+rm -rf "$wi287_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then

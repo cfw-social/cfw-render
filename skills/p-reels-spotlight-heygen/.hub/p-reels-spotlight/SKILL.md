@@ -579,12 +579,22 @@ for i, tk in enumerate(plan.get("takeovers", [])):
         m[k] = str(v) if k in RAW_KEYS else html.escape(str(v))
     tpl_name = tk["template"]
     if tpl_name == "tk-typing-ui":
-        # c-typing-ui template (sub-composition form, strip <template> wrapper)
+        # WI2.87: c-typing-ui as a sub-composition KEEPS its <template> wrapper and takes this slot's
+        # composition id (stripped and left as "typing-scene", HyperFrames never gets ready, the render
+        # fails and every takeover falls back to a still card). Its ts-* ids/classes and script are
+        # scoped to the slot, and every key it reads is filled.
         import re as re_mod
+        m["ACCENT"] = str(brand["accent"]).lstrip("#")   # the scene writes #{{ACCENT}}
+        m["PROMPT"] = html.escape(str(tk["fill"].get("PROMPT", ""))).replace("\n", "&#10;")  # decoded in-page
+        for k, v in (("TYPING_SPEED", "1.0"), ("BOTTOM_TAG", ""), ("VARIANT", "full"), ("BOTTOM_TAG_DISPLAY", "")):
+            m.setdefault(k, v)
         tpl_src = open(f"{TYPING}/templates/typing-scene.html").read()
-        tpl_src = re_mod.sub(r'<template[^>]*>\s*', '', tpl_src)
-        tpl_src = re_mod.sub(r'\s*</template>', '', tpl_src)
-        # Wrap in full sub-composition structure
+        tpl_src = tpl_src[tpl_src.index('<template id="typing-scene-template">'):]   # drop the usage comment
+        tpl_src = re_mod.sub(r'(?<=[.#"])ts-', f"tk{i}-ts-", tpl_src.replace("typing-scene", f"tk{i}"))
+        tpl_src = tpl_src.replace("<script>\n", "<script>\n(function () {\n", 1)
+        tpl_src = tpl_src.replace("\n  </script>\n</div>\n</template>", "\n})();\n  </script>\n</div>\n</template>")
+        assert f'<template id="tk{i}-template">' in tpl_src and f'__timelines["tk{i}"]' in tpl_src and "})();" in tpl_src, \
+            "FATAL: c-typing-ui typing-scene.html changed shape; cannot slot it as a takeover"
         tpl_content = fill(tpl_src, m)
     else:
         tpl_content = fill(open(f"{SKILL}/templates/{tpl_name}.html").read(), m)

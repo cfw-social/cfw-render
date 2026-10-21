@@ -100,6 +100,11 @@ WI2.89 apply_spotlight_bed_tail() makes step 01 of every p-reels-spotlight copy 
 Step 2) hold the last frame with silence so cta_duration + 0.5 s (tail <= 3.5 s) follows the
 speech, so the WI2.86 end card always fits; transcript/caption tolerances 4.5 s, reel window 65 s.
 
+WI2.87 apply_spotlight_typing_takeover() makes step 05 of every p-reels-spotlight copy (and
+SKILL.md Step 5) slot the c-typing-ui scene as a real sub-composition: <template> kept, composition
+id = the slot id (tk<i>), ts-* ids/classes and its script scoped to the slot. Stripped, HyperFrames
+never got ready and every takeover fell back to a still card with no entry motion.
+
 Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
 and before list_files/hashing, same ordering guarantee:
   strip_brand_override_host_paths() nulls/drops the two host-path fields
@@ -2725,6 +2730,108 @@ def apply_spotlight_bed_tail(directory: Path, recipe: str) -> int:
     return changed
 
 
+# WI2.87: spotlight tk-typing-ui takeover. Step 05 (and SKILL.md Step 5) stripped the <template>
+# wrapper from c-typing-ui's typing-scene.html and kept its own composition id "typing-scene", while
+# the root slot loads it as data-composition-src with data-composition-id="tk<i>". HyperFrames 0.7.5
+# then never gets ready ("Composition has zero duration. Runtime ready: false"), the render fails,
+# and the step's still-card fallback composites every takeover as a static PNG: each one hard-cuts
+# straight to its final layout, with no slam-in and no typing (re-smoke 24, R-VW59, 2026-10-21).
+# Each copy now keeps the wrapper, renames the scene to the slot id, scopes its ts-* ids/classes and
+# its script to that slot, and fills every key the scene reads (ACCENT without '#', the prompt
+# HTML-escaped as the scene expects).
+SPOTLIGHT_RENDER_FILE = Path("steps") / "05-render-scenes.md"
+_SPOTLIGHT_TYPING_STEP_OLD = """        src = open(f"{TYPING}/templates/typing-scene.html").read()
+        src = re.sub(r'<template[^>]*>\\s*', '', src); src = re.sub(r'\\s*</template>', '', src)
+"""
+SPOTLIGHT_TYPING_STEP = """        # WI2.87: a data-composition-src file must stay a <template> whose composition id is the slot's.
+        # Stripped and left as "typing-scene", HyperFrames never gets ready, the render fails and every
+        # takeover falls back to a still card (no slam-in, no typing). Keep the wrapper, give the scene
+        # this slot's id, scope its ts-* ids/classes and script to the slot, fill every key it reads.
+        m["ACCENT"] = str(brand["accent"]).lstrip("#")   # the scene writes #{{ACCENT}}
+        m["PROMPT"] = html.escape(str(tk["fill"].get("PROMPT", ""))).replace("\\n", "&#10;")  # decoded in-page
+        for k, v in (("TYPING_SPEED", "1.0"), ("BOTTOM_TAG", ""), ("VARIANT", "full"), ("BOTTOM_TAG_DISPLAY", "")):
+            m.setdefault(k, v)
+        src = open(f"{TYPING}/templates/typing-scene.html").read()
+        src = src[src.index('<template id="typing-scene-template">'):]   # drop the usage comment
+        src = re.sub(r'(?<=[.#"])ts-', f"tk{i}-ts-", src.replace("typing-scene", f"tk{i}"))
+        src = src.replace("<script>\\n", "<script>\\n(function () {\\n", 1)
+        src = src.replace("\\n  </script>\\n</div>\\n</template>", "\\n})();\\n  </script>\\n</div>\\n</template>")
+        assert f'<template id="tk{i}-template">' in src and f'__timelines["tk{i}"]' in src and "})();" in src, \\
+            "FATAL: c-typing-ui typing-scene.html changed shape; cannot slot it as a takeover"
+"""
+_SPOTLIGHT_TYPING_SKILL_OLD = """        # c-typing-ui template (sub-composition form, strip <template> wrapper)
+        import re as re_mod
+        tpl_src = open(f"{TYPING}/templates/typing-scene.html").read()
+        tpl_src = re_mod.sub(r'<template[^>]*>\\s*', '', tpl_src)
+        tpl_src = re_mod.sub(r'\\s*</template>', '', tpl_src)
+        # Wrap in full sub-composition structure
+        tpl_content = fill(tpl_src, m)
+"""
+SPOTLIGHT_TYPING_SKILL = """        # WI2.87: c-typing-ui as a sub-composition KEEPS its <template> wrapper and takes this slot's
+        # composition id (stripped and left as "typing-scene", HyperFrames never gets ready, the render
+        # fails and every takeover falls back to a still card). Its ts-* ids/classes and script are
+        # scoped to the slot, and every key it reads is filled.
+        import re as re_mod
+        m["ACCENT"] = str(brand["accent"]).lstrip("#")   # the scene writes #{{ACCENT}}
+        m["PROMPT"] = html.escape(str(tk["fill"].get("PROMPT", ""))).replace("\\n", "&#10;")  # decoded in-page
+        for k, v in (("TYPING_SPEED", "1.0"), ("BOTTOM_TAG", ""), ("VARIANT", "full"), ("BOTTOM_TAG_DISPLAY", "")):
+            m.setdefault(k, v)
+        tpl_src = open(f"{TYPING}/templates/typing-scene.html").read()
+        tpl_src = tpl_src[tpl_src.index('<template id="typing-scene-template">'):]   # drop the usage comment
+        tpl_src = re_mod.sub(r'(?<=[.#"])ts-', f"tk{i}-ts-", tpl_src.replace("typing-scene", f"tk{i}"))
+        tpl_src = tpl_src.replace("<script>\\n", "<script>\\n(function () {\\n", 1)
+        tpl_src = tpl_src.replace("\\n  </script>\\n</div>\\n</template>", "\\n})();\\n  </script>\\n</div>\\n</template>")
+        assert f'<template id="tk{i}-template">' in tpl_src and f'__timelines["tk{i}"]' in tpl_src and "})();" in tpl_src, \\
+            "FATAL: c-typing-ui typing-scene.html changed shape; cannot slot it as a takeover"
+        tpl_content = fill(tpl_src, m)
+"""
+_SPOTLIGHT_TYPING_EDITS_STEP = ((_SPOTLIGHT_TYPING_STEP_OLD, SPOTLIGHT_TYPING_STEP),)
+_SPOTLIGHT_TYPING_EDITS_SKILL = ((_SPOTLIGHT_TYPING_SKILL_OLD, SPOTLIGHT_TYPING_SKILL),)
+# (file under a spotlight root, only in a full p-reels-spotlight copy (not the heygen wrapper), edits)
+_SPOTLIGHT_TYPING_FILES = (
+    (SPOTLIGHT_RENDER_FILE, False, _SPOTLIGHT_TYPING_EDITS_STEP),
+    (Path("SKILL.md"), True, _SPOTLIGHT_TYPING_EDITS_SKILL),
+)
+
+
+def apply_spotlight_typing_takeover(directory: Path, recipe: str) -> int:
+    """WI2.87: every p-reels-spotlight copy under `directory` (the top-level p-reels-spotlight /
+    p-reels-spotlight-heygen step 05, .hub/p-reels-spotlight, and SKILL.md Step 5 of each full copy)
+    slots the c-typing-ui scene as a real HyperFrames sub-composition: <template> kept, composition
+    id = the slot id, ids/classes/script scoped to the slot. Idempotent; fails fast when a copy lost
+    its anchor or file, or when a spotlight recipe ships no render-scenes step."""
+    changed = 0
+    if not directory.is_dir():
+        return 0
+    roots = [directory] if directory.name.startswith("p-reels-spotlight") else []
+    roots += sorted(p for p in directory.rglob("p-reels-spotlight") if p.is_dir() and p.parent.name == ".hub")
+    roots = [r for r in roots if (r / SPOTLIGHT_RENDER_FILE).is_file()]
+    if recipe.startswith("p-reels-spotlight") and not roots:
+        raise SystemExit(f"sync-skills.py: ERROR - no p-reels-spotlight {SPOTLIGHT_RENDER_FILE} under {directory} "
+                         f"({recipe}); the WI2.87 transform cannot apply")
+    for root in roots:
+        for rel, full_only, edits in _SPOTLIGHT_TYPING_FILES:
+            if full_only and root.name != "p-reels-spotlight":
+                continue
+            path = root / rel
+            if not path.is_file():
+                raise SystemExit(f"sync-skills.py: ERROR - {path} is missing ({recipe}); the WI2.87 transform cannot apply")
+            text = path.read_text(encoding="utf-8")
+            new_text = text
+            for old, new in edits:
+                if new in new_text:
+                    continue
+                if new_text.count(old) != 1:
+                    raise SystemExit(f"sync-skills.py: ERROR - typing takeover anchor {old.strip().splitlines()[0][:60]!r} "
+                                     f"found {new_text.count(old)} time(s) in {path} ({recipe}); "
+                                     "the WI2.87 transform cannot apply")
+                new_text = new_text.replace(old, new, 1)
+            if new_text != text:
+                path.write_text(new_text, encoding="utf-8")
+                changed += 1
+    return changed
+
+
 def git_head_sha(repo: Path) -> str | None:
     """Best-effort `git rev-parse HEAD` of `repo`. Returns None (never
     raises) when `repo` isn't a git checkout — e.g. a test fixture dir — so
@@ -2882,6 +2989,9 @@ def main():
 
         # WI2.89: the bed gets a silent end-card tail so the card always fits after the last word.
         apply_spotlight_bed_tail(recipe_dest, recipe)
+
+        # WI2.87: the typing takeover is a real sub-composition, so the HyperFrames render runs (every copy).
+        apply_spotlight_typing_takeover(recipe_dest, recipe)
 
         files = list_files(recipe_dest)
         file_hashes = {f: sha256_file(recipe_dest / f) for f in files}

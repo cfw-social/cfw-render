@@ -78,8 +78,21 @@ for i, tk in enumerate(plan.get("takeovers", [])):
     m = {"ID": f"tk{i}", "DURATION": d, "BG": brand["bg"], "ACCENT": brand["accent"], "FG": brand["fg"]}
     for k, v in tk["fill"].items(): m[k] = str(v) if k in RAW_KEYS else html.escape(str(v))
     if tk["template"] == "tk-typing-ui":
+        # WI2.87: a data-composition-src file must stay a <template> whose composition id is the slot's.
+        # Stripped and left as "typing-scene", HyperFrames never gets ready, the render fails and every
+        # takeover falls back to a still card (no slam-in, no typing). Keep the wrapper, give the scene
+        # this slot's id, scope its ts-* ids/classes and script to the slot, fill every key it reads.
+        m["ACCENT"] = str(brand["accent"]).lstrip("#")   # the scene writes #{{ACCENT}}
+        m["PROMPT"] = html.escape(str(tk["fill"].get("PROMPT", ""))).replace("\n", "&#10;")  # decoded in-page
+        for k, v in (("TYPING_SPEED", "1.0"), ("BOTTOM_TAG", ""), ("VARIANT", "full"), ("BOTTOM_TAG_DISPLAY", "")):
+            m.setdefault(k, v)
         src = open(f"{TYPING}/templates/typing-scene.html").read()
-        src = re.sub(r'<template[^>]*>\s*', '', src); src = re.sub(r'\s*</template>', '', src)
+        src = src[src.index('<template id="typing-scene-template">'):]   # drop the usage comment
+        src = re.sub(r'(?<=[.#"])ts-', f"tk{i}-ts-", src.replace("typing-scene", f"tk{i}"))
+        src = src.replace("<script>\n", "<script>\n(function () {\n", 1)
+        src = src.replace("\n  </script>\n</div>\n</template>", "\n})();\n  </script>\n</div>\n</template>")
+        assert f'<template id="tk{i}-template">' in src and f'__timelines["tk{i}"]' in src and "})();" in src, \
+            "FATAL: c-typing-ui typing-scene.html changed shape; cannot slot it as a takeover"
     else:
         src = open(f"{SKILL}/templates/{tk['template']}.html").read()
     open(f"{proj}/compositions/tk{i}.html", "w").write(fill(src, m))
