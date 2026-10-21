@@ -61,7 +61,8 @@ Then write `saves/edit_plan.json` with your file-writing tool, following these r
    speaker between windows, never the same template twice in a row. Content restates what is SAID
    in that window. Use `tk-typing-ui` only when the content involves AI / prompts / terminal work.
    Takeover text names only the order's brand (WI2.95): quote the speech word for word, or write the
-   order's brand in place of any other brand or product the clip names; never invent a brand.
+   order's brand in place of any other brand or product the clip names; never invent a brand, and
+   never write a competitor or comparison line that names another brand (`X vs Y`, `better than X`).
 6. `sfx`: `whoosh-deep` at every takeover start, `impact-sub` 0.4 s later, optional `riser` 1.5 s
    before the biggest takeover, `click`/`pop` on at most 3 emphasis words. Max 12 cues, gain ≤ 0.6.
 7. `cover_at`: a mid-content frame (ideally mid-sentence at peak energy) — NEVER t=0 or the first
@@ -334,11 +335,13 @@ python3 work/caption_phrases.py saves/edit_plan.json || exit 1
 ```
 
 Keep takeover text on the order's brand (WI2.95). A clip may name another brand or product (a CFW
-promo cut for a `Test Brand` order says `CFW already learned her voice`). A takeover line that quotes
-the speech word for word keeps it. Any other line that carries a spoken acronym or CamelCase name
-(`CFW`, `HubSpot`) the order does not own gets the order's brand instead (`inputs/cta/cta.json`
-`brandName`, else `brief.json` `brand.name`, as on the end card), or loses the name when the order
-has no brand. Write the helper, then run it on the plan; it prints each line it changed.
+promo cut for a `Test Brand` order says `CFW already learned her voice`). A takeover line of 3+ words
+that quotes the speech word for word keeps it. Any other line that carries a spoken acronym (also
+spelled out, `C F W`) or CamelCase name (`CFW`, `HubSpot`) the order does not own gets the order's
+brand instead (`inputs/cta/cta.json` `brandName`, else `brief.json` `brand.name`, as on the end card),
+or loses the name when the order has no brand. Generic acronyms (`CAC`, `MLS`, `HOA`, `NYC`, `PhD`),
+`iPhone`-style words and names like `McKenzie` are never swapped. Write the helper, then run it on
+the plan; it prints each line it changed.
 
 ```bash
 mkdir -p work saves
@@ -348,23 +351,45 @@ cat > work/takeover_brand.py <<'PY'
 #        python3 work/takeover_brand.py --check PLAN.json WORDS.json [BRAND]  (exit 1 on a foreign name)
 # BRAND is the order's brand name ("" = the order has none). Without it the brand comes from the
 # step workdir: inputs/cta/cta.json brandName, else brief.json brand.name (as the end card does).
-# A takeover line that is an exact run of transcript words (case and punctuation aside) is a quote
-# and is kept. Any other line may not carry a brand-like name the order does not own: an acronym or
-# CamelCase word the speech says (CFW, HubSpot) or a CamelCase word in the line. With an order brand
-# the name becomes that brand; with none it is dropped. A brand is never invented. Generic acronyms
-# (AI, CEO, ...) and the channels a reel talks about (Instagram, TikTok, ...) are not brands here.
+# A foreign name is a brand-like word the speech says that the order does not own: an acronym (CFW,
+# also spelled out "C F W") or a CamelCase word (HubSpot). It is never a generic acronym (AI, CAC,
+# MLS, HOA, NYC, PhD, ...), a channel or tool (Instagram, iPhone, ...), a word that starts lower case
+# (iOS, eBay) or a Mc/Mac/O'/De/Le name (McKenzie). A line of 3+ words that is an exact run of
+# transcript words (case and punctuation aside) is a quote and keeps its words, unless the foreign
+# name is most of it. Otherwise the name becomes the order's brand; with no order brand it is dropped.
+# A brand is never invented. When in doubt a word is left alone: rule 5 asks the planner for the rest.
 import html, json, os, re, sys
 
 TOKEN = re.compile(r"[A-Za-z0-9]+(?:['’.&-][A-Za-z0-9]+)*")
 TAG = re.compile(r"(<[^>]*>)")
 POSS = re.compile(r"['’]s$", re.I)
+NAME_PREFIX = re.compile(r"^(?:Mc|Mac|O['’]|D['’]|De|Di|Da|Du|Le|La|Van|Von|St)[A-Z]")
 SKIP = {"tk-typing-ui": {"LABEL", "TYPING_SPEED"}}
 HTML_KEYS = {"TITLE", "QUOTE"}
-# Generic acronyms and the channels / tools a reel talks about: never a competing brand.
-GENERIC = set("""i ai api apis ceo cto cfo coo cmo diy faq seo roi kpi kpis crm saas b2b b2c dm dms pr hr it ui ux
-url pdf ok tv usa uk eu us am pm mvp llm llms gpt cta ctas asap fyi q1 q2 q3 q4 ugc ar vr id ip sms
-instagram ig tiktok youtube yt linkedin facebook fb threads pinterest reddit x twitter whatsapp snapchat google
-chatgpt claude gemini openai anthropic""".split())
+MIN_QUOTE = 3
+# Never a competing brand: generic business, marketing, finance, real-estate, place and tech
+# acronyms, and the channels / tools a reel talks about.
+GENERIC = set("""
+i ok ai api apis ceo ceos cto cfo coo cmo cro vp svp evp md phd mba cpa cfa jd rn pa hr pr it qa
+diy faq faqs pdf url sms dm dms fyi asap eta tbh imo lol omg vip am pm est pst cst mst utc
+q1 q2 q3 q4 ytd mtd yoy qoq mom b2b b2c d2c dtc smb smbs saas crm cms erp kpi kpis okr okrs roi
+roas aov ltv cac cpc cpm cpa cpl ctr cvr ppc sem seo ugc cta ctas mrr arr gmv nps sop sops mvp
+llc inc ltd co corp plc nda llp gst vat irs ira etf ipo sba fico heloc dti pmi apr apy arm emi gdp
+usd eur gbp cad aud inr jpy cny
+mls hoa fha va usda adu adus hvac reo nar cma hud fsbo noi reit reits sqft sf bd ba ac gc hoas
+usa us uk eu uae nyc la sf dc nj ny ca tx fl wa nc ga az co il ma pa oh mi uk gta bc on nsw
+tv hd uhd 4k 8k pc ios os wifi usb gps app apps vr ar xr iot gpu cpu ram ssd llm llms gpt ml nft nfts
+btc eth qr id ip sdk ui ux js css html sql aws gcp
+instagram ig tiktok youtube yt linkedin facebook fb threads pinterest reddit x twitter whatsapp
+snapchat google gmail chatgpt claude gemini openai anthropic iphone ipad android macbook mac zoom
+slack excel outlook zillow
+""".split())
+# Common words a transcript may put in capitals for emphasis ("NO", "STOP"): never a brand name.
+COMMON = set("""
+no so go do we me my he be by us or an at on in to up of if is it as yes now new top big best free win
+wow stop look this that what when why how who you your our all one two ten get got see the and but not
+just more most less real true easy fast huge done love hate need want must never ever only
+""".split())
 
 
 def norm(t):
@@ -376,12 +401,15 @@ def base(t):
 
 
 def shaped(t):
-    # an acronym (2+ capitals, no lower case) or CamelCase word, by its own spelling
+    """an acronym (2-6 capitals, no lower case) or CamelCase word (HubSpot), by its own spelling;
+    never a lower-case-first word (iPhone, iOS) or a Mc/Mac/O'/De/Le name (McKenzie)"""
     b = POSS.sub("", t)
+    if not b[:1].isupper() or NAME_PREFIX.match(b):
+        return False
     letters = re.sub(r"[^A-Za-z]", "", b)
-    if len(letters) >= 2 and letters.isupper():
+    if 2 <= len(letters) <= 6 and letters.isupper():
         return True
-    return bool(re.search(r"[a-z][A-Z]", b))
+    return bool(re.fullmatch(r"[A-Z][a-z]+(?:[A-Z][a-z0-9]*)+", b))
 
 
 def plain(v):
@@ -405,15 +433,36 @@ def order_brand():
 
 
 def transcript(words):
-    """the transcript's plain tokens, and the brand-like names it speaks (acronyms, CamelCase)"""
-    toks, names = [], set()
+    """the transcript's plain tokens, the brand-like names it speaks, and its spelled-out letter runs"""
+    toks, raw, stops, names, letters = [], [], [], set(), []
     for w in words:
         t = str(w.get("text", w.get("w", w.get("word", "")))) if isinstance(w, dict) else str(w)
         for m in TOKEN.finditer(t):
             toks.append(norm(m.group(0)))
-            if shaped(m.group(0)):
-                names.add(base(m.group(0)))
-    return toks, names
+            raw.append(m.group(0))
+            stops.append(bool(re.match(r"\s*[.!?,;:…]", t[m.end():])))   # punctuation ends a run
+    caps = [bool(re.search(r"[A-Z]", r)) and not re.search(r"[a-z]", r) and len(r) > 1 for r in raw]
+    plainly = {b for r, b in zip(raw, toks) if not r.isupper()}
+    for k, r in enumerate(raw):
+        if not shaped(r):
+            continue
+        # an all-caps run of 2+ words ("NYC TEAM", "SO GOOD") is emphasis, and a word also said in
+        # lower case is an ordinary word: neither is a name
+        if caps[k] and ((k and caps[k - 1] and not stops[k - 1]) or (k + 1 < len(raw) and caps[k + 1] and not stops[k])
+                        or base(r) in plainly):
+            continue
+        if base(r) not in COMMON:
+            names.add(base(r))
+    run = []
+    for t in toks + [""]:   # "C F W" spoken letter by letter: every 3+ letter run is a name
+        if len(t) == 1 and t.isalpha() and t not in ("a", "i"):
+            run.append(t)
+            continue
+        for i in range(len(run)):
+            for j in range(i + 3, len(run) + 1):
+                letters.append("".join(run[i:j]))
+        run = []
+    return toks, names, set(letters)
 
 
 def all_caps(value):
@@ -421,25 +470,31 @@ def all_caps(value):
     return bool(letters) and letters.isupper()
 
 
-def foreign(value, names, own):
-    """the names in this line that the order does not own"""
+def foreign(value, names, spelled, own):
+    """the foreign names in this line: a spoken name written as an acronym / CamelCase word (or in an
+    all-caps word), or a spelled-out letter run ("C F W") written as an acronym"""
     out = []
     for m in TOKEN.finditer(plain(value)):
         tok, b = m.group(0), base(m.group(0))
-        if not b or b in own or b in GENERIC or not re.search(r"[a-z]", b):
+        if not b or b in own or b in GENERIC or b in COMMON or not re.search(r"[a-z]", b):
             continue
-        if b in names or re.search(r"[a-z][A-Z]", POSS.sub("", tok)):
+        bare = POSS.sub("", tok)
+        if not bare[:1].isupper() or NAME_PREFIX.match(bare):
+            continue
+        upper = re.sub(r"[^A-Za-z]", "", bare).isupper()
+        if (b in names and (upper or shaped(bare))) or (b in spelled and upper and len(b) >= 3):
             out.append(tok)
     return out
 
 
-def quoted(value, said):
-    toks = [norm(t) for t in TOKEN.findall(plain(value))]
-    toks = [t for t in toks if t]
-    return bool(toks) and (" " + " ".join(toks) + " ") in (" " + " ".join(said) + " ")
+def quoted(value, said, hits):
+    toks = [t for t in (norm(t) for t in TOKEN.findall(plain(value))) if t]
+    if len(toks) < MIN_QUOTE or 2 * len(hits) > len(toks):
+        return False
+    return (" " + " ".join(toks) + " ") in (" " + " ".join(said) + " ")
 
 
-def fix_text(seg, names_hit, brand, is_html, caps):
+def fix_text(seg, names_hit, brand, caps):
     hit = {base(t) for t in names_hit}
     toks = list(TOKEN.finditer(seg))
     out, pos, i = [], 0, 0
@@ -451,22 +506,16 @@ def fix_text(seg, names_hit, brand, is_html, caps):
         j = i  # a run of adjacent names ("Acme Labs") is one name
         while j + 1 < len(toks) and base(toks[j + 1].group(0)) in hit and seg[toks[j].end():toks[j + 1].start()].strip() == "":
             j += 1
-        last = toks[j].group(0)
-        poss = POSS.search(last)
+        poss = POSS.search(toks[j].group(0))
         out.append(seg[pos:m.start()])
+        pos = toks[j].end()
         if brand:
-            name = brand.upper() if caps else brand
-            if is_html:
-                name = html.escape(name)
-            out.append(name + (poss.group(0) if poss else ""))
-            pos = toks[j].end()
+            out.append((brand.upper() if caps else brand) + (poss.group(0) if poss else ""))
         else:
-            pos = toks[j].end()
             # drop the name and the space after it (or before it at the end)
-            rest = seg[pos:]
-            if rest[:1] == " ":
+            if seg[pos:pos + 1].isspace():
                 pos += 1
-            elif out and out[-1].endswith(" "):
+            elif out and out[-1][-1:].isspace():
                 out[-1] = out[-1][:-1]
         i = j + 1
     out.append(seg[pos:])
@@ -476,15 +525,23 @@ def fix_text(seg, names_hit, brand, is_html, caps):
 def fix_value(value, names_hit, brand, is_html):
     caps = all_caps(value)
     if not is_html:
-        return re.sub(r"\s{2,}", " ", fix_text(value, names_hit, brand, False, caps)).strip()
-    parts = TAG.split(value)
-    parts = [p if TAG.fullmatch(p) else fix_text(p, names_hit, brand, True, caps) for p in parts]
-    new = "".join(parts)
-    new = re.sub(r"<span[^>]*>\s*</span>", "", new)
+        return re.sub(r"\s{2,}", " ", fix_text(value, names_hit, brand, caps)).strip()
+    hit = {base(t) for t in names_hit}
+    parts = []
+    for p in TAG.split(value):
+        if TAG.fullmatch(p):
+            parts.append(p)
+            continue
+        text = html.unescape(p)   # tokenise the text as shown (CFW&nbsp;writes is CFW + writes)
+        if not any(base(t) in hit for t in TOKEN.findall(text)):
+            parts.append(p)
+            continue
+        parts.append(html.escape(fix_text(text, names_hit, brand, caps), quote=False).replace("\xa0", "&nbsp;"))
+    new = re.sub(r"<span[^>]*>\s*</span>", "", "".join(parts))
     return re.sub(r"[ \t]{2,}", " ", new).strip()
 
 
-def problems(plan, said, names, own):
+def problems(plan, said, names, spelled, own):
     bad = []
     for i, tk in enumerate(plan.get("takeovers") or []):
         fill = tk.get("fill") if isinstance(tk, dict) else None
@@ -494,8 +551,8 @@ def problems(plan, said, names, own):
         for key, v in fill.items():
             if key in skip or not isinstance(v, str):
                 continue
-            hits = foreign(v, names, own)
-            if hits and not quoted(v, said):
+            hits = foreign(v, names, spelled, own)
+            if hits and not quoted(v, said, hits):
                 bad.append((i, key, v, hits))
     return bad
 
@@ -518,9 +575,9 @@ def main(argv):
         words = words.get("words") or []
     if not isinstance(plan, dict) or not isinstance(words, list):
         stop("plan must be a JSON object and words a JSON list (WI2.95)")
-    said, names = transcript(words)
+    said, names, spelled = transcript(words)
     own = {base(t) for t in TOKEN.findall(brand)}
-    bad = problems(plan, said, names, own)
+    bad = problems(plan, said, names, spelled, own)
     if check:
         for i, key, v, hits in bad:
             print("takeover brand check: takeover %d %s %r names %s, not the order brand %r, and is not a word-for-word "
@@ -538,7 +595,7 @@ def main(argv):
         json.dump(plan, open(path, "w"), indent=2)
     else:
         print("[plan] takeover brand: no foreign brand names, plan unchanged")
-    left = problems(plan, said, names, own)
+    left = problems(plan, said, names, spelled, own)
     for i, key, v, hits in left:
         print("takeover brand check: takeover %d %s %r still names %s (WI2.95)" % (i + 1, key, v, "/".join(hits)), file=sys.stderr)
     sys.exit(1 if left else 0)
@@ -579,8 +636,7 @@ for g in p["caption_groups"]:
 import subprocess
 assert subprocess.run([sys.executable, "work/caption_phrases.py", "--check", sys.argv[1]]).returncode == 0, \
     "a caption group splits a phrase mid-clause (WI2.76) — run python3 work/caption_phrases.py saves/edit_plan.json"
-import subprocess
-assert subprocess.run([sys.executable, "work/takeover_brand.py", "--check", sys.argv[1], "work/words.json"]).returncode == 0, \
+assert __import__("subprocess").run([sys.executable, "work/takeover_brand.py", "--check", sys.argv[1], "work/words.json"]).returncode == 0, \
     "takeover text names a brand the order does not own (WI2.95) — run python3 work/takeover_brand.py saves/edit_plan.json work/words.json"
 print(f"plan OK: {len(p['caption_groups'])} groups, {len(tks)} takeovers, {len(p.get('sfx',[]))} sfx, cover_at={cover_t}s")
 PY

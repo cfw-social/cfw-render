@@ -12383,7 +12383,7 @@ try:
             shutil.copytree(skills / rec, up / rec)
         def revert(t, edits):
             text = t.read_text(encoding="utf-8")
-            for old, new, before in reversed(edits):
+            for old, new, before, *_ in reversed(edits):
                 text = text.replace(new + old, old) if before else text.replace(new, old)
             t.write_text(text, encoding="utf-8")
         for rel, full_only, edits in files:
@@ -12423,6 +12423,87 @@ else
   fail "WI2.95 spotlight takeover text names the order's brand or quotes the speech" "$wi295_detail"
 fi
 rm -rf "$wi295_root"
+
+echo "=== Case 73: WI2.95 review — quotes need 3+ words; generic acronyms, iPhone-style words and Mc names are never swapped ==="
+# Independent review of 68e13f0: a 1-2 word line ("CFW", "CFW already") counted as a quote and kept the
+# foreign brand; ordinary words were swapped ("Cut your CAC in half" -> "Cut your Test Brand in half",
+# "NYC TEAM 3X", "McKenzie changed everything", "Shot on iPhone"); a spelled-out "C F W" was missed; and
+# CFW&nbsp;writes failed the step. The real helper (all 5 copies identical) runs on each review example.
+wi295b_root="$(mktemp -d)"
+wi295b_detail="$(python3 - "$REPO_DIR" "$wi295b_root" <<'PY'
+import json, re, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+SAID = ("Most agents cut their CAC in half. Our NYC TEAM grew 3X. McKenzie changed everything. Shot on iPhone. "
+        "My PhD, iOS, WiFi, ROAS, AOV, LTV, DTC and SMB notes. MLS HOA FHA ROI HVAC ADU APR LLC USA US UK LA SF TV "
+        "PDF FAQ DIY. CFW already learned her voice, so it writes the month.")
+SPELLED = "Then C F W writes the month for her."
+BRAND = "Test Brand"
+ROWS = [  # (transcript, template, key, value, order brand, expected after the repair)
+    (SAID, "tk-keyword", "WORD", "CFW", BRAND, "TEST BRAND"),
+    (SAID, "tk-stat", "EYEBROW", "CFW", BRAND, "TEST BRAND"),
+    (SAID, "tk-list", "ITEM1", "CFW already", BRAND, "Test Brand already"),
+    (SAID, "tk-list", "ITEM1", "CFW knows her voice", BRAND, "Test Brand knows her voice"),
+    (SAID, "tk-quote", "QUOTE", "CFW already learned her voice", BRAND, "CFW already learned her voice"),
+    (SAID, "tk-list", "TITLE", "CFW&nbsp;writes <span class=\"accent\">the</span> month", BRAND,
+     "Test Brand&nbsp;writes <span class=\"accent\">the</span> month"),
+    (SPELLED, "tk-list", "TITLE", "CFW <span class=\"accent\">WRITES</span> THE MONTH", BRAND,
+     "TEST BRAND <span class=\"accent\">WRITES</span> THE MONTH"),
+    (SAID, "tk-list", "ITEM2", "Cut your CAC in half", BRAND, "Cut your CAC in half"),
+    (SAID, "tk-stat", "LABEL", "NYC TEAM 3X", BRAND, "NYC TEAM 3X"),
+    (SAID, "tk-list", "ITEM3", "McKenzie changed everything", BRAND, "McKenzie changed everything"),
+    (SAID, "tk-keyword", "SUPPORT", "Shot on iPhone", BRAND, "Shot on iPhone"),
+    (SAID, "tk-list", "TITLE", "PhD, iOS, WiFi, ROAS, AOV, LTV, DTC, SMB", BRAND, "PhD, iOS, WiFi, ROAS, AOV, LTV, DTC, SMB"),
+    (SAID, "tk-list", "ITEM1", "MLS HOA FHA ROI HVAC ADU APR LLC USA US UK NYC LA SF TV PDF FAQ DIY", BRAND,
+     "MLS HOA FHA ROI HVAC ADU APR LLC USA US UK NYC LA SF TV PDF FAQ DIY"),
+    (SAID, "tk-list", "ITEM1", "CFW already", "", "already"),
+    ("Just say NO to cold calls.", "tk-list", "ITEM1", "No more cold calls", BRAND, "No more cold calls"),
+    ("Just say NO to cold calls.", "tk-keyword", "WORD", "NO", BRAND, "NO"),
+    ("We left HubSpot last year.", "tk-list", "ITEM1", "Ditch HubSpot today", BRAND, "Ditch Test Brand today"),
+]
+HELPER_RE = re.compile(r"cat > (?:work/|\"\$W/)takeover_brand\.py\"? <<'PY'\n(.*?\n)PY\n", re.S)
+try:
+    skills = repo / "skills"
+    copies = [p for p in sorted(skills.rglob("03-plan-edit.md")) if "p-reels-spotlight" in p.parent.parent.name]
+    copies += [skills / "p-reels-spotlight" / "SKILL.md", skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "SKILL.md"]
+    helpers = {p: HELPER_RE.findall(p.read_text(encoding="utf-8")) for p in copies}
+    if any(len(h) != 1 for h in helpers.values()):
+        bad.append("not every spotlight plan copy writes one takeover_brand.py helper (WI2.95)")
+    elif len({h[0] for h in helpers.values()}) != 1:
+        bad.append("the takeover_brand.py helper copies differ")
+    else:
+        hp = root / "takeover_brand.py"
+        hp.write_text(next(iter(helpers.values()))[0])
+        for n, (said, tpl, key, value, brand, want) in enumerate(ROWS):
+            wd = root / ("row%d" % n); wd.mkdir()
+            (wd / "w.json").write_text(json.dumps([{"text": w, "start": i, "end": i + 0.5} for i, w in enumerate(said.split())]))
+            (wd / "p.json").write_text(json.dumps({"takeovers": [{"start": 3, "end": 7, "template": tpl, "fill": {key: value}}]}))
+            r = subprocess.run([sys.executable, str(hp), "p.json", "w.json", brand], cwd=wd, capture_output=True, text=True, timeout=60)
+            got = json.loads((wd / "p.json").read_text())["takeovers"][0]["fill"][key]
+            if r.returncode != 0 or got != want:
+                bad.append("%s %r (brand %r): got %r rc %d, wanted %r" % (key, value, brand, got, r.returncode, want))
+            c = subprocess.run([sys.executable, str(hp), "--check", "p.json", "w.json", brand], cwd=wd, capture_output=True, timeout=60)
+            if c.returncode != 0:
+                bad.append("%s %r: --check fails after the repair" % (key, value))
+    for p in copies:
+        t = p.read_text(encoding="utf-8")
+        if "never write a competitor or comparison line that names another brand" not in t:
+            bad.append("%s: rule 5 does not forbid competitor / comparison lines" % p.relative_to(repo))
+        g = re.findall(r"python3 - saves/edit_plan.json \"\$DUR\" <<'PY'\n(.*?\n)PY\n", t, re.S)
+        if g and g[0].count("import subprocess") > 1:
+            bad.append("%s: the plan guard imports subprocess twice" % p.relative_to(repo))
+except (Exception, SystemExit) as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad[:12]))
+PY
+)"
+if [[ "$wi295b_detail" == "ok" ]]; then
+  pass "WI2.95 review: quotes need 3+ words; CAC/NYC/MLS/PhD/iPhone/McKenzie stay; C F W and CFW&nbsp; are caught; rule 5 forbids comparisons"
+else
+  fail "WI2.95 review: takeover brand guard is narrow and safe" "$wi295b_detail"
+fi
+rm -rf "$wi295b_root"
 
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
