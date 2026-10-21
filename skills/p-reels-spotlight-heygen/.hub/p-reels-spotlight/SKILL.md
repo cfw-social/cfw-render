@@ -93,6 +93,10 @@ CTA end-card. Both artifacts uploaded to R2 — **the MP4 R2 public URL is the d
 > `cta.line` / `cta.handle` / `brand` when present, else the brand context the order carries) and export
 > them. If the brand has no handle, leave `CTA_HANDLE` empty: Step 8 then renders the end card **without a
 > handle line**. Never reuse another brand's copy or handle, and never invent a handle.
+>
+> **`cta_card` comes from the order too (WI2.90).** Set `CTA_CARD` to the order's `cta_card` (`on` unless
+> the order says `off`) and export it with the copy above. `off` means Step 2 adds no silent tail and
+> Step 8 renders no end card; anything other than `on` counts as `off`, as in the steps path.
 
 Set up variables:
 
@@ -108,6 +112,7 @@ BROLL_REUSE="${BROLL_REUSE:-false}"
 CTA_TEXT="${CTA_TEXT:-FOLLOW FOR MORE}"
 CTA_HANDLE="${CTA_HANDLE:-}"    # empty = no handle line on the end card (per-brand; never a placeholder)
 BRAND_NAME="${BRAND_NAME:-}"    # empty = no kicker line on the end card
+CTA_CARD="${CTA_CARD:-on}"      # the order's cta_card (WI2.90): off = no Step 2 tail and no Step 8 end card
 CTA_DURATION="${CTA_DURATION:-3}"
 W="{production}/interim/spotlight" ; mkdir -p "$W"
 OUT_BASE="{production}/final/spotlight-reel"
@@ -876,6 +881,12 @@ bed. Step 2's silent tail (WI2.89) leaves `CTA_DURATION` + 0.5 s after the last 
 card shows right after the speech. Total reel duration = bed duration. Nothing is appended.
 
 ```bash
+# WI2.90: cta_card off (CTA_CARD, from the order) renders no end card; Step 2 added no tail either.
+if [ "${CTA_CARD:-on}" != "on" ]; then
+BED_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$W/polished.mp4")
+echo "[spotlight] end card: cta_card off, no end card"
+cp "$W/polished.mp4" "$OUT_RAW"
+else
 BG_HEX=$(python3 -c "import json; print(json.load(open('$W/plan.json'))['brand']['bg'].lstrip('#'))")
 ACCENT_HEX=$(python3 -c "import json; print(json.load(open('$W/plan.json'))['brand']['accent'].lstrip('#'))")
 FG_HEX=$(python3 -c "import json; print(json.load(open('$W/plan.json'))['brand']['fg'].lstrip('#'))")
@@ -916,6 +927,7 @@ ffmpeg -y -i "$W/polished.mp4" -itsoffset "${CTA_START}" -i "$W/cta-card.mp4" \
   -map "[v]" -map 0:a \
   -c:v libx264 -pix_fmt yuv420p -c:a copy \
   -movflags +faststart "$OUT_RAW"
+fi   # WI2.90: end of the cta_card on branch
 
 if [ -n "${MUSIC:-}" ]; then
   FADE_START=$(python3 -c "print(${BED_DUR} - 0.5)")

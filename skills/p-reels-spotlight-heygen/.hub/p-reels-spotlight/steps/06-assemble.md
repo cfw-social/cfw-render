@@ -113,8 +113,9 @@ handle line.** Never invent a handle or reuse another brand's.
 **The card never covers speech (WI2.86).** It starts at `max(bed − cta_duration, last word end)`,
 where the last word end is the latest `end` in `work/words.json` or `e` in the plan's
 `caption_groups`, so the closing line keeps the face and its captions. The card covers the rest
-of the bed and is rendered at that length. Nothing is appended: when less than
-1.0 s of bed is left after the last word, the card is skipped with one log line.
+of the bed and is rendered at that length. Nothing is appended. Step 01's silent tail (WI2.89)
+always leaves room, so when less than 1.0 s of bed is left after the last word the step
+fails (exit 1) with the reason instead of shipping a reel with no end card (WI2.90).
 
 ```bash
 eval "$(python3 - <<'PY'
@@ -141,10 +142,9 @@ print("%.3f" % max(bed - want, max(ends)))
 PY
   ) || exit 1
   CTA_DURATION=$(python3 -c "print('%.3f' % max(0.0, ${BED_DUR} - ${CTA_START}))")
-  if python3 -c "import sys; sys.exit(0 if ${CTA_DURATION} < 1.0 else 1)"; then
-    echo "[spotlight] end card skipped: only ${CTA_DURATION}s of bed after the last spoken word (needs 1.0s)"
-    CTA_CARD=off
-  fi
+  # WI2.90: the step 01 tail (WI2.89) always leaves room; under 1.0 s is a bug, so fail loudly
+  # (like SKILL.md Step 8) instead of shipping a reel with no end card.
+  python3 -c "import sys; sys.exit(0 if ${CTA_DURATION} >= 1.0 else 'end card: only ${CTA_DURATION}s of bed after the last spoken word (needs 1.0s); the step 01 end-card tail (WI2.89) is missing')" || exit 1
 fi
 if [ "$CTA_CARD" = "on" ]; then
   CTA_DURATION="$CTA_DURATION" CTA_TEXT="$CTA_TEXT" CTA_HANDLE="$CTA_HANDLE" BRAND_NAME="$BRAND_NAME" \

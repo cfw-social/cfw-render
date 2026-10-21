@@ -119,6 +119,11 @@ WI2.94 apply_spotlight_takeover_line_fit() makes every p-reels-spotlight takeove
 line on one line: white-space: nowrap, and the page shrinks the font from its design size until the
 line fits its safe width (>= 80 px from both frame edges); it refits once fonts load. Never truncated.
 
+WI2.90 apply_spotlight_end_card_room() makes step 06 of every p-reels-spotlight copy fail (exit 1) with
+the reason when under 1.0 s of bed is left after the last word, instead of silently dropping the end
+card, and makes SKILL.md (both full copies) read the order's cta_card into CTA_CARD (default on), so
+cta_card: off adds no Step 2 tail and Step 8 renders no card.
+
 Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
 and before list_files/hashing, same ordering guarantee:
   strip_brand_override_host_paths() nulls/drops the two host-path fields
@@ -3374,6 +3379,111 @@ def apply_spotlight_takeover_line_fit(directory: Path, recipe: str) -> int:
     return changed
 
 
+# WI2.90: independent review on WI2.89 (Render 32549b7, 2026-10-21). (1) Step 06 still skipped the end card
+# with one log line when under SPOTLIGHT_CTA_MIN_S of bed was left after the last word. Since WI2.89 step 01
+# always leaves a silent tail, that only happens through a bug, and the reel shipped with no CTA while no
+# check failed. Step 06 now fails (exit 1) with the reason, like SKILL.md Step 8. (2) SKILL.md never set
+# CTA_CARD, so Step 2's "${CTA_CARD:-on}" was always on: an order with cta_card: off still got a ~3.5 s frozen
+# silent tail. SKILL.md now reads the order's cta_card into CTA_CARD (default on) next to CTA_TEXT /
+# CTA_HANDLE / CTA_DURATION, and Step 8 renders no card when it is off. Runs after WI2.86/WI2.89/WI2.93.
+_SPOTLIGHT_CTA_ROOM_STEP_DOC_OLD = """of the bed and is rendered at that length. Nothing is appended: when less than
+""" + str(SPOTLIGHT_CTA_MIN_S) + """ s of bed is left after the last word, the card is skipped with one log line.
+"""
+SPOTLIGHT_CTA_ROOM_STEP_DOC = """of the bed and is rendered at that length. Nothing is appended. Step 01's silent tail (WI2.89)
+always leaves room, so when less than """ + str(SPOTLIGHT_CTA_MIN_S) + """ s of bed is left after the last word the step
+fails (exit 1) with the reason instead of shipping a reel with no end card (WI2.90).
+"""
+_SPOTLIGHT_CTA_ROOM_STEP_SKIP_OLD = """  if python3 -c "import sys; sys.exit(0 if ${CTA_DURATION} < """ + str(SPOTLIGHT_CTA_MIN_S) + """ else 1)"; then
+    echo "[spotlight] end card skipped: only ${CTA_DURATION}s of bed after the last spoken word (needs """ + str(SPOTLIGHT_CTA_MIN_S) + """s)"
+    CTA_CARD=off
+  fi
+"""
+SPOTLIGHT_CTA_ROOM_STEP_FAIL = """  # WI2.90: the step 01 tail (WI2.89) always leaves room; under """ + str(SPOTLIGHT_CTA_MIN_S) + """ s is a bug, so fail loudly
+  # (like SKILL.md Step 8) instead of shipping a reel with no end card.
+  python3 -c "import sys; sys.exit(0 if ${CTA_DURATION} >= """ + str(SPOTLIGHT_CTA_MIN_S) + """ else 'end card: only ${CTA_DURATION}s of bed after the last spoken word (needs """ + str(SPOTLIGHT_CTA_MIN_S) + """s); the step 01 end-card tail (WI2.89) is missing')" || exit 1
+"""
+_SPOTLIGHT_CTA_CARD_SKILL_NOTE_OLD = """> handle line**. Never reuse another brand's copy or handle, and never invent a handle.
+"""
+SPOTLIGHT_CTA_CARD_SKILL_NOTE = _SPOTLIGHT_CTA_CARD_SKILL_NOTE_OLD + """>
+> **`cta_card` comes from the order too (WI2.90).** Set `CTA_CARD` to the order's `cta_card` (`on` unless
+> the order says `off`) and export it with the copy above. `off` means Step 2 adds no silent tail and
+> Step 8 renders no end card; anything other than `on` counts as `off`, as in the steps path.
+"""
+_SPOTLIGHT_CTA_CARD_SKILL_VAR_OLD = """CTA_DURATION="${CTA_DURATION:-3}"
+W="{production}/interim/spotlight" ; mkdir -p "$W"
+"""
+SPOTLIGHT_CTA_CARD_SKILL_VAR = """CTA_CARD="${CTA_CARD:-on}"      # the order's cta_card (WI2.90): off = no Step 2 tail and no Step 8 end card
+""" + _SPOTLIGHT_CTA_CARD_SKILL_VAR_OLD
+_SPOTLIGHT_CTA_CARD_SKILL_S8_OLD = """```bash
+BG_HEX=$(python3 -c "import json; print(json.load(open('$W/plan.json'))['brand']['bg'].lstrip('#'))")
+"""
+SPOTLIGHT_CTA_CARD_SKILL_S8 = """```bash
+# WI2.90: cta_card off (CTA_CARD, from the order) renders no end card; Step 2 added no tail either.
+if [ "${CTA_CARD:-on}" != "on" ]; then
+BED_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$W/polished.mp4")
+echo "[spotlight] end card: cta_card off, no end card"
+cp "$W/polished.mp4" "$OUT_RAW"
+else
+BG_HEX=$(python3 -c "import json; print(json.load(open('$W/plan.json'))['brand']['bg'].lstrip('#'))")
+"""
+_SPOTLIGHT_CTA_CARD_SKILL_S8_END_OLD = """  -movflags +faststart "$OUT_RAW"
+
+if [ -n "${MUSIC:-}" ]; then
+"""
+SPOTLIGHT_CTA_CARD_SKILL_S8_END = """  -movflags +faststart "$OUT_RAW"
+fi   # WI2.90: end of the cta_card on branch
+
+if [ -n "${MUSIC:-}" ]; then
+"""
+_SPOTLIGHT_CTA_ROOM_FILES = (
+    # (file under a spotlight root, only in a full p-reels-spotlight copy (not the heygen wrapper), edits)
+    (SPOTLIGHT_ASSEMBLE_FILE, False, ((_SPOTLIGHT_CTA_ROOM_STEP_DOC_OLD, SPOTLIGHT_CTA_ROOM_STEP_DOC),
+                                      (_SPOTLIGHT_CTA_ROOM_STEP_SKIP_OLD, SPOTLIGHT_CTA_ROOM_STEP_FAIL))),
+    (Path("SKILL.md"), True, ((_SPOTLIGHT_CTA_CARD_SKILL_NOTE_OLD, SPOTLIGHT_CTA_CARD_SKILL_NOTE),
+                              (_SPOTLIGHT_CTA_CARD_SKILL_VAR_OLD, SPOTLIGHT_CTA_CARD_SKILL_VAR),
+                              (_SPOTLIGHT_CTA_CARD_SKILL_S8_OLD, SPOTLIGHT_CTA_CARD_SKILL_S8),
+                              (_SPOTLIGHT_CTA_CARD_SKILL_S8_END_OLD, SPOTLIGHT_CTA_CARD_SKILL_S8_END))),
+)
+
+
+def apply_spotlight_end_card_room(directory: Path, recipe: str) -> int:
+    """WI2.90: every p-reels-spotlight copy under `directory` (the top-level p-reels-spotlight /
+    p-reels-spotlight-heygen step 06, .hub/p-reels-spotlight, and SKILL.md of each full copy) fails step 06
+    loudly when the end card has under SPOTLIGHT_CTA_MIN_S of room, and the SKILL.md path reads the order's
+    cta_card into CTA_CARD (default on) so cta_card: off adds no tail and renders no card. Idempotent; fails
+    fast when a copy lost its anchor or file, or when a spotlight recipe ships no assemble step."""
+    changed = 0
+    if not directory.is_dir():
+        return 0
+    roots = [directory] if directory.name.startswith("p-reels-spotlight") else []
+    roots += sorted(p for p in directory.rglob("p-reels-spotlight") if p.is_dir() and p.parent.name == ".hub")
+    roots = [r for r in roots if (r / SPOTLIGHT_ASSEMBLE_FILE).is_file()]
+    if recipe.startswith("p-reels-spotlight") and not roots:
+        raise SystemExit(f"sync-skills.py: ERROR - no p-reels-spotlight {SPOTLIGHT_ASSEMBLE_FILE} under {directory} "
+                         f"({recipe}); the WI2.90 transform cannot apply")
+    for root in roots:
+        for rel, full_only, edits in _SPOTLIGHT_CTA_ROOM_FILES:
+            if full_only and root.name != "p-reels-spotlight":
+                continue
+            path = root / rel
+            if not path.is_file():
+                raise SystemExit(f"sync-skills.py: ERROR - {path} is missing ({recipe}); the WI2.90 transform cannot apply")
+            text = path.read_text(encoding="utf-8")
+            new_text = text
+            for old, new in edits:
+                if new in new_text:
+                    continue
+                if new_text.count(old) != 1:
+                    raise SystemExit(f"sync-skills.py: ERROR - end-card room anchor {old.strip().splitlines()[0][:60]!r} "
+                                     f"found {new_text.count(old)} time(s) in {path} ({recipe}); "
+                                     "the WI2.90 transform cannot apply")
+                new_text = new_text.replace(old, new, 1)
+            if new_text != text:
+                path.write_text(new_text, encoding="utf-8")
+                changed += 1
+    return changed
+
+
 def git_head_sha(repo: Path) -> str | None:
     """Best-effort `git rev-parse HEAD` of `repo`. Returns None (never
     raises) when `repo` isn't a git checkout — e.g. a test fixture dir — so
@@ -3543,6 +3653,9 @@ def main():
 
         # WI2.94: every single-line takeover text (tk-stat label, tk-list title/items, ...) fits on one line.
         apply_spotlight_takeover_line_fit(recipe_dest, recipe)
+
+        # WI2.90: step 06 fails when the end card has no room; SKILL.md reads the order's cta_card (every copy).
+        apply_spotlight_end_card_room(recipe_dest, recipe)
 
         files = list_files(recipe_dest)
         file_hashes = {f: sha256_file(recipe_dest / f) for f in files}
