@@ -109,8 +109,7 @@ if (( DRY )); then
   fi
 
   # Live check WITHOUT claiming: tools/list must show the 4 worker tools.
-  tools_resp="$(curl -sS --max-time 15 -X POST "${CFW_API_BASE%/}/api/v1/mcp" \
-    -H "cfw-render-key: $CFW_RENDER_WORKER_KEY" \
+  tools_resp="$(cr_curl_with_key -sS --max-time 15 -X POST "${CFW_API_BASE%/}/api/v1/mcp" \
     -H "content-type: application/json" \
     -H "accept: application/json, text/event-stream" \
     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' 2>/dev/null)"

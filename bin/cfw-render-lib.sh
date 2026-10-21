@@ -674,12 +674,32 @@ cr_log() {
 }
 
 # ---------------------------------------------------------------------------
+# cr_curl_with_key [curl args...]
+# Run curl with the render key in a header. The key is written to a mode-600
+# file and passed as -H @file, then the file is removed. curl's argv never
+# contains the key (WI2.102: process listings were showing the header value).
+# Stdin stays free, so a caller may still stream a body. Do not pass the key
+# as another argument.
+# ---------------------------------------------------------------------------
+cr_curl_with_key() {
+  local hdr rc
+  hdr="$(mktemp "${TMPDIR:-/tmp}/cfw-render-hdr.XXXXXX")" || return 1
+  chmod 600 "$hdr" || { rm -f "$hdr"; return 1; }
+  printf 'cfw-render-key: %s\n' "$CFW_RENDER_WORKER_KEY" > "$hdr" || { rm -f "$hdr"; return 1; }
+  curl -H "@$hdr" "$@"
+  rc=$?
+  rm -f "$hdr"
+  return "$rc"
+}
+
+# ---------------------------------------------------------------------------
 # cr_mcp_call <tool> <json-args>
 # Single curl JSON-RPC wrapper against $CFW_API_BASE/api/v1/mcp (pattern:
 # cfw-social/docs/mcp-brand-context-smoke.md "Manual curl reference"), headers
-# cfw-render-key + accept json/SSE, --max-time 30, 2 retries with backoff on
-# curl-level failure. Prints the unwrapped inner JSON (result.content[0].text)
-# on stdout; non-zero exit on curl failure / JSON-RPC error / isError.
+# cfw-render-key (via cr_curl_with_key, not argv) + accept json/SSE,
+# --max-time 30, 2 retries with backoff on curl-level failure. Prints the
+# unwrapped inner JSON (result.content[0].text) on stdout; non-zero exit on
+# curl failure / JSON-RPC error / isError.
 # ---------------------------------------------------------------------------
 cr_mcp_call() {
   local tool="$1" args_json="$2"
@@ -697,8 +717,7 @@ print(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
   # the dish already exists. Do not repeat this terminal write automatically.
   [[ "$tool" == complete_render_order ]] && max_attempts=1
   for (( attempt=1; attempt<=max_attempts; attempt++ )); do
-    resp="$(curl -sS --max-time 30 -X POST "$url" \
-      -H "cfw-render-key: $CFW_RENDER_WORKER_KEY" \
+    resp="$(cr_curl_with_key -sS --max-time 30 -X POST "$url" \
       -H "content-type: application/json" \
       -H "accept: application/json, text/event-stream" \
       -d "$body" 2>/dev/null)"
@@ -762,8 +781,7 @@ print(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
 
   local attempt resp rc http_code
   for attempt in 1 2 3; do
-    resp="$(curl -sS --max-time 30 -w '\n%{http_code}' -X POST "$url" \
-      -H "cfw-render-key: $CFW_RENDER_WORKER_KEY" \
+    resp="$(cr_curl_with_key -sS --max-time 30 -w '\n%{http_code}' -X POST "$url" \
       -H "content-type: application/json" \
       -H "accept: application/json, text/event-stream" \
       -d "$body" 2>/dev/null)"

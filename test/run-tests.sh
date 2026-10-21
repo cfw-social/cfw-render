@@ -12610,6 +12610,110 @@ else
 fi
 rm -rf "$wi295b_root"
 
+echo "=== Case 74: WI2.102 — render key stays out of curl argv ==="
+# A curl wrapper first on PATH appends each curl argv to a log, then execs the
+# real curl. --dry (the tools/list curl in cfw-render.sh), one worker claim
+# (--once, which also presign-uploads the finished files) and one multipart
+# upload all hit the mock. The log must name those requests and must not
+# contain the key text. On 04e5c91 those curls were started with
+# -H "cfw-render-key: $CFW_RENDER_WORKER_KEY", so this case fails there.
+wi102_root="$(mktemp -d)"
+wi102_key="cfw_render_wi2102argvsecret"
+wi102_port=$((MOCK_PORT_BASE + 1202))
+mkdir -p "$wi102_root/mockstate" "$wi102_root/cr-state" "$wi102_root/cr-scratch" "$wi102_root/bin"
+order_fixture order-wi2102 brand-1 video > "$wi102_root/queue.json"
+wi102_real_curl="$(command -v curl)"
+cat > "$wi102_root/bin/curl" <<EOF
+#!/usr/bin/env bash
+line="\$0"
+for arg in "\$@"; do
+  line="\$line <\$arg>"
+done
+printf '%s\n' "\$line" >> "$wi102_root/argv.log"
+exec "$wi102_real_curl" "\$@"
+EOF
+chmod +x "$wi102_root/bin/curl"
+: > "$wi102_root/argv.log"
+wi102_pid="$(start_mock "$wi102_root/queue.json" "$wi102_root/mockstate" "$wi102_port")"
+(
+  export PATH="$wi102_root/bin:$REPO_DIR/bin:$FAKE_BIN:$PATH"
+  export CFW_API_BASE="http://127.0.0.1:$wi102_port"
+  export CFW_RENDER_TEST_MEDIA_BASE_URL="$CFW_API_BASE"
+  export CFW_RENDER_WORKER_KEY="$wi102_key"
+  export CFW_RENDER_ENV="/nonexistent-cfw-render-env-for-tests"
+  export CFW_RENDER_STATE_DIR="$wi102_root/cr-state"
+  export CFW_RENDER_LOG_DIR="$wi102_root/cr-state"
+  export CFW_RENDER_KEEP_OUTPUTS=0
+  export CFW_RENDER_SCRATCH="$wi102_root/cr-scratch"
+  export CFW_RENDER_SKILLS_DIR="$wi102_root/skills"
+  export CFW_RENDER_OLLAMA_KEYS_FILE="$OLLAMA_KEYS_FIXTURE"
+  export CFW_RENDER_DIRECTOR_CMD="$TEST_DIR/fake-director.sh"
+  export FAKE_DIRECTOR_MODE="happy"
+  export CFW_RENDER_TIMEOUT_VIDEO=30
+  export CFW_RENDER_TIMEOUT_IMAGE=30
+  export CFW_RENDER_CONCURRENCY=1
+  "$REPO_DIR/bin/cfw-render.sh" --dry > "$wi102_root/dry.out" 2> "$wi102_root/dry.err"
+  printf '%s\n' "$?" > "$wi102_root/dry.rc"
+  "$REPO_DIR/bin/cfw-render.sh" --once > "$wi102_root/once.out" 2> "$wi102_root/once.err"
+  printf '%s\n' "$?" > "$wi102_root/once.rc"
+  printf 'x' > "$wi102_root/clip.png"
+  CFW_RENDER_UPLOAD_MODE=multipart \
+    CFW_ORDER_ID=order-wi2102 \
+    CFW_WORKER_ID=worker-wi2102 \
+    "$REPO_DIR/bin/cfw-render-upload.sh" "$wi102_root/clip.png" \
+    > "$wi102_root/upload.out" 2> "$wi102_root/upload.err"
+  printf '%s\n' "$?" > "$wi102_root/upload.rc"
+)
+kill "$wi102_pid" 2>/dev/null
+wait "$wi102_pid" 2>/dev/null || true
+wi102_dry_rc="$(cat "$wi102_root/dry.rc" 2>/dev/null || echo missing)"
+wi102_once_rc="$(cat "$wi102_root/once.rc" 2>/dev/null || echo missing)"
+wi102_up_rc="$(cat "$wi102_root/upload.rc" 2>/dev/null || echo missing)"
+wi102_claims=0
+wi102_presign=0
+wi102_multi=0
+if [[ -f "$wi102_root/mockstate/calls.jsonl" ]]; then
+  wi102_claims="$(grep -c '"tool": "claim_render_order"' "$wi102_root/mockstate/calls.jsonl" || true)"
+fi
+if [[ -f "$wi102_root/mockstate/uploads.jsonl" ]]; then
+  wi102_presign="$(grep -c '"via": "presign"' "$wi102_root/mockstate/uploads.jsonl" || true)"
+  wi102_multi="$(grep -c '"via": "multipart"' "$wi102_root/mockstate/uploads.jsonl" || true)"
+fi
+wi102_hint() {
+  python3 -c 'import pathlib,sys
+p=pathlib.Path(sys.argv[1])
+t=p.read_text(errors="replace")[-400:].replace(sys.argv[2], "<key>") if p.is_file() else "(no log)"
+print(t.replace("\n", " | "))' "$1" "$wi102_key"
+}
+if [[ "$wi102_dry_rc" == "0" && "$wi102_once_rc" == "0" && "$wi102_claims" -ge 1 && "$wi102_presign" -ge 1 ]]; then
+  pass "WI2.102: worker claim and presign upload reached the mock"
+else
+  fail "WI2.102 claim and presign upload" "dry=$wi102_dry_rc once=$wi102_once_rc claims=$wi102_claims presign=$wi102_presign dry_log=$(wi102_hint "$wi102_root/dry.err") once_log=$(wi102_hint "$wi102_root/once.err")"
+fi
+if [[ "$wi102_up_rc" == "0" && "$wi102_multi" -ge 1 ]]; then
+  pass "WI2.102: multipart upload reached the mock"
+else
+  fail "WI2.102 multipart upload" "rc=$wi102_up_rc multipart=$wi102_multi upload_log=$(wi102_hint "$wi102_root/upload.err")"
+fi
+wi102_saw_claim=0
+wi102_saw_presign=0
+wi102_saw_multi=0
+wi102_saw_list=0
+wi102_leaked=0
+if [[ -f "$wi102_root/argv.log" ]]; then
+  grep -F -q 'claim_render_order' "$wi102_root/argv.log" && wi102_saw_claim=1
+  grep -F -q '/api/v1/render/upload-url' "$wi102_root/argv.log" && wi102_saw_presign=1
+  grep -F -q -- '-F' "$wi102_root/argv.log" && wi102_saw_multi=1
+  grep -F -q 'tools/list' "$wi102_root/argv.log" && wi102_saw_list=1
+  grep -F -q -- "$wi102_key" "$wi102_root/argv.log" && wi102_leaked=1
+fi
+if [[ "$wi102_saw_claim" == "1" && "$wi102_saw_presign" == "1" && "$wi102_saw_multi" == "1" && "$wi102_saw_list" == "1" && "$wi102_leaked" == "0" ]]; then
+  pass "WI2.102: curl argv for the claim, both uploads and tools/list does not contain the render key"
+else
+  fail "WI2.102 curl argv" "claim=$wi102_saw_claim presign=$wi102_saw_presign multipart=$wi102_saw_multi list=$wi102_saw_list leaked=$wi102_leaked"
+fi
+rm -rf "$wi102_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
