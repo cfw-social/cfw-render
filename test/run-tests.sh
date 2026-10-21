@@ -11004,6 +11004,135 @@ else
 fi
 rm -rf "$wi293_root"
 
+echo "=== Case 65: WI2.92 — a failed spotlight takeover render fails step 05 loudly, with no still-card fallback ==="
+# Observed 2026-10-21 (WI2.87, p-reels-spotlight): the HyperFrames takeover render failed outright
+# ("Composition has zero duration. Runtime ready: false"), step 05's fallback swapped the takeovers for
+# static PNG / ffmpeg-overlay cards, the step passed and the reel still reached Reviews. Every
+# p-reels-spotlight step 05 copy now runs the render in its Part C block and a failed render exits
+# non-zero with the hyperframes error; the still-card fallback text, the SKILL.md Fallback assembly
+# section and the delivery gate's fallback pass are gone. Part C runs under bash with a stub npx that
+# fails like hyperframes 0.7.5 did and a stub ffprobe; the sync transform (idempotent, fail-fast) is checked too.
+wi292_root="$(mktemp -d)"
+wi292_detail="$(python3 - "$REPO_DIR" "$wi292_root" <<'PY'
+import importlib.util, json, os, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+HF_ERR = "Composition has zero duration. Runtime ready: false"
+NPX = ("#!/bin/sh\nprintf 'npx %s\\n' \"$*\" >> \"$WI292_LOG\"\n[ \"$2\" = render ] || exit 0\n"
+       "if [ -n \"${WI292_FAIL:-}\" ]; then echo 'Error: " + HF_ERR + "' >&2; exit 1; fi\n"
+       "out=; prev=; for a; do [ \"$prev\" = --output ] && out=$a; prev=$a; done\n"
+       "[ -n \"$out\" ] && printf 'video' > \"$out\"\nexit 0\n")
+FFPROBE = ("#!/bin/sh\ncase \"$*\" in *json*) echo '{\"streams\":[{\"width\":1080,\"height\":1920}],\"format\":{\"duration\":\"30.0\"}}';;\n"
+           "*) echo '1080,1920,30.0';; esac\nexit 0\n")
+bin_dir = root / "bin"; bin_dir.mkdir()
+for tool, body in (("npx", NPX), ("ffprobe", FFPROBE)):
+    (bin_dir / tool).write_text(body); (bin_dir / tool).chmod(0o755)
+def block(step):
+    t = step.read_text(encoding="utf-8")
+    if "### Part C" not in t:
+        return None
+    sec = t.split("### Part C", 1)[1].split("### Part D", 1)[0]
+    m = re.search(r"```bash\n(.*?)```", sec, re.S)
+    return m.group(1) if m else None
+def run(step, case, fail_render=False):
+    work = root / case; shutil.rmtree(work, ignore_errors=True); (work / "work" / "comp").mkdir(parents=True)
+    (work / "work" / "plan.json").write_text(json.dumps({"duration": 30.0, "takeovers": [
+        {"start": 3.0, "end": 7.0, "template": "tk-stat", "fill": {}}]}))
+    code = block(step)
+    if code is None:
+        return {"error": "no bash block in Part C"}
+    (work / "c.sh").write_text("set -u\n" + code)
+    log = work / "calls.log"
+    env = dict(os.environ, PATH="%s:%s" % (bin_dir, os.environ["PATH"]), WI292_LOG=str(log))
+    env.pop("WI292_FAIL", None)
+    if fail_render:
+        env["WI292_FAIL"] = "1"
+    p = subprocess.run(["bash", "c.sh"], cwd=work, env=env, capture_output=True, text=True, timeout=60)
+    calls = log.read_text().splitlines() if log.exists() else []
+    return {"rc": p.returncode, "out": (p.stdout + p.stderr)[-400:],
+            "renders": [c for c in calls if c.startswith("npx ") and " render " in c]}
+try:
+    skills = repo / "skills"
+    steps = sorted(p for p in skills.rglob("05-render-scenes.md")
+                   if p.parent.name == "steps" and p.parent.parent.name.startswith("p-reels-spotlight"))
+    if len(steps) != 3:
+        bad.append("expected 3 p-reels-spotlight steps/05-render-scenes.md copies, found %d" % len(steps))
+    if len({s.read_bytes() for s in steps}) > 1:
+        bad.append("the 05-render-scenes.md copies differ")
+    for step in steps:
+        rel = step.relative_to(repo)
+        t = step.read_text(encoding="utf-8")
+        if "PNG renders of the filled templates," in t or "even after the fallback" in t:
+            bad.append("%s: step 05 still offers the still-card (PNG / ffmpeg overlay) fallback" % rel)
+        r = run(step, "fail", fail_render=True)
+        if "error" in r:
+            bad.append("%s: %s" % (rel, r["error"])); continue
+        if r["rc"] == 0 or "takeovers: hyperframes render" not in r["out"] or HF_ERR not in r["out"]:
+            bad.append("%s: a failed hyperframes takeover render did not stop step 05 loudly with its error "
+                       "(rc %s, renders %d): %s" % (rel, r["rc"], len(r["renders"]), r["out"]))
+        r = run(step, "ok")
+        if r.get("rc") != 0 or not r.get("renders") or "[gate-stamp] hyperframes" not in r.get("out", ""):
+            bad.append("%s: a good takeover render did not pass Part C (rc %s, renders %d): %s"
+                       % (rel, r.get("rc"), len(r.get("renders") or []), r.get("out")))
+    for doc in (skills / "p-reels-spotlight" / "SKILL.md",
+                skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "SKILL.md"):
+        t = doc.read_text(encoding="utf-8")
+        if "## Fallback assembly" in t or 'len(hf.get("reason", "")) <= 25' in t \
+                or "takeovers: hyperframes render of $W/comp failed" not in t:
+            bad.append("%s: SKILL.md still keeps the takeover fallback (section, gate pass) or has no loud failure"
+                       % doc.relative_to(repo))
+    spec = importlib.util.spec_from_file_location("ss292", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    fn, files = getattr(ss, "apply_spotlight_takeover_render_fail_loud", None), getattr(ss, "_SPOTLIGHT_TK_FILES", None)
+    if fn is None or files is None:
+        bad.append("sync-skills.py has no apply_spotlight_takeover_render_fail_loud (WI2.92)")
+    else:
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        def revert(base):
+            for rel, full_only, edits in files:
+                if full_only and base.name != "p-reels-spotlight":
+                    continue
+                t = (base / rel).read_text(encoding="utf-8")
+                for old, new in reversed(edits):
+                    t = t.replace(new, old)
+                (base / rel).write_text(t, encoding="utf-8")
+        for base in (up / "p-reels-spotlight", up / "p-reels-spotlight-heygen",
+                     up / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight"):
+            revert(base)
+        r = run(up / "p-reels-spotlight" / "steps" / "05-render-scenes.md", "restored", fail_render=True)
+        if r.get("rc") != 0:
+            bad.append("sanity: the restored 20dca83 step 05 did not pass silently (%r)" % {k: r.get(k) for k in ("rc", "out")})
+        for rec, want in (("p-reels-spotlight", (2, 0)), ("p-reels-spotlight-heygen", (3, 0))):
+            got = (fn(up / rec, rec), fn(up / rec, rec))
+            if got != want:
+                bad.append("transform on %s changed %r file(s), expected %r" % (rec, got, want))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        revert(up / "p-reels-spotlight")
+        t = up / "p-reels-spotlight" / "steps" / "05-render-scenes.md"
+        t.write_text(t.read_text(encoding="utf-8").replace("compose the takeover cards with ffmpeg `overlay`",
+                                                           "compose the cards with ffmpeg `overlay`"), encoding="utf-8")
+        try:
+            fn(up / "p-reels-spotlight", "fixture")
+            bad.append("transform did not fail on a drifted step 05 anchor")
+        except SystemExit:
+            pass
+except (Exception, SystemExit) as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad[:12]))
+PY
+)"
+if [[ "$wi292_detail" == "ok" ]]; then
+  pass "WI2.92 a failed spotlight takeover render fails step 05 with the hyperframes error, no still-card fallback (every copy)"
+else
+  fail "WI2.92 spotlight step 05 fails loudly instead of silent still-card takeovers" "$wi292_detail"
+fi
+rm -rf "$wi292_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then

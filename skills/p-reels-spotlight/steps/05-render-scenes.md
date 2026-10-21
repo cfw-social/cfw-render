@@ -111,12 +111,17 @@ sed -i.bak 's/##/#/g' work/comp/index.html && rm -f work/comp/index.html.bak
 
 ### Part C — Render in the BACKGROUND (60–600 s)
 
-Run `cd work/comp && npx hyperframes@0.7.5 render --output ../visuals.mp4 --fps 30 --quality high`
-as a background process and wait for it — a foreground call can be killed at the runtime ceiling.
-Then verify the render really happened (this is the proof the real HyperFrames pipeline ran — the
-`scenes_not_blank` check re-derives it from the saved video, so a skipped render cannot pass):
+Run the block below as a background process and wait for it — a foreground call can be killed at
+the runtime ceiling. Its exit code is the step's: a failed render stops the step with the
+hyperframes error in the reason (WI2.92). It then verifies the render really happened (this is the
+proof the real HyperFrames pipeline ran — the `scenes_not_blank` check re-derives it from the saved
+video, so a skipped render cannot pass):
 
 ```bash
+# WI2.92: no still fallback. A failed takeover render exits non-zero with the hyperframes error.
+( cd work/comp && npx hyperframes@0.7.5 render --output ../visuals.mp4 --fps 30 --quality high ) > work/render.log 2>&1 \
+  && [ -s work/visuals.mp4 ] \
+  || { echo "takeovers: hyperframes render of work/comp failed; no still fallback (WI2.92): $(tail -n 5 work/render.log 2>/dev/null | tr '\n' ' ')" >&2; exit 1; }
 ffprobe -v error -select_streams v:0 -show_entries stream=width,height,duration -of csv=p=0 work/visuals.mp4
 python3 - <<'PY'
 import json, subprocess
@@ -130,9 +135,10 @@ print(f"[gate-stamp] hyperframes: {n} graphics takeovers rendered, visuals {d:.1
 PY
 ```
 
-Fallback (ONLY if the HyperFrames render genuinely fails after a `npx hyperframes@0.7.5 doctor`
-check): compose the takeover cards with ffmpeg `overlay` from PNG renders of the filled templates,
-and say so in your final message with the real error — a silent skip is a defect.
+No fallback (WI2.92). Never compose the takeovers from PNG renders of the filled templates or any
+other still stand-in: on 2026-10-21 that path hid a total render failure ("Composition has zero
+duration. Runtime ready: false") and the reel still reached Reviews. A failed render fails the step;
+`npx hyperframes@0.7.5 doctor` output may go in the reason, but it never unlocks a fallback.
 
 ### Part D — Composite b-roll takeovers onto the visuals (only if beat_list present)
 
@@ -162,8 +168,8 @@ cp work/scenes.mp4 saves/rendered_scenes.mp4
 ## If you cannot proceed
 
 This step has no `canAsk`. Never write `needs_input.json`. A missing template, missing vendored
-GSAP, or a render that fails even after the fallback is a failure: exit non-zero with one plain
-line.
+GSAP, or a failed HyperFrames takeover render is a failure: exit non-zero with one plain line that
+carries the hyperframes error. There is no still-card fallback (WI2.92).
 
 ## Checks the harness runs
 

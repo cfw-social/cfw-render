@@ -110,6 +110,10 @@ SKILL.md Step 8 and scripts/cta-card.py) render the end card with hyperframes fr
 (cta-card.py writes index.html + gsap.min.js), never the .json spec ("Not a directory"); there is no
 still ffmpeg fallback card, so a failed render fails the step.
 
+WI2.92 apply_spotlight_takeover_render_fail_loud() makes step 05 of every p-reels-spotlight copy
+(and SKILL.md Step 5, the Step 10.6 gate and the old Fallback assembly section) fail with the
+hyperframes error when the takeover render fails; the still-card (PNG / ffmpeg overlay) fallback is gone.
+
 Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
 and before list_files/hashing, same ordering guarantee:
   strip_brand_override_host_paths() nulls/drops the two host-path fields
@@ -3089,6 +3093,162 @@ def apply_spotlight_end_card_render(directory: Path, recipe: str) -> int:
     return changed
 
 
+# WI2.92: spotlight takeovers. Step 05 (and SKILL.md Step 5 / Fallback assembly) let a failed HyperFrames
+# takeover render fall back to static PNG / ffmpeg-overlay cards and the step still passed. On 2026-10-21
+# (WI2.87) that hid a total render failure ("Composition has zero duration. Runtime ready: false") and
+# the reel still reached Reviews. Step 05 now runs the render itself and a failed render exits non-zero
+# with the hyperframes error; the still-card path, the fallback section and the gate's fallback pass are gone.
+_SPOTLIGHT_TK_STEP_RENDER_OLD = r"""Run `cd work/comp && npx hyperframes@0.7.5 render --output ../visuals.mp4 --fps 30 --quality high`
+as a background process and wait for it — a foreground call can be killed at the runtime ceiling.
+Then verify the render really happened (this is the proof the real HyperFrames pipeline ran — the
+`scenes_not_blank` check re-derives it from the saved video, so a skipped render cannot pass):
+
+```bash
+"""
+SPOTLIGHT_TK_STEP_RENDER = r"""Run the block below as a background process and wait for it — a foreground call can be killed at
+the runtime ceiling. Its exit code is the step's: a failed render stops the step with the
+hyperframes error in the reason (WI2.92). It then verifies the render really happened (this is the
+proof the real HyperFrames pipeline ran — the `scenes_not_blank` check re-derives it from the saved
+video, so a skipped render cannot pass):
+
+```bash
+# WI2.92: no still fallback. A failed takeover render exits non-zero with the hyperframes error.
+( cd work/comp && npx hyperframes@0.7.5 render --output ../visuals.mp4 --fps 30 --quality high ) > work/render.log 2>&1 \
+  && [ -s work/visuals.mp4 ] \
+  || { echo "takeovers: hyperframes render of work/comp failed; no still fallback (WI2.92): $(tail -n 5 work/render.log 2>/dev/null | tr '\n' ' ')" >&2; exit 1; }
+"""
+_SPOTLIGHT_TK_STEP_FALLBACK_OLD = r"""Fallback (ONLY if the HyperFrames render genuinely fails after a `npx hyperframes@0.7.5 doctor`
+check): compose the takeover cards with ffmpeg `overlay` from PNG renders of the filled templates,
+and say so in your final message with the real error — a silent skip is a defect.
+"""
+SPOTLIGHT_TK_STEP_FALLBACK = r"""No fallback (WI2.92). Never compose the takeovers from PNG renders of the filled templates or any
+other still stand-in: on 2026-10-21 that path hid a total render failure ("Composition has zero
+duration. Runtime ready: false") and the reel still reached Reviews. A failed render fails the step;
+`npx hyperframes@0.7.5 doctor` output may go in the reason, but it never unlocks a fallback.
+"""
+_SPOTLIGHT_TK_STEP_FAIL_OLD = r"""GSAP, or a render that fails even after the fallback is a failure: exit non-zero with one plain
+line.
+"""
+SPOTLIGHT_TK_STEP_FAIL = r"""GSAP, or a failed HyperFrames takeover render is a failure: exit non-zero with one plain line that
+carries the hyperframes error. There is no still-card fallback (WI2.92).
+"""
+_SPOTLIGHT_TK_SKILL_WAIT_OLD = r"""- `process(action="wait", session_id=<id>)` to block until done (or `poll` to check progress)
+"""
+SPOTLIGHT_TK_SKILL_WAIT = r"""- `process(action="wait", session_id=<id>)` to block until done (or `poll` to check progress)
+- WI2.92: if the render exits non-zero or leaves no `$W/visuals.mp4`, STOP and exit non-zero with
+  `takeovers: hyperframes render of $W/comp failed; no still fallback (WI2.92): <the hyperframes error>`.
+  There is no still-card, PNG or ffmpeg-overlay takeover fallback.
+"""
+_SPOTLIGHT_TK_SKILL_INTRO_OLD = r"""The three
+proof-stamps come from Step 5 (`hyperframes.json`), Step 7 (`premium.json`), and — if the render
+truly failed — the Fallback section's stamp."""
+SPOTLIGHT_TK_SKILL_INTRO = r"""The
+proof-stamps come from Step 5 (`hyperframes.json`) and Step 7 (`premium.json`). A fallback stamp
+always fails the gate: there is no takeover fallback (WI2.92)."""
+_SPOTLIGHT_TK_SKILL_GATE_OLD = r"""# 1) HyperFrames graphics takeovers actually rendered (or a LEGITIMATE logged fallback).
+hf_path = f"{W}/.gate/hyperframes.json"
+if not os.path.exists(hf_path):
+    fail.append("Step 5 HyperFrames stamp missing — the graphics render never ran (or was skipped).")
+else:
+    hf = json.load(open(hf_path))
+    if hf.get("fallback"):
+        if len(hf.get("reason", "")) <= 25:
+            fail.append("HyperFrames fallback used without a real reason — looks like a skip, not a fault.")
+"""
+SPOTLIGHT_TK_SKILL_GATE = r"""# 1) HyperFrames graphics takeovers actually rendered (no fallback, WI2.92).
+hf_path = f"{W}/.gate/hyperframes.json"
+if not os.path.exists(hf_path):
+    fail.append("Step 5 HyperFrames stamp missing — the graphics render never ran (or was skipped).")
+else:
+    hf = json.load(open(hf_path))
+    if hf.get("fallback"):
+        fail.append("HyperFrames fallback stamp found — there is no takeover fallback (WI2.92); fix the render.")
+"""
+_SPOTLIGHT_TK_SKILL_FALLBACK_OLD = r"""## Fallback assembly (v0.4 ffmpeg overlay — ONLY if HyperFrames render genuinely fails)
+
+**This is NOT the easy path. It is permitted ONLY after `npx hyperframes@0.7.5 render` has actually
+failed and `hyperframes doctor` confirms an environment fault (chromium/memory).** Never skip the
+HyperFrames render to "save time" — a title-only or caption-only reel is a defect. If (and only if)
+the render truly fails, fall back to the proven v0.4 ffmpeg technique: render each takeover as a
+standalone HyperFrames composition, overlay on the bed with `overlay=enable='between(t,a,b)'` +
+`setpts=PTS-STARTPTS+start/TB`, `-map 0:a` for the unbroken audio. B-roll beats are handled the same
+way as Step 6b. The cover rule (Step 10) still runs.
+
+**Two hard rules for the fallback path:**
+1. **Step 7 (c-reel-premium) still runs** — the fallback replaces only the graphics render, never
+   the kinetic-caption/SFX/grade pass. Do NOT "burn plain SRT captions" as a substitute for premium.
+2. **Stamp the fallback with a reason** so the Step 10.6 gate can tell a real fault from a skip:
+   ```bash
+   mkdir -p "$W/.gate"
+   REASON="${1:-hyperframes render failed — doctor confirmed environment fault}"
+   # Paste the actual doctor/render error into REASON. An empty or generic reason FAILS the gate.
+   python3 - "$W" "$REASON" <<'PY'
+   import json, sys
+   W, reason = sys.argv[1], sys.argv[2]
+   assert len(reason) > 25, "fallback reason too short — paste the real render/doctor error"
+   json.dump({"rendered": 0, "engine": "ffmpeg-v0.4-fallback", "fallback": True,
+              "reason": reason}, open(f"{W}/.gate/hyperframes.json", "w"))
+   print("[gate-stamp] hyperframes: FALLBACK path — reason logged")
+   PY
+   ```
+"""
+SPOTLIGHT_TK_SKILL_FALLBACK = r"""## No fallback assembly (WI2.92)
+
+There is no still-card, PNG or ffmpeg-overlay stand-in for the graphics takeovers. On 2026-10-21
+that fallback hid a total render failure ("Composition has zero duration. Runtime ready: false")
+and the reel still reached Reviews. If `npx hyperframes@0.7.5 render` fails, Step 5 fails with the
+hyperframes error; `hyperframes doctor` output may go in that reason, but it never unlocks a fallback.
+"""
+_SPOTLIGHT_TK_FILES = (
+    # (file under a spotlight root, only in a full p-reels-spotlight copy (not the heygen wrapper), edits)
+    (SPOTLIGHT_RENDER_FILE, False, ((_SPOTLIGHT_TK_STEP_RENDER_OLD, SPOTLIGHT_TK_STEP_RENDER),
+                                    (_SPOTLIGHT_TK_STEP_FALLBACK_OLD, SPOTLIGHT_TK_STEP_FALLBACK),
+                                    (_SPOTLIGHT_TK_STEP_FAIL_OLD, SPOTLIGHT_TK_STEP_FAIL))),
+    (Path("SKILL.md"), True, ((_SPOTLIGHT_TK_SKILL_WAIT_OLD, SPOTLIGHT_TK_SKILL_WAIT),
+                              (_SPOTLIGHT_TK_SKILL_INTRO_OLD, SPOTLIGHT_TK_SKILL_INTRO),
+                              (_SPOTLIGHT_TK_SKILL_GATE_OLD, SPOTLIGHT_TK_SKILL_GATE),
+                              (_SPOTLIGHT_TK_SKILL_FALLBACK_OLD, SPOTLIGHT_TK_SKILL_FALLBACK))),
+)
+
+
+def apply_spotlight_takeover_render_fail_loud(directory: Path, recipe: str) -> int:
+    """WI2.92: every p-reels-spotlight copy under `directory` (the top-level p-reels-spotlight /
+    p-reels-spotlight-heygen step 05, .hub/p-reels-spotlight, and SKILL.md Step 5 / Step 10.6 /
+    Fallback assembly of each full copy) renders the graphics takeovers through HyperFrames with no
+    still-card fallback: a failed render exits non-zero with the hyperframes error. Idempotent; fails
+    fast when a copy lost its anchor or file, or when a spotlight recipe ships no render step."""
+    changed = 0
+    if not directory.is_dir():
+        return 0
+    roots = [directory] if directory.name.startswith("p-reels-spotlight") else []
+    roots += sorted(p for p in directory.rglob("p-reels-spotlight") if p.is_dir() and p.parent.name == ".hub")
+    roots = [r for r in roots if (r / SPOTLIGHT_RENDER_FILE).is_file()]
+    if recipe.startswith("p-reels-spotlight") and not roots:
+        raise SystemExit(f"sync-skills.py: ERROR - no p-reels-spotlight {SPOTLIGHT_RENDER_FILE} under {directory} "
+                         f"({recipe}); the WI2.92 transform cannot apply")
+    for root in roots:
+        for rel, full_only, edits in _SPOTLIGHT_TK_FILES:
+            if full_only and root.name != "p-reels-spotlight":
+                continue
+            path = root / rel
+            if not path.is_file():
+                raise SystemExit(f"sync-skills.py: ERROR - {path} is missing ({recipe}); the WI2.92 transform cannot apply")
+            text = path.read_text(encoding="utf-8")
+            new_text = text
+            for old, new in edits:
+                if new in new_text:
+                    continue
+                if new_text.count(old) != 1:
+                    raise SystemExit(f"sync-skills.py: ERROR - takeover render anchor {old.strip().splitlines()[0][:60]!r} "
+                                     f"found {new_text.count(old)} time(s) in {path} ({recipe}); "
+                                     "the WI2.92 transform cannot apply")
+                new_text = new_text.replace(old, new, 1)
+            if new_text != text:
+                path.write_text(new_text, encoding="utf-8")
+                changed += 1
+    return changed
+
+
 def git_head_sha(repo: Path) -> str | None:
     """Best-effort `git rev-parse HEAD` of `repo`. Returns None (never
     raises) when `repo` isn't a git checkout — e.g. a test fixture dir — so
@@ -3252,6 +3412,9 @@ def main():
 
         # WI2.93: the end card renders through hyperframes from a project dir, or the step fails (every copy).
         apply_spotlight_end_card_render(recipe_dest, recipe)
+
+        # WI2.92: a failed takeover render fails step 05 with the hyperframes error; no still cards (every copy).
+        apply_spotlight_takeover_render_fail_loud(recipe_dest, recipe)
 
         files = list_files(recipe_dest)
         file_hashes = {f: sha256_file(recipe_dest / f) for f in files}

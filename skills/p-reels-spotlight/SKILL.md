@@ -739,6 +739,9 @@ foreground call gets killed at the runtime ceiling and the cook fails with no re
 
 - `terminal(command="cd $W/comp && npx hyperframes@0.7.5 render --output $W/visuals.mp4 --fps 30 --quality high", background=true, notify_on_complete=true)` → returns a `session_id`
 - `process(action="wait", session_id=<id>)` to block until done (or `poll` to check progress)
+- WI2.92: if the render exits non-zero or leaves no `$W/visuals.mp4`, STOP and exit non-zero with
+  `takeovers: hyperframes render of $W/comp failed; no still fallback (WI2.92): <the hyperframes error>`.
+  There is no still-card, PNG or ffmpeg-overlay takeover fallback.
 
 Only after the render completes, verify the output **and stamp proof for the delivery gate**:
 
@@ -1143,9 +1146,9 @@ See `.hub/c-eval-runner/SKILL.md` for the spec format + built-in checks, and
 **This gate is NON-NEGOTIABLE and runs immediately before Step 11. If it exits non-zero, STOP —
 do NOT run `cfw-upload`, do NOT call `propose_composition`.** It proves — mechanically, not
 perceptually — that the premium reel pipeline actually ran, so a weak/rushed executor cannot ship a
-degraded reel (missing HyperFrames graphics, hand-burned captions) as if it were premium. The three
-proof-stamps come from Step 5 (`hyperframes.json`), Step 7 (`premium.json`), and — if the render
-truly failed — the Fallback section's stamp.
+degraded reel (missing HyperFrames graphics, hand-burned captions) as if it were premium. The
+proof-stamps come from Step 5 (`hyperframes.json`) and Step 7 (`premium.json`). A fallback stamp
+always fails the gate: there is no takeover fallback (WI2.92).
 
 ```bash
 python3 - "$W" "$OUT" <<'PY' || { echo "🚫 DELIVERY BLOCKED — see failures above. Fix the render and re-run Steps 5–7; do NOT upload or propose_composition."; exit 1; }
@@ -1156,15 +1159,14 @@ fail = []
 plan = json.load(open(f"{W}/plan.json"))
 planned_tk = len(plan.get("takeovers", []))
 
-# 1) HyperFrames graphics takeovers actually rendered (or a LEGITIMATE logged fallback).
+# 1) HyperFrames graphics takeovers actually rendered (no fallback, WI2.92).
 hf_path = f"{W}/.gate/hyperframes.json"
 if not os.path.exists(hf_path):
     fail.append("Step 5 HyperFrames stamp missing — the graphics render never ran (or was skipped).")
 else:
     hf = json.load(open(hf_path))
     if hf.get("fallback"):
-        if len(hf.get("reason", "")) <= 25:
-            fail.append("HyperFrames fallback used without a real reason — looks like a skip, not a fault.")
+        fail.append("HyperFrames fallback stamp found — there is no takeover fallback (WI2.92); fix the render.")
     elif planned_tk > 0 and hf.get("rendered", 0) < planned_tk:
         fail.append(f"Only {hf.get('rendered',0)}/{planned_tk} planned graphics takeovers rendered.")
 
@@ -1218,33 +1220,12 @@ cfw-upload "$COVER_PNG" 2>/dev/null || bash _scripts/upload-to-recordings.sh "$C
 Clean up `$W` after both URLs are confirmed.
 **Print the R2 public URL of `$OUT` as the final line of output.** Never print an input URL.
 
-## Fallback assembly (v0.4 ffmpeg overlay — ONLY if HyperFrames render genuinely fails)
+## No fallback assembly (WI2.92)
 
-**This is NOT the easy path. It is permitted ONLY after `npx hyperframes@0.7.5 render` has actually
-failed and `hyperframes doctor` confirms an environment fault (chromium/memory).** Never skip the
-HyperFrames render to "save time" — a title-only or caption-only reel is a defect. If (and only if)
-the render truly fails, fall back to the proven v0.4 ffmpeg technique: render each takeover as a
-standalone HyperFrames composition, overlay on the bed with `overlay=enable='between(t,a,b)'` +
-`setpts=PTS-STARTPTS+start/TB`, `-map 0:a` for the unbroken audio. B-roll beats are handled the same
-way as Step 6b. The cover rule (Step 10) still runs.
-
-**Two hard rules for the fallback path:**
-1. **Step 7 (c-reel-premium) still runs** — the fallback replaces only the graphics render, never
-   the kinetic-caption/SFX/grade pass. Do NOT "burn plain SRT captions" as a substitute for premium.
-2. **Stamp the fallback with a reason** so the Step 10.6 gate can tell a real fault from a skip:
-   ```bash
-   mkdir -p "$W/.gate"
-   REASON="${1:-hyperframes render failed — doctor confirmed environment fault}"
-   # Paste the actual doctor/render error into REASON. An empty or generic reason FAILS the gate.
-   python3 - "$W" "$REASON" <<'PY'
-   import json, sys
-   W, reason = sys.argv[1], sys.argv[2]
-   assert len(reason) > 25, "fallback reason too short — paste the real render/doctor error"
-   json.dump({"rendered": 0, "engine": "ffmpeg-v0.4-fallback", "fallback": True,
-              "reason": reason}, open(f"{W}/.gate/hyperframes.json", "w"))
-   print("[gate-stamp] hyperframes: FALLBACK path — reason logged")
-   PY
-   ```
+There is no still-card, PNG or ffmpeg-overlay stand-in for the graphics takeovers. On 2026-10-21
+that fallback hid a total render failure ("Composition has zero duration. Runtime ready: false")
+and the reel still reached Reviews. If `npx hyperframes@0.7.5 render` fails, Step 5 fails with the
+hyperframes error; `hyperframes doctor` output may go in that reason, but it never unlocks a fallback.
 
 ## Notes & gotchas
 
