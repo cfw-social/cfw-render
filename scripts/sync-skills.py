@@ -129,7 +129,8 @@ bundle (the vendored c-reel-premium one that step 06 renders, and the recipe's o
 emphasis word as a plain word (same size, FG colour, same dim) until it is spoken, then pop it by
 growing its font size (--pop) instead of a transform scale, so the line reflows and the space before
 it is never closed. The WI2.72 script check (apply_reel_script_align) also takes the order brief's
-intent as the script when no script file exists (a 60 % match guard keeps a topic brief out).
+intent as the script when no script file exists, strictly: 80 % must match and only a look-alike
+word is swapped one-for-one (never a number); no word is added or dropped.
 
 Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
 and before list_files/hashing, same ordering guarantee:
@@ -1485,8 +1486,9 @@ _SCRIPT_ALIGN_PY = r"""# WI2.72: check recognised words against the known script
 #        python3 work/script_align.py --prompt     (print the script text, or nothing)
 # The script is the first of: inputs/script/* (script.json {"text"} or .txt/.md),
 # prior/approved_script.md, prior/script.md. WI2.88: with no script file (an uploaded clip) the
-# order brief's intent (brief.json) is checked as the script; a brief that is only a topic matches
-# under 60 % and changes nothing. Neither -> the words are left unchanged.
+# order brief's intent (brief.json) is checked instead, more strictly: 80 % must match, and only a
+# look-alike word is swapped one-for-one (never a number); nothing is inserted or dropped.
+# Neither -> the words are left unchanged.
 import difflib, glob, json, os, re, sys
 
 def script_text():
@@ -1524,7 +1526,21 @@ def dress(rec, scr):
     tail = re.search(r"\W*$", rec).group(0)
     return lead + core + tail
 
-def align(words, script, max_block=4, min_ratio=0.6):
+NUMBER_WORDS = set(("zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen "
+                    "fifteen sixteen seventeen eighteen nineteen twenty thirty forty fifty sixty seventy "
+                    "eighty ninety hundred thousand million billion half once twice first second third").split())
+
+def near_miss(heard, want):
+    # WI2.88: a look-alike of the script word (flowers -> flour); never a number or number word
+    if heard == want or not heard or not want:
+        return False
+    if any(re.search(r"\d", t) or t in NUMBER_WORDS for t in (heard, want)):
+        return False
+    return difflib.SequenceMatcher(None, heard, want, autojunk=False).ratio() >= 0.6
+
+def align(words, script, max_block=4, min_ratio=0.6, near_only=False):
+    # near_only (WI2.88, a brief rather than a script file): only swap a heard word for a look-alike
+    # script word one-for-one; never insert, drop, merge or split words.
     toks = []  # (entry index, token)
     for i, w in enumerate(words):
         for t in str(w['text']).split():
@@ -1540,7 +1556,19 @@ def align(words, script, max_block=4, min_ratio=0.6):
     if not scr or ratio < min_ratio:
         report["note"] = "the script does not match this voice; words left as recognised"
         return words, report
-    for op, i1, i2, j1, j2 in sm.get_opcodes():
+    for op, i1, i2, j1, j2 in (sm.get_opcodes() if near_only else []):
+        if op == 'replace' and i2 - i1 == j2 - j1:
+            for k in range(i2 - i1):
+                rec, want = toks[i1 + k][1], scr[j1 + k]
+                if near_miss(norm(rec), norm(want)):
+                    new = dress(rec, want)
+                    report["fixed"].append([rec, new])
+                    toks[i1 + k][1] = new
+                else:
+                    report["left"].append(rec)
+        elif op != 'equal' and op != 'insert':
+            report["left"].append(" ".join(t for _, t in toks[i1:i2]))
+    for op, i1, i2, j1, j2 in ([] if near_only else sm.get_opcodes()):
         if op == 'equal' or op == 'insert':
             continue
         n, m = i2 - i1, j2 - j1
@@ -1605,7 +1633,10 @@ if __name__ == '__main__':
         print("[transcribe] no script text: words left as recognised (an uploaded clip has no script)")
         sys.exit(0)
     words = json.load(open(path))
-    out, rep = align(words, text)
+    if source == "brief":  # a brief is not a script: 80 % must match, look-alike swaps only
+        out, rep = align(words, text, min_ratio=0.8, near_only=True)
+    else:
+        out, rep = align(words, text)
     rep["source"] = source
     if source == "brief" and rep.get("note"):
         rep["note"] = "the brief is not the spoken script; words left as recognised"
@@ -1621,11 +1652,19 @@ if __name__ == '__main__':
 _SCRIPT_ALIGN_NOSCRIPT_WI277 = (
     "words against it. With no script (an uploaded talking-head clip) the words are left exactly as\n"
     "recognised and the helper says so.\n")
-_SCRIPT_ALIGN_NOSCRIPT = (
+# The first WI2.88 text (b8c3ff6) applied every script fix to a brief; review found it inserted and
+# dropped spoken words. It upgrades in place like the WI2.77 text.
+_SCRIPT_ALIGN_NOSCRIPT_B8C = (
     "words against it. An uploaded talking-head clip has no script file, so step 2b checks the words\n"
     "against the order brief's `intent` instead (WI2.88): when the owner pasted the script there, a\n"
     "mis-heard word is fixed the same way; a brief that is only a topic matches under 60 % and\n"
     "changes nothing. With neither, the words are left exactly as recognised and the helper says so.\n")
+_SCRIPT_ALIGN_NOSCRIPT = (
+    "words against it. An uploaded talking-head clip has no script file, so step 2b checks the words\n"
+    "against the order brief's `intent` instead (WI2.88), more strictly: 80 % of the heard words must\n"
+    "match, and only a heard word that looks like the brief's word (`flowers` -> `flour`) is swapped,\n"
+    "one for one, never a number; no word is added or dropped. With neither, the words are left\n"
+    "exactly as recognised and the helper says so.\n")
 _SCRIPT_ALIGN_SECTION = (
     "### 0. Known script (WI2.72)\n\n"
     "Captions come from these words, so a mis-heard word would be burned into the reel. When the\n"
@@ -1695,6 +1734,7 @@ def apply_reel_script_align(directory: Path, recipe: str) -> int:
         # has this section but lost another anchor fails fast below.
         return 0
     new = text.replace(_SCRIPT_ALIGN_NOSCRIPT_WI277, _SCRIPT_ALIGN_NOSCRIPT)  # WI2.88 prose
+    new = new.replace(_SCRIPT_ALIGN_NOSCRIPT_B8C, _SCRIPT_ALIGN_NOSCRIPT)
     if _SCRIPT_ALIGN_SECTION not in new and _SCRIPT_ALIGN_OPEN in new:
         # WI2.77: an older helper (WI2.72) is in place: swap in the current one.
         head, rest = new.split(_SCRIPT_ALIGN_OPEN, 1)
@@ -3647,13 +3687,70 @@ SPOTLIGHT_CAP_JS = """            // Emphasis word: accent pop + glow — clearl
             // timestamp it is a plain dim word (scale 1, FG, like its neighbours); the pop tweens
             // --pop (its font size), so the words beside it make room instead of being overlapped.
             tl.fromTo(wsel, { "--pop": 1, opacity: 0.42, color: FG },
-              { "--pop": 1.16, opacity: 1, color: ACCENT, duration: 0.26, ease: "back.out(2.2)" }, at);
+              { "--pop": POP_TO, opacity: 1, color: ACCENT, duration: 0.26, ease: POP_EASE }, at);
 """
 _SPOTLIGHT_CAP_SETTLE_OLD = """            tl.to(wsel, { scale: 1.08, duration: 0.18, ease: "power2.inOut" }, at + 0.26);
 """
-SPOTLIGHT_CAP_SETTLE = """            tl.to(wsel, { "--pop": 1.08, duration: 0.18, ease: "power2.inOut" }, at + 0.26);
+SPOTLIGHT_CAP_SETTLE = """            tl.to(wsel, { "--pop": POP_SETTLE, duration: 0.18, ease: "power2.inOut" }, at + 0.26);
 """
-_SPOTLIGHT_CAP_EDITS = ((_SPOTLIGHT_CAP_CSS_OLD, SPOTLIGHT_CAP_CSS), (_SPOTLIGHT_CAP_JS_OLD, SPOTLIGHT_CAP_JS),
+# Independent review of b8c3ff6: the fit measured the words with plain spaces against 760 px, but the
+# line has 0.42em column gaps and the pop's back.out overshoot, so a line near the limit could wrap
+# mid-pop; and the pop (1.16) shifted the centred line by about half its growth. The line is now fitted
+# for its real gaps and the pop's peak (shrunk, never grown, to the 900 px safe width; refit when fonts
+# load) and the pop is smaller (1.12, back.out(1.7), settling at 1.06).
+_SPOTLIGHT_CAP_HEAD_OLD = """    planner-flagged emphasis word gets the accent treatment (color + scale pop
+    + glow). Entrance style cycles per group (planner sets style 0/1/2).
+"""
+SPOTLIGHT_CAP_HEAD = """    planner-flagged emphasis word gets the accent treatment (color + font-size
+    pop + glow; WI2.88: a plain word until spoken, its line fitted so the pop
+    never wraps it). Entrance style cycles per group (planner sets style 0/1/2).
+"""
+_SPOTLIGHT_CAP_FIT_OLD = """        root.appendChild(g);
+      });
+
+      var tl = gsap.timeline({ paused: true });
+"""
+SPOTLIGHT_CAP_FIT = """        root.appendChild(g);
+      });
+
+      // WI2.88: the fit above measures the words with plain spaces against 760 px, but the line has
+      // 0.42em gaps (the .cap-group column-gap) and its emphasis word grows to POP_PEAK on its pop
+      // (back.out overshoot included). Shrink a group (never grow it) until the whole line at the
+      // peak fits the 900 px safe width, so it never wraps mid-pop; refit once fonts load. The pop
+      // is small (1.12, settling at 1.06), so the centred line shifts only a few px to make room.
+      var POP_TO = 1.12, POP_SETTLE = 1.06, POP_BACK = 1.7, POP_EASE = "back.out(" + POP_BACK + ")";
+      var POP_PEAK = (function () {
+        var most = 1;
+        for (var i = 0; i <= 400; i++) {
+          var q = i / 400 - 1;
+          most = Math.max(most, 1 + (POP_BACK + 1) * q * q * q + POP_BACK * q * q);
+        }
+        return 1 + (POP_TO - 1) * most;
+      })();
+      var GAP_EM = 0.42, SAFE_W = 900, BASE_SIZES = [];
+      function fitLines() {
+        GROUPS.forEach(function (group, gi) {
+          var g = document.getElementById("cg-" + gi);
+          if (!g) return;
+          if (BASE_SIZES[gi] === undefined) BASE_SIZES[gi] = parseFloat(g.style.fontSize) || 72;
+          var size = BASE_SIZES[gi];
+          g.style.fontSize = size + "px";
+          var need = Math.max(0, group.words.length - 1) * GAP_EM * size;
+          group.words.forEach(function (w, wi) {
+            var s = document.getElementById("cw-" + gi + "-" + wi);
+            var pop = parseFloat(s.style.getPropertyValue("--pop")) || 1;
+            need += (s.offsetWidth / pop) * (w.em ? POP_PEAK : 1);
+          });
+          if (need > SAFE_W) g.style.fontSize = Math.max(24, Math.floor(size * SAFE_W / need)) + "px";
+        });
+      }
+      fitLines();
+      if (document.fonts && document.fonts.ready) { document.fonts.ready.then(fitLines); }
+
+      var tl = gsap.timeline({ paused: true });
+"""
+_SPOTLIGHT_CAP_EDITS = ((_SPOTLIGHT_CAP_HEAD_OLD, SPOTLIGHT_CAP_HEAD), (_SPOTLIGHT_CAP_CSS_OLD, SPOTLIGHT_CAP_CSS),
+                        (_SPOTLIGHT_CAP_FIT_OLD, SPOTLIGHT_CAP_FIT), (_SPOTLIGHT_CAP_JS_OLD, SPOTLIGHT_CAP_JS),
                         (_SPOTLIGHT_CAP_SETTLE_OLD, SPOTLIGHT_CAP_SETTLE))
 SPOTLIGHT_CAP_TEMPLATE = Path("templates") / "caption-overlay.html"
 

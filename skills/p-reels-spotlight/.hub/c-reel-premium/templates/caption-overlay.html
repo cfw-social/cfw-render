@@ -4,8 +4,9 @@
     Shared premium layer used as a polish pass by the p-reels-* recipes.
 
     One caption group visible at a time, word-synced karaoke baseline, the
-    planner-flagged emphasis word gets the accent treatment (color + scale pop
-    + glow). Entrance style cycles per group (planner sets style 0/1/2).
+    planner-flagged emphasis word gets the accent treatment (color + font-size
+    pop + glow; WI2.88: a plain word until spoken, its line fitted so the pop
+    never wraps it). Entrance style cycles per group (planner sets style 0/1/2).
     Deterministic — no Math.random, every group hard-killed at group.end.
 
     Placeholders:
@@ -108,6 +109,40 @@
         root.appendChild(g);
       });
 
+      // WI2.88: the fit above measures the words with plain spaces against 760 px, but the line has
+      // 0.42em gaps (the .cap-group column-gap) and its emphasis word grows to POP_PEAK on its pop
+      // (back.out overshoot included). Shrink a group (never grow it) until the whole line at the
+      // peak fits the 900 px safe width, so it never wraps mid-pop; refit once fonts load. The pop
+      // is small (1.12, settling at 1.06), so the centred line shifts only a few px to make room.
+      var POP_TO = 1.12, POP_SETTLE = 1.06, POP_BACK = 1.7, POP_EASE = "back.out(" + POP_BACK + ")";
+      var POP_PEAK = (function () {
+        var most = 1;
+        for (var i = 0; i <= 400; i++) {
+          var q = i / 400 - 1;
+          most = Math.max(most, 1 + (POP_BACK + 1) * q * q * q + POP_BACK * q * q);
+        }
+        return 1 + (POP_TO - 1) * most;
+      })();
+      var GAP_EM = 0.42, SAFE_W = 900, BASE_SIZES = [];
+      function fitLines() {
+        GROUPS.forEach(function (group, gi) {
+          var g = document.getElementById("cg-" + gi);
+          if (!g) return;
+          if (BASE_SIZES[gi] === undefined) BASE_SIZES[gi] = parseFloat(g.style.fontSize) || 72;
+          var size = BASE_SIZES[gi];
+          g.style.fontSize = size + "px";
+          var need = Math.max(0, group.words.length - 1) * GAP_EM * size;
+          group.words.forEach(function (w, wi) {
+            var s = document.getElementById("cw-" + gi + "-" + wi);
+            var pop = parseFloat(s.style.getPropertyValue("--pop")) || 1;
+            need += (s.offsetWidth / pop) * (w.em ? POP_PEAK : 1);
+          });
+          if (need > SAFE_W) g.style.fontSize = Math.max(24, Math.floor(size * SAFE_W / need)) + "px";
+        });
+      }
+      fitLines();
+      if (document.fonts && document.fonts.ready) { document.fonts.ready.then(fitLines); }
+
       var tl = gsap.timeline({ paused: true });
 
       GROUPS.forEach(function (group, gi) {
@@ -136,12 +171,12 @@
             // timestamp it is a plain dim word (scale 1, FG, like its neighbours); the pop tweens
             // --pop (its font size), so the words beside it make room instead of being overlapped.
             tl.fromTo(wsel, { "--pop": 1, opacity: 0.42, color: FG },
-              { "--pop": 1.16, opacity: 1, color: ACCENT, duration: 0.26, ease: "back.out(2.2)" }, at);
+              { "--pop": POP_TO, opacity: 1, color: ACCENT, duration: 0.26, ease: POP_EASE }, at);
             tl.to(wsel, {
               textShadow: "0 0 26px " + ACCENT + "AA, 0 4px 24px rgba(0,0,0,0.75)",
               duration: 0.2, ease: "power2.out",
             }, at);
-            tl.to(wsel, { "--pop": 1.08, duration: 0.18, ease: "power2.inOut" }, at + 0.26);
+            tl.to(wsel, { "--pop": POP_SETTLE, duration: 0.18, ease: "power2.inOut" }, at + 0.26);
           } else {
             tl.to(wsel, { opacity: 1, duration: 0.14, ease: "power1.out" }, at);
           }

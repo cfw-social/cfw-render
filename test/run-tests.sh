@@ -11698,7 +11698,16 @@ const src = fs.readFileSync(file, 'utf8');
 const inline = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 if (inline.length !== 1) { console.log(JSON.stringify({ error: 'inline scripts ' + inline.length })); process.exit(0); }
 const els = {};
-function el(id) { return els[id] || (els[id] = { id, className: '', style: {}, textContent: '', appendChild() {} }); }
+function el(id) {
+  if (els[id]) return els[id];
+  const e = { id, className: '', textContent: '', parent: null,
+    style: { getPropertyValue(k) { return this[k] || ''; } },
+    appendChild(c) { c.parent = e; },
+    // Oswald caps ~0.5em a letter at the group's font size and the word's own --pop
+    get offsetWidth() { const f = parseFloat((e.parent && e.parent.style.fontSize) || 72);
+      return f * (parseFloat(e.style['--pop']) || 1) * 0.5 * e.textContent.length; } };
+  return (els[id] = e);
+}
 const tweens = [];
 let order = 0;
 const tl = {
@@ -11707,8 +11716,17 @@ const tl = {
   set(sel, to, pos) { tweens.push({ sel, from: null, to, pos, dur: 0, n: order++ }); return tl; },
   seek() { return tl; },
 };
-const document = { getElementById: id => el(id), createElement: () => { const e = el('tmp' + order++); return e; } };
-const ctx = vm.createContext({ window: {}, document, gsap: { timeline: () => tl },
+const document = { getElementById: id => el(id),
+  createElement: () => { const e = el('tmp' + order++); Object.defineProperty(e, 'id', { set(v) { els[v] = e; }, get() { return ''; } }); return e; } };
+// hyperframes' fitTextFontSize: the largest size whose text, with plain spaces (~0.25em), is one line
+const fitTextFontSize = (text, o) => {
+  for (let f = o.baseFontSize; f >= o.minFontSize; f -= 1) {
+    const w = [...text].reduce((n, ch) => n + (ch === ' ' ? 0.25 : 0.5), 0) * f;
+    if (w <= o.maxWidth) return { fontSize: f, fits: true };
+  }
+  return { fontSize: o.minFontSize, fits: false };
+};
+const ctx = vm.createContext({ window: { __hyperframes: { fitTextFontSize } }, document, gsap: { timeline: () => tl },
   getComputedStyle: () => ({ opacity: '0', visibility: 'hidden' }), console, Math, JSON });
 try { vm.runInContext(inline[0], ctx); } catch (e) { console.log(JSON.stringify({ error: 'run: ' + e.message })); process.exit(0); }
 function ease(name, p) {
@@ -11737,21 +11755,27 @@ function value(sel, prop, t, base) {
 const out = [];
 for (const t of JSON.parse(timesJson)) {
   const s = {};
-  for (const id of ['cw-0-2', 'cw-0-3']) {
+  for (const id of ['cw-0-2', 'cw-0-3', 'cw-1-4']) {
     const sel = '#' + id;
     s[id] = { scale: value(sel, 'scale', t, 1), pop: value(sel, '--pop', t, 1),
               opacity: value(sel, 'opacity', t, null), color: value(sel, 'color', t, null) };
   }
   out.push(s);
 }
+out.push({ sizes: [0, 1].map(i => parseFloat(el('cg-' + i).style.fontSize)) });
 console.log(JSON.stringify(out));
 """
 (root / "sim.js").write_text(SIM, encoding="utf-8")
 FG, ACCENT = "#F1F5F9", "#3B82F6"
 GROUPS = [{"start": 0.3, "end": 3.6, "style": 0, "words": [
     {"w": "FORMATTED", "s": 0.4, "e": 0.9, "em": False}, {"w": "FOR", "s": 0.9, "e": 1.1, "em": False},
-    {"w": "EVERY", "s": 1.1, "e": 1.5, "em": False}, {"w": "PLATFORM.", "s": 2.0, "e": 2.6, "em": True}]}]
+    {"w": "EVERY", "s": 1.1, "e": 1.5, "em": False}, {"w": "PLATFORM.", "s": 2.0, "e": 2.6, "em": True}]},
+    {"start": 3.8, "end": 7.6, "style": 1, "words": [  # near the limit: fits only at the minimum size
+    {"w": "FORMATTED", "s": 3.9, "e": 4.3, "em": False}, {"w": "FOR", "s": 4.3, "e": 4.5, "em": False},
+    {"w": "EVERY", "s": 4.5, "e": 4.8, "em": False}, {"w": "SINGLE", "s": 4.8, "e": 5.2, "em": False},
+    {"w": "PLATFORM,", "s": 5.6, "e": 6.2, "em": True}, {"w": "WEEKLY.", "s": 6.2, "e": 6.8, "em": False}]}]
 AT = 2.0
+POP1 = [round(5.6 + i * 0.01, 2) for i in range(60)]  # the long line's pop, overshoot and settle
 PRE = [0.8, 1.2, 1.6, 1.95]
 POP = [round(AT + i * 0.02, 2) for i in range(70)]  # 2.00 .. 3.38: pop, overshoot, settle, hold
 def css_block(text, sel):
@@ -11774,15 +11798,17 @@ def check_copy(path):
               .replace("{{DURATION}}", "4").replace("{{GROUPS_JSON}}", json.dumps(GROUPS)))
     f = root / ("filled-%d.html" % len(list(root.glob("filled-*"))))
     f.write_text(filled, encoding="utf-8")
-    r = subprocess.run(["node", str(root / "sim.js"), str(f), json.dumps(PRE + POP)], capture_output=True, text=True, timeout=60)
+    r = subprocess.run(["node", str(root / "sim.js"), str(f), json.dumps(PRE + POP + POP1)], capture_output=True, text=True, timeout=60)
     got = json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else {"error": r.stderr[-300:]}
     if isinstance(got, dict):
         return ["%s: caption script did not run: %s" % (rel, got.get("error"))]
+    sizes = got[-1]["sizes"]
+    peak1 = max((s["cw-1-4"]["pop"] if "var(--pop" in filled else 1) * s["cw-1-4"]["scale"] for s in got[len(PRE + POP):-1])
     got = {str(t): s for t, s in zip(PRE + POP, got)}
     out = []
     word, em = css_block(filled, "#caption-overlay .cap-word"), css_block(filled, "#caption-overlay .cap-word.em")
     group = css_block(filled, "#caption-overlay .cap-group")
-    F = 72.0                              # fitTextFontSize is absent here: the template's 72 px fallback
+    F = sizes[0]                          # the first group's fitted font size
     G = em_num(group, "column-gap") * F    # the gap between words
     base_op = float(re.search(r"opacity:\s*([\d.]+)", word).group(1))
     em_color = re.search(r"(?<![-\w])color:\s*([^;]+);", em)
@@ -11809,8 +11835,15 @@ def check_copy(path):
     worst = min((lay(got[str(t)]["cw-0-3"])[0], t) for t in POP)
     if worst[0] < 0.9 * G:
         out.append("%s: on its pop the space before it closes to %.0f px at t=%.2f (a plain gap is %.0f px)" % (rel, worst[0], worst[1], G))
+    # the long line at the peak of its pop (letters + real gaps + the grown word) stays inside 900 px
+    F1, words1 = sizes[1], GROUPS[1]["words"]
+    line = (sum(0.5 * len(w["w"]) for w in words1) + (len(words1) - 1) * em_num(group, "column-gap")
+            + (peak1 - 1) * 0.5 * len("PLATFORM,")) * F1
+    if line > 900:
+        out.append("%s: a long line near the limit is %.0f px at the peak of its pop (%.2fx), past the 900 px "
+                   "safe width (960 px wraps)" % (rel, line, peak1))
     end = got[str(POP[-1])]["cw-0-3"]
-    if lay(end)[1] < 1.05 or (end["color"] or "").lower() != ACCENT.lower() or (end["opacity"] or 0) < 0.99:
+    if lay(end)[1] < 1.03 or (end["color"] or "").lower() != ACCENT.lower() or (end["opacity"] or 0) < 0.99:
         out.append("%s: after its pop the word is not bigger, accent and fully on (%r)" % (rel, end))
     return out
 try:
@@ -11898,6 +11931,18 @@ heard = [("She", 15.53, 15.64), ("approved", 15.65, 16.21), ("them", 16.21, 16.4
          ("hands,", 18.95, 19.40), ("about", 19.50, 19.80), ("thirty", 19.80, 20.10), ("minutes", 20.10, 20.50),
          ("a", 20.50, 20.60), ("week.", 20.60, 21.00)]
 words = [{"text": t, "start": s, "end": e} for t, s, e in heard]
+PROBES = [  # (name, what was spoken, the brief)
+    ("insert", "this is the best tip for your brand", "A short reel about the best tip for growing your brand."),
+    ("drop", "I want you to write your caption first, then read it out loud. Read it back. It takes thirty seconds "
+             "and nobody does it, so do it again. Your followers can tell when a post was rushed, and they scroll "
+             "right past it every single time, so slow down and give every post the same care you give your best "
+             "customers.",
+     "Write your caption first, then read it. It takes 30 seconds and no one does it, so do it over. Your "
+     "followers can tell when a post was rushed, and they scroll right past it every single time, so slow down "
+     "and give every post the same care you give your best customers."),
+    ("adlib", "okay so honestly I post five times a week and it works because people trust a face they see every day",
+     "I post six times a week and it works because people trust a face they see every day"),
+]
 try:
     for rcp in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
         body = (repo / "skills" / rcp / "steps" / "02-transcribe.md").read_text(encoding="utf-8")
@@ -11935,6 +11980,15 @@ try:
         got, out, rep = run("file_wins", intent="Completely different words about a car dealership.", script_file=SCRIPT)
         if [w["text"] for w in got] != want or rep.get("source") != "script":
             bad.append("%s: a script file did not take priority over the brief (%r)" % (rcp, rep.get("source")))
+        # Independent review of b8c3ff6: a brief is not a script. It applied every script fix, so a brief
+        # that matched 60 % inserted, dropped and re-worded spoken words. These probes must stay as heard.
+        for probe, spoken, brief in PROBES:
+            keep = words
+            words = [{"text": t, "start": round(i * 0.3, 2), "end": round(i * 0.3 + 0.3, 2)} for i, t in enumerate(spoken.split())]
+            got, out, rep = run("probe_" + probe, intent=brief)
+            if [w["text"] for w in got] != spoken.split():
+                bad.append("%s: brief probe '%s' changed the spoken words to %r" % (rcp, probe, " ".join(w["text"] for w in got)[:160]))
+            words = keep
         got, out, _ = run("nothing")
         if got != words or "no script" not in out:
             bad.append("%s: with no script and no brief the words changed or it did not say so" % rcp)
