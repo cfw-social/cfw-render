@@ -96,6 +96,10 @@ WI2.86 apply_spotlight_end_card() makes every p-reels-spotlight steps/06-assembl
 max(bed - cta_duration, last spoken word end), so the closing line keeps the face and captions.
 Nothing is appended; under 1.0 s of bed after the last word, the card is skipped with a log line.
 
+WI2.89 apply_spotlight_bed_tail() makes step 01 of every p-reels-spotlight copy (and SKILL.md
+Step 2) hold the last frame with silence so cta_duration + 0.5 s (tail <= 3.5 s) follows the
+speech, so the WI2.86 end card always fits; transcript/caption tolerances 4.5 s, reel window 65 s.
+
 Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
 and before list_files/hashing, same ordering guarantee:
   strip_brand_override_host_paths() nulls/drops the two host-path fields
@@ -2524,6 +2528,203 @@ def apply_spotlight_end_card(directory: Path, recipe: str) -> int:
     return changed
 
 
+# WI2.89: after WI2.86 the end card starts only after the last spoken word, but the bed was the bare
+# clip. When the speech runs to the end (re-smoke clip: bed 41.67 s, last word 41.60 s), step 06 had
+# no room and skipped the card: the reel shipped with no CTA. Step 01 (and SKILL.md Step 2) now hold
+# the last frame with silence so cta_duration + SPOTLIGHT_TAIL_MARGIN_S follows the speech end
+# (tail at most SPOTLIGHT_TAIL_MAX_S). The tail is part of the sealed bed, so step 06 shows the full
+# card right after the last word. The transcript/caption tail tolerances become 4.5 s (3.5 s tail
+# plus timing slack) and the reel window 65 s (60 s of speech + 3.5 s tail + 0.4 s cover).
+SPOTLIGHT_TAIL_MARGIN_S = 0.5
+SPOTLIGHT_TAIL_MAX_S = 3.5
+SPOTLIGHT_TAIL_PY = """# WI2.89: hold the last frame with silence so the end card fits after the last spoken word.
+import math, os, re, subprocess, sys
+src, card, want = sys.argv[1], sys.argv[2], float(sys.argv[3])
+MARGIN, MAX_TAIL = """ + str(SPOTLIGHT_TAIL_MARGIN_S) + ", " + str(SPOTLIGHT_TAIL_MAX_S) + """   # speech end + cta_duration + MARGIN, tail at most MAX_TAIL
+def dur(p):
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", p],
+                         capture_output=True, text=True, check=True).stdout.strip()
+    return float(out)
+if card != "on":
+    print("[spotlight] end-card tail: cta_card off, no tail"); sys.exit(0)
+d = dur(src)
+log = subprocess.run(["ffmpeg", "-hide_banner", "-i", src, "-af", "silencedetect=noise=-40dB:d=0.3", "-f", "null", "-"],
+                     capture_output=True, text=True).stderr
+starts = [float(x) for x in re.findall(r"silence_start: (-?[0-9.]+)", log)]
+ends = [float(x) for x in re.findall(r"silence_end: (-?[0-9.]+)", log)]
+speech_end = d                       # no silence runs to the end: the speech fills the clip
+if starts and (len(ends) < len(starts) or ends[-1] >= d - 0.05):
+    speech_end = max(0.0, starts[-1])
+tail = math.ceil(max(0.0, min(want + MARGIN, MAX_TAIL) - (d - speech_end)) * 30) / 30
+if tail <= 0:
+    print("[spotlight] end-card tail: %.2fs of silence already follows the speech, no tail" % (d - speech_end)); sys.exit(0)
+tmp = src[:-4] + "-tail.mp4"
+subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", src, "-vf", "tpad=stop_mode=clone:stop_duration=%.3f" % tail,
+                "-af", "apad=pad_dur=%.3f" % tail, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30",
+                "-c:a", "aac", "-ar", "48000", "-ac", "2", tmp], check=True)
+got = dur(tmp)
+if abs(got - (d + tail)) > 0.1:
+    sys.exit("end-card tail: bed is %.3fs, expected %.3fs" % (got, d + tail))
+os.replace(tmp, src)
+print("[spotlight] end-card tail: speech ends %.2fs, held the last frame + silence for %.2fs (bed %.2fs)" % (speech_end, tail, got))
+"""
+SPOTLIGHT_TAIL_PROSE = """The end card never covers speech (WI2.86), so the bed needs room after the last spoken word.
+When the speech runs to the end of the clip (or nearly), hold the last frame with silence until
+`cta_duration` + """ + str(SPOTLIGHT_TAIL_MARGIN_S) + """ s follows the speech end (a tail of at most """ + str(SPOTLIGHT_TAIL_MAX_S) + """ s). The speech end is
+where the final silence starts (`silencedetect` −40 dB, 0.3 s); with no trailing silence it is
+the clip end. `cta_card: off` adds no tail, and a clip that already ends in enough silence is
+left as it is. The tail is part of the sealed bed: captions, takeovers, checks and the reel all
+time against it, and the end card then shows in full right after the last word.
+"""
+_SPOTLIGHT_SEAL_OLD = "### 5. Seal and save\n"
+SPOTLIGHT_TAIL_STEP = ("### 4b. Give the end card a silent tail (WI2.89)\n\n" + SPOTLIGHT_TAIL_PROSE + """
+```bash
+opt () { python3 -c "import json; print(json.load(open('brief.json')).get('options',{}).get('$1','$2'))"; }
+python3 - work/base.mp4 "$(opt cta_card on)" "$(opt cta_duration 3.0)" <<'PY' || exit 1
+""" + SPOTLIGHT_TAIL_PY + """PY
+```
+
+""")
+_SPOTLIGHT_BED_DUR_OLD = "csv=p=0 saves/voice_track.mp4                             # 20–60 s\n"
+SPOTLIGHT_BED_DUR = "csv=p=0 saves/voice_track.mp4                             # 20–64 s (with the WI2.89 tail)\n"
+_SPOTLIGHT_TRANSCRIBE_OLD = "the last `end` within ~3 s of the\n  bed duration.\n"
+SPOTLIGHT_TRANSCRIBE = ("the last `end` within ~4.5 s of the\n  bed duration (the bed ends in a silent end-card tail of up to "
+                        + str(SPOTLIGHT_TAIL_MAX_S) + " s, WI2.89).\n")
+_SPOTLIGHT_PLAN_ASSERT_OLD = 'assert abs(p["caption_groups"][-1]["end"] - dur) < 3.0, "captions do not cover the bed"\n'
+SPOTLIGHT_PLAN_ASSERT = ('# WI2.89: the bed ends in a silent end-card tail (at most ' + str(SPOTLIGHT_TAIL_MAX_S) + ' s), so allow 4.5 s.\n'
+                         'assert abs(p["caption_groups"][-1]["end"] - dur) < 4.5, "captions do not cover the bed"\n')
+_SPOTLIGHT_PLAN_DOC_OLD = "groups cover the bed to within 3 s"
+SPOTLIGHT_PLAN_DOC = "groups cover the bed to within 4.5 s (its silent end-card tail, WI2.89)"
+_SPOTLIGHT_SHARED_EDITS = (
+    ("ends on a branded CTA end card that overlays the last seconds of the bed (nothing is appended).\n",
+     "ends on a branded CTA end card right after the last spoken word, over the bed's silent tail\n"
+     "(step 01 holds the last frame with silence so the full card fits, WI2.89; nothing is appended\n"
+     "after the bed).\n"),
+    ("| `cta_card` | `on` | End-card takeover over the final `cta_duration` seconds. `off` skips it. |\n",
+     "| `cta_card` | `on` | End-card takeover after the last spoken word, over the bed's silent tail (WI2.89). `off` skips it and the tail. |\n"),
+    ("| `cta_duration` | `3` | Seconds of bed the end card covers. |\n",
+     "| `cta_duration` | `3` | Seconds the end card covers. Step 01 makes sure this much + " + str(SPOTLIGHT_TAIL_MARGIN_S)
+     + " s follows the speech (a tail of at most " + str(SPOTLIGHT_TAIL_MAX_S) + " s). |\n"),
+)
+_SPOTLIGHT_FINAL_EDITS = (
+    ("- `prior/assembled_video.mp4` — the finished reel at bed length (graded, captioned, end card).\n",
+     "- `prior/assembled_video.mp4` — the finished reel at bed length (graded, captioned; with `cta_card`\n"
+     "  on, the full end card right after the last spoken word, over the bed's silent tail — WI2.89).\n"),
+)
+_SPOTLIGHT_SKILL_TRIM_OLD = ("  echo \"[spotlight] trimmed ${TRIM_START}s of leading silence\"\nfi\n```\n\n"
+                             "### Step 3 — Transcribe with WORD timestamps\n")
+SPOTLIGHT_SKILL_TAIL = ("  echo \"[spotlight] trimmed ${TRIM_START}s of leading silence\"\nfi\n```\n\n"
+                        "**End-card tail (WI2.89, mandatory):** " + SPOTLIGHT_TAIL_PROSE + """
+```bash
+python3 - "$W/base.mp4" "${CTA_CARD:-on}" "${CTA_DURATION:-3}" <<'PY' || exit 1
+""" + SPOTLIGHT_TAIL_PY + """PY
+DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$W/base.mp4")
+```
+
+### Step 3 — Transcribe with WORD timestamps
+""")
+_SPOTLIGHT_SKILL_CTA_ROW_OLD = ("| `cta_card` | No | brand default | Auto-generated end-card takeover (2.5–3s) overlaying the final "
+                                "2.5–3s of the bed — does NOT extend the reel. Pass `off` to skip. |\n")
+SPOTLIGHT_SKILL_CTA_ROW = ("| `cta_card` | No | brand default | Auto-generated end-card takeover (`CTA_DURATION`, 3 s) right after "
+                           "the last spoken word, never over speech. Step 2 holds the last frame with silence so the full card "
+                           "fits (WI2.89); nothing is appended after the bed. Pass `off` to skip (no tail). |\n")
+_SPOTLIGHT_SKILL_RULE_OLD = ("**Hard rule:** the CTA end-card is the **last graphics takeover** of the bed, covering the picture\n"
+                             "during the speaker's spoken CTA line. Total reel duration = bed duration. Nothing is appended.\n")
+SPOTLIGHT_SKILL_RULE = ("**Hard rule:** the CTA end-card is the **last graphics takeover** of the bed. It never covers\n"
+                        "speech (WI2.86): it starts at `max(bed − CTA_DURATION, last word end)` and covers the rest of the\n"
+                        "bed. Step 2's silent tail (WI2.89) leaves `CTA_DURATION` + " + str(SPOTLIGHT_TAIL_MARGIN_S)
+                        + " s after the last word, so the full\n"
+                        "card shows right after the speech. Total reel duration = bed duration. Nothing is appended.\n")
+_SPOTLIGHT_SKILL_CTA_DUR_OLD = 'CTA_DURATION="${CTA_DURATION:-3.0}"\n'
+SPOTLIGHT_SKILL_CTA_DUR = _SPOTLIGHT_SKILL_CTA_DUR_OLD + """BED_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$W/polished.mp4")
+# WI2.86/WI2.89: the card starts only after the last spoken word ends and covers the rest of the bed.
+CTA_START=$(python3 - "$BED_DUR" "$CTA_DURATION" "$W" <<'PY'
+import json, os, sys
+bed, want, w = float(sys.argv[1]), float(sys.argv[2]), sys.argv[3]
+ends = [float(x["end"]) for x in json.load(open(os.path.join(w, "words.json"))) if isinstance(x, dict) and "end" in x]
+for g in json.load(open(os.path.join(w, "plan.json"))).get("caption_groups") or []:
+    ends += [float(x["e"]) for x in g.get("words") or [] if isinstance(x, dict) and "e" in x]
+if not ends:
+    sys.exit("end card: no word timings in words.json or the plan caption groups")
+print("%.3f" % max(bed - want, max(ends)))
+PY
+) || exit 1
+CTA_DURATION=$(python3 -c "print('%.3f' % max(0.0, ${BED_DUR} - ${CTA_START}))")
+python3 -c "import sys; sys.exit(0 if ${CTA_DURATION} >= 1.0 else 'end card: only ${CTA_DURATION}s of bed after the last spoken word; the Step 2 end-card tail (WI2.89) is missing')" || exit 1
+"""
+_SPOTLIGHT_SKILL_CTA_START_OLD = ('BED_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$W/polished.mp4")\n'
+                                  'CTA_START=$(python3 -c "print(${BED_DUR} - ${CTA_DURATION})")\n')
+SPOTLIGHT_SKILL_CTA_START = "# BED_DUR, CTA_START and CTA_DURATION were set above (WI2.86/WI2.89): the card follows the last word.\n"
+_SPOTLIGHT_SKILL_ASSERT_OLD = 'assert abs(p["caption_groups"][-1]["end"]-dur) < 3.0, "captions do not cover the bed"\n'
+SPOTLIGHT_SKILL_ASSERT = ('# WI2.89: the bed ends in a silent end-card tail (at most ' + str(SPOTLIGHT_TAIL_MAX_S) + ' s), so allow 4.5 s.\n'
+                          'assert abs(p["caption_groups"][-1]["end"]-dur) < 4.5, "captions do not cover the bed"\n')
+_SPOTLIGHT_ACCEPT_EDITS = (
+    ('"type": "duration_window", "min_s": 20, "max_s": 62 }', '"type": "duration_window", "min_s": 20, "max_s": 65 }'),
+    ('"tail_tolerance_s": 3,', '"tail_tolerance_s": 4.5,'),
+    ("last end within 3 s of the bed duration.\"",
+     "last end within 4.5 s of the bed duration (the bed ends in a silent end-card tail of up to "
+     + str(SPOTLIGHT_TAIL_MAX_S) + " s, WI2.89).\""),
+    ('"caption_tail_tolerance_s": 3,', '"caption_tail_tolerance_s": 4.5,'),
+    ("caption_groups cover the bed to within 3 s;", "caption_groups cover the bed to within 4.5 s (end-card tail, WI2.89);"),
+)
+# File -> edits. SKILL.md and acceptance.json only in a full p-reels-spotlight copy (the heygen wrapper's
+# own SKILL.md delegates and it ships no acceptance.json); the steps in every copy.
+_SPOTLIGHT_TAIL_FILES = (
+    (Path("steps") / "01-prepare-footage.md", False, ((_SPOTLIGHT_SEAL_OLD, SPOTLIGHT_TAIL_STEP + _SPOTLIGHT_SEAL_OLD),
+                                                      (_SPOTLIGHT_BED_DUR_OLD, SPOTLIGHT_BED_DUR))),
+    (Path("steps") / "02-transcribe.md", False, ((_SPOTLIGHT_TRANSCRIBE_OLD, SPOTLIGHT_TRANSCRIBE),)),
+    (Path("steps") / "03-plan-edit.md", False, ((_SPOTLIGHT_PLAN_ASSERT_OLD, SPOTLIGHT_PLAN_ASSERT),
+                                                (_SPOTLIGHT_PLAN_DOC_OLD, SPOTLIGHT_PLAN_DOC))),
+    (Path("steps") / "_shared.md", False, _SPOTLIGHT_SHARED_EDITS),
+    (Path("steps") / "07-final-checks.md", False, _SPOTLIGHT_FINAL_EDITS),
+    (Path("SKILL.md"), True, ((_SPOTLIGHT_SKILL_CTA_ROW_OLD, SPOTLIGHT_SKILL_CTA_ROW),
+                              (_SPOTLIGHT_SKILL_TRIM_OLD, SPOTLIGHT_SKILL_TAIL),
+                              (_SPOTLIGHT_SKILL_ASSERT_OLD, SPOTLIGHT_SKILL_ASSERT),
+                              (_SPOTLIGHT_SKILL_RULE_OLD, SPOTLIGHT_SKILL_RULE),
+                              (_SPOTLIGHT_SKILL_CTA_DUR_OLD, SPOTLIGHT_SKILL_CTA_DUR),
+                              (_SPOTLIGHT_SKILL_CTA_START_OLD, SPOTLIGHT_SKILL_CTA_START))),
+    (Path("acceptance.json"), True, _SPOTLIGHT_ACCEPT_EDITS),
+)
+
+
+def apply_spotlight_bed_tail(directory: Path, recipe: str) -> int:
+    """WI2.89: every p-reels-spotlight copy under `directory` (the top-level p-reels-spotlight /
+    p-reels-spotlight-heygen steps, and .hub/p-reels-spotlight) gives the voice bed a silent
+    end-card tail in step 01, so the WI2.86 end card always fits after the last spoken word; the
+    docs and the transcript/caption/reel-length tolerances follow. Idempotent; fails fast when a
+    copy lost an anchor or a file, or when a spotlight recipe ships no prepare-footage step."""
+    changed = 0
+    if not directory.is_dir():
+        return 0
+    roots = [directory] if directory.name.startswith("p-reels-spotlight") else []
+    roots += sorted(p for p in directory.rglob("p-reels-spotlight") if p.is_dir() and p.parent.name == ".hub")
+    roots = [r for r in roots if (r / "steps" / "01-prepare-footage.md").is_file()]
+    if recipe.startswith("p-reels-spotlight") and not roots:
+        raise SystemExit(f"sync-skills.py: ERROR - no p-reels-spotlight steps/01-prepare-footage.md under {directory} "
+                         f"({recipe}); the WI2.89 transform cannot apply")
+    for root in roots:
+        for rel, full_only, edits in _SPOTLIGHT_TAIL_FILES:
+            if full_only and root.name != "p-reels-spotlight":
+                continue
+            path = root / rel
+            if not path.is_file():
+                raise SystemExit(f"sync-skills.py: ERROR - {path} is missing ({recipe}); the WI2.89 transform cannot apply")
+            text = path.read_text(encoding="utf-8")
+            new_text = text
+            for old, new in edits:
+                if new in new_text:
+                    continue
+                if new_text.count(old) != 1:
+                    raise SystemExit(f"sync-skills.py: ERROR - end-card tail anchor {old.strip().splitlines()[0][:60]!r} "
+                                     f"found {new_text.count(old)} time(s) in {path} ({recipe}); "
+                                     "the WI2.89 transform cannot apply")
+                new_text = new_text.replace(old, new, 1)
+            if new_text != text:
+                path.write_text(new_text, encoding="utf-8")
+                changed += 1
+    return changed
+
+
 def git_head_sha(repo: Path) -> str | None:
     """Best-effort `git rev-parse HEAD` of `repo`. Returns None (never
     raises) when `repo` isn't a git checkout — e.g. a test fixture dir — so
@@ -2678,6 +2879,9 @@ def main():
 
         # WI2.86: the spotlight end card starts only after the last spoken word ends (every copy).
         apply_spotlight_end_card(recipe_dest, recipe)
+
+        # WI2.89: the bed gets a silent end-card tail so the card always fits after the last word.
+        apply_spotlight_bed_tail(recipe_dest, recipe)
 
         files = list_files(recipe_dest)
         file_hashes = {f: sha256_file(recipe_dest / f) for f in files}

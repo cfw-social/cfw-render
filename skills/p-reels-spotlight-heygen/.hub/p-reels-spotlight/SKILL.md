@@ -71,7 +71,7 @@ at any timestamp the VO is silent during a takeover, the reel is broken (continu
 | `sfx` | No | **on** | Sound design from shipped pack (`assets/sfx/` — CC0). |
 | `grade` | No | planner picks | `warm-amber` or `clean-bright`. |
 | `cover_at` | No | planner picks | Timestamp (seconds) past the hook to use as the money-shot for the 0.4s cover freeze. The Step 4 edit plan should emit this; if absent, Step 10 picks mid-content automatically. |
-| `cta_card` | No | brand default | Auto-generated end-card takeover (2.5–3s) overlaying the final 2.5–3s of the bed — does NOT extend the reel. Pass `off` to skip. |
+| `cta_card` | No | brand default | Auto-generated end-card takeover (`CTA_DURATION`, 3 s) right after the last spoken word, never over speech. Step 2 holds the last frame with silence so the full card fits (WI2.89); nothing is appended after the bed. Pass `off` to skip (no tail). |
 | `cta_text` | No | `FOLLOW FOR MORE` | Hero line on the end card. Resolve from the active brand (`brand-overrides/<slug>/brand.json` `cta.line`, or the order's `copy.cta`). The fallback is generic and carries no brand. |
 | `cta_handle` | No | — (no handle line) | Handle/URL on the end card. Resolve from the active brand (`brand-overrides/<slug>/brand.json` `cta.handle`, or the brand's primary social account in the order's brand context). **If the brand has no handle, leave it empty: the card renders without a handle line.** Never invent one and never reuse another brand's. |
 | `brand_name` | No | — (no kicker) | Brand name for the kicker line above the hero. Resolve from the brand context; empty → kicker omitted. |
@@ -209,6 +209,50 @@ if python3 -c "exit(0 if float('$TRIM_START') > 0.3 else 1)"; then
   DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$W/base.mp4")
   echo "[spotlight] trimmed ${TRIM_START}s of leading silence"
 fi
+```
+
+**End-card tail (WI2.89, mandatory):** The end card never covers speech (WI2.86), so the bed needs room after the last spoken word.
+When the speech runs to the end of the clip (or nearly), hold the last frame with silence until
+`cta_duration` + 0.5 s follows the speech end (a tail of at most 3.5 s). The speech end is
+where the final silence starts (`silencedetect` −40 dB, 0.3 s); with no trailing silence it is
+the clip end. `cta_card: off` adds no tail, and a clip that already ends in enough silence is
+left as it is. The tail is part of the sealed bed: captions, takeovers, checks and the reel all
+time against it, and the end card then shows in full right after the last word.
+
+```bash
+python3 - "$W/base.mp4" "${CTA_CARD:-on}" "${CTA_DURATION:-3}" <<'PY' || exit 1
+# WI2.89: hold the last frame with silence so the end card fits after the last spoken word.
+import math, os, re, subprocess, sys
+src, card, want = sys.argv[1], sys.argv[2], float(sys.argv[3])
+MARGIN, MAX_TAIL = 0.5, 3.5   # speech end + cta_duration + MARGIN, tail at most MAX_TAIL
+def dur(p):
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", p],
+                         capture_output=True, text=True, check=True).stdout.strip()
+    return float(out)
+if card != "on":
+    print("[spotlight] end-card tail: cta_card off, no tail"); sys.exit(0)
+d = dur(src)
+log = subprocess.run(["ffmpeg", "-hide_banner", "-i", src, "-af", "silencedetect=noise=-40dB:d=0.3", "-f", "null", "-"],
+                     capture_output=True, text=True).stderr
+starts = [float(x) for x in re.findall(r"silence_start: (-?[0-9.]+)", log)]
+ends = [float(x) for x in re.findall(r"silence_end: (-?[0-9.]+)", log)]
+speech_end = d                       # no silence runs to the end: the speech fills the clip
+if starts and (len(ends) < len(starts) or ends[-1] >= d - 0.05):
+    speech_end = max(0.0, starts[-1])
+tail = math.ceil(max(0.0, min(want + MARGIN, MAX_TAIL) - (d - speech_end)) * 30) / 30
+if tail <= 0:
+    print("[spotlight] end-card tail: %.2fs of silence already follows the speech, no tail" % (d - speech_end)); sys.exit(0)
+tmp = src[:-4] + "-tail.mp4"
+subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", src, "-vf", "tpad=stop_mode=clone:stop_duration=%.3f" % tail,
+                "-af", "apad=pad_dur=%.3f" % tail, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30",
+                "-c:a", "aac", "-ar", "48000", "-ac", "2", tmp], check=True)
+got = dur(tmp)
+if abs(got - (d + tail)) > 0.1:
+    sys.exit("end-card tail: bed is %.3fs, expected %.3fs" % (got, d + tail))
+os.replace(tmp, src)
+print("[spotlight] end-card tail: speech ends %.2fs, held the last frame + silence for %.2fs (bed %.2fs)" % (speech_end, tail, got))
+PY
+DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$W/base.mp4")
 ```
 
 ### Step 3 — Transcribe with WORD timestamps
@@ -389,7 +433,8 @@ python3 - "$W/plan.json" "$DUR" <<'PY'
 import json,re,sys
 p=json.load(open(sys.argv[1])); dur=float(sys.argv[2])
 assert p["caption_groups"], "no caption groups"
-assert abs(p["caption_groups"][-1]["end"]-dur) < 3.0, "captions do not cover the bed"
+# WI2.89: the bed ends in a silent end-card tail (at most 3.5 s), so allow 4.5 s.
+assert abs(p["caption_groups"][-1]["end"]-dur) < 4.5, "captions do not cover the bed"
 assert not re.search(r'[ऀ-ॿ]', json.dumps(p)), "Devanagari in plan — Latin script only"
 for tk in p.get("takeovers",[]): assert 2.5 <= tk["end"]-tk["start"] <= 7, f"bad takeover window {tk}"
 cover_t = float(p.get("cover_at", dur * 0.4))
@@ -812,8 +857,10 @@ fi
 
 ### Step 8 — CTA end-card (FINAL TAIL TAKEOVER — not an append)
 
-**Hard rule:** the CTA end-card is the **last graphics takeover** of the bed, covering the picture
-during the speaker's spoken CTA line. Total reel duration = bed duration. Nothing is appended.
+**Hard rule:** the CTA end-card is the **last graphics takeover** of the bed. It never covers
+speech (WI2.86): it starts at `max(bed − CTA_DURATION, last word end)` and covers the rest of the
+bed. Step 2's silent tail (WI2.89) leaves `CTA_DURATION` + 0.5 s after the last word, so the full
+card shows right after the speech. Total reel duration = bed duration. Nothing is appended.
 
 ```bash
 BG_HEX=$(python3 -c "import json; print(json.load(open('$W/plan.json'))['brand']['bg'].lstrip('#'))")
@@ -821,6 +868,21 @@ ACCENT_HEX=$(python3 -c "import json; print(json.load(open('$W/plan.json'))['bra
 FG_HEX=$(python3 -c "import json; print(json.load(open('$W/plan.json'))['brand']['fg'].lstrip('#'))")
 
 CTA_DURATION="${CTA_DURATION:-3.0}"
+BED_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$W/polished.mp4")
+# WI2.86/WI2.89: the card starts only after the last spoken word ends and covers the rest of the bed.
+CTA_START=$(python3 - "$BED_DUR" "$CTA_DURATION" "$W" <<'PY'
+import json, os, sys
+bed, want, w = float(sys.argv[1]), float(sys.argv[2]), sys.argv[3]
+ends = [float(x["end"]) for x in json.load(open(os.path.join(w, "words.json"))) if isinstance(x, dict) and "end" in x]
+for g in json.load(open(os.path.join(w, "plan.json"))).get("caption_groups") or []:
+    ends += [float(x["e"]) for x in g.get("words") or [] if isinstance(x, dict) and "e" in x]
+if not ends:
+    sys.exit("end card: no word timings in words.json or the plan caption groups")
+print("%.3f" % max(bed - want, max(ends)))
+PY
+) || exit 1
+CTA_DURATION=$(python3 -c "print('%.3f' % max(0.0, ${BED_DUR} - ${CTA_START}))")
+python3 -c "import sys; sys.exit(0 if ${CTA_DURATION} >= 1.0 else 'end card: only ${CTA_DURATION}s of bed after the last spoken word; the Step 2 end-card tail (WI2.89) is missing')" || exit 1
 # Per-brand end card (CFW-354 / M1-00): kicker = BRAND_NAME, hero = CTA_TEXT, handle = CTA_HANDLE.
 # scripts/cta-card.py OMITS the kicker/handle layer when its variable is empty — a brand with no
 # known handle gets a card with no handle line, never a placeholder or another brand's handle.
@@ -844,8 +906,7 @@ hyperframes render "$W/cta-card.json" "$W/cta-card.mp4" 2>/dev/null || {
     "$W/cta-card.mp4"
 }
 
-BED_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$W/polished.mp4")
-CTA_START=$(python3 -c "print(${BED_DUR} - ${CTA_DURATION})")
+# BED_DUR, CTA_START and CTA_DURATION were set above (WI2.86/WI2.89): the card follows the last word.
 
 ffmpeg -y -i "$W/polished.mp4" -itsoffset "${CTA_START}" -i "$W/cta-card.mp4" \
   -filter_complex "[0:v][1:v]overlay=enable='between(t,${CTA_START},${BED_DUR})':eof_action=pass[v]" \

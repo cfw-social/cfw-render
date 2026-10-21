@@ -12,7 +12,9 @@ bed is sealed. The speaker plays full-frame; word-synced kinetic captions ride o
 full-frame motion-graphics takeovers (and, when b-roll was supplied, transcript-matched b-roll
 clips) cover the *picture* at planned beats — never the *sound*. SFX sit UNDER the voice
 (`amix=normalize=0`). The deliverable carries a 0.4 s money-shot cover frame at position 0 and
-ends on a branded CTA end card that overlays the last seconds of the bed (nothing is appended).
+ends on a branded CTA end card right after the last spoken word, over the bed's silent tail
+(step 01 holds the last frame with silence so the full card fits, WI2.89; nothing is appended
+after the bed).
 
 ## The step workdir (fixed layout)
 
@@ -70,8 +72,8 @@ is a failure, not an ask). When the owner answers, the harness reruns the step f
 | `grade` | planner picks | `warm-amber` or `clean-bright`. |
 | `avatar_layout` | `fill` | `fill` = scale-to-cover; `letterbox` = pad on `#0F172A`. |
 | `broll_coverage_pct` / `broll_clip_seconds` / `broll_min_seconds` / `broll_max_seconds` / `broll_order` / `broll_reuse` | `30` / `4` / `2` / `6` / `transcript-match` / `false` | B-roll planner knobs (only when b-roll was supplied). |
-| `cta_card` | `on` | End-card takeover over the final `cta_duration` seconds. `off` skips it. |
-| `cta_duration` | `3` | Seconds of bed the end card covers. |
+| `cta_card` | `on` | End-card takeover after the last spoken word, over the bed's silent tail (WI2.89). `off` skips it and the tail. |
+| `cta_duration` | `3` | Seconds the end card covers. Step 01 makes sure this much + 0.5 s follows the speech (a tail of at most 3.5 s). |
 | `overlay_beats` | `[]` | Optional animated overlay stickers (`c-overlay-fx`); empty = none. |
 | `music` | none | Optional background-music file path inside `inputs/`; none = no music. |
 

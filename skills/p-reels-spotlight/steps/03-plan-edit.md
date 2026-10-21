@@ -337,7 +337,8 @@ python3 - saves/edit_plan.json "$DUR" <<'PY'
 import json, re, sys
 p = json.load(open(sys.argv[1])); dur = float(sys.argv[2])
 assert p["caption_groups"], "no caption groups"
-assert abs(p["caption_groups"][-1]["end"] - dur) < 3.0, "captions do not cover the bed"
+# WI2.89: the bed ends in a silent end-card tail (at most 3.5 s), so allow 4.5 s.
+assert abs(p["caption_groups"][-1]["end"] - dur) < 4.5, "captions do not cover the bed"
 assert not re.search(r'[ऀ-ॿ]', json.dumps(p)), "Devanagari in plan — Latin script only"
 for k in ("bg", "accent", "fg"):
     assert re.fullmatch(r'#[0-9A-Fa-f]{6}', p["brand"][k]), f"brand.{k} must be a single-# 6-digit hex"
@@ -367,5 +368,5 @@ words to caption (fewer than ~10), exit non-zero with one plain line; the harnes
 ## Checks the harness runs
 
 - `plan_valid` — `saves/edit_plan.json` parses and satisfies the same guard as above: caption
-  groups cover the bed to within 3 s and keep phrases whole, Latin script only, 6-digit brand
+  groups cover the bed to within 4.5 s (its silent end-card tail, WI2.89) and keep phrases whole, Latin script only, 6-digit brand
   hexes, every takeover 2.5–7 s, `cover_at ≥ 2 s`.

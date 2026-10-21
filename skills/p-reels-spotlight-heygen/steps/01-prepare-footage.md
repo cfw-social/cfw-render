@@ -172,12 +172,58 @@ if python3 -c "exit(0 if float('$TRIM_START') > 0.3 else 1)"; then
 fi
 ```
 
+### 4b. Give the end card a silent tail (WI2.89)
+
+The end card never covers speech (WI2.86), so the bed needs room after the last spoken word.
+When the speech runs to the end of the clip (or nearly), hold the last frame with silence until
+`cta_duration` + 0.5 s follows the speech end (a tail of at most 3.5 s). The speech end is
+where the final silence starts (`silencedetect` −40 dB, 0.3 s); with no trailing silence it is
+the clip end. `cta_card: off` adds no tail, and a clip that already ends in enough silence is
+left as it is. The tail is part of the sealed bed: captions, takeovers, checks and the reel all
+time against it, and the end card then shows in full right after the last word.
+
+```bash
+opt () { python3 -c "import json; print(json.load(open('brief.json')).get('options',{}).get('$1','$2'))"; }
+python3 - work/base.mp4 "$(opt cta_card on)" "$(opt cta_duration 3.0)" <<'PY' || exit 1
+# WI2.89: hold the last frame with silence so the end card fits after the last spoken word.
+import math, os, re, subprocess, sys
+src, card, want = sys.argv[1], sys.argv[2], float(sys.argv[3])
+MARGIN, MAX_TAIL = 0.5, 3.5   # speech end + cta_duration + MARGIN, tail at most MAX_TAIL
+def dur(p):
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", p],
+                         capture_output=True, text=True, check=True).stdout.strip()
+    return float(out)
+if card != "on":
+    print("[spotlight] end-card tail: cta_card off, no tail"); sys.exit(0)
+d = dur(src)
+log = subprocess.run(["ffmpeg", "-hide_banner", "-i", src, "-af", "silencedetect=noise=-40dB:d=0.3", "-f", "null", "-"],
+                     capture_output=True, text=True).stderr
+starts = [float(x) for x in re.findall(r"silence_start: (-?[0-9.]+)", log)]
+ends = [float(x) for x in re.findall(r"silence_end: (-?[0-9.]+)", log)]
+speech_end = d                       # no silence runs to the end: the speech fills the clip
+if starts and (len(ends) < len(starts) or ends[-1] >= d - 0.05):
+    speech_end = max(0.0, starts[-1])
+tail = math.ceil(max(0.0, min(want + MARGIN, MAX_TAIL) - (d - speech_end)) * 30) / 30
+if tail <= 0:
+    print("[spotlight] end-card tail: %.2fs of silence already follows the speech, no tail" % (d - speech_end)); sys.exit(0)
+tmp = src[:-4] + "-tail.mp4"
+subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", src, "-vf", "tpad=stop_mode=clone:stop_duration=%.3f" % tail,
+                "-af", "apad=pad_dur=%.3f" % tail, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30",
+                "-c:a", "aac", "-ar", "48000", "-ac", "2", tmp], check=True)
+got = dur(tmp)
+if abs(got - (d + tail)) > 0.1:
+    sys.exit("end-card tail: bed is %.3fs, expected %.3fs" % (got, d + tail))
+os.replace(tmp, src)
+print("[spotlight] end-card tail: speech ends %.2fs, held the last frame + silence for %.2fs (bed %.2fs)" % (speech_end, tail, got))
+PY
+```
+
 ### 5. Seal and save
 
 ```bash
 cp work/base.mp4 saves/voice_track.mp4
 ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 saves/voice_track.mp4   # 1080,1920
-ffprobe -v error -show_entries format=duration -of csv=p=0 saves/voice_track.mp4                             # 20–60 s
+ffprobe -v error -show_entries format=duration -of csv=p=0 saves/voice_track.mp4                             # 20–64 s (with the WI2.89 tail)
 ```
 
 From here on `voice_track.mp4` is sealed: no later step may cut, re-time or re-normalise it.

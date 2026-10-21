@@ -504,7 +504,8 @@ class Spotlight:
         elif typ == "dims":
             dimensions(self.artifact())
             if self.step == "prepare_footage":
-                require(20 <= duration(self.artifact()) <= 60, "Voice bed must last 20 to 60 seconds.")
+                # WI2.89: up to 60 s of speech plus the silent end-card tail (at most 3.5 s).
+                require(20 <= duration(self.artifact()) <= 64, "Voice bed must last 20 to 64 seconds.")
                 require(any(s["codec_type"] == "audio" for s in probe(self.artifact())["streams"]), "Voice bed has no audio.")
         elif typ == "duration_window":
             require(c["min_s"] <= duration(self.artifact()) <= c["max_s"], "Duration is outside the accepted window.")

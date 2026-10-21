@@ -10497,6 +10497,211 @@ else
 fi
 rm -rf "$wi286_root"
 
+echo "=== Case 62: WI2.89 — the spotlight bed gets a silent tail so the end card always shows ==="
+# Observed 2026-10-21 (re-smoke clip heygen-avatar.mp4, Render 5158704): the bed was 41.67 s and the
+# speech ran to 41.6 s, so the WI2.86 step 06 rule (card after the last word, skipped under 1.0 s)
+# skipped the end card and the reel shipped with no CTA. Step 01 of every p-reels-spotlight copy now
+# holds the last frame with silence until cta_duration + 0.5 s follows the speech end (tail at most
+# 3.5 s). Its section-4b bash block runs on real ffmpeg clips; the bed it makes then goes through the
+# real step 06 section-4 block (stub ffmpeg/npx, as in Case 61) and the real transcript/plan checks.
+wi289_root="$(mktemp -d)"
+wi289_detail="$(python3 - "$REPO_DIR" "$wi289_root" <<'PY'
+import importlib.util, json, os, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+def run(*a, **kw):
+    return subprocess.run([str(x) for x in a], capture_output=True, text=True, **kw)
+def dur(p, stream=None):
+    args = ["ffprobe", "-v", "error"] + (["-select_streams", stream, "-show_entries", "stream=duration"] if stream
+                                          else ["-show_entries", "format=duration"]) + ["-of", "csv=p=0", p]
+    return float(run(*args).stdout.strip().splitlines()[0])
+def trailing_silence(p):
+    d, log = dur(p), run("ffmpeg", "-hide_banner", "-i", p, "-af", "silencedetect=noise=-40dB:d=0.3", "-f", "null", "-").stderr
+    st = [float(x) for x in re.findall(r"silence_start: (-?[0-9.]+)", log)]
+    en = [float(x) for x in re.findall(r"silence_end: (-?[0-9.]+)", log)]
+    return d - st[-1] if st and (len(en) < len(st) or en[-1] >= d - 0.05) else 0.0
+def clip(name, d, speech):
+    # a tone stands in for the voice: it runs to `speech` s, then silence to `d` s
+    path = root / "clips" / name; path.parent.mkdir(exist_ok=True)
+    r = run("ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=270x480:r=30:d=%.3f" % d, "-f", "lavfi",
+            "-i", "sine=f=220:d=%.3f,volume=0.5,apad=whole_dur=%.3f" % (speech, d), "-c:v", "libx264", "-preset",
+            "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", "-t", "%.3f" % d, path)
+    if r.returncode:
+        raise RuntimeError("clip %s: %s" % (name, r.stderr[-200:]))
+    return path
+def section(step, start, stop):
+    text = step.read_text(encoding="utf-8")
+    if start not in text:
+        return None
+    m = re.search(r"```bash\n(.*?)```", text.split(start, 1)[1].split(stop, 1)[0], re.S)
+    return m.group(1) if m else None
+def prepare(step, case, src, card="on", cta=3.0):
+    work = root / case; shutil.rmtree(work, ignore_errors=True); (work / "work").mkdir(parents=True)
+    shutil.copy(src, work / "work" / "base.mp4")
+    (work / "brief.json").write_text(json.dumps({"options": {"cta_card": card, "cta_duration": cta}}))
+    code = section(step, "### 4b.", "### 5.")
+    if code is None:
+        return None
+    (work / "s4b.sh").write_text("set -u\n" + code)
+    p = subprocess.run(["bash", "s4b.sh"], cwd=work, capture_output=True, text=True, timeout=300)
+    return {"rc": p.returncode, "out": (p.stdout + p.stderr)[-300:], "bed": work / "work" / "base.mp4"}
+STUB = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$WI289_LOG\"\nfor a; do last=$a; done\ncase \"$last\" in *.mp4|*.json) : > \"$last\";; esac\nexit 0\n"
+stub_bin = root / "bin"; stub_bin.mkdir()
+for tool in ("ffmpeg", "npx"):
+    (stub_bin / tool).write_text(STUB); (stub_bin / tool).chmod(0o755)
+def assemble(step, case, bed, last_word):
+    # step 06 section 4 (the WI2.86 end-card rule) on the bed step 01 made
+    work = root / case; shutil.rmtree(work, ignore_errors=True); (work / "work").mkdir(parents=True)
+    (work / "work" / "words.json").write_text(json.dumps([{"text": "you.", "start": last_word - 0.3, "end": last_word}]))
+    (work / "work" / "plan.json").write_text(json.dumps({"brand": {"bg": "#0F172A", "accent": "#F97316", "fg": "#F1F5F9"},
+        "caption_groups": [{"start": last_word - 0.3, "end": last_word, "words": [{"w": "you.", "s": last_word - 0.3, "e": last_word}]}]}))
+    (work / "work" / "polished.mp4").write_bytes(b"x" * 10)
+    (work / "brief.json").write_text(json.dumps({"brand": {"name": "Test", "handle": "@test", "cta": "Try it"}}))
+    code = section(step.parent / "06-assemble.md", "### 4. CTA end card", "### 5.")
+    (work / "s4.sh").write_text("set -u\nCTA_CARD=on; CTA_DURATION=3.0; BED_DUR=%s\nSKILL_DIR=%s\n%s"
+                                % (bed, repo / "skills" / "p-reels-spotlight", code))
+    log = work / "ffmpeg.log"
+    env = dict(os.environ, PATH="%s:%s" % (stub_bin, os.environ["PATH"]), WI289_LOG=str(log))
+    p = subprocess.run(["bash", "s4.sh"], cwd=work, env=env, capture_output=True, text=True, timeout=60)
+    over = [c for c in (log.read_text().splitlines() if log.exists() else []) if "overlay=enable" in c]
+    m = re.search(r"between\(t,([0-9.]+),([0-9.]+)\)", over[0]) if over else None
+    card = work / "work" / "cta-card.json"
+    return {"rc": p.returncode, "out": (p.stdout + p.stderr)[-200:], "start": float(m.group(1)) if m else None,
+            "card_dur": json.loads(card.read_text())["duration"] if card.exists() and card.stat().st_size else None}
+try:
+    skills = repo / "skills"
+    steps = sorted(p for p in skills.rglob("01-prepare-footage.md")
+                   if p.parent.name == "steps" and p.parent.parent.name.startswith("p-reels-spotlight"))
+    if len(steps) != 3:
+        bad.append("expected 3 p-reels-spotlight steps/01-prepare-footage.md copies, found %d" % len(steps))
+    if len({section(s, "### 4b.", "### 5.") for s in steps}) != 1:
+        bad.append("the step 01 end-card tail blocks differ between copies")
+    full = clip("full.mp4", 41.67, 41.67)     # the smoke: speech to the end of a 41.67 s clip
+    gap = clip("gap.mp4", 8.0, 6.5)           # 1.5 s of silence already: 2.0 s more is enough
+    room = clip("room.mp4", 8.0, 4.0)         # 4.0 s of silence already: left as it is
+    for step in steps:
+        rel = step.relative_to(repo).parent.parent
+        r = prepare(step, "smoke", full)
+        if r is None:
+            bad.append("%s: step 01 has no section 4b end-card tail" % rel)
+            r = {"rc": 0, "bed": root / "clips" / "full.mp4"}   # the old bare bed, for the end-to-end proof
+        elif r["rc"] != 0:
+            bad.append("%s: tail block failed: %r" % (rel, r)); continue
+        bed = dur(r["bed"])
+        if not (41.67 + 3.4 <= bed <= 41.67 + 3.6) or trailing_silence(r["bed"]) < 3.3:
+            bad.append("%s: speech to the end of 41.67 s: bed %.2f s, %.2f s silent tail (want ~45.17, >= 3.3)"
+                       % (rel, bed, trailing_silence(r["bed"])))
+        elif dur(r["bed"], "v:0") < bed - 0.1:
+            bad.append("%s: the picture stops before the bed ends (last frame not held)" % rel)
+        a = assemble(step, "assemble", bed, 41.6)
+        if a["rc"] != 0 or a["start"] is None or a["start"] < 41.6 - 1e-6 or abs(float(a["card_dur"] or 0) - 3.0) > 0.02:
+            bad.append("%s: speech to 41.6 s on the 41.67 s clip: no full 3.0 s end card after the last word: %r" % (rel, a))
+        r = prepare(step, "gap", gap)
+        if r and (r["rc"] != 0 or abs(dur(r["bed"]) - 10.0) > 0.1):
+            bad.append("%s: 1.5 s of trailing silence should get a 2.0 s tail (bed 10.0 s): %r" % (rel, r))
+        for case, src, card in (("room", room, "on"), ("off", full, "off")):
+            r = prepare(step, case, src, card=card)
+            if r and (r["rc"] != 0 or r["bed"].read_bytes() != src.read_bytes()):
+                bad.append("%s: %s: the bed must be left as it is: %r" % (rel, case, r))
+    # The checks follow the longer bed: the right transcript/plan pass, a short one still fails.
+    spec = importlib.util.spec_from_file_location("ck289", repo / "bin" / "cfw-render-checks.py")
+    ck = importlib.util.module_from_spec(spec); spec.loader.exec_module(ck)
+    recipe = skills / "p-reels-spotlight"
+    acc = json.loads((recipe / "acceptance.json").read_text())
+    hub_acc = skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "acceptance.json"
+    if hub_acc.read_bytes() != (recipe / "acceptance.json").read_bytes():
+        bad.append("the two acceptance.json copies differ")
+    bed_path = root / "smoke" / "work" / "base.mp4"
+    work = (root / "checks").resolve(); (work / "prior").mkdir(parents=True); (work / "saves").mkdir()   # no linked /var
+    shutil.copy(bed_path, work / "prior" / "voice_track.mp4")
+    bed = dur(work / "prior" / "voice_track.mp4")
+    def verdict(fn):
+        try:
+            fn(); return "pass"
+        except BaseException as exc:
+            return "fail: %s" % exc
+    tk = [{"start": 5.0, "end": 9.0, "template": "tk-stat", "fill": {"stat": "3X"}},
+          {"start": 15.0, "end": 19.0, "template": "tk-quote", "fill": {"quote": "q"}}]
+    for last, want in ((41.6, "pass"), (37.0, "fail")):
+        (work / "saves" / "transcripts.json").write_text(json.dumps({"words": [
+            {"text": "hello", "start": 0.5, "end": 1.0}, {"text": "you.", "start": last - 0.3, "end": last}]}))
+        s = ck.Spotlight(recipe, work, "transcribe")
+        got = verdict(lambda: s.words(acc["steps"]["transcribe"]["checks"][0]))
+        if not got.startswith(want):
+            bad.append("transcript ending %.1f s on a %.2f s bed: %s (want %s)" % (last, bed, got, want))
+        (work / "saves" / "edit_plan.json").write_text(json.dumps({"duration": bed, "cover_at": 12.0, "takeovers": tk,
+            "brand": {"bg": "#0F172A", "accent": "#F97316", "fg": "#F1F5F9"},
+            "caption_groups": [{"start": 0.5, "end": last, "words": [{"w": "hello", "s": 0.5, "e": 1.0}, {"w": "you.", "s": last - 0.3, "e": last}]}]}))
+        s = ck.Spotlight(recipe, work, "plan_edit")
+        got = verdict(lambda: s.plan_guard(acc["steps"]["plan_edit"]["checks"][0]))
+        if not got.startswith(want):
+            bad.append("captions ending %.1f s on a %.2f s bed: %s (want %s)" % (last, bed, got, want))
+    m = re.search(r"require\(20 <= duration\(self\.artifact\(\)\) <= ([0-9.]+)", (repo / "bin" / "cfw-render-checks.py").read_text())
+    if not m or float(m.group(1)) < 60 + 3.5:
+        bad.append("the prepare_footage bed limit does not allow 60 s of speech + the 3.5 s tail")
+    win = next(c for c in acc["checks"] if c["id"] == "duration_window")
+    if win["max_s"] < 60 + 3.5 + 0.4:
+        bad.append("duration_window max_s %s does not allow 60 s + 3.5 s tail + 0.4 s cover" % win["max_s"])
+    for p in sorted(skills.rglob("03-plan-edit.md")):
+        if p.parent.parent.name.startswith("p-reels-spotlight") and "- dur) < 4.5, \"captions do not cover the bed\"" not in p.read_text():
+            bad.append("%s: the step 03 caption guard does not allow the tail" % p.relative_to(repo))
+    for p in (recipe / "SKILL.md", skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "SKILL.md"):
+        t = p.read_text(encoding="utf-8")
+        if "overlaying the final 2.5–3s" in t or 'CTA_START=$(python3 -c "print(${BED_DUR} - ${CTA_DURATION})")' in t \
+                or "End-card tail (WI2.89" not in t:
+            bad.append("%s still describes the card over the final seconds of the bare bed" % p.relative_to(repo))
+    finals = sorted(p for p in skills.rglob("07-final-checks.md") if p.parent.parent.name.startswith("p-reels-spotlight"))
+    if len({p.read_bytes() for p in finals}) != 1 or any("silent tail" not in p.read_text() for p in finals):
+        bad.append("07-final-checks.md copies differ or do not describe the end card after the last word")
+    # sync-skills.py keeps every copy in line.
+    spec = importlib.util.spec_from_file_location("ss289", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    files = getattr(ss, "_SPOTLIGHT_TAIL_FILES", None)
+    if files is None or not hasattr(ss, "apply_spotlight_bed_tail"):
+        bad.append("sync-skills.py does not carry the WI2.89 apply_spotlight_bed_tail transform")
+    else:
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        def revert(base):
+            for rel, full_only, edits in files:
+                if full_only and base.name != "p-reels-spotlight":
+                    continue
+                t = (base / rel).read_text(encoding="utf-8")
+                for old, new in reversed(edits):
+                    t = t.replace(new, old)
+                (base / rel).write_text(t, encoding="utf-8")
+        for base in (up / "p-reels-spotlight", up / "p-reels-spotlight-heygen",
+                     up / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight"):
+            revert(base)
+        for rec, n in (("p-reels-spotlight", 7), ("p-reels-spotlight-heygen", 12)):
+            n1 = ss.apply_spotlight_bed_tail(up / rec, rec); n2 = ss.apply_spotlight_bed_tail(up / rec, rec)
+            if (n1, n2) != (n, 0):
+                bad.append("transform on %s changed (%d, %d) file(s), expected (%d, 0)" % (rec, n1, n2, n))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        revert(up / "p-reels-spotlight")
+        t = up / "p-reels-spotlight" / "steps" / "01-prepare-footage.md"
+        t.write_text(t.read_text(encoding="utf-8").replace("### 5. Seal and save\n", "### 5. Seal it\n"), encoding="utf-8")
+        try:
+            ss.apply_spotlight_bed_tail(up / "p-reels-spotlight", "fixture")
+            bad.append("transform did not fail on a drifted step 01 anchor")
+        except SystemExit:
+            pass
+except Exception as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi289_detail" == "ok" ]]; then
+  pass "WI2.89 spotlight bed gets a silent tail (cta_duration + 0.5 s, <= 3.5 s): full end card after the last word (every copy)"
+else
+  fail "WI2.89 spotlight bed gets a silent tail so the end card always shows" "$wi289_detail"
+fi
+rm -rf "$wi289_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
