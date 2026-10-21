@@ -140,6 +140,9 @@ layouts where no PIP sits on top.
 - Root composition (`index.html`) = FULL HTML document — no `<template>` wrapper.
 - Sub-composition (`typing-scene.html`) = content inside `<template id="…">` wrapper.
 - `data-duration` drives clip length — GSAP timeline length is irrelevant.
+- Typing always finishes 0.6 s before the clip ends (`typingWindow()`, WI2.73), so the full prompt
+  is on screen before the cut at any `DURATION` / `TYPING_SPEED`; a clip too short to type in shows
+  the whole prompt. Keep `{{DURATION}}` equal to the clip's `data-duration`.
 - Typing is driven by a **stepped GSAP counter** (not TextPlugin) for frame-stability under headless chromium.
   Counter tween on `#char-count` from `0` to `text.length`, ease `none`, then sliced in a `gsap.ticker.add`.
   A GSAP `ticker` is NOT used in final form — the count proxy is tweened and read at each GSAP scrub position.

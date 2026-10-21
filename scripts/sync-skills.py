@@ -74,6 +74,11 @@ clamp no longer hides an out-of-order plan); a missing plan, bad JSON or a group
 without start/end is a clear message, not a traceback; and the pip P1 note
 replaces the WI2.64 "run P1 → P4 here" line (its inverse gives that line back).
 
+WI2.73 apply_typing_hold() rewrites the typing window in every vendored
+c-typing-ui typing-scene.html (all recipes, .hub copies included): typing ends
+0.6 s before the clip ends at any duration or speed, so the full prompt is on
+screen before the cut; its SKILL.md gotchas say so.
+
 Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
 and before list_files/hashing, same ordering guarantee:
   strip_brand_override_host_paths() nulls/drops the two host-path fields
@@ -2093,6 +2098,76 @@ def _caption_phrases_p1_rule(directory: Path, recipe: str) -> int:
     return 1
 
 
+# WI2.73: the c-typing-ui chat mock-up ended typing at DURATION*0.88/TYPING_SPEED, clamped only to
+# DURATION-0.4. A short scene (under ~4.2 s) or a slow TYPING_SPEED left the finished line on
+# screen for 0.4 s or less, so the cut came right after (or, with a rounded clip, before) the last
+# characters. The window is now one function: typing ends TYPING_HOLD (0.6 s, so at least 0.5 s
+# of rendered frames) before the clip ends, and a clip too short to type in shows the whole line.
+TYPING_SCENE_FILE = Path("templates") / "typing-scene.html"
+TYPING_SKILL_FILE = Path("SKILL.md")
+_TYPING_WINDOW_OLD = (
+    "    // Typing: starts at 0.5s, finishes at DURATION * 0.88 (settled before clip ends)\n"
+    "    var typeStart = 0.5;\n"
+    "    var typeEnd   = Math.max(typeStart + 0.5, DURATION * 0.88 / TYPING_SPEED);\n"
+    "    // Clamp typeEnd so it doesn't exceed clip duration\n"
+    "    typeEnd = Math.min(typeEnd, DURATION - 0.4);\n"
+)
+TYPING_WINDOW_JS = (
+    "    // Typing window (WI2.73): typing starts at 0.5 s and the whole prompt stays on screen for\n"
+    "    // TYPING_HOLD seconds before the clip ends, whatever the duration or TYPING_SPEED. A clip too\n"
+    "    // short to type in shows the whole prompt at once (never a half-typed line at the cut).\n"
+    "    var TYPING_HOLD = 0.6;\n"
+    "    function typingWindow(duration, speed) {\n"
+    "      if (!(speed > 0)) speed = 1.0;\n"
+    "      if (!(duration > 0)) return { start: 0, end: 0 };\n"
+    "      var latest = Math.max(0, duration - TYPING_HOLD);\n"
+    "      var start = Math.min(0.5, latest / 2);\n"
+    "      var end = Math.max(start + 0.5, duration * 0.88 / speed);\n"
+    "      end = Math.min(end, latest);\n"
+    "      if (end < start) end = start;\n"
+    "      return { start: start, end: end };\n"
+    "    }\n"
+    "    var typeWin   = typingWindow(DURATION, TYPING_SPEED);\n"
+    "    var typeStart = typeWin.start;\n"
+    "    var typeEnd   = typeWin.end;\n"
+)
+_TYPING_SKILL_ANCHOR = "- `data-duration` drives clip length — GSAP timeline length is irrelevant.\n"
+_TYPING_SKILL_NOTE = (
+    "- Typing always finishes 0.6 s before the clip ends (`typingWindow()`, WI2.73), so the full prompt\n"
+    "  is on screen before the cut at any `DURATION` / `TYPING_SPEED`; a clip too short to type in shows\n"
+    "  the whole prompt. Keep `{{DURATION}}` equal to the clip's `data-duration`.\n"
+)
+
+
+def apply_typing_hold(directory: Path, recipe: str) -> int:
+    """WI2.73: every c-typing-ui copy under `directory` (.hub/c-typing-ui, at any depth) holds the
+    finished prompt before the cut. Idempotent; fails fast when a copy lost its anchor."""
+    changed = 0
+    if not directory.is_dir():
+        return 0
+    for comp in sorted(p for p in directory.rglob("c-typing-ui") if p.is_dir() and p.parent.name == ".hub"):
+        tpl = comp / TYPING_SCENE_FILE
+        if tpl.is_file():
+            text = tpl.read_text(encoding="utf-8")
+            if TYPING_WINDOW_JS not in text:
+                if _TYPING_WINDOW_OLD not in text:
+                    raise SystemExit(f"sync-skills.py: ERROR - typing window not found in {tpl} ({recipe}); "
+                                     "the WI2.73 transform cannot apply")
+                tpl.write_text(text.replace(_TYPING_WINDOW_OLD, TYPING_WINDOW_JS, 1), encoding="utf-8")
+                changed += 1
+        doc = comp / TYPING_SKILL_FILE
+        if doc.is_file():
+            text = doc.read_text(encoding="utf-8")
+            if _TYPING_SKILL_NOTE not in text:
+                if _TYPING_SKILL_ANCHOR not in text:
+                    raise SystemExit(f"sync-skills.py: ERROR - data-duration gotcha not found in {doc} ({recipe}); "
+                                     "the WI2.73 transform cannot apply")
+                doc.write_text(text.replace(_TYPING_SKILL_ANCHOR, _TYPING_SKILL_ANCHOR + _TYPING_SKILL_NOTE, 1),
+                               encoding="utf-8")
+                changed += 1
+    return changed
+
+
 def git_head_sha(repo: Path) -> str | None:
     """Best-effort `git rev-parse HEAD` of `repo`. Returns None (never
     raises) when `repo` isn't a git checkout — e.g. a test fixture dir — so
@@ -2234,6 +2309,9 @@ def main():
 
         # WI2.76: caption groups keep phrases whole (top-level plan/composite step).
         apply_reel_caption_phrases(recipe_dest, recipe)
+
+        # WI2.73: the chat mock-up finishes typing before the cut (every c-typing-ui copy).
+        apply_typing_hold(recipe_dest, recipe)
 
         files = list_files(recipe_dest)
         file_hashes = {f: sha256_file(recipe_dest / f) for f in files}

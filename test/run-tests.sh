@@ -9890,6 +9890,116 @@ else
 fi
 rm -rf "$wi277_root"
 
+echo "=== Case 57: WI2.73 — the chat mock-up finishes typing and holds the full line before the cut ==="
+# Smoke 22 (R-78X6, p-reels-pip): a frame showed "Here's what's happening t" in the chat mock-up.
+# The c-typing-ui typing window ended at DURATION*0.88/TYPING_SPEED, clamped only to DURATION-0.4,
+# so a short scene or a slow TYPING_SPEED held the finished line for 0.4 s or less. Every vendored
+# typing-scene.html now computes the window in typingWindow(): typing ends 0.6 s before the clip
+# ends (>= 0.5 s of frames show the whole line); a clip too short to type in shows it at once.
+wi273_root="$(mktemp -d)"
+wi273_detail="$(python3 - "$REPO_DIR" "$wi273_root" <<'PY'
+import importlib.util, json, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+HOLD, FPS = 0.5, 30
+try:
+    spec = importlib.util.spec_from_file_location("ss273", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    copies = sorted((repo / "skills").glob("*/.hub/c-typing-ui/templates/typing-scene.html"))
+    names = {c.parts[-5] for c in copies}
+    for need in ("p-reels-pip", "p-reels-pip-heygen", "p-reels-spotlight", "p-reels-spotlight-heygen"):
+        if need not in names:
+            bad.append("%s: no vendored c-typing-ui typing-scene.html" % need)
+    for c in copies:
+        body = c.read_text(encoding="utf-8")
+        if ss.TYPING_WINDOW_JS not in body:
+            bad.append("%s: typing window is not the WI2.73 typingWindow()" % c.relative_to(repo))
+        if "DURATION - 0.4" in body:
+            bad.append("%s: the old DURATION - 0.4 clamp is still there" % c.relative_to(repo))
+        doc = (c.parent.parent / "SKILL.md").read_text(encoding="utf-8")
+        if ss._TYPING_SKILL_NOTE not in doc:
+            bad.append("%s: SKILL.md does not state the hold" % c.parent.parent.relative_to(repo))
+    # Run the shipped window (and the old one) in node over a grid of durations and speeds, then
+    # sample every rendered frame (t = k/FPS, k < DUR*FPS) the way the template does: the typed
+    # count is round(len * (t - start) / (end - start)), clamped to [0, len].
+    grid = [round(0.1 * i, 2) for i in range(1, 121)]
+    speeds = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 0.0, -1.0]
+    js = """
+const DURATION = 0, TYPING_SPEED = 1;
+%s
+const out = [];
+for (const d of %s) for (const s of %s) {
+  let w; try { w = WINDOW(d, s); } catch (e) { w = {err: String(e)}; }
+  out.push([d, s, w.start, w.end, w.err || null]);
+}
+console.log(JSON.stringify(out));
+"""
+    def run(src, name):
+        f = root / (name + ".js"); f.write_text(js % (src, json.dumps(grid), json.dumps(speeds)), encoding="utf-8")
+        r = subprocess.run(["node", str(f)], capture_output=True, text=True)
+        if r.returncode != 0:
+            bad.append("%s: node rc=%d %s" % (name, r.returncode, r.stderr.strip()[-300:])); return []
+        return json.loads(r.stdout)
+    def shortfalls(rows, name):
+        out = []
+        for d, s, start, end, err in rows:
+            if err or start is None or end is None:
+                out.append("%s d=%s s=%s error %s" % (name, d, s, err)); continue
+            if not (0 <= start <= end <= d):
+                out.append("%s d=%s s=%s window %.3f..%.3f" % (name, d, s, start, end)); continue
+            L = 59
+            frames = [k / FPS for k in range(int(round(d * FPS)))]
+            def typed(t):
+                if t >= end: return L
+                if t < start: return 0
+                return min(L, max(0, round(L * (t - start) / (end - start))))
+            full = [t for t in frames if typed(t) == L]
+            need = min(HOLD, d)  # a clip shorter than the hold shows the whole line throughout
+            if len(full) / FPS + 1e-9 < need - 1.0 / FPS:
+                out.append("%s d=%s s=%s full line on %d frame(s)" % (name, d, s, len(full)))
+        return out
+    new_src = "function WINDOW(duration, speed) {\n" + ss.TYPING_WINDOW_JS.replace(
+        "    var typeWin   = typingWindow(DURATION, TYPING_SPEED);\n", "").replace(
+        "    var typeStart = typeWin.start;\n", "").replace("    var typeEnd   = typeWin.end;\n", "") + \
+        "return typingWindow(duration, speed);\n}\n"
+    got = shortfalls(run(new_src, "new"), "new")
+    if got:
+        bad.append("WI2.73 window: " + "; ".join(got[:5]))
+    old_src = ("function WINDOW(DURATION, TYPING_SPEED) {\n" + ss._TYPING_WINDOW_OLD +
+               "return {start: typeStart, end: typeEnd};\n}\n")
+    old_rows = run(old_src, "old")
+    if not any(m.startswith("old d=3 s=1 ") for m in shortfalls(old_rows, "old")):  # node prints 3.0 as 3
+        bad.append("sanity: the old window was not caught short on a 3.0 s scene at speed 1.0")
+    # The transform upgrades the old template + SKILL.md once and is then a no-op; a drifted copy fails fast.
+    for c in copies[:1]:
+        comp = c.parent.parent
+        d = root / "up" / "r" / ".hub" / "c-typing-ui"; shutil.copytree(comp, d)
+        tpl, doc = d / ss.TYPING_SCENE_FILE, d / ss.TYPING_SKILL_FILE
+        tpl.write_text(c.read_text(encoding="utf-8").replace(ss.TYPING_WINDOW_JS, ss._TYPING_WINDOW_OLD), encoding="utf-8")
+        doc.write_text(doc.read_text(encoding="utf-8").replace(ss._TYPING_SKILL_NOTE, ""), encoding="utf-8")
+        n1 = ss.apply_typing_hold(root / "up" / "r", "fixture"); n2 = ss.apply_typing_hold(root / "up" / "r", "fixture")
+        if (n1, n2) != (2, 0) or tpl.read_text(encoding="utf-8") != c.read_text(encoding="utf-8") \
+                or doc.read_text(encoding="utf-8") != (comp / "SKILL.md").read_text(encoding="utf-8"):
+            bad.append("transform did not upgrade the old copy to the committed one once (%d, %d)" % (n1, n2))
+        tpl.write_text("<template>drifted</template>\n", encoding="utf-8")
+        try:
+            ss.apply_typing_hold(root / "up" / "r", "fixture")
+            bad.append("transform did not fail on a copy without its anchor")
+        except SystemExit:
+            pass
+except Exception as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi273_detail" == "ok" ]]; then
+  pass "WI2.73 typing scenes finish typing and hold the full line >= 0.5 s before the cut, every recipe"
+else
+  fail "WI2.73 typing scene holds the full line before the cut" "$wi273_detail"
+fi
+rm -rf "$wi273_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
