@@ -46,7 +46,8 @@ Then write `saves/edit_plan.json` with your file-writing tool, following these r
 
 1. `caption_groups` cover the FULL duration, 2–4 words each (up to 6 to keep a phrase whole),
    non-overlapping, breaking at punctuation, clause starts or pauses ≥ 150 ms. Never break after a
-   preposition, article, conjunction or auxiliary (`with`, `of`, `the`, `and`, `is`, …), and never
+   preposition, article, possessive, conjunction or auxiliary (`with`, `of`, `the`, `her`, `and`,
+   `is`, …), and never
    leave a lone 1–2 word fragment from mid-clause (`She approved them` / `with flour still on her
    hands,` — not `She approved them with` / `FLOUR STILL` / `on her hands,`). Words VERBATIM from
    the transcript.
@@ -70,8 +71,8 @@ Then write `saves/edit_plan.json` with your file-writing tool, following these r
 Keep caption phrases whole (WI2.76). Write the helper, then run it on the plan: it moves a
 group-ending preposition, article, conjunction or auxiliary into the next group, merges a
 1–2 word mid-clause fragment into a neighbour (up to 6 words to keep a phrase whole), keeps
-every word timing, and re-checks styles and emphasis. A plan that is already whole is left
-unchanged.
+every word timing, and re-checks styles and emphasis. A plan that is already whole keeps its
+groups; equal neighbouring styles, an overlap or a second emphasis word are still fixed (WI2.78).
 
 ```bash
 mkdir -p work saves
@@ -83,11 +84,13 @@ cat > work/caption_phrases.py <<'PY'
 # moves to the next group). A 1-2 word group from mid-clause (no punctuation before it or after
 # it) merges into a neighbour. Groups stay 2-4 words where they were; up to 6 to keep a phrase
 # whole (a longer one is split at punctuation or a clause start). Word timings never change.
+# WI2.78: repair mode also fixes adjacent equal styles, a group overlap and a second emphasis
+# word on a plan that is already whole; a possessive ("her", "his") joins the next word.
 import json, re, sys
 
 MAX_WORDS = 6
 JOINERS = set((
-    "a an the my your our their its every each "
+    "a an the my your our their its his her every each "
     "and but or nor so yet if than because while "
     "with of to in on at for from by into onto about as like through over under after before "
     "between among during without within until upon via toward towards near against across "
@@ -113,6 +116,11 @@ def joiner(w):
     b = bare(w)
     return b in JOINERS or bool(CONTRACTION.search(b))
 
+def empty_groups(groups):
+    # WI2.78: a group without words cannot be checked or repaired - say so plainly
+    return ["group %d has no words - every caption group needs at least one word" % i
+            for i, g in enumerate(groups) if not g.get("words")]
+
 def fragment(groups, i):
     # a 1-2 word group with no clause break before it and none after it
     g = groups[i]["words"]
@@ -125,12 +133,12 @@ def bad_break(groups, i):
     return i < len(groups) - 1 and joiner(groups[i]["words"][-1])
 
 def problems(groups):
-    out = []
+    out = empty_groups(groups)
+    if out:
+        return out
     for i, g in enumerate(groups):
         ws = g.get("words") or []
         say = " ".join(text(w) for w in ws)
-        if not ws:
-            out.append("group %d has no words" % i); continue
         if len(ws) > MAX_WORDS + 1:
             out.append("group %d has %d words: %r" % (i, len(ws), say))
         if fragment(groups, i):
@@ -194,18 +202,10 @@ def repair(groups):
                 moved = True; break
         if not moved:
             break
-    if not changed:
-        return groups, False
     for g in groups:
         if g.pop("_new", False):
             g["start"], g["end"] = g["words"][0]["s"], g["words"][-1]["e"]
-            seen = False
-            for w in g["words"]:  # at most one emphasis word per group
-                if w.get("em"):
-                    if seen:
-                        w["em"] = False
-                    seen = True
-    return groups, True
+    return groups, changed
 
 def restyle(groups):
     for i, g in enumerate(groups):
@@ -214,20 +214,37 @@ def restyle(groups):
             nxt = groups[i + 1].get("style") if i + 1 < len(groups) else None
             g["style"] = next(s for s in (0, 1, 2) if s not in (prev, nxt))
 
-def run(plan):
-    orig = plan.get("caption_groups") or []
-    if not orig:
-        return plan, False
-    first_start, last_end = orig[0]["start"], orig[-1]["end"]
-    groups, changed = repair(orig)
-    if not changed:
-        return plan, False
-    groups[0]["start"] = min(float(groups[0]["start"]), float(first_start))
-    groups[-1]["end"] = max(float(groups[-1]["end"]), float(last_end))
+def tidy(groups):
+    # WI2.78: run on every plan, regrouped or not - at most one emphasis word per group,
+    # no group overlaps the next (its end moves back, word timings never move), no two
+    # neighbours share a style
+    for g in groups:
+        seen = False
+        for w in g["words"]:
+            if w.get("em"):
+                if seen:
+                    w["em"] = False
+                seen = True
     for a, b in zip(groups, groups[1:]):
         if float(a["end"]) > float(b["start"]):
             a["end"] = b["start"]
     restyle(groups)
+
+def run(plan):
+    orig = plan.get("caption_groups") or []
+    if not orig:
+        return plan, False
+    bad = empty_groups(orig)
+    if bad:
+        raise ValueError("; ".join(bad))
+    first_start, last_end = orig[0]["start"], orig[-1]["end"]
+    groups, regrouped = repair(orig)
+    if regrouped:
+        groups[0]["start"] = min(float(groups[0]["start"]), float(first_start))
+        groups[-1]["end"] = max(float(groups[-1]["end"]), float(last_end))
+    tidy(groups)
+    if not regrouped and groups == orig:
+        return plan, False
     plan = dict(plan, caption_groups=groups)
     return plan, True
 
@@ -236,13 +253,21 @@ if __name__ == "__main__":
     check = args[:1] == ["--check"]
     path = args[-1]
     plan = json.load(open(path))
+    empty = empty_groups(plan.get("caption_groups") or [])
+    if empty:
+        for b in empty:
+            print("caption phrase check: " + b, file=sys.stderr)
+        sys.exit(1)
     if not check:
         before = [" ".join(text(w) for w in g.get("words") or []) for g in plan.get("caption_groups") or []]
         plan, changed = run(plan)
         if changed:
             json.dump(plan, open(path, "w"), indent=1)
             after = [" ".join(text(w) for w in g["words"]) for g in plan["caption_groups"]]
-            print("[plan] caption phrases: regrouped %d -> %d groups" % (len(before), len(after)))
+            if after == before:
+                print("[plan] caption phrases: groups kept, styles/overlaps/emphasis fixed")
+            else:
+                print("[plan] caption phrases: regrouped %d -> %d groups" % (len(before), len(after)))
             for line in sorted(set(after) - set(before), key=after.index):
                 print("  [%s]" % line)
         else:

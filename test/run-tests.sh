@@ -9471,6 +9471,157 @@ else
 fi
 rm -rf "$wi276_root"
 
+echo "=== Case 54: WI2.78 — caption-phrase repair always restyles and clamps; pip runs it as code ==="
+# Review of WI2.76: the helper only restyled and clamped overlaps when it regrouped, so a plan
+# that was already whole but had two neighbouring groups with one style (or a tiny overlap)
+# now failed --check and stopped a reel that used to render. The pip repair before P2 was only
+# prose, and the --check ran even with CAPTIONS=off. "her"/"his" were not joiners, and a group
+# with no words crashed with an IndexError. Timings never move.
+wi278_root="$(mktemp -d)"
+wi278_detail="$(python3 - "$REPO_DIR" "$wi278_root" <<'PY'
+import hashlib, importlib.util, json, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+FILES = {"p-reels-spotlight": "steps/03-plan-edit.md", "p-reels-spotlight-heygen": "steps/03-plan-edit.md",
+         "p-reels-pip": "steps/05-composite.md", "p-reels-pip-heygen": "steps/05-composite.md"}
+def say(g):
+    return " ".join(w["w"] for w in g["words"])
+def mk(lines, styles=None):
+    gs, t = [], 0.0
+    for k, line in enumerate(lines):
+        ws = []
+        for x in line.split():
+            ws.append({"w": x, "s": round(t, 3), "e": round(t + 0.3, 3), "em": False}); t += 0.32
+        gs.append({"start": ws[0]["s"], "end": ws[-1]["e"], "style": (styles or [0, 1, 2])[k % len(styles or [0, 1, 2])],
+                   "words": ws})
+    return gs
+def flat(gs):
+    return [(w["w"], w["s"], w["e"]) for g in gs for w in g["words"]]
+def run(helper, wd, *args):
+    return subprocess.run([sys.executable, "-I", str(helper), *args], cwd=wd, capture_output=True, text=True)
+try:
+    spec = importlib.util.spec_from_file_location("ss278", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    helper = root / "caption_phrases.py"; helper.write_text(ss._CAPTION_PHRASES_PY, encoding="utf-8")
+    wd = root / "wd"; wd.mkdir()
+    # 1. a whole plan with two neighbouring groups of one style is repaired, not failed
+    lines = ["She approved them", "with flour still on her hands,", "about 30 minutes", "a week."]
+    same = mk(lines, styles=[0, 0, 1, 1])
+    p1 = wd / "same.json"; p1.write_text(json.dumps({"caption_groups": same}), encoding="utf-8")
+    if run(helper, wd, "--check", "same.json").returncode == 0:
+        bad.append("--check passed equal neighbouring styles (fixture is wrong)")
+    r1 = run(helper, wd, "same.json")
+    got = json.loads(p1.read_text())["caption_groups"]
+    if r1.returncode != 0:
+        bad.append("equal styles: repair rc=%d %s" % (r1.returncode, r1.stderr.strip()[-200:]))
+    if [say(g) for g in got] != lines or flat(got) != flat(same):
+        bad.append("equal styles: groups or word timings changed: %r" % [say(g) for g in got])
+    if any(a["style"] == b["style"] for a, b in zip(got, got[1:])):
+        bad.append("equal styles: neighbours still share a style %r" % [g["style"] for g in got])
+    if run(helper, wd, "--check", "same.json").returncode != 0:
+        bad.append("equal styles: --check fails the repaired plan")
+    # 2. a whole plan with a tiny overlap is clamped, not failed; word timings stay
+    lap = mk(lines); lap[1]["end"] = round(lap[2]["start"] + 0.02, 3)
+    p2 = wd / "lap.json"; p2.write_text(json.dumps({"caption_groups": lap}), encoding="utf-8")
+    if run(helper, wd, "--check", "lap.json").returncode == 0:
+        bad.append("--check passed an overlap (fixture is wrong)")
+    r2 = run(helper, wd, "lap.json")
+    got = json.loads(p2.read_text())["caption_groups"]
+    if r2.returncode != 0:
+        bad.append("overlap: repair rc=%d %s" % (r2.returncode, r2.stderr.strip()[-200:]))
+    if flat(got) != flat(lap) or [say(g) for g in got] != lines:
+        bad.append("overlap: words or word timings changed")
+    if any(a["end"] > b["start"] + 1e-9 for a, b in zip(got, got[1:])):
+        bad.append("overlap: groups still overlap")
+    if got[1]["end"] != got[2]["start"]:
+        bad.append("overlap: group end not clamped to the next start (%r)" % got[1]["end"])
+    # 3. "her"/"his" never end a group mid-phrase: on her | hands
+    for left, right in (("with flour still on her", "hands, about 30 minutes"), ("He set down his", "rolling pin, then smiled.")):
+        gs = mk(["She approved them", left, right])
+        pp = wd / "pos.json"; pp.write_text(json.dumps({"caption_groups": gs}), encoding="utf-8")
+        c = run(helper, wd, "--check", "pos.json")
+        if c.returncode == 0 or "ends inside a phrase" not in c.stderr:
+            bad.append("--check passed %r | %r" % (left, right))
+        r = run(helper, wd, "pos.json")
+        got = json.loads(pp.read_text())["caption_groups"]
+        if r.returncode != 0:
+            bad.append("possessive: repair rc=%d %s" % (r.returncode, r.stderr.strip()[-200:]))
+        if any(g["words"][-1]["w"].lower() in ("her", "his") for g in got[:-1]):
+            bad.append("a group still ends on a possessive: %r" % [say(g) for g in got])
+        if flat(got) != flat(gs):
+            bad.append("possessive: words or word timings changed")
+    # 4. a group with no words is a clear error, not an IndexError, in both modes
+    empty = mk(["She approved them", "with flour still on her hands,", "about 30 minutes"])
+    empty.insert(1, {"start": 0.95, "end": 0.96, "style": 2, "words": []})
+    pe = wd / "empty.json"; pe.write_text(json.dumps({"caption_groups": empty}), encoding="utf-8")
+    for args in (["empty.json"], ["--check", "empty.json"]):
+        r = run(helper, wd, *args)
+        if r.returncode != 1 or "group 1 has no words" not in r.stderr or "Traceback" in r.stderr:
+            bad.append("empty group %s: rc=%d %r" % (args[0], r.returncode, r.stderr.strip()[-200:]))
+    # 5. the WI2.76 fixture still regroups to [She approved them] [with flour still on her hands,]
+    fixture = json.loads((repo / "test" / "fixtures" / "wi276-smoke21b-caption-groups.json").read_text())
+    pf = wd / "fx.json"; pf.write_text(json.dumps({"caption_groups": fixture["caption_groups"]}), encoding="utf-8")
+    r5 = run(helper, wd, "fx.json")
+    got = [say(g) for g in json.loads(pf.read_text())["caption_groups"]]
+    k = got.index("She approved them") if "She approved them" in got else -1
+    if r5.returncode != 0 or k < 0 or got[k + 1] != "with flour still on her hands,":
+        bad.append("WI2.76 fixture regrouped differently: %r" % got[max(k, 0):k + 2])
+    if flat(json.loads(pf.read_text())["caption_groups"]) != flat(fixture["caption_groups"]):
+        bad.append("WI2.76 fixture: words or word timings changed")
+    # 6. pip step 05 runs the repair as code between P1 and P2; captions off skips repair and check
+    REPAIR = 'if [ "$CAPTIONS" != off ]; then python3 work/caption_phrases.py "$PW/plan.json" || exit 1; fi\n'
+    CHECK = 'if [ "$CAPTIONS" != off ]; then python3 work/caption_phrases.py --check "$PW/plan.json" || exit 1; fi\n'
+    for rcp in ("p-reels-pip", "p-reels-pip-heygen"):
+        body = (repo / "skills" / rcp / "steps" / "05-composite.md").read_text(encoding="utf-8")
+        p1_at, rep_at = body.find("# 1) run P1 (plan) here"), body.find(REPAIR)
+        p2_at = body.find("# 3) then P2 → P4")
+        if not (0 <= p1_at < rep_at < p2_at) or body.count(REPAIR) != 1:
+            bad.append("%s: the repair is not a command between P1 and P2" % rcp)
+        if body.count(CHECK) != 1 or body.find(CHECK) < p2_at:
+            bad.append("%s: the --check after P4 is not skipped when captions are off" % rcp)
+        if "# WI2.76: after P1 and before P2:" in body:
+            bad.append("%s: the comment-only repair note is still there" % rcp)
+        prem = (repo / "skills" / rcp / ".hub" / "c-reel-premium" / "SKILL.md").read_text(encoding="utf-8")
+        if ss._CAPTION_PHRASES_P1_RULE_NEW not in prem or ss._CAPTION_PHRASES_P1_RULE_OLD in prem:
+            bad.append("%s: c-reel-premium P1 prompt does not state the grouping rule" % rcp)
+    plan = json.dumps({"caption_groups": mk(["She approved them with", "flour still", "on her hands,"])})
+    for caps, want_rc, want_plan_changed in (("off", 0, False), ("on", 0, True)):
+        sd = root / ("pip-" + caps); (sd / "work" / "premium").mkdir(parents=True)
+        shutil.copy(helper, sd / "work" / "caption_phrases.py")
+        (sd / "work" / "premium" / "plan.json").write_text(plan, encoding="utf-8")
+        sh = subprocess.run(["bash", "-c", "PW=work/premium; CAPTIONS=%s\n%s%s" % (caps, REPAIR, CHECK)],
+                            cwd=sd, capture_output=True, text=True)
+        changed = (sd / "work" / "premium" / "plan.json").read_text(encoding="utf-8") != plan
+        if sh.returncode != want_rc or changed != want_plan_changed:
+            bad.append("pip CAPTIONS=%s: rc=%d plan changed=%s %s" % (caps, sh.returncode, changed, sh.stderr.strip()[-200:]))
+    # 7. the sync transform is idempotent on the committed files; index.json hashes are current
+    idx = json.loads((repo / "skills" / "index.json").read_text(encoding="utf-8"))
+    for rcp, rel in FILES.items():
+        cp = root / "copy" / rcp; shutil.copytree(repo / "skills" / rcp / "steps", cp / "steps")
+        rels = [rel]
+        if "pip" in rcp:
+            (cp / ".hub" / "c-reel-premium").mkdir(parents=True)
+            shutil.copy(repo / "skills" / rcp / ".hub" / "c-reel-premium" / "SKILL.md", cp / ".hub" / "c-reel-premium")
+            rels.append(".hub/c-reel-premium/SKILL.md")
+        if ss.apply_reel_caption_phrases(cp, rcp) != 0:
+            bad.append("%s: committed files are not what sync-skills.py writes" % rcp)
+        for f in rels:
+            actual = "sha256:" + hashlib.sha256((repo / "skills" / rcp / f).read_bytes()).hexdigest()
+            if idx["recipes"][rcp]["fileHashes"].get(f) != actual:
+                bad.append("%s: index.json hash for %s is stale" % (rcp, f))
+except Exception as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi278_detail" == "ok" ]]; then
+  pass "WI2.78 caption-phrase repair fixes styles/overlaps on a whole plan, joins her/his, pip repairs as code"
+else
+  fail "WI2.78 caption-phrase repair always restyles and clamps" "$wi278_detail"
+fi
+rm -rf "$wi278_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
