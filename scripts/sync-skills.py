@@ -41,9 +41,11 @@ mlx-community/whisper-small to mlx-community/whisper-small-mlx in every
 p-reels-* recipe after every copy, including .hub copies. Idempotent: an
 already-correct id is left alone.
 
-WI2.71 apply_reel_fill_frame() crops flat bars baked into the face clip
-(any side, any colour) and makes the pip card scale-to-fill + crop instead of
-scale-to-fit + pad, on the top-level spotlight/pip steps (not .hub copies).
+WI2.71 apply_reel_fill_frame() crops a matched pair of flat bars baked into
+the face clip (top+bottom or left+right, same size and colour, leaving ~16:9 or
+~9:16; anything else is not cropped) and makes the pip card scale-to-fill + a
+top-biased crop instead of scale-to-fit + pad, on the top-level spotlight/pip
+steps and SKILL.md (not .hub copies).
 
 Two more sync-time transforms (CFW-318), run after rewrite_host_path_resolvers
 and before list_files/hashing, same ordering guarantee:
@@ -1109,56 +1111,96 @@ def apply_whisper_small_mlx(directory: Path) -> int:
 # WI2.71: reel face clips (HeyGen renders) arrive as 1080x1920 with a 16:9 picture
 # baked between flat light/mint bars. The old side-band check never looked at the
 # top/bottom, and the pip card used scale-to-fit + pad, so the bars stayed on screen.
-# These transforms detect flat bars on every side, crop them away, then fill + crop.
-_REEL_BARS_PY = r"""# WI2.71: find flat bars baked into the clip (any colour, any side) and print an ffmpeg crop.
-import json, subprocess, sys
-SRC, TOL, MIN_BAR = sys.argv[1], 12, 8
-m = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-    "stream=width,height:format=duration", "-of", "json", SRC], capture_output=True, text=True, check=True).stdout)
-W, H = int(m["streams"][0]["width"]), int(m["streams"][0]["height"])
-DUR = float(m.get("format", {}).get("duration") or 1.0)
+# These transforms crop a MATCHED bar pair only (top+bottom or left+right, same size,
+# same flat colour, leaving ~16:9 or ~9:16), then fill the frame / pip card. A speaker
+# on a plain backdrop is never cropped, and the pip card crop keeps the top (the head).
+_REEL_BARS_PY = r"""# WI2.71: find a matched pair of flat bars baked into the clip and print an ffmpeg crop.
+# Crops only top+bottom (or left+right) bars of about the same size and the same flat
+# colour, and only when what is left is within 5% of 16:9 or 9:16. Anything else: no crop.
+import subprocess, sys
+SRC, TOL, MIN_BAR, ASPECT_TOL = sys.argv[1], 12, 8, 0.05
 def grab(t):
-    return subprocess.run(["ffmpeg", "-v", "error", "-ss", "%.2f" % t, "-i", SRC, "-frames:v", "1",
-        "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
-def px(fr, x, y):
-    i = (y * W + x) * 3
-    return fr[i:i + 3]
-def bar(fr, lines, pts):
+    # One frame as PPM. Its header gives the size ffmpeg shows after autorotation, so a
+    # rotated phone clip is measured on the same axes the later -vf crop sees.
+    out = subprocess.run(["ffmpeg", "-v", "error", "-ss", "%.2f" % t, "-i", SRC, "-frames:v", "1",
+        "-f", "image2pipe", "-c:v", "ppm", "-"], capture_output=True, check=True).stdout
+    if not out.startswith(b"P6"):
+        return None
+    head, pos = [], 2
+    while len(head) < 3:
+        while out[pos:pos + 1].isspace():
+            pos += 1
+        end = pos
+        while out[end:end + 1] and not out[end:end + 1].isspace():
+            end += 1
+        head.append(int(out[pos:end])); pos = end
+    w, h, data = head[0], head[1], out[pos + 1:]
+    return (w, h, data) if len(data) >= w * h * 3 else None
+def duration():
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", SRC],
+        capture_output=True, text=True, check=True).stdout.strip()
+    try:
+        return float(r)
+    except ValueError:
+        return 1.0
+def close(a, b):
+    return max(abs(a[k] - b[k]) for k in range(3)) <= TOL
+def run(fr, w, lines, pts):
+    # how many lines from this edge inwards are one flat colour -> (count, colour)
     ref, n = None, 0
     for ln in lines:
-        row = [px(fr, *p(ln)) for p in pts]
+        row = [fr[(y * w + x) * 3:(y * w + x) * 3 + 3] for x, y in pts(ln)]
         ref = ref or row[0]
-        if any(max(abs(c[k] - ref[k]) for k in range(3)) > TOL for c in row):
+        if not all(close(c, ref) for c in row):
             break
         n += 1
-    return n
-sides = []
-for t in (DUR * 0.2, DUR * 0.5, DUR * 0.8):
-    fr = grab(t)
-    if len(fr) < W * H * 3:
-        continue
-    xs = [lambda y, x=x: (x, y) for x in range(0, W, 4)]
-    ys = [lambda x, y=y: (x, y) for y in range(0, H, 4)]
-    sides.append((bar(fr, range(H // 2), xs), bar(fr, range(H - 1, H // 2, -1), xs),
-                  bar(fr, range(W // 2), ys), bar(fr, range(W - 1, W // 2, -1), ys)))
-if not sides:
+    return n, ref
+D = duration()
+frames = [f for f in (grab(D * p) for p in (0.2, 0.5, 0.8)) if f]
+if not frames or len({(f[0], f[1]) for f in frames}) != 1:
     print(""); sys.exit(0)
-top, bot, left, right = (min(s[i] for s in sides) for i in range(4))
-top, bot, left, right = ((v + 2 if v >= MIN_BAR else 0) for v in (top, bot, left, right))
-cw, ch = W - left - right, H - top - bot
-cw, ch = cw - cw % 2, ch - ch % 2
-if (top or bot or left or right) and cw >= W // 4 and ch >= H // 4:
-    print("crop=%d:%d:%d:%d," % (cw, ch, left, top))
-else:
-    print("")
+W, H = frames[0][0], frames[0][1]
+sides = [(run(fr, W, range(H // 2), lambda y: [(x, y) for x in range(0, W, 4)]),
+          run(fr, W, range(H - 1, H // 2, -1), lambda y: [(x, y) for x in range(0, W, 4)]),
+          run(fr, W, range(W // 2), lambda x: [(x, y) for y in range(0, H, 4)]),
+          run(fr, W, range(W - 1, W // 2, -1), lambda x: [(x, y) for y in range(0, H, 4)]))
+         for _, _, fr in frames]
+def edge(i):
+    # bar size = the smallest run over the sampled frames; its colour must hold in every frame
+    n, cols = min(s[i][0] for s in sides), [s[i][1] for s in sides]
+    if n < MIN_BAR or not all(close(c, cols[0]) for c in cols):
+        return 0, None
+    return n, cols[0]
+(top, ct), (bot, cb), (left, cl), (right, cr) = (edge(i) for i in range(4))
+def pair(a, ca, b, cb_, side):
+    # a matched pair: both bars present, the same flat colour, sizes within 2% of the side
+    return bool(a and b and close(ca, cb_) and abs(a - b) <= max(4, side * 0.02))
+def aspect_ok(w, h):
+    return any(abs((w / h) / r - 1) <= ASPECT_TOL for r in (16 / 9, 9 / 16))
+tb, lr = pair(top, ct, bot, cb, H), pair(left, cl, right, cr, W)
+cands = ([(top, bot, left, right)] if tb and lr else []) + ([(top, bot, 0, 0)] if tb else []) \
+    + ([(0, 0, left, right)] if lr else [])
+for t, b, l, r in cands:
+    t, l = t + t % 2, l + l % 2          # even x/y (yuv420p); never keeps a bar row
+    cw, ch = W - l - r, H - t - b
+    cw, ch = cw - cw % 2, ch - ch % 2    # even w/h
+    if cw >= W // 4 and ch >= H // 4 and aspect_ok(cw, ch):
+        print("crop=%d:%d:%d:%d," % (cw, ch, l, t)); sys.exit(0)
+print("")
 """
 _REEL_BARS_WRITE = "cat > work/bars.py <<'PY'\n" + _REEL_BARS_PY + "PY\n"
+_REEL_BARS_WRITE_W = "cat > \"$W/bars.py\" <<'PY'\n" + _REEL_BARS_PY + "PY\n"
+_REEL_BARS_PROSE = (
+    "Reused HeyGen / studio renders often carry a 16:9 picture baked between two flat bars (white,\n"
+    "cream or mint) at the top and bottom, or a 9:16 picture between two side bars. WI2.71: the\n"
+    "`bars.py` helper samples three frames and prints `crop=W:H:X:Y,` only for a **matched pair** —\n"
+    "top+bottom (or left+right) bars of about the same size and the same flat colour that leave a\n"
+    "picture within 5 % of 16:9 or 9:16. Anything else (a speaker on a plain backdrop, a one-sided\n"
+    "margin) prints nothing and nothing is cropped, so the head is never cut. It measures frames the\n"
+    "way ffmpeg shows them (rotation applied), so a rotated phone clip is read on the right axes.\n"
+)
 _SPOT_BARS_NEW = (
-    "### 2. Detect & crop baked-in bars on every side (BEFORE anything else)\n\n"
-    "Reused HeyGen / studio renders often carry a 16:9 picture baked between flat white, cream or\n"
-    "mint bars (top/bottom or left/right). WI2.71: `work/bars.py` samples three frames, finds rows\n"
-    "and columns that are one flat colour from each edge inwards, and prints `crop=W:H:X:Y,` (or\n"
-    "nothing). A row with any face or picture in it is never flat, so the head is never cut.\n\n"
+    "### 2. Detect & crop a baked-in bar pair (BEFORE anything else)\n\n" + _REEL_BARS_PROSE + "\n"
     "```bash\n" + _REEL_BARS_WRITE +
     "CROP=$(python3 work/bars.py \"$AVATAR\") || exit 1\n"
     "echo \"[spotlight] bar crop: '${CROP:-none}'\"\n"
@@ -1174,12 +1216,32 @@ _SPOT_FILL_PAIRS = (
     ("`avatar_layout: letterbox` → replace the `-vf` with\n`scale=1080:-2,",
      "`avatar_layout: letterbox` → replace the `-vf` with\n`${CROP}scale=1080:-2,"),
 )
+_SPOT_SKILL_BARS_NEW = (
+    "### Step 1.5 — Detect & crop a baked-in bar pair (BEFORE anything else)\n\n" + _REEL_BARS_PROSE + "\n"
+    "```bash\n" + _REEL_BARS_WRITE_W +
+    "CROP=$(python3 \"$W/bars.py\" \"$AVATAR\") || exit 1\n"
+    "echo \"[p-reels-spotlight] bar crop: '${CROP:-none}'\"\n"
+    "if [ -n \"$CROP\" ]; then\n"
+    "  ffmpeg -y -i \"$AVATAR\" -vf \"${CROP}setsar=1\" \\\n"
+    "    -c:v libx264 -pix_fmt yuv420p -c:a copy \"$W/avatar-clean.mp4\"\n"
+    "  AVATAR_CLEAN=\"$W/avatar-clean.mp4\"\n"
+    "else\n"
+    "  AVATAR_CLEAN=\"$AVATAR\"\n"
+    "fi\n"
+    "```\n\n"
+    "The bed in Step 2 then fills 1080×1920 (`increase,crop`) — no bars reach the frame.\n"
+)
+_SPOT_SKILL_BARS_RE = re.compile(
+    r"### Step 1\.5 — Detect & crop white side bands \(BEFORE anything else\)\n.*?"
+    r"`crop=W:H:X:0` — y-offset `0` guarantees the top edge \(and head\) is preserved\.\n",
+    re.S)
+_SPOT_SKILL_PAIRS = (
+    ("Reused 16:9 studio renders often carry white side bands — Step 1.5 crops them (left/right only, never the top).",
+     "Reused HeyGen / studio renders often carry a picture baked between two flat bars — Step 1.5 crops a matched "
+     "top+bottom or left+right bar pair only (never a plain backdrop, so the head is never cut)."),
+)
 _PIP_BARS_NEW = (
-    "### 2. Detect + crop baked-in bars on every side (BEFORE anything else)\n\n"
-    "Reused HeyGen / studio renders often carry a 16:9 picture baked between flat white, cream or\n"
-    "mint bars (top/bottom or left/right). WI2.71: `work/bars.py` samples three frames, finds rows\n"
-    "and columns that are one flat colour from each edge inwards, and prints `crop=W:H:X:Y,` (or\n"
-    "nothing). A row with any face or picture in it is never flat, so the head is never cut.\n\n"
+    "### 2. Detect + crop a baked-in bar pair (BEFORE anything else)\n\n" + _REEL_BARS_PROSE + "\n"
     "```bash\n" + _REEL_BARS_WRITE +
     "CROP=$(python3 work/bars.py \"$TH\") || exit 1\n"
     "echo \"[pip] bar crop: '${CROP:-none}'\"\n"
@@ -1188,15 +1250,78 @@ _PIP_BARS_NEW = (
 _PIP_BARS_RE = re.compile(
     r"### 2\. Detect \+ crop white side-bands \(BEFORE anything else\)\n.*?echo \"\[pip\] side-band crop: '\$\{CROP:-none\}'\"\n```\n",
     re.S)
+_PIP_PREP_PAIRS = (
+    ("dimensions (white side-bands\n  cropped away)",
+     "dimensions (a matched pair of\n  baked-in bars cropped away — step 2)"),
+)
+_PIP_CARD_CROP = "crop=${CARD_W}:${CARD_H}:(iw-ow)/2:0"
 _PIP_FILL_PAIRS = (
     ("### 2. Composite — scale-to-FIT (face never cropped), bottom-centre, audio = the bed",
-     "### 2. Composite — scale-to-FILL (centre crop, no bars), bottom-centre, audio = the bed"),
+     "### 2. Composite — scale-to-FILL (top-biased crop, no bars), bottom-centre, audio = the bed"),
     ("identical dims, hence the `pad`.",
-     "identical dims, hence the `crop`. WI2.71: fill + crop, never fit + pad — padding showed bars in the card."),
+     "identical dims, hence the `crop`. WI2.71: fill + crop, never fit + pad — padding showed bars in the card.\n"
+     "The crop is top-biased (`y=0`): the head is always kept; only the body below the card is lost."),
     ("force_original_aspect_ratio=decrease,pad=${CARD_W}:${CARD_H}:(ow-iw)/2:0,setsar=1",
-     "force_original_aspect_ratio=increase,crop=${CARD_W}:${CARD_H},setsar=1"),
+     "force_original_aspect_ratio=increase," + _PIP_CARD_CROP + ",setsar=1"),
     ("[1:v]scale=${CARD_W}:${CARD_H}:force_original_aspect_ratio=decrease,setsar=1[thfit]",
-     "[1:v]scale=${CARD_W}:${CARD_H}:force_original_aspect_ratio=increase,crop=${CARD_W}:${CARD_H},setsar=1[thfit]"),
+     "[1:v]scale=${CARD_W}:${CARD_H}:force_original_aspect_ratio=increase," + _PIP_CARD_CROP + ",setsar=1[thfit]"),
+)
+_PIP_SHARED_PAIRS = (
+    ("110 px bottom margin, face whole —\nnever cropped), and a",
+     "110 px bottom margin, face whole —\nthe card is filled with a top-biased crop, no bars), and a"),
+)
+_PIP_AVATAR_PAIRS = (
+    ("(the PIP card is scale-to-fit)", "(the PIP card is filled with a top-biased crop, no bars)"),
+    ("(the PIP card scales to fit)", "(the PIP card fills with a top-biased crop)"),
+)
+_PIP_SKILL_BARS_NEW = (
+    "### Step 1.5 — Detect + crop a baked-in bar pair (BEFORE anything else)\n\n" + _REEL_BARS_PROSE + "\n"
+    "```bash\n" + _REEL_BARS_WRITE_W +
+    "CROP=$(python3 \"$W/bars.py\" \"$TH\") || exit 1\n"
+    "echo \"[p-reels-pip] bar crop: '${CROP:-none}'\"\n"
+    "if [ -n \"$CROP\" ]; then\n"
+    "  $FF -y -i \"$TH\" -vf \"${CROP}setsar=1\" \\\n"
+    "    -c:v libx264 -pix_fmt yuv420p -c:a copy \"$W/th-clean.mp4\"\n"
+    "  TH_CLEAN=\"$W/th-clean.mp4\"\n"
+    "else\n"
+    "  TH_CLEAN=\"$TH\"\n"
+    "fi\n"
+)
+_PIP_SKILL_BARS_RE = re.compile(
+    r"### Step 1\.5 — Detect \+ crop white side-bands \(BEFORE anything else\)\n.*?  TH_CLEAN=\"\$TH\"\nfi\n",
+    re.S)
+_PIP_SKILL_PAIRS = _PIP_FILL_PAIRS[2:] + (
+    ("| PIP fit | scale-to-FIT (face never cropped) | `scale=CARD_W:CARD_H:force_original_aspect_ratio=decrease` "
+     "— whole face shows, scaled to fit. Never crop the face. |",
+     "| PIP fit | scale-to-FILL, top-biased crop (no bars) | `scale=CARD_W:CARD_H:force_original_aspect_ratio=increase,"
+     "crop=CARD_W:CARD_H:(iw-ow)/2:0` — the card is filled edge to edge; the crop keeps the top, so the head is "
+     "never cut. WI2.71: fit + pad showed bars in the card. |"),
+    ("The talking head is scale-to-FIT (whole face preserved — never cropped). Positioned bottom-center",
+     "The talking head is scale-to-FILL with a top-biased crop (no bars; the head is never cut). Positioned bottom-center"),
+    ("#   [TH] scale→FIT → format=yuva444p → [thfit]",
+     "#   [TH] scale→FILL + top-biased crop → format=yuva444p → [thfit]"),
+    ("  # pad=...:(ow-iw)/2:0 letterbox-centers the scale-to-FIT result to exactly the\n"
+     "  # card dims so alphamerge dimensions match (bake-off #2 fix preserved).",
+     "  # increase + crop=...:(iw-ow)/2:0 fills the card to exactly the card dims so\n"
+     "  # alphamerge dimensions match (bake-off #2 fix preserved) — no pad bars (WI2.71)."),
+    ("  # A 9:16 talking head scales to FIT inside the card leaving a horizontal gap.\n"
+     "  # alphamerge requires both inputs (scaled TH and the mask) to have IDENTICAL\n"
+     "  # dimensions. Fix: pad=${CARD_W}:${CARD_H}:(ow-iw)/2:0 letterbox-centers to the\n"
+     "  # card dims before the format conversion.",
+     "  # alphamerge requires both inputs (scaled TH and the mask) to have IDENTICAL\n"
+     "  # dimensions. WI2.71: scale-to-FILL then crop=${CARD_W}:${CARD_H}:(iw-ow)/2:0\n"
+     "  # gives exactly the card dims with no pad bars; y=0 keeps the head."),
+    ("- `force_original_aspect_ratio=decrease` → whole face visible, never cropped (fmt5 v1 bug fix)",
+     "- `force_original_aspect_ratio=increase,crop=…:(iw-ow)/2:0` → card filled, no bars, the top (head) kept "
+     "(WI2.71; fit + pad showed bars)"),
+    ("not stretched. Cropped face = scale-to-FIT failed → fix Step 7.",
+     "not stretched. Cut head = the card crop is not top-biased → fix Step 7."),
+    ("- **Scale-to-FIT (PIP), never crop the face.**\n"
+     "  `scale=CARD_W:CARD_H:force_original_aspect_ratio=decrease` → whole face visible.\n"
+     "  fmt5 v1 cut the chin with a square crop — this is the explicit fix.",
+     "- **Scale-to-FILL (PIP), top-biased crop — never cut the head.**\n"
+     "  `scale=CARD_W:CARD_H:force_original_aspect_ratio=increase,crop=CARD_W:CARD_H:(iw-ow)/2:0` → no bars.\n"
+     "  fmt5 v1 cut the chin with a centred square crop; WI2.71 replaced fit + pad, which showed bars."),
 )
 REEL_FILL_FRAME_FILES = {
     "p-reels-spotlight": "spotlight", "p-reels-spotlight-heygen": "spotlight",
@@ -1205,23 +1330,31 @@ REEL_FILL_FRAME_FILES = {
 
 
 def _apply_pairs(text, pairs):
+    """Replace each pair's old text wherever it still appears outside that pair's
+    new text. Idempotent even when the new text contains the old text, and a pair
+    is never skipped just because its new text already appears elsewhere."""
     for old, new in pairs:
-        if new not in text:
-            text = text.replace(old, new)
+        if old in text:
+            text = new.join(part.replace(old, new) for part in text.split(new))
     return text
 
 
 def apply_reel_fill_frame(directory: Path, recipe: str) -> int:
-    """WI2.71: crop baked-in bars and fill the frame / pip card. Top-level steps
-    only (the .hub copies are left as synced). Idempotent. Returns files changed."""
+    """WI2.71: crop a matched baked-in bar pair and fill the frame / pip card.
+    Top-level recipe files only (the .hub copies are left as synced). Idempotent.
+    Returns files changed."""
     kind = REEL_FILL_FRAME_FILES.get(recipe)
     if not kind:
         return 0
     if kind == "spotlight":
-        jobs = (("steps/01-prepare-footage.md", _SPOT_BARS_RE, _SPOT_BARS_NEW, _SPOT_FILL_PAIRS),)
+        jobs = (("steps/01-prepare-footage.md", _SPOT_BARS_RE, _SPOT_BARS_NEW, _SPOT_FILL_PAIRS),
+                ("SKILL.md", _SPOT_SKILL_BARS_RE, _SPOT_SKILL_BARS_NEW, _SPOT_SKILL_PAIRS))
     else:
-        jobs = (("steps/01-prepare-footage.md", _PIP_BARS_RE, _PIP_BARS_NEW, ()),
-                ("steps/05-composite.md", None, None, _PIP_FILL_PAIRS))
+        jobs = (("steps/01-prepare-footage.md", _PIP_BARS_RE, _PIP_BARS_NEW, _PIP_PREP_PAIRS),
+                ("steps/05-composite.md", None, None, _PIP_FILL_PAIRS),
+                ("steps/_shared.md", None, None, _PIP_SHARED_PAIRS),
+                ("steps/00-generate-avatar.md", None, None, _PIP_AVATAR_PAIRS),
+                ("SKILL.md", _PIP_SKILL_BARS_RE, _PIP_SKILL_BARS_NEW, _PIP_SKILL_PAIRS))
     changed = 0
     for rel, rx, new_block, pairs in jobs:
         path = directory / rel
@@ -1229,7 +1362,7 @@ def apply_reel_fill_frame(directory: Path, recipe: str) -> int:
             continue
         text = path.read_text(encoding="utf-8")
         new = text
-        if rx is not None and "work/bars.py" not in new:
+        if rx is not None:
             new = rx.sub(lambda _m: new_block, new, count=1)
         new = _apply_pairs(new, pairs)
         if new != text:

@@ -67,9 +67,10 @@ PY
 then MASK=work/pip-mask.png; [ "$PIP_RING" -gt 0 ] && [ -f work/pip-frame.png ] && FRAME=work/pip-frame.png; fi
 ```
 
-### 2. Composite — scale-to-FILL (centre crop, no bars), bottom-centre, audio = the bed
+### 2. Composite — scale-to-FILL (top-biased crop, no bars), bottom-centre, audio = the bed
 
 `filter_complex` is ONE line. `alphamerge` needs `yuva444p` and identical dims, hence the `crop`. WI2.71: fill + crop, never fit + pad — padding showed bars in the card.
+The crop is top-biased (`y=0`): the head is always kept; only the body below the card is lost.
 `shortest=1` on the head overlay only — the static frame overlay keeps `eof_action=repeat`.
 That shortest cut can end the picture before the bed audio; the hold below clones the last
 real frame across the gap so the tail is not black. A CTA mov that runs past the bed does
@@ -78,15 +79,15 @@ the same if it is not trimmed — the overlay cap below stops at the bed.
 ```bash
 PFROM=$(( MARGIN - PIP_PAD ))
 if [ -n "$MASK" ] && [ -n "$FRAME" ]; then
-  FC="[1:v]scale=${CARD_W}:${CARD_H}:force_original_aspect_ratio=increase,crop=${CARD_W}:${CARD_H},setsar=1,format=yuva444p[thfit];[thfit][2:v]alphamerge[avpip];[0:v]format=yuv420p[bg];[bg][3:v]overlay=(W-w)/2:(H-h-${PFROM}):format=auto[bgf];[bgf][avpip]overlay=(W-w)/2:(H-h-${MARGIN}):format=auto:shortest=1[v];[1:a]anull[a]"
+  FC="[1:v]scale=${CARD_W}:${CARD_H}:force_original_aspect_ratio=increase,crop=${CARD_W}:${CARD_H}:(iw-ow)/2:0,setsar=1,format=yuva444p[thfit];[thfit][2:v]alphamerge[avpip];[0:v]format=yuv420p[bg];[bg][3:v]overlay=(W-w)/2:(H-h-${PFROM}):format=auto[bgf];[bgf][avpip]overlay=(W-w)/2:(H-h-${MARGIN}):format=auto:shortest=1[v];[1:a]anull[a]"
   ffmpeg -y -i prior/background.mp4 -i prior/voice_track.mp4 -i "$MASK" -i "$FRAME" -filter_complex "$FC" -map "[v]" -map "[a]" \
     -c:v libx264 -preset medium -crf 19 -pix_fmt yuv420p -r 30 -c:a aac -b:a 192k -ar 48000 -ac 2 -movflags +faststart work/composed.mp4
 elif [ -n "$MASK" ]; then
-  FC="[1:v]scale=${CARD_W}:${CARD_H}:force_original_aspect_ratio=increase,crop=${CARD_W}:${CARD_H},setsar=1,format=yuva444p[thfit];[thfit][2:v]alphamerge[avpip];[0:v]format=yuv420p[bg];[bg][avpip]overlay=(W-w)/2:(H-h-${MARGIN}):format=auto:shortest=1[v];[1:a]anull[a]"
+  FC="[1:v]scale=${CARD_W}:${CARD_H}:force_original_aspect_ratio=increase,crop=${CARD_W}:${CARD_H}:(iw-ow)/2:0,setsar=1,format=yuva444p[thfit];[thfit][2:v]alphamerge[avpip];[0:v]format=yuv420p[bg];[bg][avpip]overlay=(W-w)/2:(H-h-${MARGIN}):format=auto:shortest=1[v];[1:a]anull[a]"
   ffmpeg -y -i prior/background.mp4 -i prior/voice_track.mp4 -i "$MASK" -filter_complex "$FC" -map "[v]" -map "[a]" \
     -c:v libx264 -preset medium -crf 19 -pix_fmt yuv420p -r 30 -c:a aac -b:a 192k -ar 48000 -ac 2 -movflags +faststart work/composed.mp4
 else
-  FC="[1:v]scale=${CARD_W}:${CARD_H}:force_original_aspect_ratio=increase,crop=${CARD_W}:${CARD_H},setsar=1[thfit];[0:v]format=yuv420p[bg];[bg][thfit]overlay=(W-w)/2:(H-h-${MARGIN}):format=auto:shortest=1[v];[1:a]anull[a]"
+  FC="[1:v]scale=${CARD_W}:${CARD_H}:force_original_aspect_ratio=increase,crop=${CARD_W}:${CARD_H}:(iw-ow)/2:0,setsar=1[thfit];[0:v]format=yuv420p[bg];[bg][thfit]overlay=(W-w)/2:(H-h-${MARGIN}):format=auto:shortest=1[v];[1:a]anull[a]"
   ffmpeg -y -i prior/background.mp4 -i prior/voice_track.mp4 -filter_complex "$FC" -map "[v]" -map "[a]" \
     -c:v libx264 -preset medium -crf 19 -pix_fmt yuv420p -r 30 -c:a aac -b:a 192k -ar 48000 -ac 2 -movflags +faststart work/composed.mp4
 fi

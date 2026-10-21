@@ -31,56 +31,91 @@ ffmpeg -hide_banner -i "$AVATAR" -af "silencedetect=noise=-35dB:d=0.5" -f null -
   | grep -E "silence_(start|end)" || echo "narration continuous"
 ```
 
-### 2. Detect & crop baked-in bars on every side (BEFORE anything else)
+### 2. Detect & crop a baked-in bar pair (BEFORE anything else)
 
-Reused HeyGen / studio renders often carry a 16:9 picture baked between flat white, cream or
-mint bars (top/bottom or left/right). WI2.71: `work/bars.py` samples three frames, finds rows
-and columns that are one flat colour from each edge inwards, and prints `crop=W:H:X:Y,` (or
-nothing). A row with any face or picture in it is never flat, so the head is never cut.
+Reused HeyGen / studio renders often carry a 16:9 picture baked between two flat bars (white,
+cream or mint) at the top and bottom, or a 9:16 picture between two side bars. WI2.71: the
+`bars.py` helper samples three frames and prints `crop=W:H:X:Y,` only for a **matched pair** —
+top+bottom (or left+right) bars of about the same size and the same flat colour that leave a
+picture within 5 % of 16:9 or 9:16. Anything else (a speaker on a plain backdrop, a one-sided
+margin) prints nothing and nothing is cropped, so the head is never cut. It measures frames the
+way ffmpeg shows them (rotation applied), so a rotated phone clip is read on the right axes.
 
 ```bash
 cat > work/bars.py <<'PY'
-# WI2.71: find flat bars baked into the clip (any colour, any side) and print an ffmpeg crop.
-import json, subprocess, sys
-SRC, TOL, MIN_BAR = sys.argv[1], 12, 8
-m = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-    "stream=width,height:format=duration", "-of", "json", SRC], capture_output=True, text=True, check=True).stdout)
-W, H = int(m["streams"][0]["width"]), int(m["streams"][0]["height"])
-DUR = float(m.get("format", {}).get("duration") or 1.0)
+# WI2.71: find a matched pair of flat bars baked into the clip and print an ffmpeg crop.
+# Crops only top+bottom (or left+right) bars of about the same size and the same flat
+# colour, and only when what is left is within 5% of 16:9 or 9:16. Anything else: no crop.
+import subprocess, sys
+SRC, TOL, MIN_BAR, ASPECT_TOL = sys.argv[1], 12, 8, 0.05
 def grab(t):
-    return subprocess.run(["ffmpeg", "-v", "error", "-ss", "%.2f" % t, "-i", SRC, "-frames:v", "1",
-        "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
-def px(fr, x, y):
-    i = (y * W + x) * 3
-    return fr[i:i + 3]
-def bar(fr, lines, pts):
+    # One frame as PPM. Its header gives the size ffmpeg shows after autorotation, so a
+    # rotated phone clip is measured on the same axes the later -vf crop sees.
+    out = subprocess.run(["ffmpeg", "-v", "error", "-ss", "%.2f" % t, "-i", SRC, "-frames:v", "1",
+        "-f", "image2pipe", "-c:v", "ppm", "-"], capture_output=True, check=True).stdout
+    if not out.startswith(b"P6"):
+        return None
+    head, pos = [], 2
+    while len(head) < 3:
+        while out[pos:pos + 1].isspace():
+            pos += 1
+        end = pos
+        while out[end:end + 1] and not out[end:end + 1].isspace():
+            end += 1
+        head.append(int(out[pos:end])); pos = end
+    w, h, data = head[0], head[1], out[pos + 1:]
+    return (w, h, data) if len(data) >= w * h * 3 else None
+def duration():
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", SRC],
+        capture_output=True, text=True, check=True).stdout.strip()
+    try:
+        return float(r)
+    except ValueError:
+        return 1.0
+def close(a, b):
+    return max(abs(a[k] - b[k]) for k in range(3)) <= TOL
+def run(fr, w, lines, pts):
+    # how many lines from this edge inwards are one flat colour -> (count, colour)
     ref, n = None, 0
     for ln in lines:
-        row = [px(fr, *p(ln)) for p in pts]
+        row = [fr[(y * w + x) * 3:(y * w + x) * 3 + 3] for x, y in pts(ln)]
         ref = ref or row[0]
-        if any(max(abs(c[k] - ref[k]) for k in range(3)) > TOL for c in row):
+        if not all(close(c, ref) for c in row):
             break
         n += 1
-    return n
-sides = []
-for t in (DUR * 0.2, DUR * 0.5, DUR * 0.8):
-    fr = grab(t)
-    if len(fr) < W * H * 3:
-        continue
-    xs = [lambda y, x=x: (x, y) for x in range(0, W, 4)]
-    ys = [lambda x, y=y: (x, y) for y in range(0, H, 4)]
-    sides.append((bar(fr, range(H // 2), xs), bar(fr, range(H - 1, H // 2, -1), xs),
-                  bar(fr, range(W // 2), ys), bar(fr, range(W - 1, W // 2, -1), ys)))
-if not sides:
+    return n, ref
+D = duration()
+frames = [f for f in (grab(D * p) for p in (0.2, 0.5, 0.8)) if f]
+if not frames or len({(f[0], f[1]) for f in frames}) != 1:
     print(""); sys.exit(0)
-top, bot, left, right = (min(s[i] for s in sides) for i in range(4))
-top, bot, left, right = ((v + 2 if v >= MIN_BAR else 0) for v in (top, bot, left, right))
-cw, ch = W - left - right, H - top - bot
-cw, ch = cw - cw % 2, ch - ch % 2
-if (top or bot or left or right) and cw >= W // 4 and ch >= H // 4:
-    print("crop=%d:%d:%d:%d," % (cw, ch, left, top))
-else:
-    print("")
+W, H = frames[0][0], frames[0][1]
+sides = [(run(fr, W, range(H // 2), lambda y: [(x, y) for x in range(0, W, 4)]),
+          run(fr, W, range(H - 1, H // 2, -1), lambda y: [(x, y) for x in range(0, W, 4)]),
+          run(fr, W, range(W // 2), lambda x: [(x, y) for y in range(0, H, 4)]),
+          run(fr, W, range(W - 1, W // 2, -1), lambda x: [(x, y) for y in range(0, H, 4)]))
+         for _, _, fr in frames]
+def edge(i):
+    # bar size = the smallest run over the sampled frames; its colour must hold in every frame
+    n, cols = min(s[i][0] for s in sides), [s[i][1] for s in sides]
+    if n < MIN_BAR or not all(close(c, cols[0]) for c in cols):
+        return 0, None
+    return n, cols[0]
+(top, ct), (bot, cb), (left, cl), (right, cr) = (edge(i) for i in range(4))
+def pair(a, ca, b, cb_, side):
+    # a matched pair: both bars present, the same flat colour, sizes within 2% of the side
+    return bool(a and b and close(ca, cb_) and abs(a - b) <= max(4, side * 0.02))
+def aspect_ok(w, h):
+    return any(abs((w / h) / r - 1) <= ASPECT_TOL for r in (16 / 9, 9 / 16))
+tb, lr = pair(top, ct, bot, cb, H), pair(left, cl, right, cr, W)
+cands = ([(top, bot, left, right)] if tb and lr else []) + ([(top, bot, 0, 0)] if tb else []) \
+    + ([(0, 0, left, right)] if lr else [])
+for t, b, l, r in cands:
+    t, l = t + t % 2, l + l % 2          # even x/y (yuv420p); never keeps a bar row
+    cw, ch = W - l - r, H - t - b
+    cw, ch = cw - cw % 2, ch - ch % 2    # even w/h
+    if cw >= W // 4 and ch >= H // 4 and aspect_ok(cw, ch):
+        print("crop=%d:%d:%d:%d," % (cw, ch, l, t)); sys.exit(0)
+print("")
 PY
 CROP=$(python3 work/bars.py "$AVATAR") || exit 1
 echo "[spotlight] bar crop: '${CROP:-none}'"

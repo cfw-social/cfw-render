@@ -20,7 +20,7 @@ connected provider accounts. Never read a secrets file, never print a key.
 
 ## You must produce
 
-- `saves/talking_head.mp4` — the finished avatar render, portrait or landscape (the PIP card is scale-to-fit), H.264 + AAC, 20–60 s, audio
+- `saves/talking_head.mp4` — the finished avatar render, portrait or landscape (the PIP card is filled with a top-biased crop, no bars), H.264 + AAC, 20–60 s, audio
   present. Not re-encoded, not trimmed, not loudnormed (that is `prepare_footage`'s job).
 
 ## How
@@ -56,7 +56,7 @@ WORDS=$(printf '%s' "$SCRIPT" | wc -w | tr -d ' ')
 Follow `$SKILL_DIR/.hub/c-heygen/SKILL.md` **Path 4 (REST API)** with the HeyGen key from the
 environment: `POST https://api.heygen.com/v2/video/generate` with `character.type=avatar`,
 `avatar_id=$AVATAR_ID`, `voice.type=text`, `input_text=$SCRIPT`, `voice_id=$VOICE_ID`, a solid
-background and `dimension` `{"width":1280,"height":720}` (the PIP card scales to fit). Auth is the `X-Api-Key` header, not Bearer. The MCP / browser
+background and `dimension` `{"width":1280,"height":720}` (the PIP card fills with a top-biased crop). Auth is the `X-Api-Key` header, not Bearer. The MCP / browser
 / human paths of `c-heygen` are not available in this harness — on a REST failure, fail the step.
 
 Idempotency: key the render on `sha256(script|avatar|voice)` and keep `work/render-<key>.json`

@@ -51,7 +51,7 @@ own audio plays unbroken for the whole reel and is **never cut, re-timed or re-n
 the bed is sealed. The picture has three fixed zones: a full-frame **background** (transcript-synced
 HyperFrames motion graphics, or b-roll scaled-to-COVER where the transcript matches), the speaker as
 a rounded, brand-ringed **PIP card** (364×504, bottom-centre, 110 px bottom margin, face whole —
-never cropped), and a **caption band** that must never enter the PIP zone (`VARIANT=pip-safe`
+the card is filled with a top-biased crop, no bars), and a **caption band** that must never enter the PIP zone (`VARIANT=pip-safe`
 everywhere; graphics content stays above y≈1040). SFX sit UNDER the voice (`amix=normalize=0`).
 The deliverable carries a 0.4 s money-shot cover frame at position 0 and ends on a branded CTA
 end card that overlays the last seconds of the bed (nothing is appended unless an `outro` was
