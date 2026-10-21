@@ -8773,6 +8773,142 @@ for wi266_slug in p-reels-spotlight p-reels-pip; do
   fi
 done
 
+echo "=== Case 48: WI2.70 — a failed check on run 1 names itself in the step event and the worker log ==="
+# Run 1 fails picture_review; run 2 passes. The retry count stays one failure
+# then success. The check name and its short message are on the step event
+# detail and on the worker log. A planted secret and a save-file body are not.
+wi270_root="$(mktemp -d)"
+python3 - "$wi270_root" <<'PY'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+(root / "recipe" / "checks").mkdir(parents=True)
+(root / "recipe" / "checks" / "picture_review.sh").write_text("""#!/bin/bash
+nfile="$1/.wi270-runs"
+n=0
+if [[ -f "$nfile" ]]; then n=$(cat "$nfile"); fi
+n=$((n + 1))
+printf '%s' "$n" > "$nfile"
+if [[ "$n" -eq 1 ]]; then
+  printf '%s\\n' "black last frame sk-wi270secretvalue0001"
+  exit 1
+fi
+exit 0
+""")
+order = {
+    "id": "order-wi270",
+    "attempt": {"id": "att-wi270"},
+    "recipe": "wi270-check",
+    "kind": "video",
+    "taskOrder": {},
+    "inputs": {},
+    "manifest": {
+        "recipe": "wi270-check",
+        "recipeVersion": "1.0.0",
+        "steps": [{
+            "id": "final_checks",
+            "runsOn": "computer",
+            "when": "always",
+            "maxCheckRetries": 1,
+            "saves": [{"id": "note", "kind": "text"}],
+            "checks": [{"id": "picture_review"}],
+        }],
+    },
+}
+(root / "order.json").write_text(__import__("json").dumps(order))
+(root / "engine.sh").write_text("""#!/bin/bash
+set -eu
+cat >/dev/null
+mkdir -p saves
+printf '%s\\n' "FILEBODY-wi270-do-not-copy" > saves/note.md
+""")
+PY
+chmod +x "$wi270_root/engine.sh"
+(
+  export CFW_RENDER_LOG_DIR="$wi270_root/logs"
+  export CFW_RENDER_STATE_DIR="$wi270_root/state"
+  export CFW_RENDER_ENGINE=codex
+  export CFW_RENDER_ENGINE_CMD="$wi270_root/engine.sh"
+  export CFW_WORKER_ID="w-wi270"
+  export CFW_ORDER_ID="order-wi270"
+  export CFW_API_BASE="http://127.0.0.1:9"
+  export CFW_RENDER_WORKER_KEY="cfw_render_wi270testkey0000"
+  export CFW_RENDER_HEARTBEAT_SEC=30
+  export CFW_RENDER_STEP_TIMEOUT_SEC=60
+  export WI270_REPORTS="$wi270_root/reports.ndjson"
+  unset CFW_RENDER_SKILLS_DIR
+  unset CFW_RENDER_LOCAL_CHECKPOINTS
+  mkdir -p "$wi270_root/logs" "$wi270_root/state"
+  # shellcheck disable=SC1091
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  source "$REPO_DIR/bin/cfw-render-engine.sh"
+  source "$REPO_DIR/bin/cfw-render-harness.sh"
+  cr_harness_heartbeat_start() { :; }
+  cr_harness_heartbeat_stop() { :; }
+  cr_h_run_with_timeout() { shift; "$@"; }
+  cr_engine_limit_detect() { return 1; }
+  cr_h_upload_with_retry() { printf 'https://media.cfw.social/%s' "$(basename "$1")"; }
+  cr_report_step() {
+    python3 -c 'import json,sys
+open(sys.argv[1], "a").write(json.dumps({"event": sys.argv[2], "extra": json.loads(sys.argv[3])}) + "\n")' \
+      "$WI270_REPORTS" "$5" "$6" || return 1
+    printf '%s' '{"ok":true,"directive":"continue"}'
+  }
+  cr_harness_run "$wi270_root/order.json" "$wi270_root" "$wi270_root/recipe" >"$wi270_root/harness.out" 2>"$wi270_root/harness.err"
+)
+wi270_rc=$?
+wi270_detail="$(python3 - "$wi270_root" "$wi270_rc" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+rc = sys.argv[2]
+bad = []
+err = ""
+err_path = root / "harness.err"
+if err_path.is_file():
+    err = err_path.read_text(errors="replace")[-500:].replace("\n", " | ")
+if rc != "0":
+    bad.append("rc=%s err=%s" % (rc, err))
+events = []
+reports = root / "reports.ndjson"
+if reports.is_file():
+    for line in reports.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            events.append(json.loads(line))
+names = [e.get("event") for e in events]
+started = [e for e in events if e.get("event") == "step_started"]
+completed = [e for e in events if e.get("event") == "step_completed"]
+if names != ["step_started", "step_started", "step_completed", "attempt_completed"]:
+    bad.append("events=%s err=%s" % (names, err))
+if any(e.get("event") == "attempt_failed" for e in events):
+    bad.append("attempt_failed")
+log_path = root / "logs" / "cfw-render.log"
+log = log_path.read_text(encoding="utf-8", errors="replace") if log_path.is_file() else ""
+want = "picture_review: black last frame sk-[redacted]"
+if log.count("checks failed") != 1 or "run 1/2" not in log or want not in log or "retrying" not in log:
+    bad.append("log=%r" % log[-500:])
+details = []
+if len(started) >= 2:
+    details.append((started[1].get("extra") or {}).get("detail") or "")
+if completed:
+    details.append((completed[0].get("extra") or {}).get("detail") or "")
+if not details or any(want not in d for d in details):
+    bad.append("detail=%r" % details)
+blob = log + "\n" + (reports.read_text(encoding="utf-8") if reports.is_file() else "")
+if "sk-wi270secretvalue0001" in blob or "FILEBODY-wi270-do-not-copy" in blob:
+    bad.append("leaked secret or file body")
+runs = root / "steps" / "final_checks" / ".wi270-runs"
+got_runs = runs.read_text(encoding="utf-8") if runs.is_file() else ""
+if got_runs != "2":
+    bad.append("runs=%r" % got_runs)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi270_detail" == "ok" ]]; then
+  pass "WI2.70 failed check on run 1 is named in the step event detail and the worker log; run 2 completes"
+else
+  fail "WI2.70 check failure detail" "$wi270_detail"
+fi
+rm -rf "$wi270_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then

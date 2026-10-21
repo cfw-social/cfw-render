@@ -729,7 +729,11 @@ cr_h_run_checks() {
     detail=""; ok=1
     if [[ -f "$script" ]]; then
       detail="$(bash "$script" "$workdir" 2>&1)" || ok=0
-      detail="${detail: -400}"
+      # Last 400 characters. A negative offset is not portable on bash 3.2
+      # and can discard the message the retry log has to keep.
+      if (( ${#detail} > 400 )); then
+        detail="${detail:$((${#detail}-400))}"
+      fi
     else
       for f in $(cr_h_saves_for "$step_id"); do
         [[ -s "$workdir/saves/$f" ]] || { ok=0; detail="missing or empty save $f"; }
@@ -742,6 +746,83 @@ cr_h_run_checks() {
   printf '%s' "$json"
   (( failed )) && return 1
   return 0
+}
+
+# cr_h_failed_check_note <checks-json> — one short line of failed checks.
+# Shape: "<id>: <message>; <id>: <message>". Passed checks are omitted.
+# Messages are the check's own detail, collapsed to one line, redacted and
+# cut off. This does not read save files or copy their contents.
+cr_h_failed_check_note() {
+  python3 - "$CR_H_SELF_DIR/cfw-render-redact.py" "$1" <<'PY'
+import json, subprocess, sys
+sys.dont_write_bytecode = True
+try:
+    rows = json.loads(sys.argv[2]) if str(sys.argv[2]).strip() else []
+except Exception:
+    rows = []
+if not isinstance(rows, list):
+    rows = []
+
+def clean(text):
+    # Run the support redactor as a program. Importing it from this process
+    # shares stdin with the harness script and can blank the message.
+    text = " ".join(text.split())
+    if not text:
+        return ""
+    try:
+        proc = subprocess.run(
+            [sys.executable, sys.argv[1]],
+            input=text,
+            text=True,
+            capture_output=True,
+            timeout=15,
+        )
+    except Exception:
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return " ".join(proc.stdout.split())
+
+parts = []
+for row in rows:
+    if not isinstance(row, dict) or row.get("passed") is True:
+        continue
+    cid = row.get("id")
+    if not isinstance(cid, str) or not cid.strip():
+        cid = "check"
+    cid = " ".join(cid.split())[:80]
+    raw = row.get("detail")
+    if not isinstance(raw, str):
+        raw = row.get("message") if isinstance(row.get("message"), str) else ""
+    msg = clean(" ".join(raw.split()))
+    if len(msg) > 160:
+        msg = msg[:157] + "..."
+    if not msg:
+        msg = "failed"
+    parts.append("%s: %s" % (cid, msg))
+note = "; ".join(parts)
+if len(note) > 900:
+    note = note[:897] + "..."
+sys.stdout.write(note)
+PY
+}
+
+# cr_h_json_detail <json-object> <detail> [message]
+# Adds detail when it is non-empty. With "message", also sets an owner-safe
+# message (at most 240 characters) when that field is absent.
+cr_h_json_detail() {
+  python3 -c '
+import json, sys
+base = json.loads(sys.argv[1])
+if not isinstance(base, dict):
+    raise SystemExit(1)
+detail = sys.argv[2]
+if detail:
+    base["detail"] = detail
+    if len(sys.argv) > 3 and sys.argv[3] == "message" and not base.get("message"):
+        base["message"] = detail if len(detail) <= 240 else detail[:237] + "..."
+print(json.dumps(base, separators=(",", ":")))
+' "$1" "$2" "${3:-}"
 }
 
 # [M2-04] cr_h_release_revoked <stepId> — stop_after_step landed: report the
@@ -984,7 +1065,16 @@ o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alt
         return 30
       fi
       tried+="$engine "
-      cr_h_report step_started "{\"stepId\":\"$step_id\",\"engine\":\"$engine\"}" || return $?
+      # A check failure on the previous run is carried on this step_started.
+      # The workdir is removed after success, so the event has to keep the reason.
+      local start_extra="{\"stepId\":\"$step_id\",\"engine\":\"$engine\"}"
+      local fail_note_file="$order_dir/.cfw-check-fail-$step_id"
+      if [[ -s "$fail_note_file" ]]; then
+        local carried_note
+        carried_note="$(cat "$fail_note_file")"
+        start_extra="$(cr_h_json_detail "$start_extra" "$carried_note")" || return 1
+      fi
+      cr_h_report step_started "$start_extra" || return $?
       if (( CR_H_LOCAL )); then cr_h_wait_pause || return $?; fi
       cr_h_write_current_step "$order_dir" "$step_id" "$engine"
       rm -f "$workdir/needs_input.json"
@@ -1126,8 +1216,19 @@ PY
         fi
         break
       fi
+      # Keep the failed check names for the next step event and the log line.
+      # Retry count is unchanged: one failure still consumes one run.
+      local this_note=""
+      this_note="$(cr_h_failed_check_note "$checks_json")" || this_note=""
+      if [[ -n "$this_note" ]]; then
+        printf '%s' "$this_note" > "$order_dir/.cfw-check-fail-$step_id"
+      fi
       (( run > max_retries )) && break
-      cr_log "harness: step $step_id checks failed (run $run/$((max_retries + 1))) — retrying"
+      if [[ -n "$this_note" ]]; then
+        cr_log "harness: step $step_id checks failed (run $run/$((max_retries + 1))): $this_note — retrying"
+      else
+        cr_log "harness: step $step_id checks failed (run $run/$((max_retries + 1))) — retrying"
+      fi
     done
 
     # [M2-04] attempt_superseded (set by any report/heartbeat reply) → stop
@@ -1135,8 +1236,17 @@ PY
     [[ "$(cr_h_directive)" == "superseded" ]] && return 23
 
     if (( ! passed )); then
-      cr_h_report step_failed "{\"stepId\":\"$step_id\",\"checks\":$checks_json}"
-      cr_h_report attempt_failed "{\"stepId\":\"$step_id\",\"message\":\"step $step_id failed its checks\"}"
+      local fail_extra="{\"stepId\":\"$step_id\",\"checks\":$checks_json}"
+      local attempt_extra="{\"stepId\":\"$step_id\",\"message\":\"step $step_id failed its checks\"}"
+      if [[ -s "$order_dir/.cfw-check-fail-$step_id" ]]; then
+        local failed_note
+        failed_note="$(cat "$order_dir/.cfw-check-fail-$step_id")"
+        fail_extra="$(cr_h_json_detail "$fail_extra" "$failed_note" message)" || return 1
+        attempt_extra="$(cr_h_json_detail "{\"stepId\":\"$step_id\"}" "$failed_note" message)" || return 1
+      fi
+      rm -f "$order_dir/.cfw-check-fail-$step_id"
+      cr_h_report step_failed "$fail_extra"
+      cr_h_report attempt_failed "$attempt_extra"
       return 30
     fi
 
@@ -1146,6 +1256,12 @@ PY
       completion="$(cr_h_checkpoint save "$step_id" "$checks_json")" || return 31
       for sv in $saves; do completed_saves+=("$workdir/saves/${sv%%:*}.${sv##*:}"); done
       rm -f "$order_dir/current-step.json"
+      if [[ -s "$order_dir/.cfw-check-fail-$step_id" ]]; then
+        local failed_note
+        failed_note="$(cat "$order_dir/.cfw-check-fail-$step_id")"
+        completion="$(cr_h_json_detail "$completion" "$failed_note")" || return 1
+        rm -f "$order_dir/.cfw-check-fail-$step_id"
+      fi
       cr_h_report step_completed "$completion" || return $?
     else
     for sv in $saves; do
@@ -1169,7 +1285,14 @@ print(json.dumps({"saveId": sys.argv[1], "url": sys.argv[2], "checksum": "sha256
     done
     outputs="${outputs%,}]"
     rm -f "$order_dir/current-step.json"
-    cr_h_report step_completed "{\"stepId\":\"$step_id\",\"outputs\":$outputs,\"checks\":$checks_json}" || return $?
+    local done_extra="{\"stepId\":\"$step_id\",\"outputs\":$outputs,\"checks\":$checks_json}"
+    if [[ -s "$order_dir/.cfw-check-fail-$step_id" ]]; then
+      local failed_note
+      failed_note="$(cat "$order_dir/.cfw-check-fail-$step_id")"
+      done_extra="$(cr_h_json_detail "$done_extra" "$failed_note")" || return 1
+      rm -f "$order_dir/.cfw-check-fail-$step_id"
+    fi
+    cr_h_report step_completed "$done_extra" || return $?
     fi
     case "$(cr_h_directive)" in
       cancel) cr_h_report attempt_cancelled "{\"stepId\":\"$step_id\"}"; return 20 ;;
