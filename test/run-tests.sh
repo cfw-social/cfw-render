@@ -13117,6 +13117,278 @@ else
 fi
 rm -rf "$wi282_root"
 
+echo "=== Case 77: WI2.106 — a real check failure stays visible, and redaction failure still reports ==="
+# AC1: a failing check script keeps its own detail when the log has a real refusal.
+# AC2: "Nothing blocking delivery", "no blockers", "not blocked" and "isn't blocked"
+# are not a refusal, so a missing save still names the file.
+# AC3: when the redactor exits non-zero, the step still sends step_failed and
+# attempt_failed, the detail stays the missing-save text, and stderr has one line.
+wi106_root="$(mktemp -d)"
+wi106_plain="$wi106_root/plain-recipe"
+wi106_script_recipe="$wi106_root/script-recipe"
+python3 - "$wi106_root" "$wi106_plain" "$wi106_script_recipe" "$REPO_DIR/bin" <<'PY'
+import json, os, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+plain = pathlib.Path(sys.argv[2])
+script_recipe = pathlib.Path(sys.argv[3])
+real_bin = pathlib.Path(sys.argv[4])
+prompt = (
+    "DELIVERY BLOCKED — fix the render (rerun the failing step); do not deliver.\n"
+    "PROMPT-ONLY-WI106-SHOULD-NOT-APPEAR\n"
+)
+for recipe in (plain, script_recipe):
+    steps = recipe / "steps"
+    steps.mkdir(parents=True)
+    (steps / "07-final-checks.md").write_text(prompt, encoding="utf-8")
+checks = script_recipe / "checks"
+checks.mkdir()
+(checks / "qa_gate.sh").write_text(
+    "#!/bin/bash\n"
+    "printf '%s\\n' 'WI106-SCRIPT-DETAIL caption times do not match the cut'\n"
+    "exit 1\n",
+    encoding="utf-8",
+)
+(checks / "qa_gate.sh").chmod(0o755)
+
+def write_engine(name, answer):
+    body = """#!/bin/bash
+set -eu
+cat >/dev/null
+cat "${CFW_RENDER_ENGINE_PROMPT_FILE:?}"
+printf '%s\\n' 'tokens used' '4'
+printf '%s\\n' 'ANSWER'
+""".replace("ANSWER", answer.replace("'", "'\\''"))
+    path = root / name
+    path.write_text(body, encoding="utf-8")
+    path.chmod(0o755)
+
+write_engine(
+    "script-engine.sh",
+    "block: WI106-REAL-REFUSAL green background. Do not deliver this reel.",
+)
+write_engine(
+    "negate-engine.sh",
+    "Nothing blocking delivery. No blockers. The frame is not blocked. It isn't blocked and isnt blocked.",
+)
+write_engine(
+    "redact-engine.sh",
+    "block: WI106-REDACT-FAIL captions are missing. I refuse to deliver.",
+)
+
+def order(checks_ids):
+    return {
+        "id": "order-wi106",
+        "attempt": {"id": "att-wi106"},
+        "recipe": "wi106-check",
+        "kind": "video",
+        "taskOrder": {},
+        "inputs": {},
+        "manifest": {
+            "recipe": "wi106-check",
+            "recipeVersion": "1.0.0",
+            "steps": [{
+                "id": "final_checks",
+                "runsOn": "computer",
+                "when": "always",
+                "maxCheckRetries": 0,
+                "instructions": "steps/07-final-checks.md",
+                "saves": [
+                    {"id": "final_video", "kind": "video"},
+                    {"id": "cover", "kind": "image"},
+                    {"id": "captions", "kind": "json"},
+                ],
+                "checks": [{"id": cid} for cid in checks_ids],
+            }],
+        },
+    }
+
+for name, checks_ids in (
+    ("script", ["qa_gate"]),
+    ("negate", ["qa_gate", "duration_window"]),
+    ("redact", ["qa_gate", "duration_window"]),
+):
+    dest = root / name
+    dest.mkdir()
+    (dest / "order.json").write_text(json.dumps(order(checks_ids)), encoding="utf-8")
+
+bindir = root / "bin"
+bindir.mkdir()
+os.symlink(real_bin / "cfw-render-stage.py", bindir / "cfw-render-stage.py")
+(bindir / "cfw-render-redact.py").write_text(
+    "#!/usr/bin/env python3\n"
+    "import sys\n"
+    "data = sys.stdin.buffer.read().decode('utf-8', 'replace')\n"
+    "if 'WI106-REDACT-FAIL' in data:\n"
+    "    sys.exit(1)\n"
+    "sys.stdout.write(data)\n",
+    encoding="utf-8",
+)
+(bindir / "cfw-render-redact.py").chmod(0o755)
+PY
+
+wi106_run() {
+  local root="$1" engine="$2" recipe="$3" selfdir="${4:-}"
+  (
+    export CFW_RENDER_LOG_DIR="$root/logs"
+    export CFW_RENDER_STATE_DIR="$root/state"
+    export CFW_RENDER_ENGINE=codex
+    export CFW_RENDER_ENGINE_CMD="$engine"
+    export CFW_WORKER_ID="w-wi106"
+    export CFW_ORDER_ID="order-wi106"
+    export CFW_API_BASE="http://127.0.0.1:9"
+    export CFW_RENDER_WORKER_KEY="cfw_render_wi106testkey0000"
+    export CFW_RENDER_HEARTBEAT_SEC=30
+    export CFW_RENDER_STEP_TIMEOUT_SEC=60
+    export WI106_REPORTS="$root/reports.ndjson"
+    unset CFW_RENDER_SKILLS_DIR
+    unset CFW_RENDER_LOCAL_CHECKPOINTS
+    mkdir -p "$root/logs" "$root/state"
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-lib.sh"
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-engine.sh"
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-harness.sh"
+    if [[ -n "$selfdir" ]]; then
+      # cr_h_agent_refusal reads this. The sourced harness is not followed here.
+      # shellcheck disable=SC2034
+      CR_H_SELF_DIR="$selfdir"
+    fi
+    cr_harness_heartbeat_start() { :; }
+    cr_harness_heartbeat_stop() { :; }
+    cr_h_run_with_timeout() { shift; "$@"; }
+    cr_engine_limit_detect() { return 1; }
+    cr_h_upload_with_retry() { printf 'https://media.cfw.social/%s' "$(basename "$1")"; }
+    cr_report_step() {
+      python3 -c 'import json,sys
+open(sys.argv[1], "a").write(json.dumps({"event": sys.argv[2], "extra": json.loads(sys.argv[3])}) + "\n")' \
+        "$WI106_REPORTS" "$5" "$6" || return 1
+      printf '%s' '{"ok":true,"directive":"continue"}'
+    }
+    cr_harness_run "$root/order.json" "$root" "$recipe" >"$root/harness.out" 2>"$root/harness.err"
+    printf '%s\n' "$?" > "$root/rc"
+  )
+}
+wi106_run "$wi106_root/script" "$wi106_root/script-engine.sh" "$wi106_script_recipe"
+wi106_run "$wi106_root/negate" "$wi106_root/negate-engine.sh" "$wi106_plain"
+wi106_run "$wi106_root/redact" "$wi106_root/redact-engine.sh" "$wi106_plain" "$wi106_root/bin"
+wi106_detail="$(python3 - "$wi106_root" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+
+def load_events(name):
+    path = root / name / "reports.ndjson"
+    if not path.is_file():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+def failed(name):
+    events = [e for e in load_events(name) if e.get("event") == "step_failed"]
+    if len(events) != 1:
+        return None
+    return events[0].get("extra") or {}
+
+def rc_of(name):
+    path = root / name / "rc"
+    return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+
+def tail(path):
+    p = pathlib.Path(path)
+    if not p.is_file():
+        return ""
+    return p.read_text(encoding="utf-8", errors="replace")[-500:].replace("\n", " | ")
+
+def events_of(name):
+    return [e.get("event") for e in load_events(name)]
+
+script_bad, negate_bad, redact_bad = [], [], []
+want_miss = "qa_gate: missing or empty save captions.json; duration_window: missing or empty save captions.json"
+want_checks = ["missing or empty save captions.json", "missing or empty save captions.json"]
+
+if rc_of("script") != "30":
+    script_bad.append("rc=%s err=%s" % (rc_of("script"), tail(root / "script" / "harness.err")))
+script = failed("script") or {}
+script_detail = script.get("detail") or ""
+script_checks = script.get("checks") or []
+script_raw = ""
+if script_checks and isinstance(script_checks[0], dict):
+    script_raw = script_checks[0].get("detail") or ""
+script_text = " ".join(script_raw.split())
+if script_text != "WI106-SCRIPT-DETAIL caption times do not match the cut":
+    script_bad.append("check=%r" % script_text[:180])
+if "WI106-REAL-REFUSAL" in script_text or "do not deliver" in script_text.lower():
+    script_bad.append("check detail was replaced by the agent refusal")
+if not script_detail.startswith("qa_gate: WI106-SCRIPT-DETAIL caption times do not match the cut"):
+    script_bad.append("detail=%r" % script_detail[:220])
+if "WI106-REAL-REFUSAL" in script_detail or "green background" in script_detail:
+    script_bad.append("step reason is the agent refusal")
+if "PROMPT-ONLY-WI106-SHOULD-NOT-APPEAR" in script_detail:
+    script_bad.append("step reason picked up the prompt")
+if events_of("script") != ["step_started", "step_failed", "attempt_failed"]:
+    script_bad.append("events=%s" % events_of("script"))
+attempt = [e for e in load_events("script") if e.get("event") == "attempt_failed"]
+if not attempt or (attempt[0].get("extra") or {}).get("detail") != script_detail:
+    script_bad.append("attempt detail differs")
+
+if rc_of("negate") != "30":
+    negate_bad.append("rc=%s err=%s" % (rc_of("negate"), tail(root / "negate" / "harness.err")))
+negate = failed("negate") or {}
+negate_detail = negate.get("detail") or ""
+if negate_detail != want_miss:
+    negate_bad.append("detail=%r" % negate_detail[:300])
+negate_checks = negate.get("checks") or []
+if [c.get("detail") for c in negate_checks] != want_checks:
+    negate_bad.append("checks=%r" % negate_checks)
+for phrase in ("Nothing blocking", "No blockers", "not blocked", "isn't blocked", "block:"):
+    if phrase.lower() in negate_detail.lower():
+        negate_bad.append("negated text counted as a refusal (%s)" % phrase)
+if "PROMPT-ONLY-WI106-SHOULD-NOT-APPEAR" in negate_detail:
+    negate_bad.append("missing-save path picked up the prompt")
+
+if rc_of("redact") != "30":
+    redact_bad.append("rc=%s err=%s" % (rc_of("redact"), tail(root / "redact" / "harness.err")))
+redact = failed("redact") or {}
+redact_detail = redact.get("detail") or ""
+if redact_detail != want_miss:
+    redact_bad.append("detail=%r" % redact_detail[:300])
+redact_checks = redact.get("checks") or []
+if [c.get("detail") for c in redact_checks] != want_checks:
+    redact_bad.append("checks=%r" % redact_checks)
+if "WI106-REDACT-FAIL" in redact_detail or "refuse to deliver" in redact_detail:
+    redact_bad.append("redactor failure still published the agent text")
+if events_of("redact") != ["step_started", "step_failed", "attempt_failed"]:
+    redact_bad.append("events=%s" % events_of("redact"))
+err_path = root / "redact" / "harness.err"
+err_lines = err_path.read_text(encoding="utf-8", errors="replace").splitlines() if err_path.is_file() else []
+fail_lines = [line for line in err_lines if "agent refusal redaction failed" in line]
+if fail_lines != ["harness: agent refusal redaction failed"]:
+    redact_bad.append("stderr=%r" % err_lines[-5:])
+
+print("SCRIPT=" + ("ok" if not script_bad else "; ".join(script_bad)))
+print("NEGATE=" + ("ok" if not negate_bad else "; ".join(negate_bad)))
+print("REDACT=" + ("ok" if not redact_bad else "; ".join(redact_bad)))
+PY
+)"
+wi106_script="$(printf '%s\n' "$wi106_detail" | sed -n 's/^SCRIPT=//p' | tail -1)"
+wi106_negate="$(printf '%s\n' "$wi106_detail" | sed -n 's/^NEGATE=//p' | tail -1)"
+wi106_redact="$(printf '%s\n' "$wi106_detail" | sed -n 's/^REDACT=//p' | tail -1)"
+if [[ "$wi106_script" == "ok" ]]; then
+  pass "WI2.106 failing check script keeps its own detail when the agent refused"
+else
+  fail "WI2.106 check script detail" "$wi106_script"
+fi
+if [[ "$wi106_negate" == "ok" ]]; then
+  pass "WI2.106 nothing blocking, no blockers, and not blocked are not a refusal"
+else
+  fail "WI2.106 negated refusal" "$wi106_negate"
+fi
+if [[ "$wi106_redact" == "ok" ]]; then
+  pass "WI2.106 redactor failure keeps the missing-save text and still reports"
+else
+  fail "WI2.106 redactor failure" "$wi106_redact"
+fi
+rm -rf "$wi106_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then

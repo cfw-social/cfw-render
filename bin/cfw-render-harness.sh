@@ -28,8 +28,9 @@
 # <workdir>` when that script exists. FALLBACK: when it doesn't, the check
 # passes iff every declared save for the step exists and is non-empty.
 # final_checks: when the agent refused (its own block/refuse verdict in this
-# run's log), that missing-save line is replaced by the finding, first 500
-# characters. No refusal keeps the missing-save text.
+# run's log), a missing-save line is replaced by the finding, first 500
+# characters. A check script and a local validator keep their own detail.
+# No refusal, and a redactor failure, keep the missing-save text.
 #
 # Return codes of cr_harness_run: 0 completed, 20 cancelled, 21 released
 # (pause timeout), 22 revoked, 23 superseded, 24 released for an engine usage
@@ -750,9 +751,12 @@ body = raw[matches[-1].end():] if matches else raw
 text = " ".join(body.split())
 if not text:
     sys.exit(0)
-# "not blocked" is not a refusal. "block:" is the agent's verdict form.
+# Negated forms are not a refusal. Each lookbehind is fixed-width.
+# "not blocked", "isn't blocked", "isnt blocked", "nothing blocking",
+# and "no blockers" / "no blocking" do not count. "block:" is the verdict.
 refusal = re.compile(
-    r"(?i)(?<![Nn]ot )(?:\bblock\s*:|\bblocked\b|\bblocking\b|\brefus(?:e|es|ed|al)\b|\bdo not deliver\b|\bnot delivered\b)"
+    r"(?i)(?<![Nn]ot )(?<!nothing )(?<!no )(?<!isn't )(?<!isn’t )(?<!isnt )"
+    r"(?:\bblock\s*:|\bblocked\b|\bblocking\b|\brefus(?:e|es|ed|al)\b|\bdo not deliver\b|\bnot delivered\b)"
 )
 found = list(refusal.finditer(text))
 if not found:
@@ -1294,10 +1298,31 @@ PY
       fi
 
       # final_checks only: a QA refusal is read from this run's log. Other
-      # steps keep the check text they already had.
+      # steps keep the check text they already had. A redactor failure or
+      # timeout logs one line, keeps an empty refusal (the missing-save text
+      # stays) and continues. It must not return before the failure report.
       CR_H_AGENT_REFUSAL=""
       if [[ "$step_id" == "final_checks" ]]; then
-        CR_H_AGENT_REFUSAL="$(cr_h_agent_refusal "$log" "$log_from" "$workdir/prompt.md")" || return 1
+        local refusal_err="" refusal_line="" refusal_rc=0
+        refusal_err="$(mktemp 2>/dev/null)" || refusal_err=""
+        if [[ -n "$refusal_err" ]]; then
+          CR_H_AGENT_REFUSAL="$(cr_h_agent_refusal "$log" "$log_from" "$workdir/prompt.md" 2>"$refusal_err")" || refusal_rc=$?
+        else
+          CR_H_AGENT_REFUSAL="$(cr_h_agent_refusal "$log" "$log_from" "$workdir/prompt.md")" || refusal_rc=$?
+        fi
+        if (( refusal_rc != 0 )); then
+          CR_H_AGENT_REFUSAL=""
+          if [[ -n "$refusal_err" ]]; then
+            IFS= read -r refusal_line < "$refusal_err" || true
+          fi
+          if [[ -z "$refusal_line" ]]; then
+            refusal_line="harness: agent refusal redaction failed"
+          fi
+          printf '%s\n' "$refusal_line" >&2
+        fi
+        if [[ -n "$refusal_err" ]]; then
+          rm -f "$refusal_err"
+        fi
       fi
       # shellcheck disable=SC2086
       if checks_json="$(cr_h_run_checks "$step_id" "$workdir" $checks)"; then
@@ -1313,10 +1338,23 @@ PY
       # Retry count is unchanged: one failure still consumes one run.
       local this_note=""
       this_note="$(cr_h_failed_check_note "$checks_json")" || this_note=""
-      # The joined note cuts each message to 160 characters and would repeat
-      # it once per check. The refusal is the step reason: the finding, first
-      # 500 characters, already redacted by cr_h_agent_refusal.
-      if [[ -n "$CR_H_AGENT_REFUSAL" ]]; then
+      # The joined note cuts each message to 160 characters. The full refusal
+      # is the step reason only when every failed check is a missing save
+      # (that fallback already stored the finding). A check script or a local
+      # validator keeps its own detail, even when the agent log refused.
+      if [[ -n "$CR_H_AGENT_REFUSAL" ]] && python3 -c '
+import json, sys
+try:
+    rows = json.loads(sys.argv[1])
+except Exception:
+    raise SystemExit(1)
+refusal = sys.argv[2]
+if not isinstance(rows, list) or not refusal:
+    raise SystemExit(1)
+failed = [row for row in rows if isinstance(row, dict) and row.get("passed") is not True]
+if not failed or any(row.get("detail") != refusal for row in failed):
+    raise SystemExit(1)
+' "$checks_json" "$CR_H_AGENT_REFUSAL"; then
         this_note="$CR_H_AGENT_REFUSAL"
       fi
       if [[ -n "$this_note" ]]; then
