@@ -27,6 +27,9 @@
 # Checks: for each `checks[].id` the harness runs `<recipe-dir>/checks/<id>.sh
 # <workdir>` when that script exists. FALLBACK: when it doesn't, the check
 # passes iff every declared save for the step exists and is non-empty.
+# final_checks: when the agent refused (its own block/refuse verdict in this
+# run's log), that missing-save line is replaced by the finding, first 500
+# characters. No refusal keeps the missing-save text.
 #
 # Return codes of cr_harness_run: 0 completed, 20 cancelled, 21 released
 # (pause timeout), 22 revoked, 23 superseded, 24 released for an engine usage
@@ -705,7 +708,86 @@ cr_h_seal_final_loudness() {
   rm -f "$errfile"
 }
 
+# cr_h_agent_refusal <log> <from-byte> <prompt-file>
+# The final_checks agent's own block/refuse finding for THIS run, as one
+# line, first 500 characters. Prints nothing when this run did not refuse.
+# Codex copies the step prompt into the log, and that prompt already says
+# "DELIVERY BLOCKED", so the prompt is not the verdict. The final answer is
+# the text after the last "tokens used" / count pair (the count may contain
+# a comma, as in 21,140). Secrets are redacted before the cut.
+cr_h_agent_refusal() {
+  local log="$1" from="$2" prompt="$3"
+  [[ -f "$log" ]] || return 0
+  python3 - "$CR_H_SELF_DIR/cfw-render-redact.py" "$log" "${from:-0}" "$prompt" <<'PY'
+import re, subprocess, sys
+sys.dont_write_bytecode = True
+redact_py, log_path, from_s, prompt_path = sys.argv[1:]
+try:
+    start = int(from_s)
+except ValueError:
+    sys.stderr.write("harness: agent refusal log offset is not an integer\n")
+    sys.exit(1)
+if start < 0:
+    start = 0
+try:
+    with open(log_path, "rb") as fh:
+        fh.seek(start)
+        raw = fh.read().decode("utf-8", "replace")
+except OSError:
+    sys.exit(0)
+prompt = ""
+if prompt_path:
+    try:
+        with open(prompt_path, "r", encoding="utf-8", errors="replace") as fh:
+            prompt = fh.read()
+    except OSError:
+        prompt = ""
+if prompt:
+    raw = raw.replace(prompt, "\n")
+# Last pair wins: an earlier pair in the same run is not the final answer.
+matches = list(re.finditer(r"(?m)^tokens used\r?\n[0-9][0-9,]*[ \t]*\r?\n", raw))
+body = raw[matches[-1].end():] if matches else raw
+text = " ".join(body.split())
+if not text:
+    sys.exit(0)
+# "not blocked" is not a refusal. "block:" is the agent's verdict form.
+refusal = re.compile(
+    r"(?i)(?<![Nn]ot )(?:\bblock\s*:|\bblocked\b|\bblocking\b|\brefus(?:e|es|ed|al)\b|\bdo not deliver\b|\bnot delivered\b)"
+)
+found = list(refusal.finditer(text))
+if not found:
+    sys.exit(0)
+# No tokens-used marker: do not take a preamble from the engine banner.
+# Start at the last refusal sentence and keep the rest of the answer.
+if not matches and found[-1].start() > 0:
+    start_at = text.rfind(". ", 0, found[-1].start())
+    text = text[start_at + 2:] if start_at >= 0 else text[found[-1].start():]
+    text = " ".join(text.split())
+try:
+    proc = subprocess.run(
+        [sys.executable, redact_py],
+        input=text,
+        text=True,
+        capture_output=True,
+        timeout=15,
+    )
+except Exception as exc:
+    sys.stderr.write("harness: agent refusal redaction failed: %s\n" % exc)
+    sys.exit(1)
+if proc.returncode != 0:
+    sys.stderr.write("harness: agent refusal redaction failed\n")
+    sys.exit(1)
+clean = " ".join(proc.stdout.split())
+if not clean or not refusal.search(clean):
+    sys.exit(0)
+sys.stdout.write(clean[:500])
+PY
+}
+
 # cr_h_run_checks <stepId> <workdir> <check-ids...> → prints checks JSON; rc 1 if any failed.
+# CR_H_AGENT_REFUSAL, when set, is the finding from cr_h_agent_refusal for
+# this run. A missing save then carries that finding instead of the
+# missing-save line. An empty value keeps today's missing-save text.
 cr_h_run_checks() {
   local step_id="$1" workdir="$2"; shift 2
   if (( CR_H_LOCAL )); then
@@ -738,6 +820,10 @@ cr_h_run_checks() {
       for f in $(cr_h_saves_for "$step_id"); do
         [[ -s "$workdir/saves/$f" ]] || { ok=0; detail="missing or empty save $f"; }
       done
+      # The agent refused. The missing file is not the reason Social should see.
+      if (( ! ok )) && [[ -n "${CR_H_AGENT_REFUSAL:-}" ]]; then
+        detail="$CR_H_AGENT_REFUSAL"
+      fi
     fi
     (( ok )) || failed=1
     json+="$(python3 -c 'import json,sys; print(json.dumps({"id": sys.argv[1], "passed": sys.argv[2]=="1", **({"detail": sys.argv[3]} if sys.argv[3] else {})}))' "$id" "$ok" "$detail"),"
@@ -1048,6 +1134,7 @@ o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alt
     for p in ${completed_saves[@]+"${completed_saves[@]}"}; do cp "$p" "$workdir/prior/" 2>/dev/null || true; done
 
     local run=0 checks_json="[]" passed=0 ask d waited
+    local CR_H_AGENT_REFUSAL=""
     # [M3-01b] Engine failover (D107/D109): each engine is tried at most once
     # per step; a usage-limit message moves the step to the next engine.
     local tried=" " limit_until next_engine log_from
@@ -1206,6 +1293,12 @@ PY
         continue
       fi
 
+      # final_checks only: a QA refusal is read from this run's log. Other
+      # steps keep the check text they already had.
+      CR_H_AGENT_REFUSAL=""
+      if [[ "$step_id" == "final_checks" ]]; then
+        CR_H_AGENT_REFUSAL="$(cr_h_agent_refusal "$log" "$log_from" "$workdir/prompt.md")" || return 1
+      fi
       # shellcheck disable=SC2086
       if checks_json="$(cr_h_run_checks "$step_id" "$workdir" $checks)"; then
         passed=1
@@ -1220,6 +1313,12 @@ PY
       # Retry count is unchanged: one failure still consumes one run.
       local this_note=""
       this_note="$(cr_h_failed_check_note "$checks_json")" || this_note=""
+      # The joined note cuts each message to 160 characters and would repeat
+      # it once per check. The refusal is the step reason: the finding, first
+      # 500 characters, already redacted by cr_h_agent_refusal.
+      if [[ -n "$CR_H_AGENT_REFUSAL" ]]; then
+        this_note="$CR_H_AGENT_REFUSAL"
+      fi
       if [[ -n "$this_note" ]]; then
         printf '%s' "$this_note" > "$order_dir/.cfw-check-fail-$step_id"
       fi

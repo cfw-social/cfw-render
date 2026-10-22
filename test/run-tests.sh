@@ -12909,6 +12909,214 @@ else
 fi
 rm -rf "$wi104_dir"
 
+echo "=== Case 76: WI2.82 — a final_checks refusal is the step reason, not a missing save ==="
+# Smoke 23b: the QA agent blocked delivery and wrote no saves. The step reason
+# was "missing or empty save captions.json" on every check. The reason is now
+# the agent's own finding, first 500 characters. The prompt's "DELIVERY BLOCKED"
+# line is not that finding. A missing save with no refusal still names the file.
+wi282_root="$(mktemp -d)"
+wi282_recipe="$wi282_root/recipe"
+python3 - "$wi282_root" "$wi282_recipe" <<'PY'
+import json, pathlib, sys
+root, recipe = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+steps = recipe / "steps"
+steps.mkdir(parents=True)
+(steps / "07-final-checks.md").write_text(
+    "DELIVERY BLOCKED — fix the render (rerun the failing step); do not deliver.\n"
+    "PROMPT-ONLY-WI282-SHOULD-NOT-APPEAR\n",
+    encoding="utf-8",
+)
+finding = (
+    "block: green background at 2/8/24/32 s; takeover text clipped at 16 s. "
+    "sk-wi282secretvalue0001. " + ("seen " * 200) + "WI282-TAIL-MARKER"
+)
+(root / "finding.txt").write_text(finding, encoding="utf-8")
+engine = """#!/bin/bash
+set -eu
+cat >/dev/null
+cat "${CFW_RENDER_ENGINE_PROMPT_FILE:?}"
+printf '%s\\n' 'tokens used' '1'
+printf '%s\\n' 'Delivery blocked WI282-EARLY this must not be the reason.'
+printf '%s\\n' 'tokens used' '21,140'
+printf '%s\\n' 'FINDING'
+""".replace("FINDING", finding.replace("'", "'\\''"))
+(root / "refuse-engine.sh").write_text(engine, encoding="utf-8")
+(root / "refuse-engine.sh").chmod(0o755)
+(root / "miss-engine.sh").write_text(
+    """#!/bin/bash
+set -eu
+cat >/dev/null
+cat "${CFW_RENDER_ENGINE_PROMPT_FILE:?}"
+printf '%s\\n' 'finished the step with no verdict'
+""",
+    encoding="utf-8",
+)
+(root / "miss-engine.sh").chmod(0o755)
+order = {
+    "id": "order-wi282",
+    "attempt": {"id": "att-wi282"},
+    "recipe": "wi282-check",
+    "kind": "video",
+    "taskOrder": {},
+    "inputs": {},
+    "manifest": {
+        "recipe": "wi282-check",
+        "recipeVersion": "1.0.0",
+        "steps": [{
+            "id": "final_checks",
+            "runsOn": "computer",
+            "when": "always",
+            "maxCheckRetries": 0,
+            "instructions": "steps/07-final-checks.md",
+            "saves": [
+                {"id": "final_video", "kind": "video"},
+                {"id": "cover", "kind": "image"},
+                {"id": "captions", "kind": "json"},
+            ],
+            "checks": [{"id": "qa_gate"}, {"id": "duration_window"}],
+        }],
+    },
+}
+for name in ("refuse", "miss"):
+    dest = root / name
+    dest.mkdir()
+    (dest / "order.json").write_text(json.dumps(order), encoding="utf-8")
+PY
+
+wi282_run() {
+  local root="$1" engine="$2"
+  (
+    export CFW_RENDER_LOG_DIR="$root/logs"
+    export CFW_RENDER_STATE_DIR="$root/state"
+    export CFW_RENDER_ENGINE=codex
+    export CFW_RENDER_ENGINE_CMD="$engine"
+    export CFW_WORKER_ID="w-wi282"
+    export CFW_ORDER_ID="order-wi282"
+    export CFW_API_BASE="http://127.0.0.1:9"
+    export CFW_RENDER_WORKER_KEY="cfw_render_wi282testkey0000"
+    export CFW_RENDER_HEARTBEAT_SEC=30
+    export CFW_RENDER_STEP_TIMEOUT_SEC=60
+    export WI282_REPORTS="$root/reports.ndjson"
+    unset CFW_RENDER_SKILLS_DIR
+    unset CFW_RENDER_LOCAL_CHECKPOINTS
+    mkdir -p "$root/logs" "$root/state"
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-lib.sh"
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-engine.sh"
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-harness.sh"
+    cr_harness_heartbeat_start() { :; }
+    cr_harness_heartbeat_stop() { :; }
+    cr_h_run_with_timeout() { shift; "$@"; }
+    cr_engine_limit_detect() { return 1; }
+    cr_h_upload_with_retry() { printf 'https://media.cfw.social/%s' "$(basename "$1")"; }
+    cr_report_step() {
+      python3 -c 'import json,sys
+open(sys.argv[1], "a").write(json.dumps({"event": sys.argv[2], "extra": json.loads(sys.argv[3])}) + "\n")' \
+        "$WI282_REPORTS" "$5" "$6" || return 1
+      printf '%s' '{"ok":true,"directive":"continue"}'
+    }
+    cr_harness_run "$root/order.json" "$root" "$wi282_recipe" >"$root/harness.out" 2>"$root/harness.err"
+    printf '%s\n' "$?" > "$root/rc"
+  )
+}
+wi282_run "$wi282_root/refuse" "$wi282_root/refuse-engine.sh"
+wi282_run "$wi282_root/miss" "$wi282_root/miss-engine.sh"
+wi282_detail="$(python3 - "$wi282_root" "$REPO_DIR/bin/cfw-render-redact.py" <<'PY'
+import json, pathlib, subprocess, sys
+root = pathlib.Path(sys.argv[1])
+redact_py = sys.argv[2]
+
+def load_events(name):
+    path = root / name / "reports.ndjson"
+    if not path.is_file():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+def one(name):
+    events = [e for e in load_events(name) if e.get("event") == "step_failed"]
+    if len(events) != 1:
+        return None
+    return events[0].get("extra") or {}
+
+def tail(path):
+    p = pathlib.Path(path)
+    if not p.is_file():
+        return ""
+    return p.read_text(encoding="utf-8", errors="replace")[-400:].replace("\n", " | ")
+
+finding = (root / "finding.txt").read_text(encoding="utf-8")
+proc = subprocess.run([sys.executable, redact_py], input=finding, text=True, capture_output=True, timeout=15)
+red = " ".join(proc.stdout.split())
+expect = red[:500]
+secret = "sk-wi282secretvalue0001"
+refuse_bad, miss_bad = [], []
+rc_r = (root / "refuse" / "rc").read_text(encoding="utf-8").strip() if (root / "refuse" / "rc").is_file() else ""
+rc_m = (root / "miss" / "rc").read_text(encoding="utf-8").strip() if (root / "miss" / "rc").is_file() else ""
+if proc.returncode != 0 or len(red) <= 500 or "WI282-TAIL-MARKER" not in red:
+    refuse_bad.append("fixture redacted length %d" % len(red))
+if rc_r != "30":
+    refuse_bad.append("rc=%s err=%s" % (rc_r, tail(root / "refuse" / "harness.err")))
+if rc_m != "30":
+    miss_bad.append("rc=%s err=%s" % (rc_m, tail(root / "miss" / "harness.err")))
+extra = one("refuse") or {}
+detail = extra.get("detail") or ""
+if detail != expect:
+    refuse_bad.append("detail=%r" % detail[:180])
+if secret in detail or "WI282-TAIL-MARKER" in detail or "WI282-EARLY" in detail:
+    refuse_bad.append("detail leaked tail, early verdict, or secret")
+if "PROMPT-ONLY-WI282-SHOULD-NOT-APPEAR" in detail or "missing or empty save" in detail:
+    refuse_bad.append("detail still has the prompt or the missing-save text")
+if "sk-[redacted]" not in detail or not detail.startswith("block: green background at 2/8/24/32 s; takeover text clipped at 16 s."):
+    refuse_bad.append("detail does not start with the agent finding")
+message = extra.get("message") or ""
+if message != (detail[:237] + "..." if len(detail) > 240 else detail):
+    refuse_bad.append("message=%r" % message[:80])
+checks = extra.get("checks") or []
+if [c.get("id") for c in checks] != ["qa_gate", "duration_window"] or any(c.get("detail") != detail or c.get("passed") for c in checks):
+    refuse_bad.append("checks=%r" % [(c.get("id"), (c.get("detail") or "")[:40]) for c in checks])
+names = [e.get("event") for e in load_events("refuse")]
+if names != ["step_started", "step_failed", "attempt_failed"]:
+    refuse_bad.append("events=%s" % names)
+attempt = [e for e in load_events("refuse") if e.get("event") == "attempt_failed"]
+if not attempt or (attempt[0].get("extra") or {}).get("detail") != detail:
+    refuse_bad.append("attempt detail differs")
+blob = ""
+for rel in ("refuse/reports.ndjson", "refuse/harness.err", "refuse/logs/cfw-render.log"):
+    p = root / rel
+    if p.is_file():
+        blob += p.read_text(encoding="utf-8", errors="replace")
+if secret in blob:
+    refuse_bad.append("secret reached a report or the worker log")
+miss = one("miss") or {}
+miss_detail = miss.get("detail") or ""
+want = "qa_gate: missing or empty save captions.json; duration_window: missing or empty save captions.json"
+if miss_detail != want:
+    miss_bad.append("detail=%r" % miss_detail[:300])
+miss_checks = miss.get("checks") or []
+if [c.get("detail") for c in miss_checks] != ["missing or empty save captions.json", "missing or empty save captions.json"]:
+    miss_bad.append("checks=%r" % miss_checks)
+if "PROMPT-ONLY-WI282-SHOULD-NOT-APPEAR" in miss_detail or "block:" in miss_detail:
+    miss_bad.append("missing-save path picked up the prompt or a refusal")
+print("REFUSE=" + ("ok" if not refuse_bad else "; ".join(refuse_bad)))
+print("MISS=" + ("ok" if not miss_bad else "; ".join(miss_bad)))
+PY
+)"
+wi282_refuse="$(printf '%s\n' "$wi282_detail" | sed -n 's/^REFUSE=//p' | tail -1)"
+wi282_miss="$(printf '%s\n' "$wi282_detail" | sed -n 's/^MISS=//p' | tail -1)"
+if [[ "$wi282_refuse" == "ok" ]]; then
+  pass "WI2.82 final_checks refusal is the step reason: the agent finding, first 500 characters"
+else
+  fail "WI2.82 refusal step reason" "$wi282_refuse"
+fi
+if [[ "$wi282_miss" == "ok" ]]; then
+  pass "WI2.82 missing save with no refusal still reports the missing file"
+else
+  fail "WI2.82 missing save without a refusal" "$wi282_miss"
+fi
+rm -rf "$wi282_root"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
