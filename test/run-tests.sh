@@ -12775,6 +12775,140 @@ else
 fi
 rm -rf "$wi102_root"
 
+echo "=== Case 75: WI2.104 — a killed cr_curl_with_key leaves no key header file ==="
+# On 03cf836 the header file was removed only after curl returned. TERM to
+# that shell mid-call skipped the rm, so cfw-render-hdr.* stayed in TMPDIR.
+# Here one call blocks on a server that never answers. TERM goes to the shell
+# that still owns the file (curl's parent, not curl): the old shell dies
+# before rm; the trapped subshell deletes the file and then the curl.
+wi104_dir="$(mktemp -d)"
+wi104_key="cfw_render_wi2104hdrsecret"
+wi104_port=""
+wi104_pid=""
+wi104_server=""
+wi104_result="not-run"
+python3 -c '
+import socket, sys, time
+path = sys.argv[1]
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", 0))
+s.listen(1)
+with open(path, "w") as fh:
+    fh.write(str(s.getsockname()[1]))
+s.settimeout(20)
+try:
+    conn, _ = s.accept()
+except OSError:
+    raise SystemExit(0)
+conn.settimeout(30)
+try:
+    while conn.recv(4096):
+        pass
+except OSError:
+    pass
+time.sleep(30)
+' "$wi104_dir/port" >"$wi104_dir/server.log" 2>&1 &
+wi104_server=$!
+for _ in $(seq 1 50); do
+  if [[ -s "$wi104_dir/port" ]]; then
+    wi104_port="$(cat "$wi104_dir/port")"
+    break
+  fi
+  sleep 0.1
+done
+if [[ "$wi104_port" =~ ^[0-9]+$ ]]; then
+  cat > "$wi104_dir/call.sh" <<EOF
+#!/usr/bin/env bash
+source "$REPO_DIR/bin/cfw-render-lib.sh"
+export CFW_RENDER_WORKER_KEY="$wi104_key"
+export TMPDIR="$wi104_dir"
+cr_curl_with_key -sS --max-time 25 "http://127.0.0.1:${wi104_port}/hang"
+EOF
+  chmod 600 "$wi104_dir/call.sh"
+  bash "$wi104_dir/call.sh" >"$wi104_dir/call.out" 2>"$wi104_dir/call.err" &
+  wi104_pid=$!
+  wi104_result="$(python3 - "$TEST_DIR/stop-owned-tree.py" "$wi104_pid" "$wi104_dir" 2>>"$wi104_dir/kill.err" <<'PY'
+import importlib.util, os, signal, sys, time, pathlib
+cleanup_path, root_s, tmp_s = sys.argv[1:]
+root = int(root_s)
+tmp = pathlib.Path(tmp_s)
+spec = importlib.util.spec_from_file_location("cleanup", cleanup_path)
+cleanup = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cleanup)
+
+def header_files():
+    return [p for p in tmp.glob("cfw-render-hdr.*") if p.is_file()]
+
+def descendants(table, pid):
+    found = set()
+    def walk(parent):
+        for child, (ppid, _ident) in table.items():
+            if ppid == parent and child not in found:
+                found.add(child)
+                walk(child)
+    walk(pid)
+    return found
+
+deadline = time.time() + 10
+parent = None
+reason = "no-header"
+while time.time() < deadline:
+    table = cleanup.processes()
+    if root not in table:
+        reason = "caller-exited"
+        break
+    if not header_files():
+        reason = "no-header"
+        time.sleep(0.05)
+        continue
+    desc = descendants(table, root)
+    argmax = cleanup._argmax()
+    needle = str(tmp)
+    found = False
+    for pid in desc:
+        args = cleanup._arguments(pid, argmax) or ""
+        if "cfw-render-hdr" in args and needle in args:
+            found = True
+            ppid = table[pid][0]
+            if ppid <= 1 or (ppid != root and ppid not in desc):
+                reason = "parent-outside-tree"
+                parent = None
+            else:
+                parent = ppid
+                reason = ""
+            break
+    if parent:
+        break
+    if not found:
+        reason = "no-curl"
+    time.sleep(0.05)
+
+if not parent:
+    print(reason)
+    raise SystemExit(0)
+
+os.kill(parent, signal.SIGTERM)
+deadline = time.time() + 5
+left = header_files()
+while left and time.time() < deadline:
+    time.sleep(0.05)
+    left = header_files()
+print("left=%d" % len(left) if left else "ok")
+PY
+)"
+else
+  wi104_result="no-port"
+fi
+if [[ -n "$wi104_pid" ]]; then stop_test_tree "$wi104_pid" || true; fi
+if [[ -n "$wi104_server" ]]; then stop_test_tree "$wi104_server" || true; fi
+if [[ "$wi104_result" == "ok" ]]; then
+  pass "WI2.104: killing cr_curl_with_key mid-call leaves no key header file in TMPDIR"
+else
+  fail "WI2.104 key header cleanup" "result=${wi104_result:-empty}"
+fi
+rm -rf "$wi104_dir"
+
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
 if (( FAILURES > 0 )); then
