@@ -676,19 +676,52 @@ cr_log() {
 # ---------------------------------------------------------------------------
 # cr_curl_with_key [curl args...]
 # Run curl with the render key in a header. The key is written to a mode-600
-# file and passed as -H @file, then the file is removed. curl's argv never
-# contains the key (WI2.102: process listings were showing the header value).
-# Stdin stays free, so a caller may still stream a body. Do not pass the key
-# as another argument.
+# file and passed as -H @file. curl's argv never contains the key (WI2.102:
+# process listings were showing the header value). Stdin stays free, so a
+# caller may still stream a body. Do not pass the key as another argument.
+#
+# The file is removed when this call ends, including when curl is killed or
+# this call receives TERM, INT or HUP (WI2.104). The trap lives in a subshell
+# so the caller's own traps stay in place. The subshell's exit status is
+# curl's.
 # ---------------------------------------------------------------------------
 cr_curl_with_key() {
-  local hdr rc
-  hdr="$(mktemp "${TMPDIR:-/tmp}/cfw-render-hdr.XXXXXX")" || return 1
-  chmod 600 "$hdr" || { rm -f "$hdr"; return 1; }
-  printf 'cfw-render-key: %s\n' "$CFW_RENDER_WORKER_KEY" > "$hdr" || { rm -f "$hdr"; return 1; }
-  curl -H "@$hdr" "$@"
+  local rc
+  (
+    set +m
+    hdr=""
+    curl_pid=""
+    # Installed before mktemp, so a signal during the call still removes the
+    # key file. EXIT covers a normal curl exit; INT/TERM/HUP cover a kill of
+    # this subshell while wait is blocked on curl.
+    _cr_drop_hdr() {
+      if [[ -n "$hdr" ]]; then
+        rm -f "$hdr"
+        hdr=""
+      fi
+      if [[ -n "$curl_pid" ]]; then
+        kill "$curl_pid" 2>/dev/null || true
+        curl_pid=""
+      fi
+    }
+    trap '_cr_drop_hdr' EXIT
+    trap '_cr_drop_hdr; exit 129' HUP
+    trap '_cr_drop_hdr; exit 130' INT
+    trap '_cr_drop_hdr; exit 143' TERM
+    hdr="$(mktemp "${TMPDIR:-/tmp}/cfw-render-hdr.XXXXXX")" || exit 1
+    chmod 600 "$hdr" || exit 1
+    printf 'cfw-render-key: %s\n' "$CFW_RENDER_WORKER_KEY" > "$hdr" || exit 1
+    curl -H "@$hdr" "$@" &
+    curl_pid=$!
+    if [[ -z "$curl_pid" ]]; then
+      exit 1
+    fi
+    wait "$curl_pid"
+    rc=$?
+    curl_pid=""
+    exit "$rc"
+  )
   rc=$?
-  rm -f "$hdr"
   return "$rc"
 }
 

@@ -12619,7 +12619,9 @@ echo "=== Case 74: WI2.102 — render key stays out of curl argv ==="
 # -H "cfw-render-key: $CFW_RENDER_WORKER_KEY", so this case fails there.
 wi102_root="$(mktemp -d)"
 wi102_key="cfw_render_wi2102argvsecret"
+wi102_brand_key="cfw_brand_wi2104mediasecret"
 wi102_port=$((MOCK_PORT_BASE + 1202))
+wi102_media_port=$((MOCK_PORT_BASE + 1203))
 mkdir -p "$wi102_root/mockstate" "$wi102_root/cr-state" "$wi102_root/cr-scratch" "$wi102_root/bin"
 order_fixture order-wi2102 brand-1 video > "$wi102_root/queue.json"
 wi102_real_curl="$(command -v curl)"
@@ -12663,12 +12665,66 @@ wi102_pid="$(start_mock "$wi102_root/queue.json" "$wi102_root/mockstate" "$wi102
     "$REPO_DIR/bin/cfw-render-upload.sh" "$wi102_root/clip.png" \
     > "$wi102_root/upload.out" 2> "$wi102_root/upload.err"
   printf '%s\n' "$?" > "$wi102_root/upload.rc"
+  # URL upload is one POST. The brand key must not appear in that curl's argv.
+  # On 03cf836 the call was -H "x-api-key: $CFW_BRAND_API_KEY", so this fails there.
+  python3 -c '
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", "0") or "0")
+        if n:
+            self.rfile.read(n)
+        path = self.path.split("?", 1)[0]
+        if path != "/api/v1/media/upload-media":
+            body = b"{\"error\":\"not found\"}"
+            code = 404
+        else:
+            body = b"{\"cdnUrl\":\"https://cdn.example/a.png\",\"mediaId\":\"m-wi2104\"}"
+            code = 200
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *a):
+        return
+ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+' "$wi102_media_port" > "$wi102_root/media-server.log" 2>&1 &
+  wi102_media_pid=$!
+  wi102_media_up=0
+  for _ in $(seq 1 50); do
+    if python3 -c 'import socket,sys
+s=socket.socket(); s.settimeout(0.2)
+try:
+    s.connect(("127.0.0.1", int(sys.argv[1])))
+except Exception:
+    raise SystemExit(1)
+finally:
+    s.close()' "$wi102_media_port"; then
+      wi102_media_up=1
+      break
+    fi
+    sleep 0.1
+  done
+  if [[ "$wi102_media_up" == "1" ]]; then
+    CFW_API_BASE="http://127.0.0.1:$wi102_media_port" \
+      CFW_BRAND_API_KEY="$wi102_brand_key" \
+      "$REPO_DIR/bin/cfw-render-media.sh" --kind image --filename a.png "https://cdn.example/in.png" \
+      > "$wi102_root/media.out" 2> "$wi102_root/media.err"
+    printf '%s\n' "$?" > "$wi102_root/media.rc"
+  else
+    printf '%s\n' "noup" > "$wi102_root/media.rc"
+  fi
+  kill "$wi102_media_pid" 2>/dev/null || true
+  wait "$wi102_media_pid" 2>/dev/null || true
 )
 kill "$wi102_pid" 2>/dev/null
 wait "$wi102_pid" 2>/dev/null || true
 wi102_dry_rc="$(cat "$wi102_root/dry.rc" 2>/dev/null || echo missing)"
 wi102_once_rc="$(cat "$wi102_root/once.rc" 2>/dev/null || echo missing)"
 wi102_up_rc="$(cat "$wi102_root/upload.rc" 2>/dev/null || echo missing)"
+wi102_media_rc="$(cat "$wi102_root/media.rc" 2>/dev/null || echo missing)"
 wi102_claims=0
 wi102_presign=0
 wi102_multi=0
@@ -12682,8 +12738,10 @@ fi
 wi102_hint() {
   python3 -c 'import pathlib,sys
 p=pathlib.Path(sys.argv[1])
-t=p.read_text(errors="replace")[-400:].replace(sys.argv[2], "<key>") if p.is_file() else "(no log)"
-print(t.replace("\n", " | "))' "$1" "$wi102_key"
+t=p.read_text(errors="replace")[-400:] if p.is_file() else "(no log)"
+for secret in sys.argv[2:]:
+    t=t.replace(secret, "<key>")
+print(t.replace("\n", " | "))' "$1" "$wi102_key" "$wi102_brand_key"
 }
 if [[ "$wi102_dry_rc" == "0" && "$wi102_once_rc" == "0" && "$wi102_claims" -ge 1 && "$wi102_presign" -ge 1 ]]; then
   pass "WI2.102: worker claim and presign upload reached the mock"
@@ -12699,18 +12757,21 @@ wi102_saw_claim=0
 wi102_saw_presign=0
 wi102_saw_multi=0
 wi102_saw_list=0
+wi102_saw_media=0
 wi102_leaked=0
 if [[ -f "$wi102_root/argv.log" ]]; then
   grep -F -q 'claim_render_order' "$wi102_root/argv.log" && wi102_saw_claim=1
   grep -F -q '/api/v1/render/upload-url' "$wi102_root/argv.log" && wi102_saw_presign=1
   grep -F -q -- '-F' "$wi102_root/argv.log" && wi102_saw_multi=1
   grep -F -q 'tools/list' "$wi102_root/argv.log" && wi102_saw_list=1
+  grep -F -q '/api/v1/media/upload-media' "$wi102_root/argv.log" && wi102_saw_media=1
   grep -F -q -- "$wi102_key" "$wi102_root/argv.log" && wi102_leaked=1
+  grep -F -q -- "$wi102_brand_key" "$wi102_root/argv.log" && wi102_leaked=1
 fi
-if [[ "$wi102_saw_claim" == "1" && "$wi102_saw_presign" == "1" && "$wi102_saw_multi" == "1" && "$wi102_saw_list" == "1" && "$wi102_leaked" == "0" ]]; then
-  pass "WI2.102: curl argv for the claim, both uploads and tools/list does not contain the render key"
+if [[ "$wi102_saw_claim" == "1" && "$wi102_saw_presign" == "1" && "$wi102_saw_multi" == "1" && "$wi102_saw_list" == "1" && "$wi102_saw_media" == "1" && "$wi102_media_rc" == "0" && "$wi102_leaked" == "0" ]]; then
+  pass "WI2.102: curl argv for the claim, both uploads, tools/list and the media upload does not contain the render key or the brand key"
 else
-  fail "WI2.102 curl argv" "claim=$wi102_saw_claim presign=$wi102_saw_presign multipart=$wi102_saw_multi list=$wi102_saw_list leaked=$wi102_leaked"
+  fail "WI2.102 curl argv" "claim=$wi102_saw_claim presign=$wi102_saw_presign multipart=$wi102_saw_multi list=$wi102_saw_list media=$wi102_saw_media media_rc=$wi102_media_rc leaked=$wi102_leaked media_log=$(wi102_hint "$wi102_root/media.err")"
 fi
 rm -rf "$wi102_root"
 

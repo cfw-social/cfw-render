@@ -58,9 +58,13 @@ mime_for() {
 kind_for_mime() { case "$1" in video/*) echo video;; image/*) echo image;; application/pdf) echo doc;; *) echo "";; esac; }
 
 api_post() { # <json-body> → response body on stdout; non-zero on HTTP failure
-  curl -fsS -X POST "${CFW_API_BASE%/}/api/v1/media/upload-media" \
-    -H "x-api-key: $CFW_BRAND_API_KEY" -H "content-type: application/json" \
-    --data-binary "$1"
+  # Brand key is a header read from stdin (-H @-), never a curl argv
+  # (WI2.104: process listings were showing x-api-key). The body is an
+  # argument, so stdin is free. Same pattern as install/from-app.sh.
+  printf 'x-api-key: %s\n' "$CFW_BRAND_API_KEY" \
+    | curl -fsS -X POST "${CFW_API_BASE%/}/api/v1/media/upload-media" \
+      -H @- -H "content-type: application/json" \
+      --data-binary "$1"
 }
 jbody() { # build a JSON body from key=value pairs (values are strings)
   python3 -c 'import json,sys; print(json.dumps({k:v for k,v in (a.split("=",1) for a in sys.argv[1:]) if v!=""}))' "$@"
