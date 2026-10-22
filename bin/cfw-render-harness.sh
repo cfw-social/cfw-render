@@ -513,6 +513,148 @@ with open(sys.argv[2], "w") as handle:
 PY
 }
 
+# Shared claim parser for staging and conditions. Social sends inputs as
+# [{inputId, items:[{kind,url}]}] and answers as [{inputId, text}]. Keep legacy
+# dict values unchanged (including their condition truthiness). Missing/null
+# collections are empty; malformed collections must not become a false condition.
+CR_H_CLAIM_PY='
+def claim_values(order, field):
+    raw = order.get(field)
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, list):
+        raise ValueError("invalid claim collection")
+    values = {}
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise ValueError("invalid claim entry")
+        key = entry.get("inputId")
+        if not isinstance(key, str) or not key:
+            raise ValueError("invalid claim inputId")
+        if field == "inputs":
+            items = entry.get("items")
+            if not isinstance(items, list):
+                raise ValueError("invalid claim items")
+            values.setdefault(key, []).extend(items)
+        else:
+            text = entry.get("text")
+            if not isinstance(text, str):
+                raise ValueError("invalid claim answer text")
+            values[key] = text
+    return values
+'
+
+# cr_h_condition <order-file> <kind> <arg> — print 0/1, or fail to evaluate.
+cr_h_condition() {
+  python3 -c "$CR_H_CLAIM_PY"'
+import json, sys
+try:
+    with open(sys.argv[1]) as source:
+        order = json.load(source)
+    if not isinstance(order, dict):
+        raise ValueError("invalid claim")
+    kind, arg = sys.argv[2:4]
+    if kind == "always":
+        matched = True
+    elif kind == "inputPresent":
+        matched = bool(claim_values(order, "inputs").get(arg))
+    elif kind == "alternative":
+        matched = claim_values(order, "answers").get("alternative") == arg
+    else:
+        raise ValueError("invalid condition kind")
+    print("1" if matched else "0")
+except (OSError, ValueError, TypeError):
+    print("harness: invalid condition data", file=sys.stderr)
+    sys.exit(1)
+' "$1" "$2" "$3"
+}
+
+# Brand API keys live only in the engine subshell. Never inherit recipe keys
+# from the worker, derive env names from claim data, or treat HeyGen OAuth in
+# taskOrder.credentials as an API key. The NUL stream ends with a success marker:
+# a failed/truncated parser cannot silently start an engine with partial keys.
+cr_h_export_step_keys() {
+  { set +x; } 2>/dev/null
+  local order_file="$1" step_id="$2" name value ready=0
+  unset HEYGEN_API_KEY ELEVENLABS_API_KEY KIE_AI_API_KEY GEMINI_API_KEY FAL_KEY REPLICATE_API_TOKEN || return 1
+  while IFS= read -r -d '' name && IFS= read -r -d '' value; do
+    case "$name" in
+      HEYGEN_API_KEY|ELEVENLABS_API_KEY|KIE_AI_API_KEY|GEMINI_API_KEY|FAL_KEY|REPLICATE_API_TOKEN)
+        (( ready == 0 )) && [[ -n "$value" ]] || return 1
+        export "$name=$value" || return 1 ;;
+      __CFW_KEYS_OK__)
+        (( ready == 0 )) && [[ -z "$value" ]] || return 1
+        ready=1 ;;
+      *) return 1 ;;
+    esac
+  done < <(python3 - "$order_file" "$step_id" <<'PY'
+import datetime, json, sys
+
+ENV = {"heygen": "HEYGEN_API_KEY", "elevenlabs": "ELEVENLABS_API_KEY",
+       "kie": "KIE_AI_API_KEY", "gemini": "GEMINI_API_KEY", "fal": "FAL_KEY",
+       "replicate": "REPLICATE_API_TOKEN"}
+try:
+    with open(sys.argv[1]) as source:
+        order = json.load(source)
+    if not isinstance(order, dict) or not isinstance(order.get("manifest"), dict):
+        raise ValueError("invalid claim")
+    steps = order["manifest"].get("steps")
+    if not isinstance(steps, list) or any(not isinstance(s, dict) for s in steps):
+        raise ValueError("invalid steps")
+    matches = [s for s in steps if s.get("id") == sys.argv[2]]
+    if len(matches) != 1:
+        raise ValueError("invalid step")
+    step = matches[0]
+    allowed = set(ENV)
+    if "uses" in step:
+        uses = step["uses"]
+        if not isinstance(uses, dict):
+            raise ValueError("invalid uses")
+        groups, optional = uses.get("providers", []), uses.get("optionalProviders", [])
+        if (not isinstance(groups, list) or not isinstance(optional, list)
+                or any(not isinstance(g, list) or not g for g in groups)):
+            raise ValueError("invalid provider groups")
+        providers = [p for group in groups for p in group] + optional
+        if any(not isinstance(p, str) or not p for p in providers):
+            raise ValueError("invalid provider name")
+        allowed = set(providers)
+    keys = order.get("providerKeys", [])
+    if not isinstance(keys, list):
+        raise ValueError("invalid provider keys")
+    delivered = {}
+    now = datetime.datetime.now(datetime.timezone.utc)
+    for key in keys:
+        if not isinstance(key, dict):
+            raise ValueError("invalid provider key")
+        provider, value = key.get("provider"), key.get("value")
+        if (not isinstance(provider, str) or provider not in ENV or provider in delivered
+                or not isinstance(value, str) or not value.strip() or "\x00" in value):
+            raise ValueError("invalid provider key")
+        if "expiresAt" in key:
+            expires = key["expiresAt"]
+            if not isinstance(expires, str):
+                raise ValueError("invalid key expiry")
+            expiry = datetime.datetime.fromisoformat(expires.replace("Z", "+00:00"))
+            if expiry.tzinfo is None or expiry <= now:
+                raise ValueError("expired provider key")
+        delivered[provider] = value
+    # Validate the entire claim before emitting any secret bytes.
+    output = bytearray()
+    for provider in sorted(delivered):
+        if provider in allowed:
+            output.extend(ENV[provider].encode() + b"\x00" + delivered[provider].encode() + b"\x00")
+    output.extend(b"__CFW_KEYS_OK__\x00\x00")
+except (OSError, ValueError, TypeError):
+    print("harness: invalid provider key claim", file=sys.stderr)
+    sys.exit(1)
+sys.stdout.buffer.write(output)
+PY
+)
+  [[ "$ready" == 1 ]]
+}
+
 # cr_h_stage_inputs <workdir> <order-file> — copy/download claim inputs.
 # A plain-text value (not an http(s) URL and not an existing path) is written
 # as UTF-8 to inputs/<name>/<name>.md. A JSON number or boolean is written
@@ -528,7 +670,7 @@ cr_h_stage_inputs() {
   cr_h_write_brief "$workdir" "$order_file" || return 1
   list="$(mktemp)"
   err="$(mktemp)"
-  python3 - "$workdir" "$order_file" >"$list" 2>"$err" <<'PY' || py_rc=$?
+  python3 -c "$CR_H_CLAIM_PY"'
 import json, os, sys
 workdir, order_path = sys.argv[1], sys.argv[2]
 order = json.load(open(order_path))
@@ -544,26 +686,7 @@ def write_text(key, text):
     with open(os.path.join(folder, str(key) + ".md"), "w", encoding="utf-8", newline="") as handle:
         handle.write(text)
 
-raw_inputs = order.get("inputs")
-if isinstance(raw_inputs, dict):
-    named_inputs = list(raw_inputs.items())
-elif isinstance(raw_inputs, list):
-    named_inputs = []
-    for entry in raw_inputs:
-        if not isinstance(entry, dict):
-            continue
-        key = entry.get("inputId")
-        if not isinstance(key, str) or key == "":
-            continue
-        if "items" not in entry:
-            continue
-        named_inputs.append((key, entry.get("items")))
-elif not raw_inputs:
-    named_inputs = []
-else:
-    named_inputs = raw_inputs.items()
-
-for key, value in named_inputs:
+for key, value in claim_values(order, "inputs").items():
     if name_refused(key):
         print(key, file=sys.stderr)
         refused = True
@@ -585,7 +708,7 @@ for key, value in named_inputs:
         print(f"{key}\x1f{raw}")
 if refused:
     raise SystemExit(2)
-PY
+' "$workdir" "$order_file" >"$list" 2>"$err" || py_rc=$?
   if (( py_rc == 2 )); then
     cr_log "harness: input name refused ($(tr '\n' ' ' < "$err"))"
     rm -f "$list" "$err"
@@ -1116,16 +1239,14 @@ for s in (o.get("manifest") or {}).get("steps", []):
       return 30
     fi
 
-    cond=1
-    case "$when_kind" in
-      inputPresent) cond="$(python3 -c '
-import json, sys
-o = json.load(open(sys.argv[1])); v = (o.get("inputs") or {}).get(sys.argv[2])
-print("1" if v else "0")' "$order_file" "$when_arg")" ;;
-      alternative) cond="$(python3 -c '
-import json, sys
-o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alternative") == sys.argv[2] else "0")' "$order_file" "$when_arg")" ;;
-    esac
+    rc=0
+    cond="$(cr_h_condition "$order_file" "$when_kind" "$when_arg")" || rc=$?
+    if (( rc != 0 )) || [[ "$cond" != "0" && "$cond" != "1" ]]; then
+      cr_log "harness: step $step_id condition evaluation failed"
+      cr_h_report step_failed "{\"stepId\":\"$step_id\",\"message\":\"Condition evaluation failed: invalid claim data\"}" || return $?
+      cr_h_report attempt_failed "{\"stepId\":\"$step_id\",\"message\":\"Condition evaluation failed: invalid claim data\"}" || return $?
+      return 30
+    fi
     if [[ "$cond" != "1" ]]; then
       if (( CR_H_LOCAL )); then cr_h_checkpoint skip "$step_id" >/dev/null || return 31; fi
       cr_h_report step_skipped "{\"stepId\":\"$step_id\",\"message\":\"condition not met\"}" || return $?
@@ -1172,9 +1293,17 @@ o = json.load(open(sys.argv[1])); print("1" if (o.get("answers") or {}).get("alt
       cr_h_build_prompt "$step_id" "$workdir" "$order_file"
       rc=0; log_from=0
       [[ -f "$log" ]] && log_from="$(wc -c < "$log" | tr -d ' ')"
-      CFW_STEP_SAVES="$saves" CFW_STEP_ID="$step_id" \
-        cr_h_run_with_timeout "$CFW_RENDER_STEP_TIMEOUT_SEC" cr_engine_run "$engine" "$workdir/prompt.md" "$workdir" "$log" \
-        || { rc=$?; cr_log "harness: step $step_id engine exited nonzero (run $run)"; }
+      (
+        cr_h_export_step_keys "$order_file" "$step_id" || exit 32
+        CFW_STEP_SAVES="$saves" CFW_STEP_ID="$step_id" \
+          cr_h_run_with_timeout "$CFW_RENDER_STEP_TIMEOUT_SEC" cr_engine_run "$engine" "$workdir/prompt.md" "$workdir" "$log"
+      ) || { rc=$?; cr_log "harness: step $step_id engine exited nonzero (run $run)"; }
+
+      if (( rc == 32 )); then
+        cr_h_report step_failed "{\"stepId\":\"$step_id\",\"message\":\"Invalid or expired provider key claim\"}" || return $?
+        cr_h_report attempt_failed "{\"stepId\":\"$step_id\",\"message\":\"Invalid or expired provider key claim\"}" || return $?
+        return 30
+      fi
 
       # Cancellation/supersession always wins over timeout/check retry policy.
       case "$rc" in

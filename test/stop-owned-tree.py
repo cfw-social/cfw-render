@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Stop only a recorded test child and its descendants, never command matches.
 
-Process facts come from macOS libproc and sysctl through ctypes, not from `ps`
-or any other setuid binary: the runner sandbox refuses those, and plain
-library calls read the same process table without them.
+Process facts come from macOS libproc/sysctl or Linux procfs, not from `ps`
+or any other setuid binary. Both backends retain parent and start-time identity
+checks; Linux support lets the full suite run inside an isolated container.
 """
 import ctypes
 import ctypes.util
 import os
+from pathlib import Path
 import signal
 import sys
 
@@ -59,18 +60,44 @@ def _load(names):
     raise OSError("no process library: " + ", ".join(names))
 
 
-_LIBPROC = _load(["/usr/lib/libproc.dylib", "libproc.dylib", "/usr/lib/libSystem.B.dylib"])
-_LIBC = _load([ctypes.util.find_library("c") or "libc.dylib", "/usr/lib/libSystem.B.dylib"])
+if sys.platform == "darwin":
+    _LIBPROC = _load(["/usr/lib/libproc.dylib", "libproc.dylib", "/usr/lib/libSystem.B.dylib"])
+    _LIBC = _load([ctypes.util.find_library("c") or "libc.dylib", "/usr/lib/libSystem.B.dylib"])
+    _LIBPROC.proc_listallpids.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    _LIBPROC.proc_listallpids.restype = ctypes.c_int
+    _LIBPROC.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+    _LIBPROC.proc_pidinfo.restype = ctypes.c_int
+    _LIBPROC.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    _LIBPROC.proc_pidpath.restype = ctypes.c_int
+    _LIBC.sysctl.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_uint, ctypes.c_void_p,
+                             ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
+    _LIBC.sysctl.restype = ctypes.c_int
+elif sys.platform != "linux":
+    raise OSError("unsupported test process backend: " + sys.platform)
 
-_LIBPROC.proc_listallpids.argtypes = [ctypes.c_void_p, ctypes.c_int]
-_LIBPROC.proc_listallpids.restype = ctypes.c_int
-_LIBPROC.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
-_LIBPROC.proc_pidinfo.restype = ctypes.c_int
-_LIBPROC.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
-_LIBPROC.proc_pidpath.restype = ctypes.c_int
-_LIBC.sysctl.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_uint, ctypes.c_void_p,
-                         ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
-_LIBC.sysctl.restype = ctypes.c_int
+
+def _linux_identity(raw):
+    # comm (field 2) may contain spaces and parentheses. Fields after its final
+    # ')' start with state (3); ppid is 4 and starttime is 22. Never read argv.
+    end = raw.rfind(")")
+    if end < 0:
+        raise ValueError("malformed proc stat")
+    fields = raw[end + 1:].split()
+    if len(fields) < 20:
+        raise ValueError("short proc stat")
+    return int(fields[1]), (int(fields[19]), 0)
+
+
+def _linux_processes():
+    table = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdecimal():
+            continue
+        try:
+            table[int(entry.name)] = _linux_identity((entry / "stat").read_text())
+        except (FileNotFoundError, ProcessLookupError):
+            continue  # exited between listing and lookup
+    return table
 
 
 def _all_pids():
@@ -98,6 +125,8 @@ def _bsdinfo(pid):
 def processes():
     # Do not collect command lines: unrelated processes can contain credentials.
     # Identity is (parent, start time): a reused pid never matches an old record.
+    if sys.platform == "linux":
+        return _linux_processes()
     table = {}
     for pid in _all_pids():
         info = _bsdinfo(pid)
@@ -142,6 +171,8 @@ def stop_owned_tree(pid, owner):
 
 
 def _argmax():
+    if sys.platform == "linux":
+        return os.sysconf("SC_ARG_MAX")
     mib = (ctypes.c_int * 2)(CTL_KERN, KERN_ARGMAX)
     value = ctypes.c_int(0)
     size = ctypes.c_size_t(ctypes.sizeof(value))
@@ -152,6 +183,12 @@ def _argmax():
 
 def _arguments(pid, argmax):
     """argv of one process as `ps -o args=` printed it, or None when unavailable."""
+    if sys.platform == "linux":
+        try:
+            raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            return None
+        return raw.rstrip(b"\0").replace(b"\0", b" ").decode("utf-8", "replace")
     mib = (ctypes.c_int * 3)(CTL_KERN, KERN_PROCARGS2, pid)
     buffer = ctypes.create_string_buffer(argmax)
     size = ctypes.c_size_t(argmax)
@@ -171,6 +208,11 @@ def _arguments(pid, argmax):
 
 
 def _path(pid):
+    if sys.platform == "linux":
+        try:
+            return os.readlink(f"/proc/{pid}/exe")
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            return None
     buffer = ctypes.create_string_buffer(4096)
     if _LIBPROC.proc_pidpath(pid, buffer, ctypes.sizeof(buffer)) <= 0:
         return None

@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+"""Local-only landing regressions. No render, model, network, or process cleanup.
+
+Run: python3 test/recipe-landing-regression.py
+Optional: --source-skills /path/to/ecosystem/harness/skills tests local upstream files.
+The old bundle pin predates upstream manifest.json; do not claim a full pinned sync.
+Default fixtures represent upstream inputs, not inversions of generated output.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+from types import ModuleType
+
+
+def load_sync(repo: Path) -> ModuleType:
+    spec = importlib.util.spec_from_file_location("sync_skills", repo / "scripts/sync-skills.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def snapshot(root: Path) -> dict[str, bytes]:
+    return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def put(root: Path, rel: str, text: str) -> None:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def command(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=30,
+                          env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "CTA_WINDOW": "work/cta-window.json"})
+
+
+def shell(text: str, cwd: Path) -> None:
+    result = command(["bash", "-eu", "-c", text], cwd)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def upstream_fixture(root: Path) -> None:
+    put(root, "p-carousel/LEARNINGS.md", """# Carousel learnings
+
+## Active Feedback (apply on every run)
+
+*None yet — add feedback below and it becomes part of this skill's behavior.*
+
+---
+
+## Feedback Log
+
+### 2026-05-08 — Initial template
+- Skill created. No feedback yet.
+""")
+    put(root, "p-carousel/manifest.json", json.dumps({
+        "recipe": "p-carousel", "recipeVersion": "2026.10.2",
+        "steps": [{"id": "render_slides", "saves": [
+            {"id": "cover", "kind": "image", "preview": True},
+            {"id": "slide_sheet", "kind": "image", "preview": True},
+            {"id": "slides", "kind": "json", "preview": False},
+            {"id": "qa_report", "kind": "json", "preview": False}]}]}))
+    put(root, "p-carousel/steps/03-render-slides.md", """# Render slides
+
+## You must produce
+
+- cover and sheet
+
+## How
+
+### 4. Write the saves
+
+Old save block.
+
+Keep `work/qa_report.json` up to date.
+""")
+    put(root, "p-carousel/steps/04-captions.md", "# Captions\n\n## You receive\n\n- slides\n")
+    put(root, "p-carousel/SKILL.md", "### Step 8 — Deliver ⛔ CHECKPOINT\n\nOld delivery.\n\n## Self-Improvement Feedback Loop\n")
+    # Minimal upstream P1/P2 section with the actual pre-WI2.64 anchors. No inverse transform.
+    pip = '''### 5. Kinetic captions + grade + SFX — `c-reel-premium`, EXACTLY ONCE, pip-safe
+
+`drawtext` is a defect.
+
+```bash
+python3 -c "import json; json.dump(json.load(open('prior/transcripts.json'))['words'], open('work/words.json','w'))"
+export PREMIUM_DIR REEL_IN=work/pre-premium.mp4 REEL_OUT=work/polished.mp4 WORDS_JSON=work/words.json
+# run P1 → P4 here; GSAP for the premium comp: cp "$GSAP" "$PW/comp/gsap.min.js" "$PW/comp/compositions/"
+python3 - <<'PY'
+import os
+assert os.path.getsize("work/polished.mp4") > 100_000, "premium output missing/empty — the pass did not run"
+PY
+```
+'''
+    for name in ("p-reels-pip", "p-reels-pip-heygen", "p-reels-pip-heygen/.hub/p-reels-pip"):
+        put(root, name + "/steps/05-composite.md", pip)
+
+
+def sequence(text: str) -> tuple[str, str]:
+    start = text.index("# P1 needs the FULL normalized transcript")
+    end = text.index("export PREMIUM_DIR", start)
+    init = text[start:end]
+    p1 = text.index('# 1) run P1 (plan) here')
+    words = text.index("python3 work/clamp_captions.py words", p1)
+    plan = text.index("python3 work/clamp_captions.py plan", words)
+    repair = text.index('if [ "$CAPTIONS" != off ]; then python3 work/caption_phrases.py "$PW/plan.json"', plan)
+    p2 = text.index("# 3) now run P2 → P4 only", repair)
+    check = text.index('python3 work/caption_phrases.py --check "$PW/plan.json"', p2)
+    assert start < end < p1 < words < plan < repair < p2 < check
+    assert "clamp_captions.py" not in init
+    assert "run P1" not in text[repair:]
+    return init, text[p1:p2]
+
+
+def generation(repo: Path, temp: Path, sync: ModuleType, source: Path | None) -> None:
+    root = temp / "source"
+    if source:
+        paths = {"p-carousel": ("LEARNINGS.md", "manifest.json", "SKILL.md", "steps/03-render-slides.md", "steps/04-captions.md"),
+                 "p-reels-pip": ("steps/05-composite.md",), "p-reels-pip-heygen": ("steps/05-composite.md",)}
+        for name, files in paths.items():
+            for rel in files:
+                put(root, f"{name}/{rel}", (source / name / rel).read_text(encoding="utf-8"))
+        put(root, "p-reels-pip-heygen/.hub/p-reels-pip/steps/05-composite.md",
+            (root / "p-reels-pip/steps/05-composite.md").read_text())
+    else:
+        upstream_fixture(root)
+    before = snapshot(root)
+    assert "WI2.45" not in before["p-carousel/LEARNINGS.md"].decode()
+    for _ in range(2):
+        sync.apply_p_carousel_contract(root / "p-carousel")
+        for name in ("p-reels-pip", "p-reels-pip-heygen"):
+            sync.apply_p_reels_pip_tail(root / name)
+            sync.apply_reel_caption_phrases(root / name, name)
+        once = snapshot(root)
+        if _ == 0:
+            first = once
+        else:
+            assert once == first, "generation is not byte-idempotent"
+    learned = (root / "p-carousel/LEARNINGS.md").read_text()
+    for content in (sync._P_CAROUSEL_FEEDBACK, sync._P_CAROUSEL_HISTORY, sync._P_CAROUSEL_LOG):
+        assert learned.count(content) == 1
+    assert "### 2026-05-08 — Initial template" in learned
+    assert "None yet" not in learned
+    if source:
+        assert learned == (repo / "skills/p-carousel/LEARNINGS.md").read_text(), "upstream feedback not reproduced"
+    # New upstream feedback must survive too.
+    learned = learned.replace("## Active Feedback (apply on every run)\n", "## Active Feedback (apply on every run)\n\n- Keep future feedback.\n")
+    put(root, "p-carousel/LEARNINGS.md", learned)
+    assert sync.apply_p_carousel_contract(root / "p-carousel") == 0
+    man = root / "p-carousel/manifest.json"
+    canonical = man.read_bytes()
+    data = json.loads(canonical)
+    assert data["recipeVersion"] == "2026.10.3"
+    saves = next(s["saves"] for s in data["steps"] if s["id"] == "render_slides")
+    assert [s["id"] for s in saves] == [f"slide_{i}" for i in range(1, 11)] + ["cover", "slide_sheet", "slides", "qa_report"]
+    man.write_text(json.dumps(data))
+    sync.apply_p_carousel_contract(root / "p-carousel")
+    assert man.read_bytes() == canonical, "already-contracted manifest not canonicalized"
+    for rel in ("p-reels-pip", "p-reels-pip-heygen", "p-reels-pip-heygen/.hub/p-reels-pip"):
+        sequence((root / rel / "steps/05-composite.md").read_text())
+    # Existing generated trees stay byte-identical, including the nested PIP copy.
+    for name in ("p-carousel", "p-reels-pip", "p-reels-pip-heygen"):
+        copied = temp / "shipped" / name
+        shutil.copytree(repo / "skills" / name, copied)
+        old = snapshot(copied)
+        if name == "p-carousel":
+            assert sync.apply_p_carousel_contract(copied) == 0
+        else:
+            assert sync.apply_p_reels_pip_tail(copied) == 0
+            assert sync.apply_reel_caption_phrases(copied, name) == 0
+        assert snapshot(copied) == old
+
+
+def clamp_cases(repo: Path, temp: Path) -> None:
+    premium = (repo / "skills/p-reels-pip/.hub/c-reel-premium/SKILL.md").read_text()
+    guard = premium.split('python3 - "$PW/plan.json" "$DUR" <<\'PY\'\n', 1)[1].split("\nPY\n", 1)[0]
+    assert 'assert abs(p["caption_groups"][-1]["end"]-dur) < 3.0' in guard
+    groups = [
+        {"start": 0.0, "end": 2.0, "style": 0, "words": [
+            {"w": w, "s": s, "e": e, "em": False} for w, s, e in
+            (("We", 0.0, 0.5), ("ship", 0.5, 1.0), ("now.", 1.0, 2.0))]},
+        {"start": 6.0, "end": 7.2, "style": 1, "words": [
+            {"w": w, "s": s, "e": e, "em": False} for w, s, e in
+            (("More", 6.0, 6.4), ("bright", 6.4, 6.8), ("ideas.", 6.8, 7.2))]},
+        {"start": 7.2, "end": 9.8, "style": 2, "words": [
+            {"w": w, "s": s, "e": e, "em": False} for w, s, e in
+            (("Join", 7.2, 8.0), ("our", 8.0, 9.0), ("team.", 9.0, 9.8))]},
+    ]
+    words = [{"text": w["w"], "start": w["s"], "end": w["e"]} for g in groups for w in g["words"]]
+    for rel in ("p-reels-pip", "p-reels-pip-heygen", "p-reels-pip-heygen/.hub/p-reels-pip"):
+        text = (repo / "skills" / rel / "steps/05-composite.md").read_text()
+        init, between = sequence(text)
+        for limit in (7.0, 0.0, None):  # default 3s CTA, CTA covers a short bed, card off
+            for caps in ("on", "off"):
+                wd = temp / "cases" / rel / f"{limit}-{caps}"
+                (wd / "work/premium").mkdir(parents=True)
+                (wd / "prior").mkdir()
+                for helper in ("clamp_captions.py", "caption_phrases.py"):
+                    body = text.split(f"cat > work/{helper} <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+                    put(wd, "work/" + helper, body + "\n")
+                put(wd, "work/cta-window.json", json.dumps({"cta_start": limit, "bed_dur": 10}))
+                put(wd, "prior/transcripts.json", json.dumps({"words": words}))
+                put(wd, "work/premium/plan.json", json.dumps({"caption_groups": groups, "sfx": [], "grade": "off"}))
+                shell(init, wd)
+                assert json.loads((wd / "work/words.json").read_text()) == words
+                result = command([sys.executable, "-c", guard, "work/premium/plan.json", "10"], wd)
+                assert result.returncode == 0, result.stderr  # actual premium P1 gate, no model call
+                shell(f"PW=work/premium; CAPTIONS={caps}\n" + between, wd)
+                after = json.loads((wd / "work/premium/plan.json").read_text())
+                kept = json.loads((wd / "work/words.json").read_text())
+                assert after["sfx"] == [] and after["grade"] == "off"
+                if limit is None:
+                    assert kept == words and after["caption_groups"] == groups
+                elif limit == 0:
+                    assert kept == [] and after["caption_groups"] == []
+                else:
+                    assert kept[-1]["end"] == limit
+                    assert after["caption_groups"][-1]["end"] == limit
+                    assert all(w["start"] < limit and w["end"] <= limit for w in kept)
+                    assert all(g["end"] <= limit and all(w["s"] < limit and w["e"] <= limit for w in g["words"])
+                               for g in after["caption_groups"])
+                    # This is the former failure: clipped cues cannot satisfy P1's strict <3s gap.
+                    rejected = command([sys.executable, "-c", guard, "work/premium/plan.json", "10"], wd)
+                    assert rejected.returncode != 0 and "captions do not cover the reel" in rejected.stderr
+                before = (wd / "work/premium/plan.json").read_bytes()
+                shell(f"PW=work/premium; CAPTIONS={caps}\n" + between, wd)
+                assert (wd / "work/premium/plan.json").read_bytes() == before
+                shell('python3 work/caption_phrases.py --check work/premium/plan.json', wd)
+                assert 'caption cue overlaps CTA window:' in text
+
+
+def rollups(repo: Path, temp: Path, sync: ModuleType) -> None:
+    index = json.loads((repo / "skills/index.json").read_text())
+    config = json.loads((repo / "config/skills-version.json").read_text())
+    expected = {}
+    for name, entry in sorted(index["recipes"].items()):
+        root = repo / "skills" / name
+        files = sync.list_files(root)
+        hashes = {f: sync.sha256_file(root / f) for f in files}
+        assert entry["files"] == files and entry["fileHashes"] == hashes, name
+        digest = "sha256:" + hashlib.sha256("\n".join(f"{f}={hashes[f]}" for f in files).encode()).hexdigest()
+        assert entry["checksum"] == digest, name
+        expected[name] = {"version": entry["version"], "checksum": digest, "fileCount": len(files)}
+    assert config["recipes"] == expected
+    assert config["recipeCount"] == len(expected)
+    aggregate = hashlib.sha256("\n".join(f"{n}={expected[n]['checksum']}" for n in sorted(expected)).encode()).hexdigest()
+    assert config["aggregateChecksum"] == "sha256:" + aggregate
+    copy = temp / "skills-version.json"
+    shutil.copyfile(repo / "config/skills-version.json", copy)
+    original = copy.read_bytes()
+    for _ in range(2):
+        result = command(["bash", str(repo / "scripts/gen-skills-manifest.sh"), "--skills-dir", str(repo / "skills"),
+                          "--manifest", str(copy), "--bundled-at", config["bundledAt"]], repo)
+        assert result.returncode == 0, result.stderr
+        assert copy.read_bytes() == original, "config generator not byte-idempotent"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source-skills", type=Path)
+    args = parser.parse_args()
+    repo = Path(__file__).resolve().parents[1]
+    sys.dont_write_bytecode = True
+    sync = load_sync(repo)
+    with tempfile.TemporaryDirectory(prefix="recipe-landing-") as directory:
+        temp = Path(directory)
+        generation(repo, temp, sync, args.source_skills)
+        clamp_cases(repo, temp)
+        rollups(repo, temp, sync)
+    print("PASS: generation/history/canonical bytes; 18 P1/clamp cases; complete bundle/config rollups")
+
+
+if __name__ == "__main__":
+    main()

@@ -113,7 +113,11 @@
       "label": "Outline the slides",
       "weight": 15,
       "runsOn": "computer",
-      "uses": { "tools": ["python3"] },
+      "uses": {
+        "tools": [
+          "python3"
+        ]
+      },
       "when": "always",
       "instructions": "steps/01-outline.md",
       "saves": [
@@ -139,7 +143,11 @@
       "label": "Write copy and author the HTML",
       "weight": 25,
       "runsOn": "computer",
-      "uses": { "tools": ["python3"] },
+      "uses": {
+        "tools": [
+          "python3"
+        ]
+      },
       "when": "always",
       "instructions": "steps/02-author-slides.md",
       "saves": [
@@ -171,20 +179,68 @@
       "label": "Render and vision-check every slide",
       "weight": 40,
       "runsOn": "computer",
-      "uses": { "tools": ["ffmpeg", "imagemagick", "node>=22", "npx", "chromium"] },
+      "uses": {
+        "tools": [
+          "ffmpeg",
+          "imagemagick",
+          "node>=22",
+          "npx",
+          "chromium"
+        ]
+      },
       "when": "always",
       "instructions": "steps/03-render-slides.md",
       "saves": [
-        { "id": "slide_1", "kind": "image", "preview": false },
-        { "id": "slide_2", "kind": "image", "preview": false },
-        { "id": "slide_3", "kind": "image", "preview": false },
-        { "id": "slide_4", "kind": "image", "preview": false },
-        { "id": "slide_5", "kind": "image", "preview": false },
-        { "id": "slide_6", "kind": "image", "preview": false },
-        { "id": "slide_7", "kind": "image", "preview": false },
-        { "id": "slide_8", "kind": "image", "preview": false },
-        { "id": "slide_9", "kind": "image", "preview": false },
-        { "id": "slide_10", "kind": "image", "preview": false },
+        {
+          "id": "slide_1",
+          "kind": "image",
+          "preview": false
+        },
+        {
+          "id": "slide_2",
+          "kind": "image",
+          "preview": false
+        },
+        {
+          "id": "slide_3",
+          "kind": "image",
+          "preview": false
+        },
+        {
+          "id": "slide_4",
+          "kind": "image",
+          "preview": false
+        },
+        {
+          "id": "slide_5",
+          "kind": "image",
+          "preview": false
+        },
+        {
+          "id": "slide_6",
+          "kind": "image",
+          "preview": false
+        },
+        {
+          "id": "slide_7",
+          "kind": "image",
+          "preview": false
+        },
+        {
+          "id": "slide_8",
+          "kind": "image",
+          "preview": false
+        },
+        {
+          "id": "slide_9",
+          "kind": "image",
+          "preview": false
+        },
+        {
+          "id": "slide_10",
+          "kind": "image",
+          "preview": false
+        },
         {
           "id": "cover",
           "kind": "image",
@@ -227,7 +283,11 @@
       "label": "Write the post captions",
       "weight": 20,
       "runsOn": "computer",
-      "uses": { "tools": ["python3"] },
+      "uses": {
+        "tools": [
+          "python3"
+        ]
+      },
       "when": "always",
       "instructions": "steps/04-captions.md",
       "saves": [

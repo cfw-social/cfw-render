@@ -458,7 +458,7 @@
     },
     "p-carousel": {
       "version": "2026.10.3",
-      "checksum": "sha256:78da51ec04428a615d555cbf7cf1bff3809c49a241b4fdf994cd386e02d67782",
+      "checksum": "sha256:b62b55001ddc6f50212edc11efab0d481eef2fdc3654dcd6fe7511ce07bf1fdb",
       "files": [
         ".hub/c-eval-runner/LEARNINGS.md",
         ".hub/c-eval-runner/SKILL.md",
@@ -504,7 +504,7 @@
         "brand-overrides/b-vasanth/template.html": "sha256:4cb9717b6d45dc9807eb0590fb5d0f58fa8f02e85db1e375ec860be0f6a3e7cd",
         "brand-overrides/vasanth-sek8tv/brand.json": "sha256:9d4b9b46dd91643860ebe9498d2b656f153a31c82d9a97cd0674e8f878e762d5",
         "examples.json": "sha256:6cbd143eaaa63653c29764993611f3633a35eb24faa3ee6c09bb0a6e6f0cf96d",
-        "manifest.json": "sha256:4f8be1268d389a32accef3183b0252ac1fcf7d712bf6e0818a8e2942d58e1dd2",
+        "manifest.json": "sha256:7bb431f8f7f2014f75ac02fa259db7ab3cb2d6be3ec98e1ae204440f22a7322e",
         "render.mjs": "sha256:645aa08fbf408121b262e30b22df4992712165947f52168b1235c3723351fbcf",
         "steps/01-outline.md": "sha256:745c407c5abeecd019a1b5ee2b11edb4306ce3d029042472d6740a592678a442",
         "steps/02-author-slides.md": "sha256:92c62ae87a2b59453f1411781065d691633847a392a660c97189e9f2435486eb",
@@ -1023,7 +1023,7 @@
     },
     "p-reels-pip": {
       "version": "1.0.0",
-      "checksum": "sha256:9e7e8d2dd70dfa9e8d4794b9972e650bfe34e039c7c0237a14460aa88162e62a",
+      "checksum": "sha256:633b37d2a70bd3c15804893c41c0634e6da539267c1fb224fef421d25ff5e460",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1233,7 +1233,7 @@
         "steps/02-transcribe.md": "sha256:58423227fe90125cb2281d0be57a50c68873b77a6d5b9373b67c705abe9d0d22",
         "steps/03-plan-beats.md": "sha256:f66a79cffd9ec11461a2f7bedf665d2abd72117d6d8dd73dafcc6b0ecf051d27",
         "steps/04-build-background.md": "sha256:7b0226808e436cc2a05cbf6dd5f3056f7e0084fea8ca1f0ee87008d7c0b8b473",
-        "steps/05-composite.md": "sha256:263b25589857f4385e5e3e95ba23d47bae2b4d968d0bc3153928c2c9d1d433eb",
+        "steps/05-composite.md": "sha256:f0f031ca8411fd23f661e5fef4010a4248ef2bca91ecc2be12d39a5ed47d4eb5",
         "steps/06-final-checks.md": "sha256:44589f5c49356e53f0b7ced0656bf794695a0917c2755bedcd0a9a609cbf2346",
         "steps/_shared.md": "sha256:0d2cafc6bfcc51ec80194d2d1c30144c166c8bcad3223832a043aa209d5f6a20",
         "templates/motion-card.html": "sha256:81f0a62270ed98a5d5e75e26b715562c24d681fb72406cbdf75ffb4c9c44bd60"
@@ -2021,7 +2021,7 @@
     },
     "p-reels-pip-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:c093ab26bd441b2d445219f97503f2068be9f7516ec4b99fbb9b72032e479261",
+      "checksum": "sha256:7a6512e31c60baba5afb25b599115296cb0c5851ef8126d301ffd0829de5adb2",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -2247,7 +2247,7 @@
         ".hub/p-reels-pip/steps/02-transcribe.md": "sha256:c9d356feedd28e033e4268fb1f3bdeea184d3fa01c5bcfa24c00d5f058ccf0ff",
         ".hub/p-reels-pip/steps/03-plan-beats.md": "sha256:f66a79cffd9ec11461a2f7bedf665d2abd72117d6d8dd73dafcc6b0ecf051d27",
         ".hub/p-reels-pip/steps/04-build-background.md": "sha256:7b0226808e436cc2a05cbf6dd5f3056f7e0084fea8ca1f0ee87008d7c0b8b473",
-        ".hub/p-reels-pip/steps/05-composite.md": "sha256:ff6d3d1e0e2e903446264955c9f40fdde3f3db2033d30ce4bea5ae2ab37dbabe",
+        ".hub/p-reels-pip/steps/05-composite.md": "sha256:3c2ca8a987ea9c6a27037707b8eb562931114bfcd235c5361e1e7c13a7eea1ff",
         ".hub/p-reels-pip/steps/06-final-checks.md": "sha256:44589f5c49356e53f0b7ced0656bf794695a0917c2755bedcd0a9a609cbf2346",
         ".hub/p-reels-pip/steps/_shared.md": "sha256:b4d99efa23ad4da66eb8da17358bc8408975583041b363167031d6b7090a2340",
         ".hub/p-reels-pip/templates/motion-card.html": "sha256:81f0a62270ed98a5d5e75e26b715562c24d681fb72406cbdf75ffb4c9c44bd60",
@@ -2258,7 +2258,7 @@
         "steps/02-transcribe.md": "sha256:58423227fe90125cb2281d0be57a50c68873b77a6d5b9373b67c705abe9d0d22",
         "steps/03-plan-beats.md": "sha256:f66a79cffd9ec11461a2f7bedf665d2abd72117d6d8dd73dafcc6b0ecf051d27",
         "steps/04-build-background.md": "sha256:7b0226808e436cc2a05cbf6dd5f3056f7e0084fea8ca1f0ee87008d7c0b8b473",
-        "steps/05-composite.md": "sha256:263b25589857f4385e5e3e95ba23d47bae2b4d968d0bc3153928c2c9d1d433eb",
+        "steps/05-composite.md": "sha256:f0f031ca8411fd23f661e5fef4010a4248ef2bca91ecc2be12d39a5ed47d4eb5",
         "steps/06-final-checks.md": "sha256:44589f5c49356e53f0b7ced0656bf794695a0917c2755bedcd0a9a609cbf2346",
         "steps/_shared.md": "sha256:161059454b3fea0ffe65c126407892e14b026a415c86f9e7b2b54afdb723207e"
       },

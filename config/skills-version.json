@@ -5,7 +5,7 @@
   "sourceRelease": null,
   "sourceSha": "8ab5d1fcdeacc6f8e6ec62e726d0a6ac65e8eea4",
   "recipeCount": 14,
-  "aggregateChecksum": "sha256:92113a8b4c65fc8a32de48cbec49f1226939aad50aa4dbe3c7606c115fc73a4b",
+  "aggregateChecksum": "sha256:90873a6b3e320f6213bd6ebf114c688ace4c37f189b655023b9a50c04afc72f5",
   "bundledAt": "2026-10-15T21:24:13Z",
   "bundleMethod": "scripts/sync-skills.sh (direct copy from private source repo; git-subtree retired)",
   "updateCommand": "CFW_SKILLS_SRC=<path-to-private-skills-repo> scripts/sync-skills.sh",
@@ -27,7 +27,7 @@
     },
     "p-carousel": {
       "version": "2026.10.3",
-      "checksum": "sha256:78da51ec04428a615d555cbf7cf1bff3809c49a241b4fdf994cd386e02d67782",
+      "checksum": "sha256:b62b55001ddc6f50212edc11efab0d481eef2fdc3654dcd6fe7511ce07bf1fdb",
       "fileCount": 25
     },
     "p-clone-reel": {
@@ -42,42 +42,42 @@
     },
     "p-longform": {
       "version": "1.0.0",
-      "checksum": "sha256:ff0b976b7ae667c443d5b8de53f0cdb29100c3bd33e5c35243250835b92e556a",
+      "checksum": "sha256:80b2eba5279868d10f6e19a91cee27048fc6d7f9f06f5e7832dcd21e5d15d57c",
       "fileCount": 158
     },
     "p-reels-faceless": {
       "version": "1.0.0",
-      "checksum": "sha256:04ed49760ef9d7d64be86c7c6ec2732750c72557c839796de79d4212161f946e",
+      "checksum": "sha256:b363a0cfdbeccb0d0a8e087b5bc45e4578a0d9908027556ee51717cd2f481110",
       "fileCount": 112
     },
     "p-reels-pip": {
       "version": "1.0.0",
-      "checksum": "sha256:05a5108ebe9cb55a25fe308a3941a9227ccd1adca1ab3fd150653d5f3a56f753",
+      "checksum": "sha256:633b37d2a70bd3c15804893c41c0634e6da539267c1fb224fef421d25ff5e460",
       "fileCount": 105
     },
     "p-reels-pip-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:d1bc1fb05dca8ff584caad704e51e080fc27b72c8af57a271146644b29c10b91",
+      "checksum": "sha256:7a6512e31c60baba5afb25b599115296cb0c5851ef8126d301ffd0829de5adb2",
       "fileCount": 118
     },
     "p-reels-split": {
       "version": "1.0.0",
-      "checksum": "sha256:5cdb285bcc24907b499e37845cdf44d1ed897db8e3b439e10a0a4c0baf71c29d",
+      "checksum": "sha256:ebb914fe8868c7e479b824e49274531c45ae343f257cf99ba3c54a95bfc03e89",
       "fileCount": 112
     },
     "p-reels-split-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:fe44f4278e833f239643a686c4497a3e56e81d6ca4a742e352a5504fb643c929",
+      "checksum": "sha256:e2d5679f2c6616ead86ba6bf85a658099ba17c21b5cc7137f0c658507aa8020a",
       "fileCount": 128
     },
     "p-reels-spotlight": {
       "version": "1.0.0",
-      "checksum": "sha256:26c642fcfc40f5d3801a8e0c0538d9f71e652f20b21ca8bc30c0cbe6af8386fc",
+      "checksum": "sha256:1d15f687d9ae3f1185272916156f56f67a812acdf1a2ac60a6fd11bd9500bd55",
       "fileCount": 122
     },
     "p-reels-spotlight-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:5038e321bcd4575daaf74a1b4a13ba0b6d8b95dc95b70001f3364feda3ce27bd",
+      "checksum": "sha256:190fe5c4740b8f0743b91e548943994110d036954ec3e0203a63cb040dcdf1f1",
       "fileCount": 136
     }
   }

@@ -27,11 +27,40 @@ stop_test_tree() {
   # SIGKILL is the expected fixture shutdown, not a failed assertion.
   if wait "$1" 2>/dev/null; then :; fi
 }
+landing_regressions_case() {
+  python3 "$TEST_DIR/harness-conditions.py" &&
+    python3 "$TEST_DIR/provider-keys.py" &&
+    python3 "$TEST_DIR/recipe-landing-regression.py"
+}
+if [[ "${1:-}" == --landing-regressions ]]; then
+  landing_regressions_case
+  exit $?
+fi
+if [[ -z "${1:-}" ]]; then
+  if landing_regressions_case; then pass "landing regressions"; else fail "landing regressions" "regression failed"; fi
+fi
+
 process_cleanup_case() {
   python3 - "$TEST_DIR" <<'PY'
 import importlib.util, os, pathlib, subprocess, sys, tempfile, time
 spec = importlib.util.spec_from_file_location('cleanup', pathlib.Path(sys.argv[1])/'stop-owned-tree.py')
 cleanup = importlib.util.module_from_spec(spec); spec.loader.exec_module(cleanup)
+# Linux procfs parsing must retain identity even when comm includes spaces or
+# parentheses. A PID reused after the first lookup must never receive a signal.
+from unittest.mock import patch
+stat = '123 (fixture ) with spaces) S 42 ' + '0 ' * 17 + '9876 0'
+assert cleanup._linux_identity(stat) == (42, (9876, 0))
+for malformed in ('', '123 fixture', '123 (fixture) S 42'):
+    try:
+        cleanup._linux_identity(malformed)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('accepted malformed proc identity')
+with patch.object(cleanup, 'processes', side_effect=[{123: (42, (1, 0))}, {123: (42, (2, 0))}]), \
+     patch.object(cleanup.os, 'kill') as send_signal:
+    cleanup.stop_owned_tree(123, 42)
+    send_signal.assert_not_called()
 with tempfile.TemporaryDirectory() as tmp:
     marker = pathlib.Path(tmp)/'child'
     unrelated = subprocess.Popen(['sleep', '30'])
@@ -3216,6 +3245,55 @@ if grep -q '^RC=1$' <<< "$c16d_nojs" && grep -q 'FAIL — 4 of 5' <<< "$c16d_noj
   pass "validate-manifests.py: without jsonschema, hand-written checks still fail exactly the 4 bad fixtures"
 else
   fail "validate-manifests.py: no-jsonschema mode" "expected RC=1 and 'FAIL — 4 of 5' in: $c16d_nojs"
+fi
+
+echo "=== Case 16e: validate-manifests.py — per-stage uses (providers, optional providers, tools) ==="
+# Each stage says which provider keys it needs (groups: any ONE of a group is enough),
+# which it uses only when present, and which local tools it runs. The validator ties
+# them to needs.* so a recipe can't ask for a key no stage uses, or a stage run a tool
+# the computer was never checked for.
+c16e_ok="$(python3 "$c16_validator" "$c16_fixtures/uses-ok/manifest.json" 2>&1)"
+c16e_ok_rc=$?
+if [[ "$c16e_ok_rc" == "0" ]]; then
+  pass "validate-manifests.py: uses with an any-one-of group + an optional provider is valid"
+else
+  fail "validate-manifests.py: uses-ok" "expected exit 0, got $c16e_ok_rc: $c16e_ok"
+fi
+c16e_check() {
+  # c16e_check <fixture> <expected error substring> <description>
+  local out rc
+  out="$(python3 "$c16_validator" "$c16_fixtures/$1/manifest.json" 2>&1)"
+  rc=$?
+  if [[ "$rc" == "1" ]] && grep -qF "$2" <<< "$out"; then
+    pass "validate-manifests.py: $3"
+  else
+    fail "validate-manifests.py: $1" "expected exit 1 + '$2', got rc=$rc: $out"
+  fi
+}
+c16e_check bad-uses-unknown-tool "steps[prepare].uses.tools: 'yt-dlp' is not listed in needs.tools" \
+  "a stage tool missing from needs.tools is refused, naming the stage and tool"
+c16e_check bad-uses-orphan-provider "needs.providers: 'kie' is not required by any stage" \
+  "a provider key no stage requires is refused (optional keys never go in needs.providers)"
+c16e_check bad-uses-half-annotated "steps[finish].uses: required once any computer step declares uses" \
+  "a half-annotated recipe is refused, naming the stage without uses"
+c16e_check bad-uses-required-and-optional "steps[prepare].uses.optionalProviders: 'heygen' is also required by this stage" \
+  "a provider both required and optional on one stage is refused"
+c16e_nojs="$(python3 - "$c16_validator" "$c16_fixtures" <<'PY' 2>&1
+import runpy, sys
+validator, fixtures = sys.argv[1], sys.argv[2]
+sys.modules["jsonschema"] = None
+bad = ["bad-uses-unknown-tool", "bad-uses-orphan-provider", "bad-uses-half-annotated", "bad-uses-required-and-optional"]
+sys.argv = [validator] + [f"{fixtures}/{b}/manifest.json" for b in bad] + [f"{fixtures}/uses-ok/manifest.json"]
+try:
+    runpy.run_path(validator, run_name="__main__")
+except SystemExit as e:
+    print(f"RC={e.code}")
+PY
+)"
+if grep -q '^RC=1$' <<< "$c16e_nojs" && grep -q 'FAIL — 4 of 5' <<< "$c16e_nojs"; then
+  pass "validate-manifests.py: without jsonschema, the uses rules fail exactly the 4 bad fixtures"
+else
+  fail "validate-manifests.py: uses no-jsonschema mode" "expected RC=1 and 'FAIL — 4 of 5' in: $c16e_nojs"
 fi
 
 echo "=== Case 18: step harness mock — capability-gated claim, report_render_step, control files (M1-08 b) ==="
@@ -8229,10 +8307,10 @@ try:
         add("WI2.64 pip and heygen composite match")
     hub = repo / "skills/p-reels-pip-heygen/.hub/p-reels-pip/steps/05-composite.md"
     hub_hash = sha256_file(hub)
-    if hub_hash != "sha256:ff6d3d1e0e2e903446264955c9f40fdde3f3db2033d30ce4bea5ae2ab37dbabe":
-        add("WI2.64 heygen hub composite left for sync", hub_hash)
+    if hub_hash != "sha256:3c2ca8a987ea9c6a27037707b8eb562931114bfcd235c5361e1e7c13a7eea1ff":
+        add("WI2.64 heygen hub composite matches generated contract", hub_hash)
     else:
-        add("WI2.64 heygen hub composite left for sync")
+        add("WI2.64 heygen hub composite matches generated contract")
     if "itsoffset \"$CTA_START\"" in pip_md:
         add("WI2.64 bundled composite drops itsoffset", "itsoffset still present")
     else:

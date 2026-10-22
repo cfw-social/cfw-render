@@ -482,10 +482,94 @@ captions file. Standalone:
 """
 
 
+# Render-owned feedback is a transform, not a hand edit to the generated bundle.
+# Keep upstream feedback and log entries; add these sections once on every sync.
+_P_CAROUSEL_FEEDBACK = """- **[ACTIVE] WI2.45 — ordered slides are the deliverables, never cover/sheet.** After
+  `render_slides`, write `saves/slide_1.png`…`saves/slide_N.png` (N = outline count) plus
+  pad `saves/slide_{N+1}.png`…`saves/slide_10.png` as copies of the last real slide so the
+  manifest's fixed `slide_1`…`slide_10` saves all exist for harness upload/resume. Write
+  `saves/slides.json` with `count` = N only (real slides). `cover.png` and `slide_sheet.png`
+  are previews only — never deliver them. The worker selects `slide_1`…`slide_N` from
+  `slides.json` for `complete_render_order`.
+"""
+_P_CAROUSEL_HISTORY = """## Upstream source port (WI2.45 / WI2.45 review rework)
+
+`scripts/sync-skills.py` rewrites `skills/` from the private source skills repo (`--src`,
+outside this repository). Bundled hand-edits are overwritten on the next sync. **Mechanism
+(WI2.45 review):** `apply_p_carousel_contract()` in `scripts/sync-skills.py` re-applies the
+contract below after every `p-carousel` copy (same pattern as the Playwright work-folder
+loader rewrite). LEARNINGS keeps the contract text as history; sync-skills is what keeps it.
+
+### `manifest.json` (render_slides.saves + recipeVersion)
+
+- `recipeVersion`: `2026.10.3` (bumped from `2026.10.2` when slide saves landed).
+- `render_slides.saves` must declare, in order:
+  - `slide_1` … `slide_10` (`kind: image`, `preview: false`) — max matches `num_slides` choices
+  - `cover` (`kind: image`, `preview: true`)
+  - `slide_sheet` (`kind: image`, `preview: true`)
+  - `slides` (`kind: json`, `preview: false`)
+  - `qa_report` (`kind: json`, `preview: false`)
+
+### `steps/03-render-slides.md` — required wording
+
+- You must produce `saves/slide_1.png` … `saves/slide_N.png` as the carousel deliverables
+  (N = `slides.json.count`).
+- Pad `saves/slide_{N+1}.png` … `saves/slide_10.png` as copies of the last real slide so
+  every declared manifest save exists for upload/resume; delivery still uses only
+  `slides.json.count`.
+- `cover.png` / `slide_sheet.png` are **preview only**; not deliverables.
+- Save-writing Python must copy real slides, pad to 10, write `slides.json` with
+  `count: len(real)`, then write cover + qa_report + contact sheet.
+
+### `SKILL.md` — Step 8 Deliver
+
+Must say: deliver individual slide PNGs in slide order (`slide_1.png` … `slide_N.png`);
+never send `cover.png` or `slide_sheet.png` as a deliverable; managed runs select
+`steps/render_slides/saves/slide_N.png` from `slides.json`.
+
+### `steps/04-captions.md` — Delivery boundary
+
+Must say: the worker delivers ordered `saves/slide_1.png` … `saves/slide_N.png` from
+`render_slides` (via `prior/slides.json` order) plus captions; do not select `cover.png` or
+`slide_sheet.png`.
+
+---
+
+"""
+_P_CAROUSEL_LOG = """### 2026-10-20 — WI2.45 resume + sync survival (review rework)
+- Manifest declares `slide_1`…`slide_10` so per-slide PNGs are checked, uploaded and
+  restored on resume. Recipe pads unused slots; selector still uses `slides.json.count`.
+- `scripts/sync-skills.py` `apply_p_carousel_contract()` re-applies those saves and the
+  render/captions delivery wording after every sync copy, so the contract survives.
+
+"""
+
+
 def apply_p_carousel_contract(directory: Path) -> int:
     """Re-apply the p-carousel WI2.43/WI2.45 contract onto a just-copied recipe
     tree. Idempotent. Returns the number of files changed."""
     changed = 0
+
+    learnings = directory / "LEARNINGS.md"
+    if learnings.is_file():
+        text = learnings.read_text(encoding="utf-8")
+        new = text
+        for anchor, addition, marker in (
+            ("## Active Feedback (apply on every run)\n\n", _P_CAROUSEL_FEEDBACK + "\n",
+             "- **[ACTIVE] WI2.45"),
+            ("## Feedback Log\n\n", _P_CAROUSEL_LOG, "### 2026-10-20 — WI2.45"),
+        ):
+            if marker not in new:
+                if new.count(anchor) != 1:
+                    raise SystemExit(f"sync-skills.py: ERROR - feedback anchor missing in {learnings}")
+                new = new.replace(anchor, anchor + addition, 1)
+        placeholder = "*None yet — add feedback below and it becomes part of this skill's behavior.*\n\n"
+        new = new.replace(placeholder, "", 1)
+        if "## Upstream source port (WI2.45" not in new:
+            new = new.replace("## Feedback Log\n", _P_CAROUSEL_HISTORY + "## Feedback Log\n", 1)
+        if new != text:
+            learnings.write_text(new, encoding="utf-8")
+            changed += 1
 
     man_path = directory / "manifest.json"
     if man_path.is_file():
@@ -494,10 +578,8 @@ def apply_p_carousel_contract(directory: Path) -> int:
         except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
             data = None
         if isinstance(data, dict):
-            mutated = False
             if data.get("recipeVersion") != P_CAROUSEL_RECIPE_VERSION:
                 data["recipeVersion"] = P_CAROUSEL_RECIPE_VERSION
-                mutated = True
             for step in data.get("steps") or []:
                 if not isinstance(step, dict) or step.get("id") != "render_slides":
                     continue
@@ -522,13 +604,12 @@ def apply_p_carousel_contract(directory: Path) -> int:
                     ):
                         if sid not in have:
                             step["saves"].append({"id": sid, "kind": kind, "preview": preview})
-                    mutated = True
                 break
-            if mutated:
-                man_path.write_text(
-                    json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-                    encoding="utf-8",
-                )
+            # Canonical bytes even when the contract was already present (the shipped
+            # manifest once mixed compact slide entries with indented objects).
+            canonical = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+            if man_path.read_text(encoding="utf-8") != canonical:
+                man_path.write_text(canonical, encoding="utf-8")
                 changed += 1
 
     render_md = directory / "steps" / "03-render-slides.md"
@@ -1061,7 +1142,12 @@ fi
 _PIP_TAIL_OUTRO_OLD = "  cp work/with-cta.mp4 work/pre-premium.mp4\nfi\n"
 _PIP_TAIL_OUTRO_NEW = "  cp work/with-cta.mp4 work/pre-premium.mp4\nfi\npython3 work/hold_tail.py work/pre-premium.mp4 || exit 1\n"
 _PIP_TAIL_WORDS_OLD = "python3 -c \"import json; json.dump(json.load(open('prior/transcripts.json'))['words'], open('work/words.json','w'))\"\n"
-_PIP_TAIL_WORDS_NEW = "# WI2.64: drop caption cues that would sit on the CTA card. Card off leaves the words unchanged.\npython3 work/clamp_captions.py words prior/transcripts.json work/words.json || exit 1\n"
+_PIP_TAIL_WORDS_CLAMP = "# WI2.64: drop caption cues that would sit on the CTA card. Card off leaves the words unchanged.\npython3 work/clamp_captions.py words prior/transcripts.json work/words.json || exit 1\n"
+_PIP_TAIL_WORDS_NEW = (
+    "# P1 needs the FULL normalized transcript for its ending-gap validation (<3 s).\n"
+    "# Clamp only after P1 validates, before P2 renders; never caption the CTA (WI2.64).\n"
+    + _PIP_TAIL_WORDS_OLD
+)
 _PIP_TAIL_PLAN_OLD = """# run P1 → P4 here; GSAP for the premium comp: cp \"$GSAP\" \"$PW/comp/gsap.min.js\" \"$PW/comp/compositions/\"
 python3 - <<'PY'
 import os
@@ -1156,7 +1242,9 @@ def apply_p_reels_pip_tail(directory: Path) -> int:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, ValueError):
             continue
-        new = text
+        # Upgrade the old pre-P1 clamp only, not the same command now used after P1.
+        new = text.replace(_PIP_TAIL_WORDS_CLAMP + "export PREMIUM_DIR",
+                           _PIP_TAIL_WORDS_NEW + "export PREMIUM_DIR", 1)
         for old, repl in P_REELS_PIP_TAIL_PAIRS:
             if old in new and repl not in new:
                 new = new.replace(old, repl, 1)
@@ -2087,12 +2175,21 @@ _CAPTION_PHRASES_PIP_P1_NOTE_WI278 = (
     "if [ \"$CAPTIONS\" != off ]; then python3 work/caption_phrases.py \"$PW/plan.json\" || exit 1; fi\n"
     "# 3) then P2 → P4 (P1 is done above; do not plan again):\n"
 )
-_CAPTION_PHRASES_PIP_P1_NOTE = (
+_CAPTION_PHRASES_PIP_P1_NOTE_WI279 = (
     "# 1) run P1 (plan) here: it writes \"$PW/plan.json\"\n"
     "# 2) WI2.76/WI2.78: keep caption phrases whole before P2 renders them (captions off: nothing to render)\n"
     "if [ \"$CAPTIONS\" != off ]; then python3 work/caption_phrases.py \"$PW/plan.json\" || exit 1; fi\n"
     "# 3) now run P2 → P4 only (P1 is done above; planning again would undo the repair); GSAP for the\n"
     "#    premium comp: cp \"$GSAP\" \"$PW/comp/gsap.min.js\" \"$PW/comp/compositions/\"\n"
+)
+# P1 validates full coverage; only then remove CTA cues, repair the remaining
+# phrases, and render. Keep the later clamps and final guards as defence in depth.
+_CAPTION_PHRASES_PIP_P1_NOTE = _CAPTION_PHRASES_PIP_P1_NOTE_WI279.replace(
+    '# 2) WI2.76/WI2.78:',
+    _PIP_TAIL_WORDS_CLAMP
+    + 'python3 work/clamp_captions.py plan work/premium/plan.json || exit 1\n'
+    + '# 2) WI2.76/WI2.78:',
+    1,
 )
 # The rest of the WI2.64 hunk after its first line: the --check goes after it.
 _CAPTION_PHRASES_PIP_TAIL_ANCHOR = _PIP_TAIL_PLAN_NEW[len(_CAPTION_PHRASES_PIP_P1_ANCHOR):]
@@ -2153,7 +2250,7 @@ def _caption_phrases_refresh_helper(text: str, path: Path, recipe: str) -> str:
 
 def apply_reel_caption_phrases(directory: Path, recipe: str) -> int:
     """WI2.76: keep caption phrases whole (no lone mid-clause fragment).
-    Top-level spotlight 03-plan-edit.md / pip 05-composite.md only (not .hub copies), plus the
+    Spotlight 03-plan-edit.md / pip 05-composite.md (including the heygen pip hub), plus the
     pip .hub/c-reel-premium P1 caption rule (WI2.78). WI2.79: the pip P1 note replaces the
     WI2.64 "run P1 → P4" line, so nothing after the repair invites a second P1.
     Idempotent; fails fast when an anchor drifted. Returns files changed."""
@@ -2187,6 +2284,8 @@ def apply_reel_caption_phrases(directory: Path, recipe: str) -> int:
         if _CAPTION_PHRASES_PIP_CHECK not in new:
             new = _caption_phrases_insert(new, path, recipe, _PIP_TAIL_PLAN_NEW,
                                           _CAPTION_PHRASES_PIP_CHECK, after=True, wi="WI2.78")
+        new = new.replace(_CAPTION_PHRASES_PIP_P1_NOTE_WI279,
+                          _CAPTION_PHRASES_PIP_P1_NOTE, 1)
         # WI2.79: the note replaces the "run P1 → P4" line (also over a WI2.78 note + that line)
         if _CAPTION_PHRASES_PIP_P1_NOTE not in new:
             old = _CAPTION_PHRASES_PIP_P1_NOTE_WI278 + _CAPTION_PHRASES_PIP_P1_ANCHOR
@@ -2204,6 +2303,9 @@ def apply_reel_caption_phrases(directory: Path, recipe: str) -> int:
         changed = 1
     if rel.endswith("05-composite.md"):
         changed += _caption_phrases_p1_rule(directory, recipe)
+        hub = directory / ".hub" / "p-reels-pip"
+        if hub.is_dir():
+            changed += apply_reel_caption_phrases(hub, "p-reels-pip")
     return changed
 
 

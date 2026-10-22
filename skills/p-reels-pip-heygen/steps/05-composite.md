@@ -731,12 +731,16 @@ PY
 ```
 
 ```bash
-# WI2.64: drop caption cues that would sit on the CTA card. Card off leaves the words unchanged.
-python3 work/clamp_captions.py words prior/transcripts.json work/words.json || exit 1
+# P1 needs the FULL normalized transcript for its ending-gap validation (<3 s).
+# Clamp only after P1 validates, before P2 renders; never caption the CTA (WI2.64).
+python3 -c "import json; json.dump(json.load(open('prior/transcripts.json'))['words'], open('work/words.json','w'))"
 export PREMIUM_DIR REEL_IN=work/pre-premium.mp4 REEL_OUT=work/polished.mp4 WORDS_JSON=work/words.json \
        PW=work/premium CAP_TOP=760 CAPTIONS="$CAPTIONS" SFX="$SFX" GRADE="$(opt grade clean-bright)"
 mkdir -p "$PW"
 # 1) run P1 (plan) here: it writes "$PW/plan.json"
+# WI2.64: drop caption cues that would sit on the CTA card. Card off leaves the words unchanged.
+python3 work/clamp_captions.py words prior/transcripts.json work/words.json || exit 1
+python3 work/clamp_captions.py plan work/premium/plan.json || exit 1
 # 2) WI2.76/WI2.78: keep caption phrases whole before P2 renders them (captions off: nothing to render)
 if [ "$CAPTIONS" != off ]; then python3 work/caption_phrases.py "$PW/plan.json" || exit 1; fi
 # 3) now run P2 → P4 only (P1 is done above; planning again would undo the repair); GSAP for the
