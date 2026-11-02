@@ -16,6 +16,11 @@ from pathlib import Path
 from typing import BinaryIO
 from urllib.parse import urlsplit
 
+# media.cfw.social sits behind Cloudflare, whose browser integrity check answers
+# urllib's default "Python-urllib/3.x" with 403 (error 1010). Name the worker
+# instead, on the first request and on every redirect (B27).
+USER_AGENT = "cfw-render"
+
 
 def save_extension(kind: str) -> str:
     return {"video": "mp4", "image": "png", "audio": "mp3", "json": "json", "text": "md"}.get(kind, "bin")
@@ -170,6 +175,7 @@ def restore(order: dict, root: Path, media_base: str = "", test_base: str = "") 
         contained(root, relative)
         selected.append((key, relative, url, algo, digest))
     opener = urllib.request.build_opener(MediaRedirect(media_base, test_base))
+    opener.addheaders = [("User-Agent", USER_AGENT)]
     restored = []
     for key, relative, url, algo, digest in selected:
         dest = contained(root, relative)
@@ -218,7 +224,13 @@ def main() -> int:
     except (ValueError, KeyError, TypeError, AttributeError, OSError, HTTPException) as error:
         print(json.dumps({"missing": error.missing if isinstance(error, SavedOutputError) else "invalid_output"}))
         # Do not print URLs, signed query strings, claim data or exception bodies.
-        print("cfw-render: invalid stage bounds or unusable saved outputs", file=sys.stderr)
+        # The save name and the HTTP status (or error class) are safe and say why.
+        reason = ""
+        if isinstance(error, SavedOutputError):
+            cause = error.__cause__
+            code = getattr(cause, "code", None)
+            reason = f" ({error.missing}: {'HTTP %d' % code if isinstance(code, int) else type(cause).__name__})"
+        print("cfw-render: invalid stage bounds or unusable saved outputs" + reason, file=sys.stderr)
         return 1
 
 
