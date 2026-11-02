@@ -677,8 +677,13 @@ cr_log() {
 # cr_curl_with_key [curl args...]
 # Run curl with the render key in a header. The key is written to a mode-600
 # file and passed as -H @file. curl's argv never contains the key (WI2.102:
-# process listings were showing the header value). Stdin stays free, so a
-# caller may still stream a body. Do not pass the key as another argument.
+# process listings were showing the header value). Do not pass the key as
+# another argument.
+#
+# Stdin is /dev/null. Job control is off and curl is started in the
+# background, so this call does not pass the caller's stdin through
+# (WI2.105). --data-binary @- therefore sends an empty body. Pass the body
+# as an argument or as a file (@path).
 #
 # The file is removed when this call ends, including when curl is killed or
 # this call receives TERM, INT or HUP (WI2.104). The trap lives in a subshell

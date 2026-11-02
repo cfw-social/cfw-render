@@ -18,11 +18,12 @@ import { test } from 'node:test';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SUITE_SCRIPT = path.join('test', 'run-tests.sh');
-// Idle runs finish in about 9 minutes. A loaded Mac can take 30 or more.
-// The cap is 60 minutes unless CFW_SUITE_TIMEOUT_MIN is a positive whole
-// number of minutes. Any other value, including one setTimeout cannot
-// schedule, stays at 60. The failure text below names that cap.
-const DEFAULT_SUITE_TIMEOUT_MIN = 60;
+// The bound suite takes 50-60+ minutes under load, so a 60-minute cap
+// stops it before the later cases run. The cap is 100 minutes unless
+// CFW_SUITE_TIMEOUT_MIN is a positive whole number of minutes. Any other
+// value, including one setTimeout cannot schedule, stays at 100. The
+// failure text below names that cap.
+const DEFAULT_SUITE_TIMEOUT_MIN = 100;
 const SUITE_TIMEOUT_MAX_MS = 2147483647;
 
 function suiteTimeoutMsFrom(raw) {
@@ -38,18 +39,19 @@ const SUITE_TIMEOUT_MS = suiteTimeoutMsFrom(process.env.CFW_SUITE_TIMEOUT_MIN);
 const KILL_GRACE_MS = 10 * 1000;
 
 const timeoutChecks = [
-  [undefined, 60],
-  ['', 60],
-  ['0', 60],
-  ['-4', 60],
-  ['1.5', 60],
-  ['60min', 60],
-  [' 60', 60],
-  ['08', 60],
-  ['999999999', 60],
+  [undefined, 100],
+  ['', 100],
+  ['0', 100],
+  ['-4', 100],
+  ['1.5', 100],
+  ['60min', 100],
+  [' 60', 100],
+  ['08', 100],
+  ['999999999', 100],
   ['1', 1],
   ['60', 60],
   ['90', 90],
+  ['100', 100],
 ];
 for (const [raw, minutes] of timeoutChecks) {
   const got = suiteTimeoutMsFrom(raw);

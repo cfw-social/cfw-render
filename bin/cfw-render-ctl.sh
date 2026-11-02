@@ -141,6 +141,17 @@ EOF
     ;;
 
   send-logs)
+    # Background bash ignores SIGINT, and bash will not trap a signal that was
+    # ignored when it started. WI2.105 starts this command that way and then
+    # sends INT while the key file exists, so the INT trap never runs and the
+    # file stays. Re-exec once with SIGINT restored to the default. Nothing
+    # has been created yet, so the exec leaves no file behind.
+    if [[ -z "${CFW_RENDER_CTL_SIGINT_RESET:-}" ]]; then
+      export CFW_RENDER_CTL_SIGINT_RESET=1
+      exec python3 -c 'import os, signal, sys
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+os.execv(sys.argv[1], sys.argv[1:])' "$0" "$VERB" "$@"
+    fi
     # [M3-06a] redacted support bundle → POST /api/v1/computers/logs.
     sl_yes=0; sl_dry=0
     for a in "$@"; do
@@ -153,8 +164,35 @@ EOF
     cr_load_config || exit 1
     sl_tmp="$(mktemp -d "${TMPDIR:-/tmp}/cfw-render-logs.XXXXXX")"
     sl_hdr=""
-    # shellcheck disable=SC2064
-    trap 'rm -rf "$sl_tmp"; [[ -n "$sl_hdr" ]] && rm -f "$sl_hdr"' EXIT
+    sl_curl_pid=""
+    sl_guard=""
+    sl_body=""
+    sl_done=""
+    # Idempotent: a signal trap and the EXIT trap both call this. The key
+    # file goes first so a kill cannot leave cfw-render-hdr.* in TMPDIR.
+    _sl_drop_hdr() {
+      if [[ -n "${sl_hdr:-}" ]]; then
+        rm -f "$sl_hdr"
+        sl_hdr=""
+      fi
+      if [[ -n "${sl_curl_pid:-}" ]]; then
+        kill "$sl_curl_pid" 2>/dev/null || true
+        sl_curl_pid=""
+      fi
+      if [[ -n "${sl_body:-}" ]]; then
+        rm -f "$sl_body"
+        sl_body=""
+      fi
+      if [[ -n "${sl_done:-}" ]]; then
+        rm -f "$sl_done"
+        sl_done=""
+      fi
+      if [[ -n "${sl_tmp:-}" ]]; then
+        rm -rf "$sl_tmp"
+        sl_tmp=""
+      fi
+    }
+    trap '_sl_drop_hdr' EXIT
     mkdir -p "$sl_tmp/bundle"
     sl_redact() { python3 "$SELF_DIR/cfw-render-redact.py"; }
     while IFS= read -r -d '' f; do
@@ -184,11 +222,82 @@ EOF
       case "$sl_ans" in y|Y|yes|YES) ;; *) echo "Not sent."; exit 0 ;; esac
     fi
     sl_base="${CFW_RENDER_API_BASE:-${CFW_API_BASE:-https://app.cfw.social}}"
+    # EXIT alone does not run when this shell is killed while a foreground
+    # curl is still going (WI2.104). Same pattern as cr_curl_with_key: trap
+    # TERM, INT and HUP, start curl in the background, and wait. The key file
+    # is this shell's, so the trap removes it. --data-binary reads the bundle
+    # file, not stdin (background curl has stdin /dev/null).
+    trap '_sl_drop_hdr; exit 129' HUP
+    trap '_sl_drop_hdr; exit 130' INT
+    trap '_sl_drop_hdr; exit 143' TERM
     sl_hdr="$(mktemp "${TMPDIR:-/tmp}/cfw-render-hdr.XXXXXX")"
     chmod 600 "$sl_hdr"
     printf 'cfw-render-key: %s\n' "$CFW_RENDER_WORKER_KEY" > "$sl_hdr"
-    sl_resp="$(curl -sS --max-time 120 -w '\n%{http_code}' -X POST "${sl_base%/}/api/v1/computers/logs" \
-      -H @"$sl_hdr" -H "content-type: application/gzip" --data-binary @"$sl_gz" 2>/dev/null)" || sl_resp=$'\n000'
+    # Bash re-raises SIGINT out of `wait` and skips this shell's INT trap, so
+    # the key file can outlive the process (WI2.105). This helper is not that
+    # wait: it ignores INT/TERM/HUP and deletes the file once this shell is gone.
+    # $$ is this shell even inside the subshell; PPID there is not.
+    sl_owner=$$
+    (
+      owner="$sl_owner"
+      target="$sl_hdr"
+      trap '' INT HUP TERM
+      while kill -0 "$owner" 2>/dev/null; do
+        sleep 0.1
+      done
+      rm -f "$target"
+    ) &
+    sl_guard=$!
+    # The helper ignores INT/HUP/TERM and deletes the key file once this
+    # shell is gone. Keep its pid so the assignment is used, and do not
+    # signal it (a signal would not stop it).
+    : "${sl_guard:-}"
+    sl_body="$(mktemp "${TMPDIR:-/tmp}/cfw-render-body.XXXXXX")"
+    set +m
+    sl_done="$(mktemp "${TMPDIR:-/tmp}/cfw-render-curlrc.XXXXXX")"
+    # The subshell waits on curl and records its status. This shell sleeps
+    # instead of blocking in `wait`: SIGINT during `wait` skips the INT trap
+    # and re-raises. A short sleep is an ordinary foreground command, so
+    # INT/TERM/HUP run the trap when it returns. The helper above still
+    # removes the key file if this shell dies without the trap. TERM on the
+    # subshell (it is inside `wait`) kills curl.
+    (
+      cpid=""
+      trap '[[ -n "${cpid:-}" ]] && kill "$cpid" 2>/dev/null; exit 143' TERM
+      trap '[[ -n "${cpid:-}" ]] && kill "$cpid" 2>/dev/null; exit 130' INT
+      curl -sS --max-time 120 -w '\n%{http_code}' -X POST "${sl_base%/}/api/v1/computers/logs" \
+        -H "@$sl_hdr" -H "content-type: application/gzip" --data-binary @"$sl_gz" >"$sl_body" 2>/dev/null &
+      cpid=$!
+      wait "$cpid"
+      echo $? > "$sl_done"
+    ) &
+    sl_curl_pid=$!
+    if [[ -z "$sl_curl_pid" ]]; then
+      sl_resp=$'\n000'
+    else
+      while [[ ! -s "$sl_done" ]]; do
+        if ! kill -0 "$sl_curl_pid" 2>/dev/null; then
+          break
+        fi
+        sleep 0.2
+      done
+      # Reap only a child that has already exited. A blocking `wait` is where
+      # bash 5 re-raises SIGINT and skips the trap (WI2.105).
+      sl_rc=1
+      if ! kill -0 "$sl_curl_pid" 2>/dev/null; then
+        wait "$sl_curl_pid" 2>/dev/null || sl_rc=$?
+      fi
+      if [[ -s "$sl_done" ]]; then
+        sl_rc="$(tr -d '[:space:]' < "$sl_done")"
+      fi
+      sl_curl_pid=""
+      if (( sl_rc == 0 )); then
+        sl_resp="$(cat "$sl_body" 2>/dev/null)" || sl_resp=$'\n000'
+      else
+        sl_resp=$'\n000'
+      fi
+    fi
+    rm -f "$sl_body"; sl_body=""
     rm -f "$sl_hdr"; sl_hdr=""
     sl_code="${sl_resp##*$'\n'}"; sl_resp="${sl_resp%$'\n'*}"
     sl_ref="$(python3 -c '

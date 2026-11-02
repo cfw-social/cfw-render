@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -92,6 +93,24 @@ else:
 set -euo pipefail
 source "$1"
 dir="$2"
+# Rename the real pause hook without a double-quoted eval: its body contains
+# command substitutions, and those must not run while the name is rewritten.
+declare -f cr_h_wait_pause > "$dir/wait-src.sh"
+python3 -c 'import pathlib,sys
+p=pathlib.Path(sys.argv[1])
+t=p.read_text()
+if not t.startswith("cr_h_wait_pause"):
+    raise SystemExit(1)
+p.write_text("cr_h_wait_pause_orig"+t[len("cr_h_wait_pause"):])' "$dir/wait-src.sh"
+source "$dir/wait-src.sh"
+_cfw_mark() {
+  python3 -c 'import os,sys,time; open(os.environ["FIXTURE_ROOT"]+"/step-clock","a").write("%.6f %s\n" % (time.monotonic(), sys.argv[1]))' "$1"
+}
+# step_id is local in cr_harness_run and already set when this hook runs.
+cr_h_wait_pause() {
+  _cfw_mark "${step_id:-pre}" || return 31
+  cr_h_wait_pause_orig "$@"
+}
 cr_log() { printf '%s\n' "$*" >> "$dir/log"; }
 cr_harness_heartbeat_start() { :; }
 cr_harness_heartbeat_stop() { :; }
@@ -107,18 +126,65 @@ cr_report_step() {
   python3 -c 'import json,sys; print(json.dumps({"event":sys.argv[1], "extra":json.loads(sys.argv[2])}))' "$5" "$6" >> "$dir/events"
   printf '%s' '{"ok":true,"directive":"continue"}'
 }
+_cfw_mark preamble
 rc=0
 cr_harness_run "$dir/order.json" "$dir" "$dir/recipe" || rc=$?
+_cfw_mark end
 python3 "$dir/check-env.py" parent
 exit "$rc"
 '''
             env = {"PATH": str(commands), "HOME": str(root), "TMPDIR": str(root),
                    "FIXTURE_ROOT": str(root), "CFW_WORKER_ID": "fixture", "LC_ALL": "C",
                    "PYTHONDONTWRITEBYTECODE": "1", **ambient}
-            result = subprocess.run(
-                [str(commands / "bash"), "-x", "-c", script, "fixture", str(harness), str(root)],
-                env=env, capture_output=True, text=True, timeout=15,
-            )
+            # bash -x traces every command, and the argv guard starts an interpreter
+            # before each real bash/python/mkdir. CLAIM_TIMEOUT_S is the ceiling.
+            # The stderr line PROVIDER-KEYS-STEP-SECONDS is the measurement: preamble,
+            # then each claim step (the last span runs through harness return). The
+            # claim fails if that sum or the subprocess wall reaches the ceiling.
+            # 90s remains the ceiling until a measured run shows a lower one still
+            # holds. It is not a hung restore, lock, or engine.
+            CLAIM_TIMEOUT_S = 90
+
+            def step_spans(wall: float) -> list[tuple[str, float]]:
+                marks: list[tuple[float, str]] = []
+                clock = root / "step-clock"
+                text = clock.read_text(encoding="utf-8") if clock.is_file() else ""
+                ok = True
+                for line in text.splitlines():
+                    if not line:
+                        continue
+                    stamp, sep, name = line.partition(" ")
+                    if not sep:
+                        ok = False
+                        break
+                    try:
+                        marks.append((float(stamp), name))
+                    except ValueError:
+                        ok = False
+                        break
+                spans = [(marks[i][1], marks[i + 1][0] - marks[i][0]) for i in range(len(marks) - 1)] if ok else []
+                safe = bool(spans) and all(
+                    0 < len(name) <= 40 and all(ch.isalnum() or ch in "_.-" for ch in name) and delta >= 0
+                    for name, delta in spans)
+                if safe:
+                    detail = " ".join("%s=%.3f" % (name, delta) for name, delta in spans)
+                else:
+                    detail = "unreadable=%d" % len(text.splitlines())
+                print("PROVIDER-KEYS-STEP-SECONDS %s wall=%.3f timeout=%d" % (detail, wall, CLAIM_TIMEOUT_S),
+                      file=sys.stderr)
+                return spans if safe else []
+
+            started = time.perf_counter()
+            try:
+                result = subprocess.run(
+                    [str(commands / "bash"), "-x", "-c", script, "fixture", str(harness), str(root)],
+                    env=env, capture_output=True, text=True, timeout=CLAIM_TIMEOUT_S,
+                )
+            except subprocess.TimeoutExpired:
+                step_spans(time.perf_counter() - started)
+                raise
+            wall = time.perf_counter() - started
+            spans = step_spans(wall)
             # Include trace, harness/engine logs, reports and recorded argv, not
             # the fixture order/config or prompts (which have separate contracts).
             observed = result.stdout + result.stderr
@@ -131,6 +197,12 @@ exit "$rc"
             self.assertNotIn("secret in argv", observed)
             self.assertNotIn("stage env differs", observed)
             self.assertNotIn("parent env changed", observed)
+            self.assertTrue(spans, "claim step clock missing")
+            self.assertEqual(spans[0][0], "preamble")
+            self.assertLess(sum(delta for _, delta in spans), CLAIM_TIMEOUT_S)
+            self.assertLess(wall, CLAIM_TIMEOUT_S)
+            for step in steps:
+                self.assertIn(step["id"], [name for name, _ in spans])
             events = [json.loads(line) for line in (root / "events").read_text().splitlines()]
             runs = (root / "runs").read_text().splitlines() if (root / "runs").exists() else []
             return result.returncode, events, runs

@@ -17,6 +17,9 @@ import sys
 import tempfile
 import unittest
 
+# A loaded Mac exceeded 30s here while another suite ran. Assertions stay the same.
+RUN_SHELL_TIMEOUT_SEC = 120
+
 
 def key(label: str) -> str:
     return "cfw_render_fixture-only-" + label
@@ -200,7 +203,7 @@ fi
         args = [os.environ.get("TEST_SUITE_BASH") or "/bin/bash", "--noprofile", "--norc", str(self.script)]
         assert_no_secrets("\n".join(args))
         result = subprocess.run(args, input=stdin, env={**self.env, **overrides},
-                                capture_output=True, text=True, timeout=30)
+                                capture_output=True, text=True, timeout=RUN_SHELL_TIMEOUT_SEC)
         assert_no_secrets(result.stdout + result.stderr)
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
         self.assertEqual(self.worker.read_text(), "fixture-stable-identity\n")

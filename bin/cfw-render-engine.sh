@@ -358,6 +358,105 @@ print(json.dumps({"engine": sys.argv[1], "os": sys.argv[2], "manifests": json.lo
 }
 
 # ---------------------------------------------------------------------------
+# WI2.109 — coder config and write sandbox.
+#
+# Every claude-code, codex, and CFW_RENDER_ENGINE_CMD run gets an empty
+# config directory inside the step work area. CLAUDE_CONFIG_DIR and
+# CODEX_HOME point there. Nothing is copied from ~/.claude or ~/.codex:
+# this file does not read those paths, and a copy in the work area could
+# be logged or uploaded. Sign-in is only what the process already has in
+# its environment (API keys or token variables such as ANTHROPIC_API_KEY
+# or CLAUDE_CODE_OAUTH_TOKEN). A subscription that lives only as a file
+# under ~/.claude or ~/.codex is not visible, on purpose.
+#
+# Writes go through sandbox-exec. The profile allows writes only under the
+# work folder, the isolated config dirs and a private tmp dir (plus device
+# nodes libc already opens). Reads stay open. If sandbox-exec is missing,
+# or it fails for any reason other than "already inside a sandbox", the
+# coder is not started. macOS refuses a nested sandbox_apply, so a coder
+# that is already sandboxed keeps this isolated config and the enclosing
+# write sandbox; that limit is logged, not hidden.
+# ---------------------------------------------------------------------------
+cr_engine_sb_quote() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  printf '"%s"' "$s"
+}
+
+cr_engine_allow_write_subpath() {
+  local logical="$1" physical quoted
+  [[ -n "$logical" ]] || return 1
+  quoted="$(cr_engine_sb_quote "$logical")"
+  printf '(allow file-write* (subpath %s))\n' "$quoted"
+  physical="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$logical" 2>/dev/null)" || return 1
+  [[ -n "$physical" ]] || return 1
+  if [[ "$physical" != "$logical" ]]; then
+    quoted="$(cr_engine_sb_quote "$physical")"
+    printf '(allow file-write* (subpath %s))\n' "$quoted"
+  fi
+}
+
+# cr_engine_sandbox_probe — set CR_ENGINE_SANDBOX_MODE to apply, enclosing,
+# missing or broken. Cached for this shell. Does not run the coder.
+cr_engine_sandbox_probe() {
+  local err rc
+  [[ -n "${CR_ENGINE_SANDBOX_MODE:-}" ]] && return 0
+  if [[ ! -x /usr/bin/sandbox-exec ]]; then
+    CR_ENGINE_SANDBOX_MODE=missing
+    return 0
+  fi
+  rc=0
+  err="$(/usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>&1)" || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    CR_ENGINE_SANDBOX_MODE=apply
+    return 0
+  fi
+  case "$err" in
+    *"sandbox_apply: Operation not permitted"*) CR_ENGINE_SANDBOX_MODE=enclosing ;;
+    *)
+      CR_ENGINE_SANDBOX_MODE=broken
+      CR_ENGINE_SANDBOX_ERROR="${err//$'\n'/ }"
+      ;;
+  esac
+}
+
+cr_engine_prepare_isolate() {
+  local workdir="$1"
+  CR_CODER_ROOT="$workdir/.cfw-coder"
+  CR_CODER_CLAUDE_DIR="$CR_CODER_ROOT/claude"
+  CR_CODER_CODEX_DIR="$CR_CODER_ROOT/codex"
+  CR_CODER_TMP="$CR_CODER_ROOT/tmp"
+  # Empty dirs. Do not copy settings, output styles, CLAUDE.md, plugins or hooks.
+  ( umask 077
+    mkdir -p "$CR_CODER_CLAUDE_DIR" "$CR_CODER_CODEX_DIR" "$CR_CODER_TMP" ) || return 1
+  chmod 700 "$CR_CODER_ROOT" "$CR_CODER_CLAUDE_DIR" "$CR_CODER_CODEX_DIR" "$CR_CODER_TMP" || return 1
+}
+
+cr_engine_write_profile() {
+  local dest="$1" work="$2" claude="$3" codex="$4" tmp="$5" dev
+  {
+    printf '%s\n' '(version 1)' '(allow default)' '(deny file-write*)'
+    # Device nodes libc and the test doubles open for write. Not work-folder paths.
+    for dev in /dev/null /dev/zero /dev/dtracehelper /dev/random /dev/urandom /dev/tty /dev/stdin /dev/stdout /dev/stderr; do
+      printf '(allow file-write* (literal %s))\n' "$(cr_engine_sb_quote "$dev")"
+    done
+    cr_engine_allow_write_subpath "$work" || return 1
+    cr_engine_allow_write_subpath "$claude" || return 1
+    cr_engine_allow_write_subpath "$codex" || return 1
+    cr_engine_allow_write_subpath "$tmp" || return 1
+  } > "$dest" || return 1
+  chmod 600 "$dest" || return 1
+}
+
+cr_engine_refuse_unsandboxed() {
+  local log="$1" why="$2"
+  cr_log "cr_engine_run: $why"
+  printf '%s\n' "cr_engine_run: $why" >> "$log"
+  return 127
+}
+
+# ---------------------------------------------------------------------------
 # cr_engine_run <engine> <prompt-file> <workdir> <log> — run one step prompt.
 # stdout+stderr of the engine are APPENDED to <log>; returns the engine's rc.
 # ---------------------------------------------------------------------------
@@ -371,29 +470,52 @@ cr_engine_run() {
     gemini) cr_engine_run_gemini "$prompt_file" "$workdir" "$log"; return ;;
     zai|moonshot|minimax|xai|openrouter) cr_engine_run_api "$engine" "$prompt_file" "$workdir" "$log"; return ;;
   esac
-  if [[ -n "${CFW_RENDER_ENGINE_CMD:-}" ]]; then
-    (
-      cd "$workdir" || exit 1
-      export CFW_RENDER_ENGINE_PROMPT_FILE="$prompt_file" CFW_ENGINE_NAME="$engine"
-      # shellcheck disable=SC2086
-      $CFW_RENDER_ENGINE_CMD < "$prompt_file" >> "$log" 2>&1
-    ) || rc=$?
-    return "$rc"
-  fi
-  case "$engine" in
-    codex)
-      ( cd "$workdir" && codex exec --skip-git-repo-check -C "$workdir" \
-          --dangerously-bypass-approvals-and-sandbox - < "$prompt_file" >> "$log" 2>&1 ) || rc=$?
+  cr_engine_sandbox_probe
+  case "$CR_ENGINE_SANDBOX_MODE" in
+    missing)
+      cr_engine_refuse_unsandboxed "$log" "sandbox-exec is missing; refusing to run the coder without a write sandbox"
+      return $?
       ;;
-    claude-code)
-      ( cd "$workdir" && claude -p --dangerously-skip-permissions --output-format text \
-          < "$prompt_file" >> "$log" 2>&1 ) || rc=$?
-      ;;
-    *)
-      cr_log "cr_engine_run: no usable engine ('$engine')"
-      return 2
+    broken)
+      cr_engine_refuse_unsandboxed "$log" "sandbox-exec cannot apply a write profile (${CR_ENGINE_SANDBOX_ERROR:0:180}); refusing to run the coder unsandboxed"
+      return $?
       ;;
   esac
+  if ! cr_engine_prepare_isolate "$workdir"; then
+    cr_log "cr_engine_run: could not create the isolated coder config dir"
+    return 2
+  fi
+  if ! cr_engine_write_profile "$CR_CODER_ROOT/profile.sb" "$workdir" "$CR_CODER_CLAUDE_DIR" "$CR_CODER_CODEX_DIR" "$CR_CODER_TMP"; then
+    cr_log "cr_engine_run: could not write the coder write profile"
+    return 2
+  fi
+  if [[ "$CR_ENGINE_SANDBOX_MODE" == "enclosing" ]]; then
+    cr_log "cr_engine_run: sandbox-exec cannot nest inside the current sandbox; coder keeps the isolated config dir and the enclosing write sandbox"
+    printf '%s\n' "cr_engine_run: sandbox-exec cannot nest inside the current sandbox; coder keeps the isolated config dir and the enclosing write sandbox" >> "$log"
+  fi
+  local -a cmd
+  if [[ -n "${CFW_RENDER_ENGINE_CMD:-}" ]]; then
+    # shellcheck disable=SC2206
+    cmd=($CFW_RENDER_ENGINE_CMD)
+  elif [[ "$engine" == "codex" ]]; then
+    cmd=(codex exec --skip-git-repo-check -C "$workdir" --dangerously-bypass-approvals-and-sandbox -)
+  elif [[ "$engine" == "claude-code" ]]; then
+    cmd=(claude -p --dangerously-skip-permissions --output-format text)
+  else
+    cr_log "cr_engine_run: no usable engine ('$engine')"
+    return 2
+  fi
+  (
+    cd "$workdir" || exit 1
+    export CFW_RENDER_ENGINE_PROMPT_FILE="$prompt_file" CFW_ENGINE_NAME="$engine"
+    export CLAUDE_CONFIG_DIR="$CR_CODER_CLAUDE_DIR" CODEX_HOME="$CR_CODER_CODEX_DIR"
+    export TMPDIR="$CR_CODER_TMP" TMP="$CR_CODER_TMP" TEMP="$CR_CODER_TMP"
+    export CFW_RENDER_CODER_SANDBOX="$CR_ENGINE_SANDBOX_MODE"
+    if [[ "$CR_ENGINE_SANDBOX_MODE" == "apply" ]]; then
+      exec /usr/bin/sandbox-exec -f "$CR_CODER_ROOT/profile.sb" "${cmd[@]}" < "$prompt_file" || exit $?
+    fi
+    exec "${cmd[@]}" < "$prompt_file" || exit $?
+  ) >> "$log" 2>&1 || rc=$?
   return "$rc"
 }
 

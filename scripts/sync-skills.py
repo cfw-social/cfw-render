@@ -72,7 +72,8 @@ WI2.79 (same transform): both helper modes refuse a group whose end is not
 after its start or whose start is not after the previous start (the overlap
 clamp no longer hides an out-of-order plan); a missing plan, bad JSON or a group
 without start/end is a clear message, not a traceback; and the pip P1 note
-replaces the WI2.64 "run P1 → P4 here" line (its inverse gives that line back).
+replaces the WI2.64 "run P1 → P4 here" line on the top-level step and the
+vendored .hub copy (its inverse gives that line back).
 
 WI2.73 apply_typing_hold() rewrites the typing window in every vendored
 c-typing-ui typing-scene.html (all recipes, .hub copies included): typing ends
@@ -2250,9 +2251,11 @@ def _caption_phrases_refresh_helper(text: str, path: Path, recipe: str) -> str:
 
 def apply_reel_caption_phrases(directory: Path, recipe: str) -> int:
     """WI2.76: keep caption phrases whole (no lone mid-clause fragment).
-    Spotlight 03-plan-edit.md / pip 05-composite.md (including the heygen pip hub), plus the
-    pip .hub/c-reel-premium P1 caption rule (WI2.78). WI2.79: the pip P1 note replaces the
-    WI2.64 "run P1 → P4" line, so nothing after the repair invites a second P1.
+    Spotlight 03-plan-edit.md / pip 05-composite.md, plus the pip .hub/c-reel-premium
+    P1 caption rule (WI2.78). WI2.79: the pip P1 note replaces the WI2.64
+    "run P1 → P4" line, so nothing after the repair invites a second P1.
+    The vendored .hub/p-reels-pip copy uses that same note, whether or not the
+    caption-phrase section was already in the file.
     Idempotent; fails fast when an anchor drifted. Returns files changed."""
     rel = REEL_CAPTION_PHRASES_FILES.get(recipe)
     if rel is None:
@@ -2284,9 +2287,10 @@ def apply_reel_caption_phrases(directory: Path, recipe: str) -> int:
         if _CAPTION_PHRASES_PIP_CHECK not in new:
             new = _caption_phrases_insert(new, path, recipe, _PIP_TAIL_PLAN_NEW,
                                           _CAPTION_PHRASES_PIP_CHECK, after=True, wi="WI2.78")
+        # WI2.79: the hub copy uses the same P1 note as the top-level step.
         new = new.replace(_CAPTION_PHRASES_PIP_P1_NOTE_WI279,
                           _CAPTION_PHRASES_PIP_P1_NOTE, 1)
-        # WI2.79: the note replaces the "run P1 → P4" line (also over a WI2.78 note + that line)
+        # The note replaces the "run P1 → P4" line (also over a WI2.78 note + that line).
         if _CAPTION_PHRASES_PIP_P1_NOTE not in new:
             old = _CAPTION_PHRASES_PIP_P1_NOTE_WI278 + _CAPTION_PHRASES_PIP_P1_ANCHOR
             if old not in new:

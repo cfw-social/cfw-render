@@ -165,6 +165,8 @@ fi
 local_checkpoint_cases() {
   python3 - "$REPO_DIR" <<'PY'
 import copy, importlib.util, json, os, pathlib, shutil, subprocess, sys, tempfile, time
+# A loaded Mac exceeded 60 s on this helper while the rest of the suite was still running.
+LOCAL_CHECKPOINT_RUN_TIMEOUT_S = 180
 repo = pathlib.Path(sys.argv[1])
 helper = repo/'bin/cfw-render-checkpoint.py'
 spec = importlib.util.spec_from_file_location('checkpoint', helper)
@@ -227,7 +229,7 @@ if [[ "${FAIL_STEP:-}" == "$CFW_STEP_ID" ]]; then printf invalid > saves/image.p
         (d/'order.json').write_text(json.dumps(o)); return d, o
     def put(d, o): (d/'order.json').write_text(json.dumps(o))
     def run(d, expected=0, **extra):
-        p = subprocess.run(['bash','-c',script],env={**env,'JOB':str(d),**extra},capture_output=True,text=True,timeout=60)
+        p = subprocess.run(['bash','-c',script],env={**env,'JOB':str(d),**extra},capture_output=True,text=True,timeout=LOCAL_CHECKPOINT_RUN_TIMEOUT_S)
         assert p.returncode == expected, (p.returncode,expected,p.stdout,p.stderr[-4000:])
         return json.loads(p.stdout) if expected == 0 else None
     def command(d, cmd, *args, worker='install-A', expected=0):
@@ -4322,12 +4324,17 @@ c32="$(mktemp -d)"
 c21_setup "$c32" $((MOCK_PORT_BASE + 930)) harness-3step '[]' CFW_MOCK_ORDERS_ARRAY=1
 c21_worker "$c32" $((MOCK_PORT_BASE + 930)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=0.2 &
 c32_w=$!
-for _ in $(seq 1 60); do [[ "$(grep -c '"tool": "claim_render_order"' "$c32/mockstate/calls.jsonl" 2>/dev/null || true)" -ge 3 ]] && break; sleep 0.1; done
+# Wall-clock deadline: worker start-up on a loaded Mac can consume a short poll.
+c32_wait_start=$SECONDS
+while [[ $((SECONDS - c32_wait_start)) -lt 60 ]]; do
+  [[ "$(grep -c '"tool": "claim_render_order"' "$c32/mockstate/calls.jsonl" 2>/dev/null || true)" -ge 3 ]] && break
+  sleep 0.1
+done
 stop_test_tree "$c32_w" || { fail "loop cleanup" "could not stop owned tree"; exit 1; }
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 c32_n="$(grep -c '"tool": "claim_render_order"' "$c32/mockstate/calls.jsonl" 2>/dev/null || true)"
 if [[ "$c32_n" -ge 3 ]]; then
-  pass "idle --loop re-claims every idle unit ($c32_n claims within ~6 s at unit 0.2 s)"
+  pass "idle --loop re-claims every idle unit ($c32_n claims within a 60 s deadline at unit 0.2 s)"
 else
   fail "idle loop re-claim" "claims=$c32_n (want >= 3); $(tail -3 "$c32/cr-state/cfw-render.log" 2>/dev/null)"
 fi
@@ -8389,16 +8396,71 @@ try:
                 if proc.returncode != 0:
                     bad_sync.append("rc %s %s" % (proc.returncode, (proc.stderr or proc.stdout or "")[-400:]))
                 for path in paths:
-                    # top-level steps also get the WI2.76+ caption-phrase note; the hub copy does not
-                    want = base_md if ".hub" in path.parts else pip_md
+                    # Hub and top-level steps get the same WI2.79 P1 note.
+                    want = pip_md
                     if not path.is_file():
                         bad_sync.append("missing %s" % path.name)
                     elif path.read_text(encoding="utf-8") != want:
-                        bad_sync.append("diff %s" % path.relative_to(out))
+                        got_sync = path.read_text(encoding="utf-8")
+                        pos = next((i for i, (a, b) in enumerate(zip(got_sync, want)) if a != b), min(len(got_sync), len(want)))
+                        bad_sync.append("diff %s at %d" % (path.relative_to(out), pos))
                 if bad_sync:
                     add("WI2.64 sync-skills.sh re-applies the pip tail on both recipes and the hub copy", "; ".join(bad_sync))
                 else:
                     add("WI2.64 sync-skills.sh re-applies the pip tail on both recipes and the hub copy")
+
+                # The shipped hub file is the contract. Re-applying the caption
+                # transform, including the helper refresh, must not change it.
+                real_hub = (repo / "skills/p-reels-pip-heygen/.hub/p-reels-pip/steps/05-composite.md").read_text(encoding="utf-8")
+                pinned = root / "pinned-hub" / ".hub" / "p-reels-pip"
+                (pinned / "steps").mkdir(parents=True)
+                pinned_file = pinned / "steps" / "05-composite.md"
+                pinned_file.write_text(real_hub, encoding="utf-8")
+                n_pin = mod.apply_reel_caption_phrases(pinned, "p-reels-pip")
+                pinned_got = pinned_file.read_text(encoding="utf-8")
+                if pinned_got != real_hub or n_pin != 0:
+                    pos = next((i for i, (a, b) in enumerate(zip(pinned_got, real_hub)) if a != b), min(len(pinned_got), len(real_hub)))
+                    add("WI2.64 bundled hub composite matches the caption transform",
+                        "changed=%d at %d lens %d/%d" % (n_pin, pos, len(pinned_got), len(real_hub)))
+                else:
+                    add("WI2.64 bundled hub composite matches the caption transform")
+
+                # A hub copy that does not yet have the caption-phrase section
+                # still receives that section and the same P1 note. The result
+                # is the text after the helper refresh, not the input on disk.
+                bare = base_md
+                bare_bad = ""
+                for chunk in (mod._CAPTION_PHRASES_PIP_SECTION, mod._CAPTION_PHRASES_PIP_CHECK):
+                    count = bare.count(chunk)
+                    if count != 1:
+                        bare_bad = "chunk count %d" % count
+                        break
+                    bare = bare.replace(chunk, "", 1)
+                if not bare_bad:
+                    if bare.count(mod._CAPTION_PHRASES_PIP_PROSE_NEW) != 1:
+                        bare_bad = "prose count %d" % bare.count(mod._CAPTION_PHRASES_PIP_PROSE_NEW)
+                    else:
+                        bare = bare.replace(mod._CAPTION_PHRASES_PIP_PROSE_NEW, mod._CAPTION_PHRASES_PIP_PROSE_OLD, 1)
+                if bare_bad or "Keep caption phrases whole (WI2.76)." in bare:
+                    add("WI2.64 hub without the caption section gets the section and the P1 note",
+                        bare_bad or "section still in the fixture")
+                else:
+                    nosec = root / "nosec" / ".hub" / "p-reels-pip"
+                    (nosec / "steps").mkdir(parents=True)
+                    nosec_file = nosec / "steps" / "05-composite.md"
+                    nosec_file.write_text(bare, encoding="utf-8")
+                    mod.apply_reel_caption_phrases(nosec, "p-reels-pip")
+                    got_nosec = nosec_file.read_text(encoding="utf-8")
+                    n_nosec = mod.apply_reel_caption_phrases(nosec, "p-reels-pip")
+                    again_nosec = nosec_file.read_text(encoding="utf-8")
+                    has_section = "Keep caption phrases whole (WI2.76)." in got_nosec
+                    note_n = got_nosec.count(mod._CAPTION_PHRASES_PIP_P1_NOTE)
+                    if not has_section or note_n != 1 or got_nosec != pip_md or again_nosec != pip_md or n_nosec != 0:
+                        pos = next((i for i, (a, b) in enumerate(zip(got_nosec, pip_md)) if a != b), min(len(got_nosec), len(pip_md)))
+                        add("WI2.64 hub without the caption section gets the section and the P1 note",
+                            "section=%s note=%d at %d second=%d" % (has_section, note_n, pos, n_nosec))
+                    else:
+                        add("WI2.64 hub without the caption section gets the section and the P1 note")
 
     hold_src = extract(pip_md, "hold_tail.py")
     clamp_src = extract(pip_md, "clamp_captions.py")
@@ -13466,6 +13528,230 @@ else
   fail "WI2.106 redactor failure" "$wi106_redact"
 fi
 rm -rf "$wi106_root"
+
+echo "=== Case 78: WI2.105 — a killed cfw-render-ctl key call leaves no header file ==="
+# send-logs keeps the render key in cfw-render-hdr.* until curl returns. A
+# fake curl sleeps, so the file is still there when TERM or INT hits the ctl
+# process. No network and no real key: the stub never connects, and the key
+# is a fixture string.
+wi105_dir="$(mktemp -d)"
+wi105_key="cfw_render_wi2105hdrfixture"
+mkdir -p "$wi105_dir/bin" "$wi105_dir/home/.cfw-render" "$wi105_dir/home/CFW Render/logs"
+printf 'CFW_RENDER_MODE=byoa\nCFW_RENDER_WORKER_KEY=%s\nCFW_API_BASE=http://127.0.0.1:9\n' "$wi105_key" > "$wi105_dir/home/.cfw-render/cfw-render.env"
+chmod 600 "$wi105_dir/home/.cfw-render/cfw-render.env"
+cat > "$wi105_dir/bin/curl" <<'EOF'
+#!/bin/sh
+exec sleep 60
+EOF
+chmod 755 "$wi105_dir/bin/curl"
+wi105_once() {
+  local sig="$1" run pid result hint
+  run="$(mktemp -d "${wi105_dir}/run.XXXXXX")"
+  (
+    export HOME="$wi105_dir/home"
+    export TMPDIR="$run"
+    export PATH="$wi105_dir/bin:${PATH}"
+    export CFW_RENDER_API_BASE="http://127.0.0.1:9"
+    export CFW_API_BASE="http://127.0.0.1:9"
+    export CFW_RENDER_WORKER_KEY="$wi105_key"
+    export CFW_RENDER_HOME="$wi105_dir/home/CFW Render"
+    export CFW_RENDER_LOG_DIR="$wi105_dir/home/CFW Render/logs"
+    export CFW_RENDER_STATE_DIR="$wi105_dir/home/.cfw-render"
+    export CFW_RENDER_OUTPUTS="$wi105_dir/home/CFW Render/outputs"
+    export CFW_RENDER_SCRATCH="$wi105_dir/home/.cfw-render/scratch"
+    export CFW_RENDER_ENV="$wi105_dir/home/.cfw-render/cfw-render.env"
+    export CFW_WORKER_ID="wi105-ctl"
+    exec "$REPO_DIR/bin/cfw-render-ctl.sh" send-logs --yes >"$run/out.log" 2>"$run/err.log"
+  ) &
+  pid=$!
+  result="$(python3 - "$TEST_DIR/stop-owned-tree.py" "$pid" "$run" "$sig" 2>>"$run/kill.err" <<'PY'
+import importlib.util, os, signal, sys, time, pathlib
+cleanup_path, root_s, tmp_s, sig_name = sys.argv[1:]
+root = int(root_s)
+tmp = pathlib.Path(tmp_s)
+sig = {"TERM": signal.SIGTERM, "INT": signal.SIGINT}[sig_name]
+spec = importlib.util.spec_from_file_location("cleanup", cleanup_path)
+cleanup = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cleanup)
+
+def headers():
+    return [p for p in tmp.glob("cfw-render-hdr.*") if p.is_file()]
+
+def descendants(table, pid):
+    found = set()
+    def walk(parent):
+        for child, (ppid, _ident) in table.items():
+            if ppid == parent and child not in found:
+                found.add(child)
+                walk(child)
+    walk(pid)
+    return found
+
+deadline = time.time() + 45
+ready = False
+reason = "no-header"
+while time.time() < deadline:
+    table = cleanup.processes()
+    if root not in table:
+        reason = "caller-exited-with-header" if headers() else "caller-exited"
+        break
+    args = cleanup._arguments(root, cleanup._argmax()) or ""
+    if "cfw-render-ctl.sh" not in args or "send-logs" not in args:
+        reason = "not-ctl"
+        time.sleep(0.05)
+        continue
+    nonempty = [p for p in headers() if p.stat().st_size > 0]
+    if not nonempty:
+        reason = "no-header"
+        time.sleep(0.05)
+        continue
+    if not descendants(table, root):
+        reason = "no-curl"
+        time.sleep(0.05)
+        continue
+    ready = True
+    reason = ""
+    break
+
+if not ready:
+    print(reason)
+    raise SystemExit(0)
+
+os.kill(root, sig)
+deadline = time.time() + 5
+left = headers()
+while left and time.time() < deadline:
+    time.sleep(0.05)
+    left = headers()
+print("left=%d" % len(left) if left else "ok")
+PY
+)" || result="${result:-python-failed}"
+  stop_test_tree "$pid" || true
+  if [[ "$result" != "ok" && -f "$run/err.log" ]]; then
+    hint="$(tr '\n' ' ' < "$run/err.log")"
+    hint="${hint//$wi105_key/[key]}"
+    hint="${hint:0:180}"
+    if [[ -n "$hint" ]]; then
+      result="$result err=$hint"
+    fi
+  fi
+  printf '%s' "$result"
+}
+wi105_bad=""
+for wi105_sig in TERM INT; do
+  wi105_result="$(wi105_once "$wi105_sig")"
+  if [[ "$wi105_result" != "ok" ]]; then
+    wi105_bad="${wi105_bad}${wi105_sig}=${wi105_result} "
+  fi
+done
+wi105_left="$(find "$wi105_dir" -name 'cfw-render-hdr.*' -type f -print)"
+if [[ -z "$wi105_bad" && -z "$wi105_left" ]]; then
+  pass "WI2.105: killing cfw-render-ctl send-logs (TERM and INT) leaves no key header file in TMPDIR"
+else
+  fail "WI2.105 key header cleanup" "bad=${wi105_bad:-none} left=${wi105_left:-none}"
+fi
+rm -rf "$wi105_dir"
+
+echo "=== Case 79: WI2.109 — the coder uses an isolated config and cannot write outside the work folder ==="
+# A planted HOME holds Claude settings, an output style and a Codex config.
+# The coder is a local stub (no network, no real CLI). It must see
+# CLAUDE_CONFIG_DIR and CODEX_HOME inside the work folder, not that HOME.
+# A write outside the work folder must fail. A write inside must succeed.
+wi109_root="$(mktemp -d)"
+wi109_home="$wi109_root/home"
+wi109_work="$wi109_root/work"
+wi109_out="$wi109_root/outside"
+mkdir -p "$wi109_home/.claude/output-styles" "$wi109_home/.codex" "$wi109_work" "$wi109_out" "$wi109_root/logs" "$wi109_root/state"
+printf '%s\n' '{"outputStyle":"WI2109-PLANTED-STYLE"}' > "$wi109_home/.claude/settings.json"
+printf '%s\n' 'WI2109-PLANTED-STYLE' > "$wi109_home/.claude/output-styles/personal.md"
+printf '%s\n' 'WI2109-PLANTED-CODEX' > "$wi109_home/.codex/config.toml"
+printf '%s\n' 'render the fixture' > "$wi109_work/prompt.md"
+wi109_field() { sed -n "s/^$1=//p" "$2" | tail -n 1; }
+wi109_once() {
+  local engine="$1" run escape
+  run="$wi109_root/run-$engine"
+  escape="/tmp/cfw-wi2109-$$-$engine"
+  mkdir -p "$run"
+  rm -f "$escape" "$wi109_out/escape-$engine.txt"
+  (
+    export HOME="$wi109_home"
+    export CFW_RENDER_LOG_DIR="$wi109_root/logs"
+    export CFW_RENDER_STATE_DIR="$wi109_root/state"
+    export CFW_RENDER_ENGINE="$engine"
+    export CFW_RENDER_ENGINE_CMD="bash $TEST_DIR/fake-coder-isolation.sh"
+    export CFW_WI2109_REPORT="$wi109_work/report-$engine.txt"
+    export CFW_WI2109_INSIDE="$wi109_work/inside-$engine.txt"
+    export CFW_WI2109_OUTSIDE="$wi109_out/escape-$engine.txt"
+    export CFW_WI2109_ESCAPE="$escape"
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-lib.sh"
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-engine.sh"
+    cr_engine_run "$engine" "$wi109_work/prompt.md" "$wi109_work" "$run/step.log" > "$run/rc-out" 2> "$run/rc-err"
+    printf '%s\n' "$?" > "$run/rc"
+  )
+}
+wi109_check() {
+  local engine="$1" run report sandbox claude_dir codex_dir tmpdir planted inside outside escape rc
+  local profile default_n deny_n allow_n escape_path why=""
+  run="$wi109_root/run-$engine"
+  report="$wi109_work/report-$engine.txt"
+  escape_path="/tmp/cfw-wi2109-$$-$engine"
+  profile="$wi109_work/.cfw-coder/profile.sb"
+  rc="$(cat "$run/rc" 2>/dev/null || true)"
+  if [[ ! -f "$report" ]]; then
+    printf 'no-report rc=%s log=%s' "${rc:-none}" "$(tail -c 240 "$run/step.log" 2>/dev/null | tr '\n' ' ')"
+    return 0
+  fi
+  sandbox="$(wi109_field SANDBOX "$report")"
+  claude_dir="$(wi109_field CLAUDE_CONFIG_DIR "$report")"
+  codex_dir="$(wi109_field CODEX_HOME "$report")"
+  tmpdir="$(wi109_field TMPDIR "$report")"
+  planted="$(wi109_field PLANTED "$report")"
+  inside="$(wi109_field INSIDE "$report")"
+  outside="$(wi109_field OUTSIDE "$report")"
+  escape="$(wi109_field ESCAPE "$report")"
+  [[ "$rc" == "0" ]] || why="${why}rc=$rc "
+  [[ "$planted" == "no" ]] || why="${why}planted=$planted "
+  [[ "$claude_dir" == "$wi109_work/.cfw-coder/claude" ]] || why="${why}claude=$claude_dir "
+  [[ "$codex_dir" == "$wi109_work/.cfw-coder/codex" ]] || why="${why}codex=$codex_dir "
+  [[ "$tmpdir" == "$wi109_work/.cfw-coder/tmp" ]] || why="${why}tmp=$tmpdir "
+  [[ "$inside" == "ok" && -f "$wi109_work/inside-$engine.txt" ]] || why="${why}inside=$inside "
+  [[ ! -f "$claude_dir/settings.json" && ! -e "$claude_dir/output-styles/personal.md" && ! -f "$codex_dir/config.toml" ]] || why="${why}copied "
+  [[ "$(cat "$wi109_home/.claude/settings.json")" == '{"outputStyle":"WI2109-PLANTED-STYLE"}' ]] || why="${why}home-settings "
+  [[ -f "$profile" ]] || why="${why}no-profile "
+  if [[ -f "$profile" ]]; then
+    default_n="$(grep -n -F '(allow default)' "$profile" | head -n 1 | cut -d: -f1)"
+    deny_n="$(grep -n -F '(deny file-write*)' "$profile" | head -n 1 | cut -d: -f1)"
+    allow_n="$(grep -n -F "$wi109_work" "$profile" | head -n 1 | cut -d: -f1)"
+    [[ -n "$default_n" && -n "$deny_n" && -n "$allow_n" && "$default_n" -lt "$deny_n" && "$deny_n" -lt "$allow_n" ]] || why="${why}profile-order "
+    grep -F -q "$claude_dir" "$profile" || why="${why}profile-claude "
+    grep -F -q "$codex_dir" "$profile" || why="${why}profile-codex "
+    grep -F -q "$tmpdir" "$profile" || why="${why}profile-tmp "
+    grep -F -q "$wi109_home" "$profile" && why="${why}profile-names-home "
+    grep -F -q "$wi109_out" "$profile" && why="${why}profile-names-outside "
+  fi
+  [[ "$escape" == "fail" && ! -e "$escape_path" ]] || why="${why}escape=$escape "
+  if [[ "$sandbox" == "apply" ]]; then
+    [[ "$outside" == "fail" && ! -e "$wi109_out/escape-$engine.txt" ]] || why="${why}outside=$outside "
+  elif [[ "$sandbox" == "enclosing" ]]; then
+    grep -F -q 'sandbox-exec cannot nest inside the current sandbox' "$run/step.log" || why="${why}no-nest-log "
+  else
+    why="${why}sandbox=$sandbox "
+  fi
+  printf '%s' "${why:-ok}"
+}
+for wi109_engine in claude-code codex; do
+  wi109_once "$wi109_engine"
+  wi109_detail="$(wi109_check "$wi109_engine")"
+  if [[ "$wi109_detail" == "ok" ]]; then
+    pass "WI2.109 $wi109_engine: isolated config inside the work area; outside write refused"
+  else
+    fail "WI2.109 $wi109_engine isolation" "$wi109_detail"
+  fi
+  rm -f "/tmp/cfw-wi2109-$$-$wi109_engine"
+done
+rm -rf "$wi109_root"
 
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"
