@@ -8165,13 +8165,17 @@ PY
   rm -rf "$root"
 }
 
-for wi263_slug in p-reels-spotlight p-reels-pip; do
+# F22: every video recipe, not only spotlight and pip. Faceless once uploaded
+# voice_bed, body_video and assembled_video to Reviews beside the final file.
+for wi263_slug in p-reels-spotlight p-reels-pip p-reels-faceless p-reels-pip-heygen p-reels-spotlight-heygen p-reels-split p-reels-split-heygen p-clone-reel p-longform; do
   wi263_detail="$(wi263_delivery "$wi263_slug")"
   if [[ "$wi263_detail" == "ok" ]]; then
     if [[ "$wi263_slug" == "p-reels-spotlight" ]]; then
       pass "WI2.63 spotlight: delivery uploads final_video then cover, no voice_track or assembled or scenes"
-    else
+    elif [[ "$wi263_slug" == "p-reels-pip" ]]; then
       pass "WI2.63 pip: delivery uploads final_video then cover, no voice_track, assembled or background"
+    else
+      pass "F22 $wi263_slug: delivery uploads final_video then cover, no step video"
     fi
   else
     fail "WI2.63 $wi263_slug delivery" "$wi263_detail"

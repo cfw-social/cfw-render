@@ -1573,12 +1573,14 @@ print(json.dumps({"saveId": sys.argv[1], "url": sys.argv[2], "checksum": "sha256
   # the lease and no later heartbeat should race that transition.
   cr_harness_heartbeat_stop
   if (( CR_H_LOCAL )); then final_outputs="$(cr_h_checkpoint final)" || return 31; fi
-  # Delivery order is this list. Do this before attempt_completed. A finished
-  # reel (not a partial stage) missing final_video or cover reports
-  # attempt_failed and names the missing file. It does not report success.
-  # Step videos (voice_track, assembled, scenes) stay out of the list.
-  # The filtered list drops both files when either is missing, so name the
-  # gap from the step outputs, before that filter runs.
+  # Delivery order is this list. Do this before attempt_completed. Every
+  # recipe delivers only its deliverables (F22): manifest finalOutputs, or for
+  # a reel final_video, cover and captions. A finished run (not a partial
+  # stage) missing a deliverable reports attempt_failed and names the missing
+  # file. It does not report success. Step saves (voice_bed, body_video,
+  # voice_track, assembled, scenes) stay out of the list.
+  # The filtered list drops all media when one deliverable is missing, so name
+  # the gap from the step outputs, before that filter runs.
   local reel_raw="$final_outputs" reel_missing="" reel_fail=""
   final_outputs="$(cr_h_reel_delivery_outputs "$order_file" "$final_outputs" "$CR_H_RECIPE_DIR")" || return 1
   if [[ "$nonfinal" != "1" ]]; then
@@ -1608,38 +1610,96 @@ print(json.dumps(body))' "$reel_missing" "$endpoint")" || return 1
   return 0
 }
 
-# cr_h_reel_missing_delivery <order-file> <step-outputs-json> <recipe-dir>
-# For p-reels-spotlight and p-reels-pip, print the missing deliverable ids
-# (final_video, then cover) separated by a space. Read the step outputs from
-# before cr_h_reel_delivery_outputs: that filter drops both files when either
-# one is missing, so it cannot say which file was absent. Print nothing for
-# any other recipe, and nothing when both files are in the step outputs.
-# Keep this recipe pair the same as cr_h_reel_delivery_outputs.
-cr_h_reel_missing_delivery() {
-  python3 - "$1" "$2" "$3" <<'PY'
+# ---------------------------------------------------------------------------
+# Delivery filter (F22, finishes WI2.51). Only a recipe's deliverables go to
+# Social. Every other step save (voice_bed, body_video, assembled_video,
+# voice_track, rendered_scenes, narration, ...) stays in the order's scratch
+# folder; none of them is a Reviews file.
+#
+# The rule is read from the order's manifest, not from a recipe name:
+#   1. manifest.finalOutputs[] when it is set: exactly those saves, in that
+#      order. A ref is {stepId, saveId, role}; role is deliverable, poster or
+#      captions. The harness list is matched by save id.
+#   2. Otherwise a reel or video recipe, meaning its manifest declares a video
+#      save with id final_video: final_video, then cover, then captions when
+#      the recipe saves them. (A bare manifest that names only p-reels-spotlight
+#      or p-reels-pip, with no steps, gets the same rule, as before.)
+#   3. Otherwise the list is returned unchanged. p-carousel keeps its ordered
+#      slide_N rule, and the image recipes keep the WI2.51 preview drop, both
+#      in cr_select_deliverables (cfw-render-lib.sh).
+# A media deliverable that is absent contributes no media at all, so an
+# intermediate can never become outputUrl. cr_h_reel_missing_delivery names the
+# absent ids and cr_harness_run then reports attempt_failed, not success.
+# Exit 2 from the filter means finalOutputs is malformed; the caller stops.
+# ---------------------------------------------------------------------------
+cr_h_delivery_py() {
+  cat <<'PY'
 import json, os, sys
-order_path, raw, recipe_dir = sys.argv[1], sys.argv[2], sys.argv[3]
-recipe = ""
+
+mode, order_path, raw, recipe_dir = sys.argv[1:5]
+ROLES = ("deliverable", "poster", "captions")
+BARE_REELS = ("p-reels-spotlight", "p-reels-pip")
+
 try:
     order = json.load(open(order_path))
 except (OSError, ValueError):
     order = {}
-if isinstance(order, dict):
-    manifest = order.get("manifest")
-    if isinstance(manifest, dict) and isinstance(manifest.get("recipe"), str):
-        recipe = manifest["recipe"]
-    elif isinstance(order.get("recipe"), str):
-        recipe = order["recipe"]
+if not isinstance(order, dict):
+    order = {}
+manifest = order.get("manifest") if isinstance(order.get("manifest"), dict) else {}
+if isinstance(manifest.get("recipe"), str):
+    recipe = manifest["recipe"]
+elif isinstance(order.get("recipe"), str):
+    recipe = order["recipe"]
+else:
+    recipe = ""
 if not recipe and recipe_dir:
     recipe = os.path.basename(recipe_dir.rstrip("/"))
-if recipe not in ("p-reels-spotlight", "p-reels-pip"):
+
+
+def declares_reel():
+    for step in manifest.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        for save in step.get("saves") or []:
+            if isinstance(save, dict) and save.get("id") == "final_video" and save.get("kind") == "video":
+                return True
+    return recipe in BARE_REELS
+
+
+def bad_refs():
+    sys.stderr.write("finalOutputs needs a saveId and a role (deliverable, poster or captions) on every entry\n")
+    raise SystemExit(2)
+
+
+# Each target is (save id, file extension or "", role).
+refs = manifest.get("finalOutputs")
+explicit = refs not in (None, [])
+targets = None
+if explicit:
+    if not isinstance(refs, list):
+        bad_refs()
+    targets = []
+    for ref in refs:
+        if (not isinstance(ref, dict) or not isinstance(ref.get("saveId"), str)
+                or not ref["saveId"] or ref.get("role") not in ROLES):
+            bad_refs()
+        targets.append((ref["saveId"], "", ref["role"]))
+elif declares_reel():
+    targets = [("final_video", "mp4", "deliverable"), ("cover", "png", "poster"), ("captions", "json", "captions")]
+
+if targets is None:
+    if mode == "select":
+        sys.stdout.write(raw)
     raise SystemExit(0)
+
 try:
     items = json.loads(raw or "[]")
 except json.JSONDecodeError:
     items = []
 if not isinstance(items, list):
     items = []
+
 
 def ident(item):
     sid = item.get("id") if isinstance(item.get("id"), str) else ""
@@ -1648,88 +1708,75 @@ def ident(item):
     path = item.get("path") if isinstance(item.get("path"), str) else ""
     return sid, os.path.basename(path)
 
-have_video = False
-have_cover = False
-for item in items:
-    if not isinstance(item, dict):
-        continue
+
+def matches(item, name, ext):
     sid, base = ident(item)
-    if sid == "final_video" or base == "final_video.mp4":
-        have_video = True
-    elif sid == "cover" or base == "cover.png":
-        have_cover = True
-missing = []
-if not have_video:
-    missing.append("final_video")
-if not have_cover:
-    missing.append("cover")
-if missing:
+    if sid == name:
+        return True
+    if ext:
+        return base == name + "." + ext
+    return not sid and os.path.splitext(base)[0] == name
+
+
+def pick(name, ext, role):
+    hits = [i for i in items if isinstance(i, dict) and matches(i, name, ext)]
+    # A later save with the same id wins. Captions keep every match.
+    return hits if role == "captions" else hits[-1:]
+
+
+picked = [(t, pick(*t)) for t in targets]
+missing = [t[0] for t, hits in picked if t[2] != "captions" and not hits]
+if mode == "missing":
     sys.stdout.write(" ".join(missing))
+    raise SystemExit(0)
+
+media, captions = [], []
+for (name, ext, role), hits in picked:
+    for item in hits:
+        if role == "captions":
+            if explicit and not isinstance(item.get("role"), str):
+                item = dict(item, role="captions")
+            captions.append(item)
+        else:
+            media.append(item)
+out = ([] if missing else media) + captions
+sys.stdout.write(json.dumps(out, separators=(",", ":")))
 PY
 }
 
+# cr_h_delivery_run <select|missing> <order-file> <outputs-json> <recipe-dir>
+cr_h_delivery_run() {
+  local out rc=0
+  out="$(python3 -c "$(cr_h_delivery_py)" "$@")" || rc=$?
+  if (( rc != 0 )); then
+    if declare -F cr_log >/dev/null; then
+      if (( rc == 2 )); then
+        cr_log "harness: manifest finalOutputs is invalid (each entry needs a saveId and a role); nothing was delivered"
+      else
+        cr_log "harness: delivery filter failed (exit $rc)"
+      fi
+    fi
+    return 1
+  fi
+  printf '%s' "$out"
+}
+
+# cr_h_reel_missing_delivery <order-file> <step-outputs-json> <recipe-dir>
+# Print the missing media deliverable ids, separated by a space: final_video
+# then cover for a reel, or the finalOutputs saveIds that are absent. Read the
+# step outputs from before cr_h_reel_delivery_outputs: that filter drops all
+# media when one deliverable is missing, so it cannot say which was absent.
+# Print nothing for a recipe with no delivery rule, and nothing when every
+# deliverable is present. Both functions share cr_h_delivery_py.
+cr_h_reel_missing_delivery() {
+  cr_h_delivery_run missing "$1" "$2" "$3"
+}
+
 # cr_h_reel_delivery_outputs <order-file> <outputs-json> <recipe-dir>
-# p-reels-spotlight and p-reels-pip: Reviews must show saves/final_video.mp4.
-# The cover still is attached, second. Earlier videos (voice_track,
-# rendered_scenes, background, assembled_video) are step files, never
-# deliverables. Captions stay so the worker can send them beside the media.
-# Any other recipe is returned unchanged, in the same order the steps saved.
-# A reel missing final_video or cover contributes no media, so an intermediate
-# cannot become outputUrl. This function still returns that filtered list.
-# cr_harness_run reports attempt_failed, naming the missing file, instead of
-# attempt_completed.
+# The list of finished files to hand to Social, in delivery order (rules above).
+# Captions stay in the list so the worker can send them beside the media.
+# A recipe with no delivery rule is returned unchanged, in the order the steps
+# saved. The name says reel for history; it now covers every recipe.
 cr_h_reel_delivery_outputs() {
-  python3 -c '
-import json, os, sys
-order_path, raw, recipe_dir = sys.argv[1], sys.argv[2], sys.argv[3]
-recipe = ""
-try:
-    order = json.load(open(order_path))
-except (OSError, ValueError):
-    order = {}
-if isinstance(order, dict):
-    manifest = order.get("manifest")
-    if isinstance(manifest, dict) and isinstance(manifest.get("recipe"), str):
-        recipe = manifest["recipe"]
-    elif isinstance(order.get("recipe"), str):
-        recipe = order["recipe"]
-if not recipe and recipe_dir:
-    recipe = os.path.basename(recipe_dir.rstrip("/"))
-if recipe not in ("p-reels-spotlight", "p-reels-pip"):
-    sys.stdout.write(raw)
-    raise SystemExit(0)
-try:
-    items = json.loads(raw or "[]")
-except json.JSONDecodeError:
-    items = []
-if not isinstance(items, list):
-    items = []
-
-def ident(item):
-    sid = item.get("id") if isinstance(item.get("id"), str) else ""
-    if not sid and isinstance(item.get("saveId"), str):
-        sid = item["saveId"]
-    path = item.get("path") if isinstance(item.get("path"), str) else ""
-    return sid, os.path.basename(path)
-
-chosen = {}
-captions = []
-for item in items:
-    if not isinstance(item, dict):
-        continue
-    sid, base = ident(item)
-    if sid == "captions" or base == "captions.json":
-        captions.append(item)
-        continue
-    if sid == "final_video" or base == "final_video.mp4":
-        chosen["final_video"] = item
-    elif sid == "cover" or base == "cover.png":
-        chosen["cover"] = item
-out = []
-if "final_video" in chosen and "cover" in chosen:
-    out.append(chosen["final_video"])
-    out.append(chosen["cover"])
-out.extend(captions)
-sys.stdout.write(json.dumps(out, separators=(",", ":")))
-' "$1" "$2" "$3"
+  cr_h_delivery_run select "$1" "$2" "$3"
 }
