@@ -7,7 +7,9 @@
 # every transition to cfw-social via report_render_step.
 #
 # Layout (pinned, shared with the recipe step files):
-#   $ORDER_DIR/steps/<stepId>/inputs/<inputId>/   files from the claim's `inputs`
+#   $ORDER_DIR/steps/<stepId>/inputs/<inputId>/   files from the claim's `inputs`,
+#                                                 and the owner's typed `answers`
+#                                                 as <inputId>/<inputId>.md (B13)
 #   $ORDER_DIR/steps/<stepId>/prior/<saveId>.<ext> earlier steps' saves (copied)
 #   $ORDER_DIR/steps/<stepId>/saves/<saveId>.<ext> what the step must write
 #   $ORDER_DIR/steps/<stepId>/brief.json           order brief (no secrets or provider keys)
@@ -33,7 +35,8 @@
 # No refusal, and a redactor failure, keep the missing-save text.
 #
 # Return codes of cr_harness_run: 0 completed, 20 cancelled, 21 released
-# (pause timeout), 22 revoked, 23 superseded, 24 released for an engine usage
+# (pause timeout, or an answered ask handed back so the next claim carries the
+# answer, B13), 22 revoked, 23 superseded, 24 released for an engine usage
 # limit [M3-01b], 25 nonfinal stage completed (no Composition),
 # 30 step failed (attempt_failed reported), 31 local recovery blocked, 1 bad input.
 # On rc 0 the final outputs JSON ([{id,url,path}]) is printed to stdout.
@@ -665,6 +668,14 @@ PY
 # Social sends inputs as a list: [{inputId, items:[{kind, url}]}]. inputId is
 # the input name. Each item is staged the same way as a dict value. The older
 # dict form {name: value} still works. An empty list stages nothing.
+# B13: Social sends a typed (text) answer only in the claim's `answers`
+# ([{inputId, text}], claim-inputs.ts), never in `inputs`. Each answer is
+# written to inputs/<inputId>/<inputId>.md, the same file a typed `inputs`
+# value gets, so a step that reads inputs/<name>/ finds it and does not ask
+# again. An input that `inputs` already supplied is left alone, an empty or
+# blank answer is skipped, and `alternative` stays a condition value (it is
+# not a step input). An answer name containing / or .. is refused like an
+# input name.
 cr_h_stage_inputs() {
   local workdir="$1" order_file="$2" iid src dest list err py_rc=0
   cr_h_write_brief "$workdir" "$order_file" || return 1
@@ -686,6 +697,7 @@ def write_text(key, text):
     with open(os.path.join(folder, str(key) + ".md"), "w", encoding="utf-8", newline="") as handle:
         handle.write(text)
 
+supplied = set()
 for key, value in claim_values(order, "inputs").items():
     if name_refused(key):
         print(key, file=sys.stderr)
@@ -696,6 +708,7 @@ for key, value in claim_values(order, "inputs").items():
         raw = (item.get("url") or item.get("path")) if isinstance(item, dict) else item
         if raw is None or raw == "":
             continue
+        supplied.add(key)
         if isinstance(raw, str):
             if raw.startswith("http://") or raw.startswith("https://") or os.path.exists(raw):
                 print(f"{key}\x1f{raw}")
@@ -706,6 +719,17 @@ for key, value in claim_values(order, "inputs").items():
             write_text(key, json.dumps(raw))
             continue
         print(f"{key}\x1f{raw}")
+
+# B13: typed answers ride in answers, not inputs. The id alternative is the
+# condition value cr_h_condition reads; it is not a step input.
+for key, text in claim_values(order, "answers").items():
+    if key == "alternative" or key in supplied or not isinstance(text, str) or not text.strip():
+        continue
+    if name_refused(key):
+        print(key, file=sys.stderr)
+        refused = True
+        continue
+    write_text(key, text)
 if refused:
     raise SystemExit(2)
 ' "$workdir" "$order_file" >"$list" 2>"$err" || py_rc=$?
@@ -1422,6 +1446,20 @@ PY
           sleep 10; waited=$((waited + 10))
           cr_h_report heartbeat '{}'
         done
+        # B13: the owner's answer reaches this computer only inside a claim
+        # (claim_render_order: `answers`, `inputs`, `providerKeys`). The claim
+        # this run holds was taken before the ask, so rerunning the step here
+        # would show it the same empty answers and it would ask again. Hand the
+        # attempt back instead: Social queues the request, and the next claim
+        # carries the answer (cr_h_stage_inputs writes it where the step reads
+        # it). This is the path a hold-window release already takes. A local
+        # checkpoint claim keeps the rerun.
+        if (( ! CR_H_LOCAL )); then
+          rm -f "$order_dir/current-step.json"
+          cr_h_report attempt_released "{\"stepId\":\"$step_id\",\"reason\":\"ask_answered\"}" || return $?
+          cr_log "harness: order $CR_H_ORDER_ID — ask at step $step_id answered; released so the next claim carries the answer"
+          return 21
+        fi
         run=$((run - 1))   # an answered ask reruns the step; not a check retry
         continue
       fi
