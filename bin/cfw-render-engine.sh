@@ -12,7 +12,9 @@
 # reads, copies or prints ~/.codex/auth.json, ~/.claude/*, the keychain, or
 # any env var that looks like a key. Detection relies solely on each CLI's own
 # status command EXIT CODE; its stdout (which carries the account e-mail) is
-# discarded, never logged.
+# discarded, never logged. The one sign-in step it takes: a coder run and the
+# codex status probe get a SYMLINK to the codex sign-in file (a path; the file
+# is never opened here). See WI2.109 below.
 #
 # Pinned non-interactive forms — CONFIRMED from `codex exec --help`
 # (codex-cli 0.142.5) and `claude --help` / `claude auth status --help`
@@ -108,10 +110,25 @@ cr_engine_signed_in() {
   fi
   case "$engine" in codex|claude-code) ;; *) return 1 ;; esac
   [[ -n "${CFW_RENDER_ENGINE_CMD:-}" ]] && return 0
+  # Probe the way cr_engine_run runs: an empty config dir (codex: plus the
+  # sign-in link). A sign-in a run cannot see must not count as signed in.
+  local probe rc=1
+  probe="$(mktemp -d "${TMPDIR:-/tmp}/cfw-engine-probe.XXXXXX")" || return 1
   case "$engine" in
-    codex) command -v codex >/dev/null 2>&1 && codex login status >/dev/null 2>&1 < /dev/null ;;
-    claude-code) command -v claude >/dev/null 2>&1 && claude auth status >/dev/null 2>&1 < /dev/null ;;
+    codex)
+      if command -v codex >/dev/null 2>&1 && mkdir -p "$probe/codex"; then
+        cr_engine_link_codex_signin "$probe/codex" || true
+        CODEX_HOME="$probe/codex" codex login status >/dev/null 2>&1 < /dev/null && rc=0
+      fi
+      ;;
+    claude-code)
+      if command -v claude >/dev/null 2>&1 && mkdir -p "$probe/claude"; then
+        CLAUDE_CONFIG_DIR="$probe/claude" claude auth status >/dev/null 2>&1 < /dev/null && rc=0
+      fi
+      ;;
   esac
+  rm -rf "$probe"
+  return "$rc"
 }
 
 # cr_engine_order — known engines one per line, in the owner's order.
@@ -363,11 +380,20 @@ print(json.dumps({"engine": sys.argv[1], "os": sys.argv[2], "manifests": json.lo
 # Every claude-code, codex, and CFW_RENDER_ENGINE_CMD run gets an empty
 # config directory inside the step work area. CLAUDE_CONFIG_DIR and
 # CODEX_HOME point there. Nothing is copied from ~/.claude or ~/.codex:
-# this file does not read those paths, and a copy in the work area could
-# be logged or uploaded. Sign-in is only what the process already has in
-# its environment (API keys or token variables such as ANTHROPIC_API_KEY
-# or CLAUDE_CODE_OAUTH_TOKEN). A subscription that lives only as a file
-# under ~/.claude or ~/.codex is not visible, on purpose.
+# no settings, config.toml, skills, plugins, hooks, CLAUDE.md or AGENTS.md.
+#
+# Sign-in (hotfix for the 7b08037 401s): a codex run gets one entry in its
+# isolated CODEX_HOME, auth.json as a SYMLINK to the owner's
+# ${CODEX_HOME:-~/.codex}/auth.json. A link, not a copy: the work area then
+# holds a path, never a token, and codex rewrites auth.json in place when
+# it refreshes (open + truncate, not rename). OpenAI refresh tokens are
+# single-use, so a refreshed copy would leave the owner's file holding a
+# spent token. The write profile allows that one file. Claude Code does
+# not find its sign-in under an empty CLAUDE_CONFIG_DIR (2.1.303: `claude
+# auth status` exits 1), so a claude-code run sees only token variables in
+# its environment (CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY).
+# cr_engine_signed_in probes with the same isolated dirs, so the worker
+# advertises only an engine its runs can use.
 #
 # Writes go through sandbox-exec. The profile allows writes only under the
 # work folder, the isolated config dirs and a private tmp dir (plus device
@@ -395,6 +421,20 @@ cr_engine_allow_write_subpath() {
     quoted="$(cr_engine_sb_quote "$physical")"
     printf '(allow file-write* (subpath %s))\n' "$quoted"
   fi
+}
+
+# cr_engine_codex_signin_file — the owner's codex sign-in file (path only).
+cr_engine_codex_signin_file() { printf '%s/auth.json' "${CODEX_HOME:-${HOME}/.codex}"; }
+
+# cr_engine_link_codex_signin <isolated-codex-home> — symlink the owner's
+# sign-in file into it. rc 0 linked; 1 no sign-in file, or a regular file
+# is already there (left alone, never overwritten).
+cr_engine_link_codex_signin() {
+  local src dest="$1/auth.json"
+  src="$(cr_engine_codex_signin_file)"
+  [[ -f "$src" ]] || return 1
+  [[ -L "$dest" || ! -e "$dest" ]] || return 1
+  ln -sfn "$src" "$dest"
 }
 
 # cr_engine_sandbox_probe — set CR_ENGINE_SANDBOX_MODE to apply, enclosing,
@@ -434,7 +474,7 @@ cr_engine_prepare_isolate() {
 }
 
 cr_engine_write_profile() {
-  local dest="$1" work="$2" claude="$3" codex="$4" tmp="$5" dev
+  local dest="$1" work="$2" claude="$3" codex="$4" tmp="$5" signin="${6:-}" dev physical
   {
     printf '%s\n' '(version 1)' '(allow default)' '(deny file-write*)'
     # Device nodes libc and the test doubles open for write. Not work-folder paths.
@@ -445,6 +485,12 @@ cr_engine_write_profile() {
     cr_engine_allow_write_subpath "$claude" || return 1
     cr_engine_allow_write_subpath "$codex" || return 1
     cr_engine_allow_write_subpath "$tmp" || return 1
+    if [[ -n "$signin" ]]; then
+      # The sandbox checks the link's target, so allow that one real file.
+      physical="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$signin" 2>/dev/null)" || return 1
+      [[ -n "$physical" ]] || return 1
+      printf '(allow file-write* (literal %s))\n' "$(cr_engine_sb_quote "$physical")"
+    fi
   } > "$dest" || return 1
   chmod 600 "$dest" || return 1
 }
@@ -485,7 +531,11 @@ cr_engine_run() {
     cr_log "cr_engine_run: could not create the isolated coder config dir"
     return 2
   fi
-  if ! cr_engine_write_profile "$CR_CODER_ROOT/profile.sb" "$workdir" "$CR_CODER_CLAUDE_DIR" "$CR_CODER_CODEX_DIR" "$CR_CODER_TMP"; then
+  local signin=""
+  if [[ "$engine" == codex ]] && cr_engine_link_codex_signin "$CR_CODER_CODEX_DIR"; then
+    signin="$(cr_engine_codex_signin_file)"
+  fi
+  if ! cr_engine_write_profile "$CR_CODER_ROOT/profile.sb" "$workdir" "$CR_CODER_CLAUDE_DIR" "$CR_CODER_CODEX_DIR" "$CR_CODER_TMP" "$signin"; then
     cr_log "cr_engine_run: could not write the coder write profile"
     return 2
   fi
@@ -516,6 +566,9 @@ cr_engine_run() {
     fi
     exec "${cmd[@]}" < "$prompt_file" || exit $?
   ) >> "$log" 2>&1 || rc=$?
+  if [[ -n "$signin" && -e "$CR_CODER_CODEX_DIR/auth.json" && ! -L "$CR_CODER_CODEX_DIR/auth.json" ]]; then
+    cr_log "cr_engine_run: codex replaced the sign-in link with a file; $signin may hold a spent token (check: codex login status)"
+  fi
   return "$rc"
 }
 
