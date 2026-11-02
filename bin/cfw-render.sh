@@ -265,14 +265,19 @@ print("" if o.get("manifest") and not ranged and not local else aid)
   export CFW_ATTEMPT_ID
 
   # [CFW-313] Brand-scoped provider credential gate. A HeyGen recipe must
-  # carry taskOrder.credentials.heygen — a brand-scoped OAuth credential
-  # cfw-social embeds into the order at claim time from THAT brand's own
-  # connected HeyGen account. This worker NEVER falls back to any
-  # worker-local/vault HeyGen key — absent or malformed means this brand
-  # simply hasn't connected HeyGen yet (or the companion cfw-social piece of
-  # CFW-313 hasn't shipped), and the honest answer is to block, not to
-  # borrow another brand's credential.
-  local heygen_mode="" heygen_token="" heygen_expires="" heygen_pool="" heygen_expired=""
+  # carry a HeyGen credential from THAT brand, embedded into the order by
+  # cfw-social at claim time. Either source passes:
+  #   - taskOrder.credentials.heygen — a brand-scoped OAuth credential, or
+  #   - order.providerKeys — the brand's own HeyGen key
+  #     ({provider:"heygen", value, expiresAt?}), the form production
+  #     cfw-social sends on a manifest claim. The step harness exports it as
+  #     HEYGEN_API_KEY (cr_h_export_step_keys), so a manifest order is the only
+  #     kind this path admits.
+  # This worker NEVER falls back to any worker-local/vault HeyGen key — if
+  # neither source is usable this brand simply hasn't connected HeyGen yet,
+  # and the honest answer is to block, not to borrow another brand's
+  # credential.
+  local heygen_mode="" heygen_token="" heygen_expires="" heygen_pool="" heygen_expired="" heygen_pk=""
   if cr_recipe_needs_heygen "$recipe"; then
     IFS=$'\x1f' read -r heygen_mode heygen_token heygen_expires heygen_pool heygen_expired <<< "$(python3 -c '
 import datetime, json, sys
@@ -292,8 +297,40 @@ if expires:
 print("\x1f".join([mode, token, expires, pool, expired]))
 ' <<< "$order_json" 2>/dev/null)"
 
-    if [[ "$heygen_mode" != "oauth" || -z "$heygen_token" || "$heygen_expired" == "1" ]]; then
-      cr_log "spawn_director: order $order_id (recipe=$recipe) has no usable brand-scoped HeyGen OAuth credential on taskOrder.credentials.heygen (mode=$heygen_mode expired=$heygen_expired) — blocking (never falling back to a worker-local key)"
+    # providerKeys path. Same rules the harness applies before it exports the
+    # key (cr_h_export_step_keys): a manifest order, a heygen entry with a
+    # non-blank string value, and an expiresAt, if present, that is timezone-
+    # aware and in the future. Only "1" or "0" leaves Python — the value never
+    # reaches a variable, a log line or argv. Any error counts as not usable.
+    heygen_pk="$(python3 -c '
+import datetime, json, sys
+usable = "0"
+try:
+    o = json.load(sys.stdin)
+    if isinstance(o.get("manifest"), dict) and o["manifest"]:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        for k in o.get("providerKeys") or []:
+            if not isinstance(k, dict) or k.get("provider") != "heygen":
+                continue
+            v = k.get("value")
+            if not isinstance(v, str) or not v.strip() or "\x00" in v:
+                continue
+            if "expiresAt" in k:
+                e = k["expiresAt"]
+                if not isinstance(e, str):
+                    continue
+                exp_dt = datetime.datetime.fromisoformat(e.replace("Z", "+00:00"))
+                if exp_dt.tzinfo is None or exp_dt <= now:
+                    continue
+            usable = "1"
+            break
+except Exception:
+    usable = "0"
+print(usable)
+' <<< "$order_json" 2>/dev/null)"
+
+    if [[ "$heygen_pk" != "1" && ( "$heygen_mode" != "oauth" || -z "$heygen_token" || "$heygen_expired" == "1" ) ]]; then
+      cr_log "spawn_director: order $order_id (recipe=$recipe) has no usable brand-scoped HeyGen OAuth credential on taskOrder.credentials.heygen and no usable heygen providerKeys entry (mode=$heygen_mode expired=$heygen_expired providerKey=$heygen_pk) — blocking (never falling back to a worker-local key)"
       cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"this brand'"'"'s HeyGen account isn'"'"'t connected — connect it in brand settings","needs":"decision"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
         || cr_log "order $order_id — block_render_order (no-heygen-credential) call failed; lease expiry is the backstop"
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "blocked" "" "" >> "$JOURNAL"
