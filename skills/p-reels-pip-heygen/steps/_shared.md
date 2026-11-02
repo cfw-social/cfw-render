@@ -33,13 +33,18 @@ the files listed below. Do not look for the rest of the recipe and do not run ot
 
 ## This is the script-driven (HeyGen avatar) variant of `p-reels-pip`
 
-There is NO `inputs/talking_head/` in this recipe. The leading `generate_avatar` step renders the
-speaker from the `script` input with the brand's HeyGen avatar and saves it as `talking_head`, so
-from `prepare_footage` onward the talking-head video is **`prior/talking_head.mp4`**. Wherever a
-step file reads `inputs/talking_head/*`, read `prior/talking_head.mp4` instead; a step may never
-ask for `talking_head` (it is not an input here — `needs_input.json` for it is a failure). The
-script text is also available at `inputs/script/script.json` (`{"text"}`) — the `transcribe`
-step still produces word timings from the audio (do not skip it: HeyGen does not emit word times).
+There is NO `inputs/talking_head/` in this recipe. The leading `generate_avatar` step produces the
+speaker video and saves it as `talking_head`, in one of two ways. By default it renders the
+`script` input with the brand's HeyGen avatar through the HeyGen API. When the order carries the
+optional `avatar_video` input (a finished clip in `inputs/avatar_video/`, for example one made in
+the HeyGen web app) it adopts that clip instead and does NOT call the API. Only `generate_avatar`
+reads `inputs/avatar_video/`. Either way, from `prepare_footage` onward the talking-head video is
+**`prior/talking_head.mp4`**. Wherever a step file reads `inputs/talking_head/*`, read
+`prior/talking_head.mp4` instead; a step may never ask for `talking_head` or `avatar_video`
+(neither is an ask here — `needs_input.json` for them is a failure). The script text is also
+available at `inputs/script/script.md` (raw text; a `script.json` `{"text"}` is read too) — the
+`transcribe` step still produces word timings from the audio (do not skip it: HeyGen does not emit
+word times).
 Provider keys (HEYGEN_API_KEY) are exported by the harness from the order's brand
 provider credentials; they are never read from a file and never printed. Everything below is the
 base recipe's shared contract and applies unchanged.
@@ -63,7 +68,7 @@ The harness runs you in a fresh **step workdir** — the current directory. Use 
 
 | Where | What |
 |---|---|
-| `inputs/<inputId>/` | The order inputs by manifest input id: `inputs/talking_head/` (exactly one video file), `inputs/broll/` (zero or more clips), `inputs/cta/cta.json` (`{"text","brandName","handle"}`; any key may be absent), `inputs/outro/` (one optional clip). An input dir that does not exist means the input was not supplied. |
+| `inputs/<inputId>/` | The order inputs by manifest input id: `inputs/talking_head/` (exactly one video file), `inputs/broll/` (zero or more clips), `inputs/avatar_video/` (one optional pre-made talking-head clip, read only by `generate_avatar`), the typed inputs `script`, `avatar_id` and `voice_id` arrive as raw text in `inputs/<id>/<id>.md` (the worker stages every typed answer that way; `generate_avatar` reads `.md`, `.txt` and `<id>.json` `{"text"}`), `inputs/cta/cta.json` (`{"text","brandName","handle"}`; any key may be absent), `inputs/outro/` (one optional clip). An input dir that does not exist means the input was not supplied. |
 | `brief.json` | The order brief: `recipe`, `intent`, `targets` (platform list), `brand` (slug, name, palette/typography when known, `brief` text) and any `options` the owner set (listed per step, every option has a default). |
 | `prior/<saveId>.<ext>` | Earlier steps' saved outputs the harness downloaded for you, named by their manifest save id (`.mp4` video, `.png`/`.jpg` image, `.json` json, `.md` text). Only the files your step file lists are present. |
 | `saves/<saveId>.<ext>` | **Where you write THIS step's saves.** The manifest `saves[]` carry no path — the path is always `saves/<id>.<ext>` (video `.mp4`, image `.png`, json `.json`, text `.md`). The harness validates saves and declared checks before recording completion; local mode retains intermediate bytes on this computer, while legacy mode uploads saves. See the reporting boundary above for validator/readiness limits. |

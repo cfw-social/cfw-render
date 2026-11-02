@@ -2023,7 +2023,7 @@
     },
     "p-reels-pip-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:7a6512e31c60baba5afb25b599115296cb0c5851ef8126d301ffd0829de5adb2",
+      "checksum": "sha256:44cffb2b23f9577e641f5ccff82e60fcbb1446ef93788f205d5bc59dd8930876",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -2254,15 +2254,15 @@
         ".hub/p-reels-pip/steps/_shared.md": "sha256:b4d99efa23ad4da66eb8da17358bc8408975583041b363167031d6b7090a2340",
         ".hub/p-reels-pip/templates/motion-card.html": "sha256:81f0a62270ed98a5d5e75e26b715562c24d681fb72406cbdf75ffb4c9c44bd60",
         "SKILL.md": "sha256:b36b01083e578165ffb8ff39d62646626dd57dfd83db0734b32855d973344e60",
-        "manifest.json": "sha256:9779de551df5a882135970be84978e45b1d555fa903ed64150c5cd8942dd5f57",
-        "steps/00-generate-avatar.md": "sha256:dc00fd624210b129ca893dffabef3d91db5dd944bdb11f484fbc18e9cb23d136",
+        "manifest.json": "sha256:17bf2771885905da0c10331dacc4aa83f35d1fcd803fa2d4ff9b4ffec4be13b2",
+        "steps/00-generate-avatar.md": "sha256:9292202e7d92ead3703ebfcd8b6e2db73c85c23e283f2be6389ab7076e3412a7",
         "steps/01-prepare-footage.md": "sha256:d5e5376491a988ebd4969d5f7be6dfa6d66497bf9cae0958fc4b0f415eb05693",
         "steps/02-transcribe.md": "sha256:58423227fe90125cb2281d0be57a50c68873b77a6d5b9373b67c705abe9d0d22",
         "steps/03-plan-beats.md": "sha256:f66a79cffd9ec11461a2f7bedf665d2abd72117d6d8dd73dafcc6b0ecf051d27",
         "steps/04-build-background.md": "sha256:7b0226808e436cc2a05cbf6dd5f3056f7e0084fea8ca1f0ee87008d7c0b8b473",
         "steps/05-composite.md": "sha256:f0f031ca8411fd23f661e5fef4010a4248ef2bca91ecc2be12d39a5ed47d4eb5",
         "steps/06-final-checks.md": "sha256:44589f5c49356e53f0b7ced0656bf794695a0917c2755bedcd0a9a609cbf2346",
-        "steps/_shared.md": "sha256:161059454b3fea0ffe65c126407892e14b026a415c86f9e7b2b54afdb723207e"
+        "steps/_shared.md": "sha256:ffdd8833a499a2f696ac8c558331902852c24606a64dcf63aac6041588fcb109"
       },
       "providers": [],
       "systemRequires": [],
@@ -2284,7 +2284,7 @@
     },
     "p-reels-spotlight-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:190fe5c4740b8f0743b91e548943994110d036954ec3e0203a63cb040dcdf1f1",
+      "checksum": "sha256:dbc19a1ffde8533f28c368f2dc3c79318ba14416fa2274a6dc34b8ec21220339",
       "files": [
         ".hub/c-broll-sync/SCENE-PLAN.md",
         ".hub/c-broll-sync/SKILL.md",
@@ -2550,8 +2550,8 @@
         ".hub/p-reels-spotlight/templates/tk-quote.html": "sha256:82ef191dc26c1bbf956fa1baa93890166d9cf8c572c35de295127ca26da3e306",
         ".hub/p-reels-spotlight/templates/tk-stat.html": "sha256:308084d23ae3e3b822e035dcfc3f72f7264dd9e938fd49cb2aa69012a987ebd5",
         "SKILL.md": "sha256:2a3f7b070438d31423358438e441bd23c06e33e4463be061c513475b27219bf1",
-        "manifest.json": "sha256:0cbdd4d1eba4238de11154c3a086e2601ae9d88b285793844ea65e978f92494b",
-        "steps/00-generate-avatar.md": "sha256:eac770a046a182a5c561b349441b2087376a0387e3c20d53bafe97909cff80c6",
+        "manifest.json": "sha256:db9dcc8946dcd1ea777e05e745a07ad622059d2820eac4145ebed727e92774be",
+        "steps/00-generate-avatar.md": "sha256:941ed02e484968958812d57a546c8cb5736812a9c5eddd4f4dea3b34159ed06a",
         "steps/01-prepare-footage.md": "sha256:07c886005e6f595bd7fd7b00973ddc4d3257de468351692724de057364729aad",
         "steps/02-transcribe.md": "sha256:77a7fc03a1200f09304b37207a4fcbf6a5ec64139c7d51fcbeff3f3e74890600",
         "steps/03-plan-edit.md": "sha256:1a1ad4ec5d7cddbabe735e420bb190fe2f244775d6c5fdc9f29af8bc9ec0f8e3",
@@ -2559,7 +2559,7 @@
         "steps/05-render-scenes.md": "sha256:a17bf9ed7023f1e55f3cb2fde9244f5f91e41908148b5e7dd68821dfdfd8827c",
         "steps/06-assemble.md": "sha256:653ac1b378b6716f590daa0382739054f76563e60f687fdc218b7de02490d1f6",
         "steps/07-final-checks.md": "sha256:bc9ca4a87811fae4e01e7f58dc7cf98832fd7b0a06b9bc7356f3a1217bd918d5",
-        "steps/_shared.md": "sha256:09ea316256fd4dd8f250e7bb379e465c913575b3567a48e7a38ab3fcd50e3244"
+        "steps/_shared.md": "sha256:00e89557a589d19f1e055bac0696de9fe4b60b288ba98d02593c23704d0a1f40"
       },
       "providers": [],
       "systemRequires": [],

@@ -5,8 +5,8 @@
   "sourceRelease": null,
   "sourceSha": "8ab5d1fcdeacc6f8e6ec62e726d0a6ac65e8eea4",
   "recipeCount": 14,
-  "aggregateChecksum": "sha256:252b2745ee03c909cd7ce3e95b4d8d1383f16a0fd81446be72ddb71568df1491",
-  "bundledAt": "2026-11-02T20:47:15Z",
+  "aggregateChecksum": "sha256:6df3938fa5c3cbe8a89e099063d390a32da30b45cc25c6767d97e51bf3056e3d",
+  "bundledAt": "2026-11-02T23:20:36Z",
   "bundleMethod": "scripts/sync-skills.sh (direct copy from private source repo; git-subtree retired)",
   "updateCommand": "CFW_SKILLS_SRC=<path-to-private-skills-repo> scripts/sync-skills.sh",
   "recipes": {
@@ -57,7 +57,7 @@
     },
     "p-reels-pip-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:7a6512e31c60baba5afb25b599115296cb0c5851ef8126d301ffd0829de5adb2",
+      "checksum": "sha256:44cffb2b23f9577e641f5ccff82e60fcbb1446ef93788f205d5bc59dd8930876",
       "fileCount": 118
     },
     "p-reels-split": {
@@ -77,7 +77,7 @@
     },
     "p-reels-spotlight-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:190fe5c4740b8f0743b91e548943994110d036954ec3e0203a63cb040dcdf1f1",
+      "checksum": "sha256:dbc19a1ffde8533f28c368f2dc3c79318ba14416fa2274a6dc34b8ec21220339",
       "fileCount": 136
     }
   }

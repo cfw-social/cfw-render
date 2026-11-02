@@ -76,6 +76,27 @@
       "default": "brand"
     },
     {
+      "id": "avatar_video",
+      "label": "Pre-made avatar clip",
+      "kinds": [
+        "video"
+      ],
+      "required": false,
+      "count": {
+        "min": 0,
+        "max": 1
+      },
+      "constraints": {
+        "durationSec": {
+          "min": 20,
+          "max": 60
+        },
+        "orientation": "any"
+      },
+      "neededAt": "start",
+      "prompt": "Pre-made talking-head clip (HeyGen web app or any source). When given, the HeyGen API is not called."
+    },
+    {
       "id": "broll",
       "label": "B-roll clips",
       "kinds": [
