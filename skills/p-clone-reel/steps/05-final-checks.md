@@ -9,7 +9,8 @@ failing gate means the reel is NOT delivered.
 - `prior/composite_video.mp4` — the finished reel (narration + outro, mastered, captioned).
 - `prior/format_analysis.json` — `layout.presenter` (tells the vision pass whether to expect a PIP).
 - `prior/adapted_script.md` — source for the post captions.
-- `inputs/cta/cta.json` — CTA text / brand name / handle when supplied; else `brief.json.brand`.
+- `inputs/cta/cta.md` — the typed CTA offer line as raw text (or `cta.json` with text / brand name /
+  handle, or `cta.txt`) when supplied; else `brief.json.brand`.
 - `brief.json` — `targets` (platform list), `brand.slug`, `options.cover_style`, intent.
 
 ## You must produce

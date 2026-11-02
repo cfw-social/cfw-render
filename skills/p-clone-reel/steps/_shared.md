@@ -48,7 +48,7 @@ The harness runs you in a fresh **step workdir** — the current directory. Use 
 
 | Where | What |
 |---|---|
-| `inputs/<inputId>/` | The order inputs by manifest input id: `inputs/source_reel/` holds either `source_reel.json` (`{"url": "..."}` for a link — CFW copied the file into Media too, so a `.mp4` may sit beside it) or one video file; `inputs/topic/topic.json` (`{"text": "..."}`), `inputs/section/section.json` (`{"choice": "full|opening|middle"}`), `inputs/avatar_id/avatar_id.json` and `inputs/voice_id/voice_id.json` (`{"text": "<id>"}`), `inputs/cta/cta.json` (`{"text","brandName","handle"}`; any key may be absent). An input dir that does not exist means the input was not supplied. |
+| `inputs/<inputId>/` | The order inputs by manifest input id: `inputs/source_reel/` holds either `source_reel.json` (`{"url": "..."}` for a link — CFW copied the file into Media too, so a `.mp4` may sit beside it) or one video file; the typed inputs `topic`, `section` (`full|opening|middle`), `avatar_id`, `voice_id` and `cta` arrive as raw text in `inputs/<id>/<id>.md` (the worker stages every typed answer that way); a step also reads `<id>.json` (`{"text": "..."}`, `{"choice": "..."}` for `section`, `{"text","brandName","handle"}` for `cta`) and `<id>.txt`. An `avatar_id` text of `none`, `no`, `voice-only` or `off`, any case, forces the voice-only path even when the brand has an avatar. A `cta` answer is the offer line; `brandName` and `handle` come from the brand. An input dir that does not exist means the input was not supplied. |
 | `brief.json` | The order brief: `intent`, `targets` (platform list), `brand` (slug, name, palette/typography when known, `brief` text, `heygen.avatarId` / `heygen.voiceId` / `elevenlabs.voiceId` when the brand has them) and any `options` the owner set (every option has a default). |
 | `prior/<saveId>.<ext>` | Earlier steps' saved outputs the harness downloaded for you, named by their manifest save id (`.mp4` video, `.png` image, `.json` json, `.md` text). Only the files your step file lists are present. |
 | `saves/<saveId>.<ext>` | **Where you write THIS step's saves.** The manifest `saves[]` carry no path — the path is always `saves/<id>.<ext>` (video `.mp4`, image `.png`, json `.json`, text `.md`). The harness validates saves and declared checks before recording completion; local mode retains intermediate bytes on this computer, while legacy mode uploads saves. See the reporting boundary above for validator/readiness limits. |
@@ -81,8 +81,8 @@ ask). When the owner answers, the harness reruns the step from scratch.
   the reference footage itself is never shown as the brand's own — it informs layout and rhythm.
 - **Palette / typography come from the brand**: brand brief → palette in `brief.json` → the
   dark-premium default `bg #0F172A`, `accent #F97316`, `fg #F1F5F9`. Hexes are 6-digit.
-- **End-card copy is per-brand**: offer line, brand name and handle come from `inputs/cta/cta.json`
-  (`text`, `brandName`, `handle`), else `brief.json.brand`. A brand with no handle gets a card
+- **End-card copy is per-brand**: offer line, brand name and handle come from `inputs/cta/`
+  (`cta.md` raw text is the offer line; `cta.json` has `text`, `brandName`, `handle`), else `brief.json.brand`. A brand with no handle gets a card
   with **no handle line** — never invent one.
 - **Frame 0 and the last frame are never black.** The reel ends on the outro / CTA card.
 - **Green-screen keying is two-pass `colorkey`** (`0x00FF00:0.25:0.05` then `0x00FF00:0.40:0.01`),

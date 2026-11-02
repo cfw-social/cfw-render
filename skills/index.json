@@ -271,10 +271,11 @@
     },
     "p-clone-reel": {
       "version": "1.0.0",
-      "checksum": "sha256:c8bba8273f9daf70ea23441a2112c2304fe92b64bbe460ecf1c4be01b846c734",
+      "checksum": "sha256:2fc64c54bd83c2af412e3f88134bf18eea4a8c1dc8ca58330e44a0ef525d5806",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
+        ".hub/c-audio/scripts/transcribe.sh",
         ".hub/c-broll/LEARNINGS.md",
         ".hub/c-broll/SKILL.md",
         ".hub/c-cloud-media/LEARNINGS.md",
@@ -359,6 +360,7 @@
       "fileHashes": {
         ".hub/c-audio/LEARNINGS.md": "sha256:a0b4d73ab2ccaf7a1040dce8f5fd2ecbb17a7b145f1f782bfb4e60ce154200a7",
         ".hub/c-audio/SKILL.md": "sha256:449e6861d4a01a6733be37b7d78f709e8f59c5cfd98e15f82ce5f60152fede2a",
+        ".hub/c-audio/scripts/transcribe.sh": "sha256:63a55b82875fb0c0dd4c30c89854d2b66adb29ec4820d55c3e37404443b1bf08",
         ".hub/c-broll/LEARNINGS.md": "sha256:2063aee967e5e0cb45e3093a2a6c593537a2b215657afe2c241dd694abc8a649",
         ".hub/c-broll/SKILL.md": "sha256:b2d8f12b2548f0a829304354c73d1085bfb46152ec8c8e6b1d5f6ad8d1a6b5f8",
         ".hub/c-cloud-media/LEARNINGS.md": "sha256:bd3fc51f0d21c894bcf3a8bbbaab8d7c47165564aedd600b855a8633e0eabfd9",
@@ -434,11 +436,11 @@
         "examples.json": "sha256:57c7d12c47e46532de2ffc7bf148f462d301abef2d939fa0f752092a81ab6207",
         "manifest.json": "sha256:c7a98582c06757d270ac231bb5a6368dc0891adc4ba81d891961515a83fc343c",
         "steps/01-ingest-reference.md": "sha256:3756f88e3f1294e7a2870a8fa0e8c43d8fac0d30179d39d70e84fca35a8ed554",
-        "steps/02-adapt-script.md": "sha256:a59592ffaec45e9118630d2bc91163ee07271a3cf2398630ea074fa6f255293b",
-        "steps/03-generate-narration.md": "sha256:aba852d3376cb7519fbab7f717705fd45675461af20457d3563a16b1faceb9d1",
-        "steps/04-composite.md": "sha256:2a0649851328ff7512eb993283ca5ab9441c411257b60e076d201ea1412e057f",
-        "steps/05-final-checks.md": "sha256:93dfec9efc1882986bf480e84b46c3063db4eb051afca5a02f8117d9fe0a9dff",
-        "steps/_shared.md": "sha256:e5f6f7d73912d2f6049e11318d0c2424e22c8c28858cff38a42aba94d26e7a8b"
+        "steps/02-adapt-script.md": "sha256:f4cd51a1195cdbe68cdb60259056e849565699938dba7a84aaf33c4c1f944379",
+        "steps/03-generate-narration.md": "sha256:2a6042837b10ca04390c27a3938b84eb0ed8b4e2200694d554251eb1cb558f06",
+        "steps/04-composite.md": "sha256:6501bb6cb98965e8116875ea9839589f8ee61b46c68bc291475291743f10ea83",
+        "steps/05-final-checks.md": "sha256:43ce81e0ee6de9f051bc574a8c8ed6ed462ea34a75e3e7d36296f5e6a438fee1",
+        "steps/_shared.md": "sha256:dddc52d6e048ede15f0a2699d4e3536629440658d9aae97e3851aa3b6ab747d0"
       },
       "providers": [],
       "systemRequires": [],

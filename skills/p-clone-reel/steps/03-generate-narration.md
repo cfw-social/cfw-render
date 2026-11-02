@@ -7,9 +7,13 @@ voice-over wrapped in a solid-colour 1080×1920 bed. Loudness is normalised once
 ## You receive
 
 - `prior/adapted_script.md` — front matter + TTS-clean body (use the body verbatim).
-- `inputs/avatar_id/avatar_id.json` — `{"text": "<HeyGen avatar id>"}` when supplied; dir absent
-  → `brief.json.brand.heygen.avatarId`; neither → voice-only path.
-- `inputs/voice_id/voice_id.json` — `{"text": "<voice id>"}` when supplied; dir absent →
+- `inputs/avatar_id/avatar_id.md` — the typed HeyGen avatar id as raw text (the worker stages every
+  typed answer as `<id>.md`; `<id>.json` `{"text": "..."}` and `<id>.txt` are read too); dir absent
+  → `brief.json.brand.heygen.avatarId`; neither → voice-only path. The text `none`, `no`,
+  `voice-only` or `off` (any case) also selects the voice-only path, so a brand that has an avatar
+  can still be run without HeyGen.
+- `inputs/voice_id/voice_id.md` — the typed voice id as raw text (same file forms as `avatar_id`)
+  when supplied; dir absent →
   `brief.json.brand.heygen.voiceId` (avatar path) or `brief.json.brand.elevenlabs.voiceId`.
 - `brief.json` — `brand`, `options.speed` (default 1.0).
 
@@ -29,16 +33,24 @@ for the voice path. Never read a secrets file, never print a key.
 ```bash
 mkdir -p work saves
 eval "$(python3 - <<'PY'
-import json, os, shlex, re
+import glob, json, os, shlex, re
 def t(i):
+    # typed answers are staged as inputs/<id>/<id>.md (raw text); also read <id>.json and .txt
     p = f"inputs/{i}/{i}.json"
-    return (json.load(open(p)).get("text") or "").strip() if os.path.exists(p) else ""
+    if os.path.exists(p): return (json.load(open(p)).get("text") or "").strip()
+    for f in sorted(glob.glob(f"inputs/{i}/*")):
+        if f.endswith((".md", ".txt")): return open(f, encoding="utf-8").read().strip()
+    return ""
 b = json.load(open("brief.json")); br = b.get("brand") or {}
 hg = br.get("heygen") or {}; el = br.get("elevenlabs") or {}
 body = re.sub(r"^---.*?---\s*", "", open("prior/adapted_script.md").read(), flags=re.S).strip()
-avatar = t("avatar_id") or hg.get("avatarId") or ""
+avatar_in = t("avatar_id")
+# "none", "no", "voice-only" or "off" (any case) forces the voice-only path, even when the brand has an avatar
+no_avatar = avatar_in.lower() in ("none", "no", "voice-only", "off")
+avatar = "" if no_avatar else (avatar_in or hg.get("avatarId") or "")
 voice = t("voice_id") or (hg.get("voiceId") if avatar else el.get("voiceId")) or ""
 print("SCRIPT=" + shlex.quote(body)); print("AVATAR=" + shlex.quote(avatar)); print("VOICE=" + shlex.quote(voice))
+print("NOAVATAR=" + ("1" if no_avatar else "0"))
 print("BG=" + shlex.quote((br.get("palette") or {}).get("bg") or "#0F172A"))
 print("SPEED=" + str((b.get("options") or {}).get("speed") or 1.0))
 PY
@@ -48,7 +60,11 @@ if [ -n "$AVATAR" ]; then
   [ -n "${HEYGEN_API_KEY:-}" ] || { echo "HeyGen is not connected for this brand (no provider key in the environment)"; exit 1; }
   [ -n "$VOICE" ] || { echo '{ "inputId": "voice_id", "reason": "No HeyGen voice is set for this brand — please provide the voice id the avatar should speak with.", "count": 1 }' > needs_input.json; exit 0; }
 else
-  [ -n "${ELEVENLABS_API_KEY:-}" ] || { echo '{ "inputId": "avatar_id", "reason": "This brand has no avatar and no ElevenLabs voice connected — provide a HeyGen avatar id, or connect ElevenLabs for a voice-only remake.", "count": 1 }' > needs_input.json; exit 0; }
+  if [ -z "${ELEVENLABS_API_KEY:-}" ]; then
+    if [ "$NOAVATAR" = 1 ]; then WHY="You chose no avatar, but no ElevenLabs voice is connected for this brand — connect ElevenLabs for a voice-only remake, or provide a HeyGen avatar id instead."
+    else WHY="This brand has no avatar and no ElevenLabs voice connected — provide a HeyGen avatar id, or connect ElevenLabs for a voice-only remake."; fi
+    printf '{ "inputId": "avatar_id", "reason": "%s", "count": 1 }\n' "$WHY" > needs_input.json; exit 0
+  fi
   [ -n "$VOICE" ] || { echo '{ "inputId": "voice_id", "reason": "No narration voice is set for this brand — please provide the ElevenLabs voice id to use.", "count": 1 }' > needs_input.json; exit 0; }
 fi
 printf '%s\n' "$SCRIPT" > work/narration.txt

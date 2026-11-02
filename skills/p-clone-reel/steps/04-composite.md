@@ -13,7 +13,10 @@ outro / CTA card and master the mix. The narration audio is the spine and is nev
   narration, below).
 - `prior/source_video.mp4` — for layout reference ONLY (measure, sample, compare); its frames are
   never placed in the output.
-- `inputs/cta/cta.json` — `{"text","brandName","handle"}` when supplied; else `brief.json.brand`.
+- `inputs/cta/cta.md` — the owner's typed closing offer line (and handle) as raw text; this is the
+  `text`, and `brandName` / `handle` then come from `brief.json.brand`. The worker stages every typed
+  answer as `<id>.md`; `cta.json` `{"text","brandName","handle"}` and `cta.txt` are read too. Dir
+  absent → `brief.json.brand`.
 - `brief.json` — `brand` palette, `options.layout` (`auto|pip|split`), `options.captions`.
 
 ## You must produce
@@ -67,14 +70,24 @@ this render — widen the second pass to `0.45:0.01`, never switch to `chromakey
 
 ### 3. Captions (default on)
 
-Transcribe `prior/narration.mp4` (`c-audio` Whisper, word timestamps) and burn word-synced captions
-in the lower third (y ≈ 1450–1700, Oswald, brand accent for the active word), clear of the PIP zone
-on `pip` layouts. Latin script only. `options.captions = off` skips this.
+Transcribe `prior/narration.mp4` with the `c-audio` script (offline Whisper, word timestamps):
+
+```bash
+bash "$CFW_RENDER_SKILLS_DIR/p-clone-reel/.hub/c-audio/scripts/transcribe.sh" prior/narration.mp4 work/narration-words.json
+```
+
+`work/narration-words.json` is `{"duration", "text", "wpm", "words": [{"w", "start", "end"}]}` in
+seconds. Where Whisper misheard a brand or product name, correct `w` from `prior/adapted_script.md`
+(edit `w` only, never a timestamp). Burn word-synced captions in the lower third (y ≈ 1450–1700,
+Oswald, brand accent for the active word), clear of the PIP zone on `pip` layouts. Word times are
+good to about 0.15 s, so hold each caption word until the next one starts. Latin script only.
+`options.captions = off` skips this (and the transcription). If the script exits non-zero, fail the
+step with its message; do not caption from guessed timings.
 
 ### 4. Outro / CTA card and master
 
-Render the end card with `c-html-gfx` from `inputs/cta/cta.json` or `brief.json.brand` (offer
-line, brand name, handle only when present), 2.5 s, 1080×1920, then concat (re-encode, never
+Render the end card with `c-html-gfx` from `inputs/cta/` (`cta.md` raw text, or `cta.json`) or
+`brief.json.brand` (offer line, brand name, handle only when present), 2.5 s, 1080×1920, then concat (re-encode, never
 `-c copy`) and master:
 
 ```bash
