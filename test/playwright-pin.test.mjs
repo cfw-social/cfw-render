@@ -230,11 +230,130 @@ test('the fix hint and the installer name the pinned command', () => {
 
 test('install.sh installs the pin before the preflight and ships the pin file', () => {
   const sh = read('install/install.sh');
-  const install = sh.indexOf('cr_install_pinned_chromium');
+  const update = sh.indexOf('if (( UPDATE )); then');
+  const fresh = sh.indexOf('ensure_pinned_browser || true');
   const firstPreflight = sh.search(/\bcr_preflight\b(?! *\))/);
-  assert.ok(install > 0, 'install.sh never installs the pinned browser');
-  assert.ok(install < firstPreflight, 'the pinned browser must be installed before the preflight runs');
+  assert.ok(update > 0 && fresh > update, 'install.sh never installs the pinned browser on the fresh path');
+  assert.ok(fresh < firstPreflight, 'the pinned browser must be installed before the preflight runs');
   assert.ok(sh.includes('cp -a "$REPO_DIR/config/playwright-pin.json" "$PREFIX/config/"'), 'pin file is not copied to the install');
+});
+
+// ensure_pinned_browser is THE pin-install block of install.sh: the fresh install and
+// `--from-app --update` both call it (B8 follow-up). The update path used to copy the new
+// pin file and stop, so a Mac whose cache lacked the new revision had its worker's preflight
+// refuse every claim after an app update.
+const installSh = read('install/install.sh');
+const ensureFn = installSh.match(/^ensure_pinned_browser\(\) \{\n[\s\S]*?\n\}\n/m);
+const updateBranch = installSh.match(/^if \(\( UPDATE \)\); then\n[\s\S]*?\nfi\n/m);
+
+test('the update path installs the pinned browser through the same function as the fresh install, before it replaces any file', () => {
+  assert.ok(ensureFn, 'install.sh has no ensure_pinned_browser function');
+  assert.ok(updateBranch, 'install.sh has no --update branch');
+  const update = updateBranch[0];
+
+  // ONE install block: the npx command lives in the lib helper, and install.sh reaches it
+  // only through the function, so the two paths cannot drift apart.
+  assert.equal(installSh.split('cr_install_pinned_chromium').length - 1, 1, 'install.sh must call the lib installer in one place');
+  assert.ok(ensureFn[0].includes('cr_install_pinned_chromium'));
+  assert.ok(ensureFn[0].includes('cr_preflight_chromium'), 'the install must run only when the pinned folders are missing');
+  const calls = installSh.split('\n').filter((l) => /^\s*(PATH=\S+ )?ensure_pinned_browser\b/.test(l) && !l.includes('() {'));
+  assert.equal(calls.length, 2, `expected the fresh path and the update path to call it: ${calls}`);
+
+  // Update branch: lib sourced, pin installed, THEN fa_update copies the new files.
+  const src = update.indexOf('source "$REPO_DIR/bin/cfw-render-lib.sh"');
+  const call = update.indexOf('ensure_pinned_browser');
+  const copy = update.search(/^\s*fa_update$/m);
+  assert.ok(src > 0 && src < call, 'the update branch must source the lib before it installs the pin');
+  assert.ok(copy > 0, 'the update branch no longer calls fa_update');
+  assert.ok(call > 0 && call < copy, 'the pin must be installed before fa_update replaces the worker files');
+  // The app starts the update with a GUI PATH that has no node/npx: look where the worker looks.
+  assert.match(update, /PATH="\$\(cr_resolve_worker_path\):\$PATH" ensure_pinned_browser/);
+  // No npx: stop the update (nothing replaced), never leave a worker that cannot claim.
+  assert.match(update, /ensure_pinned_browser \|\| \{[\s\S]*app_fail checking 4/);
+});
+
+test('ensure_pinned_browser installs only a missing pin, announces it, and stops on a failed install', () => {
+  assert.ok(ensureFn, 'install.sh has no ensure_pinned_browser function');
+  const pinFolders = (root) => [
+    path.join(root, `chromium-${pin.chromiumRevision}`),
+    path.join(root, `chromium_headless_shell-${pin.chromiumHeadlessShellRevision}`),
+  ];
+  // A fake npx: records its argv; unless told to fail it leaves the finished folders behind.
+  const fakeNpx = (cacheRoot, { fail = false } = {}) => {
+    const dir = tmp('npx');
+    const log = path.join(dir, 'npx.log');
+    const make = pinFolders(cacheRoot).map((d) => `mkdir -p "${d}" && : > "${d}/INSTALLATION_COMPLETE"`).join('\n');
+    fs.writeFileSync(path.join(dir, 'npx'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${log}"\n${fail ? 'echo "npx: network down" >&2; exit 1' : make}\n`, { mode: 0o755 });
+    return { dir, log };
+  };
+  // Run the real function from install.sh with the lib sourced and the app helpers stubbed.
+  const run = (cacheRoot, { npx, fromApp = 1, twice = false } = {}) =>
+    bash(
+      `source "$1/bin/cfw-render-lib.sh"
+       set -euo pipefail
+       FROM_APP=${fromApp}
+       app_step() { printf 'STEP %s|%s|%s\\n' "$1" "$2" "$3"; }
+       app_fail() { printf 'FAIL %s|%s|%s\\n' "$1" "$2" "$3"; exit "$2"; }
+       eval "$ENSURE_FN"
+       rc=0; ensure_pinned_browser || rc=$?
+       ${twice ? 'ensure_pinned_browser || rc=$?' : ''}
+       echo "RC=$rc"`,
+      {
+        env: {
+          ENSURE_FN: ensureFn[0],
+          PLAYWRIGHT_BROWSERS_PATH: cacheRoot,
+          PATH: npx ? `${npx.dir}:${process.env.PATH}` : process.env.PATH,
+        },
+      },
+    );
+
+  // Pin already cached: nothing runs, nothing is announced (no behaviour change).
+  const cached = fakeCache(pinFolders('').map((p) => path.basename(p)));
+  const noop = fakeNpx(cached);
+  const present = run(cached, { npx: noop });
+  assert.equal(present.rc, 0, present.err);
+  assert.match(present.out, /RC=0/);
+  assert.ok(!present.out.includes('STEP'), `app step printed with the pin cached: ${present.out}`);
+  assert.ok(!fs.existsSync(noop.log), 'npx must not run when the pinned folders are cached');
+
+  // Pin missing (stale 1194 only): installs exactly the pinned command, once, and says so.
+  const stale = String(Number(pin.chromiumRevision) - 54);
+  const missing = fakeCache([`chromium-${stale}`, `chromium_headless_shell-${stale}`]);
+  const npx = fakeNpx(missing);
+  const updated = run(missing, { npx, twice: true });
+  assert.equal(updated.rc, 0, updated.err);
+  assert.match(updated.out, /RC=0/);
+  assert.match(updated.out, /STEP checking\|started\|Installing the browser/);
+  assert.equal(fs.readFileSync(npx.log, 'utf8').trim(), `--yes playwright@${pin.playwright} install chromium`, 'one pinned install, not repeated once cached');
+
+  // npx fails: the app step reports exit 4 and the function never returns.
+  const down = fakeCache([]);
+  const bad = run(down, { npx: fakeNpx(down, { fail: true }) });
+  assert.equal(bad.rc, 4, bad.out + bad.err);
+  assert.match(bad.out, /FAIL checking\|4\|Could not install the browser/);
+  assert.ok(!bad.out.includes('RC='), 'a failed install must not fall through');
+
+  // Same failure outside the app: exits 1 with the plain message.
+  const downCli = fakeCache([]);
+  const cli = run(downCli, { npx: fakeNpx(downCli, { fail: true }), fromApp: 0 });
+  assert.equal(cli.rc, 1, cli.out + cli.err);
+  assert.match(cli.err, /ABORTING — the pinned Playwright browser could not be installed/);
+
+  // No npx anywhere: rc 2 back to the caller, nothing installed.
+  const bare = tmp('bare');
+  for (const tool of ['python3', 'dirname', 'uname']) {
+    const real = spawnSync(BASH, ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim();
+    fs.symlinkSync(real, path.join(bare, tool));
+  }
+  const none = bash(
+    `source "$1/bin/cfw-render-lib.sh"; set -euo pipefail; FROM_APP=1
+     app_step() { printf 'STEP %s\\n' "$1"; }; app_fail() { printf 'FAIL\\n'; exit "$2"; }
+     eval "$ENSURE_FN"; rc=0; ensure_pinned_browser || rc=$?; echo "RC=$rc"`,
+    { env: { ENSURE_FN: ensureFn[0], PLAYWRIGHT_BROWSERS_PATH: fakeCache([]), PATH: bare } },
+  );
+  assert.equal(none.rc, 0, none.err);
+  assert.match(none.out, /RC=2/);
+  assert.ok(!none.out.includes('FAIL'));
 });
 
 test('the bundled recipe files still match the pinned hashes in skills/index.json', () => {
