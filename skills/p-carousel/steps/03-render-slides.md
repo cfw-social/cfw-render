@@ -44,6 +44,8 @@ PW="${CFW_PLAYWRIGHT_PIN:?CFW_PLAYWRIGHT_PIN is not set: the worker exports the 
 (cd work && [ "$(python3 -c "import json;print(json.load(open('node_modules/playwright/package.json'))['version'])" 2>/dev/null)" = "$PW" ] \
   || npm i --no-save --no-audit --no-fund "playwright@$PW" >npm-install.log 2>&1) \
   || { tail -n 5 work/npm-install.log >&2; echo "playwright@$PW did not install" >&2; false; }
+# Read the pin only through the step's own line PW="${CFW_PLAYWRIGHT_PIN:?CFW_PLAYWRIGHT_PIN missing}". It is missing only if that line errors.
+# Do not probe it with printenv or echo first; on macOS `printenv A B` prints only A.
 ```
 
 Install exactly that version and never another. If `render.mjs` reports that the Chromium

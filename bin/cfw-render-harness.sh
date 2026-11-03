@@ -480,6 +480,11 @@ print("## You must produce\n")
 for sv in s.get("saves") or []:
     print(f"- saves/{sv['id']}.{ext.get(sv.get('kind'), 'bin')} ({sv.get('kind')})")
 PY
+  # B40: name the Playwright pin so the model has no reason to probe for it. On macOS
+  # `printenv A B` prints only A, and a model read the missing B as "unset" and stopped.
+  if [[ "${CFW_PLAYWRIGHT_PIN:-}" =~ ^[0-9A-Za-z.+-]+$ ]]; then
+    printf '\nPlaywright pin for this run: %s\n' "$CFW_PLAYWRIGHT_PIN" >> "$prompt"
+  fi
   # Standalone prompt inspections can source the harness without the worker lib.
   if declare -F cr_provider_wait_note >/dev/null; then cr_provider_wait_note >> "$prompt"; fi
   # Spotlight local evidence only. Loudness is sealed by cr_h_seal_prior_loudness

@@ -460,7 +460,7 @@
     },
     "p-carousel": {
       "version": "2026.10.3",
-      "checksum": "sha256:5bfe8b272b8b282889b487e74f1d55e2deb504f1775688a9188d7a932ccfa027",
+      "checksum": "sha256:de6f241f3c8681745f252d7a132695be5f560be1fb17346409137142ef50cda9",
       "files": [
         ".hub/c-eval-runner/LEARNINGS.md",
         ".hub/c-eval-runner/SKILL.md",
@@ -510,9 +510,9 @@
         "render.mjs": "sha256:645aa08fbf408121b262e30b22df4992712165947f52168b1235c3723351fbcf",
         "steps/01-outline.md": "sha256:745c407c5abeecd019a1b5ee2b11edb4306ce3d029042472d6740a592678a442",
         "steps/02-author-slides.md": "sha256:92c62ae87a2b59453f1411781065d691633847a392a660c97189e9f2435486eb",
-        "steps/03-render-slides.md": "sha256:754eac1363b8c4e45ae0b26bc1efc5707a631c578c5742db698a69bd2a6c6f58",
+        "steps/03-render-slides.md": "sha256:aec247923eae5d8b70c36b0a08fa2085bb00b356a754e74b80b21f5fa56234d1",
         "steps/04-captions.md": "sha256:c5954bbbe64e7772305766e964442f694e6c77ce68ec44733875b406e1cfcc27",
-        "steps/_shared.md": "sha256:a98f1dfd6ffe9e5226b8232879a195375f9d739e6768a2edcf175d61ad1de281",
+        "steps/_shared.md": "sha256:8dc03a926bc734bcb2e67d8a58be1dee4202fba3c4f2e5b8f1ae843629768c09",
         "template.html": "sha256:c6260bca8cd6cc4009dc69ad664059fbd2ede417a4c1339099a81307746e2668"
       },
       "providers": [],

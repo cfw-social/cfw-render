@@ -55,7 +55,7 @@ The harness runs you in a fresh **step workdir** — the current directory. Use 
 | `work/` | Your scratch space. Anything here is discarded when the step ends. |
 | `needs_input.json` | Written by you ONLY when the step cannot proceed without an input listed in your step's `canAsk`. In this recipe only `outline` may ask, and only for `topic`. |
 | `$CFW_RENDER_SKILLS_DIR` | Exported by the harness: the skills bundle root. Every step resolves `RECIPE=$(python3 -c "import json;print(json.load(open('brief.json'))['recipe'])")` and `SKILL_DIR="$CFW_RENDER_SKILLS_DIR/$RECIPE"`; the recipe's own `template.html`, `render.mjs` and `acceptance.json` live there, and vendored components at `$SKILL_DIR/.hub/<name>` (`c-script`, `c-vision-qa`, `c-eval-runner`). Nothing else on the machine is read. |
-| `$CFW_PLAYWRIGHT_PIN` | Exported by the worker from `config/playwright-pin.json`: the one Playwright version this recipe may install (used by `render_slides` only). Unset means the pin was not delivered: stop and say so; never guess a version. |
+| `$CFW_PLAYWRIGHT_PIN` | Exported by the worker from `config/playwright-pin.json`: the one Playwright version this recipe may install (used by `render_slides` only). Read the pin only through the step's own line `PW="${CFW_PLAYWRIGHT_PIN:?CFW_PLAYWRIGHT_PIN missing}"`. It is missing only if that line errors. Do not probe it with printenv or echo first; on macOS `printenv A B` prints only A. Never guess a version. |
 
 Never read any file outside the workdir and `$CFW_RENDER_SKILLS_DIR`. There is no `.env`, no key
 file and no hosted-box path. This recipe calls no external provider.
