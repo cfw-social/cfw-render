@@ -1009,7 +1009,7 @@ cr_engine_capabilities_json codex "$1/skills"
             env={"PATH": str(Path(sys.executable).parent) + os.pathsep + os.defpath,
                  "TMPDIR": os.environ.get("TMPDIR", "/tmp")})
         self.assertEqual(json.loads(result.stdout)["features"], ["stage-range-v1"])
-        self.assertEqual((repo / "VERSION").read_text().strip(), "1.1.0")
+        self.assertEqual((repo / "VERSION").read_text().strip(), "1.2.0")
         # Exercise only the bin copy line against a disposable destination;
         # never execute installer setup, launchctl or provider calls here.
         lines = (repo / "install/install.sh").read_text().splitlines()
@@ -4469,8 +4469,8 @@ import json,sys
 for l in open(sys.argv[1]):
     d=json.loads(l)
     if d["tool"]=="claim_render_order": print(d["args"].get("capabilities",{}).get("workerVersion")); break' "$m4/mockstate/calls.jsonl" 2>/dev/null)"
-if [[ "$m4_ver" == "1.1.0" && "$(m3_status "$m4" 'd["workerVersion"]')" == "1.1.0" ]]; then
-  pass "version: claim capabilities.workerVersion=1.1.0, status.json version=1.1.0"
+if [[ "$m4_ver" == "1.2.0" && "$(m3_status "$m4" 'd["workerVersion"]')" == "1.2.0" ]]; then
+  pass "version: claim capabilities.workerVersion=1.2.0, status.json version=1.2.0"
 else
   fail "version" "workerVersion='$m4_ver' status=$(m3_status "$m4" 'd["workerVersion"]')"
 fi
