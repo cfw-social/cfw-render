@@ -10262,16 +10262,12 @@ import importlib.util, re, shutil, sys
 from pathlib import Path
 repo, root = Path(sys.argv[1]), Path(sys.argv[2])
 bad = []
-# Gaps that predate WI2.80 (the c-audio / c-heygen / c-ai-media / c-ffmpeg scripts are not vendored
-# into these recipes). Listed exactly so a NEW missing script still fails, and an entry that gets
+# Gaps that predate WI2.80 (the c-heygen render script is not vendored into these recipes; the
+# c-audio transcribe.sh, c-ai-media generate.py and c-ffmpeg build-segments.py now ship, B12). Listed exactly so a NEW missing script still fails, and an entry that gets
 # fixed must be removed from this list (a stale entry fails too).
 KNOWN_GAPS = {
-    ("p-clone-reel", "steps/01-ingest-reference.md", "transcribe.sh"),
     ("p-clone-reel", "steps/03-generate-narration.md", "render.py"),
     ("p-longform", "steps/02-avatar-render.md", "render.py"),
-    ("p-longform", "steps/03-transcribe.md", "transcribe.sh"),
-    ("p-longform", "steps/04-build-visuals.md", "generate.py"),
-    ("p-longform", "steps/06-composite.md", "build-segments.py"),
 }
 REF = re.compile(r"(?<![\w.-])scripts/([A-Za-z0-9_.-]+\.(?:sh|py|mjs|cjs|js|ts))")
 def missing_refs(skills):

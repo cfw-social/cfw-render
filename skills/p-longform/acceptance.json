@@ -3,7 +3,7 @@
   "spec_version": 1,
   "_note": "Primary output: 1920×1080 landscape (16:9). All three p-longform formats (vsl/demo/tutorial) produce this canvas; qa_gate uses 'vsl' (the c-shorts-qa-gate landscape check set). Duration band 300–1200 s covers all formats (vsl: 10–20 min; demo: 5–15 min; tutorial: 5–20 min) — the VSL primary is 600–1200 s; a brand may narrow via brand-overrides/<slug>/acceptance.json. Strict, recipe-owned spec read by c-eval-runner. A brand may layer brand-overrides/<slug>/acceptance.json to TIGHTEN thresholds (same id wins; new ids appended). See cfw-skills-pack/docs/skills-audit.md §4.",
   "checks": [
-    { "id": "qa_gate",         "kind": "mechanical", "type": "qa_gate", "format": "vsl" },
+    { "id": "qa_gate",         "kind": "mechanical", "type": "qa_gate", "format": "vsl", "expect_fps": 25 },
     { "id": "duration_window", "kind": "mechanical", "type": "duration_window", "min_s": 300, "max_s": 1200 },
     { "id": "canvas_1920x1080","kind": "geometry",   "type": "dims", "w": 1920, "h": 1080 },
     { "id": "frame0_not_black","kind": "geometry",   "type": "luma_floor",

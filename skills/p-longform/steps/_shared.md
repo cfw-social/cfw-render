@@ -41,10 +41,12 @@ One 16:9 (1920×1080, 25 fps) H.264 MP4 of 5–20 minutes, parameterised by **`f
 | `demo` | Product / feature walkthrough led by screen recordings | Screen recordings primary, avatar PIP, callout overlays |
 | `tutorial` | Step-by-step educational with section titles / chapter markers | Section-by-section stitch: talking head, demo recording, concept slides (HyperFrames), side-by-side |
 
-The spine is **one continuous narration**: a HeyGen avatar on a `#00FF00` green screen when the
-brand (or owner) names an avatar, otherwise an ElevenLabs voice-over. It is rendered once, never
-cut or re-timed; every visual is laid over it by transcript timecode. The three formats share one
-composite engine (`c-ffmpeg`) and differ only in section map, visual layer and narrative arc.
+The spine is **one continuous narration** (the "avatar track"). It comes from one of three
+sources, chosen once in `avatar_render` (see *The narration track: three paths* below): a clip the
+owner supplies as `source_video`, a HeyGen avatar rendered on a `#00FF00` green screen, or an
+ElevenLabs voice-over on a solid colour bed. It is made once, never cut or re-timed; every visual
+is laid over it by transcript timecode. The three formats share one composite engine (`c-ffmpeg`)
+and differ only in section map, visual layer and narrative arc.
 
 ## The step workdir (fixed layout)
 
@@ -52,7 +54,7 @@ The harness runs you in a fresh **step workdir** — the current directory. Use 
 
 | Where | What |
 |---|---|
-| `inputs/<inputId>/` | The order inputs by manifest input id: `inputs/script/script.json` (`{"text": "..."}`; a `.txt`/`.md` in the same dir is also acceptable), `inputs/format/format.json` (`{"choice": "vsl|demo|tutorial"}`), `inputs/source_video/` (one landscape green-screen or opaque avatar render), `inputs/avatar_id/avatar_id.json` and `inputs/voice_id/voice_id.json` (`{"text": "<id>"}`), `inputs/broll/` (zero or more clips / stills / screen recordings), `inputs/cta/cta.json` (`{"text","brandName","handle"}`; any key may be absent), `inputs/outro/` (one landscape clip), `inputs/captions/captions.json` (`{"choice": "on|off"}`). An input dir that does not exist means the input was not supplied. |
+| `inputs/<inputId>/` | The order inputs by manifest input id. Typed answers (`script`, `format`, `avatar_id`, `voice_id`, `cta`, `captions`) arrive as raw text in `inputs/<id>/<id>.md` (the worker stages every typed answer that way); a step also reads `<id>.json` and `<id>.txt`: `{"text": "..."}` for text, `{"choice": "..."}` for `format` (`vsl`, `demo`, `tutorial`) and `captions` (`on`, `off`), `{"text","brandName","handle"}` for `cta` (any key may be absent). For a choice the raw text is the choice id, any case. Media inputs are files: `inputs/source_video/` (one landscape green-screen or opaque avatar clip), `inputs/broll/` (zero or more clips / stills / screen recordings), `inputs/outro/` (one landscape clip). An `avatar_id` text of `none`, `no`, `voice-only` or `off`, any case, is the owner choosing the voice-only path, even when the brand has an avatar; voice-only happens only on that explicit choice. A `cta` answer is the offer line; when it already holds a handle or URL, do not add the brand handle; brand name and handle come from the brand. An input dir that does not exist means the input was not supplied. |
 | `brief.json` | The order brief: `intent`, `targets`, `brand` (slug, name, palette/typography when known, `brief` text, `heygen.avatarId` / `heygen.voiceId` / `elevenlabs.voiceId` when the brand has them) and any `options` the owner set (every option has a default). |
 | `prior/<saveId>.<ext>` | Earlier steps' saved outputs the harness downloaded for you, named by manifest save id (`.mp4` video, `.png` image, `.json` json, `.md` text). Only the files your step file lists are present. When the owner chose the "research and write my script first" path, `prior/approved_script.md` holds the script instead of `inputs/script/`. |
 | `saves/<saveId>.<ext>` | **Where you write THIS step's saves.** The manifest `saves[]` carry no path — the path is always `saves/<id>.<ext>` (video `.mp4`, image `.png`, json `.json`, text `.md`). The harness validates saves and declared checks before recording completion; local mode retains intermediate bytes on this computer, while legacy mode uploads saves. See the reporting boundary above for validator/readiness limits. |
@@ -62,8 +64,39 @@ The harness runs you in a fresh **step workdir** — the current directory. Use 
 
 Never read any file outside the workdir and `$CFW_RENDER_SKILLS_DIR`. There is no `.env`, no key
 file and no hosted-box path. Provider keys exist only as `HEYGEN_API_KEY`, `ELEVENLABS_API_KEY`
-and `KIE_API_KEY` in the environment, exported by the harness from the order's brand provider
-keys; a step that needs one and finds it unset fails with a plain message — it never searches.
+and `KIE_AI_API_KEY` in the environment, exported by the harness from the order's brand provider
+keys; no other name is read (a worker-local key is never used); a step that needs one and
+finds it unset fails with a plain message — it never searches. A key being set is not a request
+to spend: a paid call (ElevenLabs characters, Kie stills, HeyGen credits) is made only on the
+path chosen below, and never repeated for something already on disk.
+
+## The narration track: three paths, and the owner chooses
+
+`avatar_render` takes the first of these that applies. Every later step learns the result from
+`prior/transcripts.json` → `avatar_mode` (`supplied`, `avatar` or `voice`).
+
+| Order | Path (`avatar_mode`) | When | Spend | What you get |
+|---|---|---|---|---|
+| 1 | **Supplied clip** (`supplied`) — the route to use without a HeyGen API key | `inputs/source_video/` holds a playable video (picked by what is in the file, not its name): the avatar render the owner made in the HeyGen web app, or any 16:9 video of this script, 5–20 min | none | the clip as is, conformed to 1920×1080 / 25 fps; a green clip is keyed, an opaque one is not |
+| 2 | **Voice-only** (`voice`) — only on an explicit choice | the owner answered `avatar_id` with `none` / `no` / `voice-only` / `off`; needs `ELEVENLABS_API_KEY` and a voice id | ElevenLabs characters (about 15 per second of audio) | narration over a solid brand-colour bed; no presenter on screen |
+| 3 | **HeyGen render** (`avatar`) | an avatar id (typed, else the brand's); `HEYGEN_API_KEY`; the c-heygen render script present | HeyGen credits | a `#00FF00` green-screen avatar render. Without the render script the step asks for `source_video`; without the key it fails with a plain message |
+| 4 | **Ask** | no clip, no `none`, no avatar id — or a `source_video` folder arrived with no playable video in it | none | `needs_input` for `source_video` (the owner may instead answer `avatar_id`, or `none` for voice-only) |
+
+Voice-only is never a default and never a fallback: with no clip and no choice the step asks, and
+a clip that did not arrive is asked for again. ElevenLabs is therefore charged only when the owner
+chose voice-only.
+
+What changes by mode:
+
+- `voice`: no presenter. The plan has no PIP / side-by-side rows (`FULLSCREEN_BROLL` instead), the
+  composite passes `--no-pip`, cards use `clear_zone: none`, and the avatar items of the final
+  vision pass (whole face, PIP card, lip sync, green fringe) are skipped.
+- `supplied`: layouts work as with an avatar. The whole-face check is skipped (the clip's framing
+  is the owner's); the PIP, lip-sync and green-fringe checks apply wherever they can.
+- `avatar`: nothing changes.
+- `pip_mode = none` (an option) removes the PIP rows in any mode.
+- Footage is the lever for coverage: cards and stills alone cover only a few minutes of a long
+  video, so the plan needs `inputs/broll/` clips or a lower `broll_coverage`.
 
 ## Asking for an input (`needs_input.json`)
 
@@ -95,8 +128,8 @@ ask). When the owner answers, the harness reruns the step from scratch.
 - **Green-screen keying is two-pass `colorkey`** (`0x00FF00:0.25:0.05` then `0x00FF00:0.40:0.01`),
   never `chromakey`; detect the background type from edge pixels first — an opaque avatar is not
   keyed.
-- **End-card copy is per-brand**: offer line, brand name, handle from `inputs/cta/cta.json`, else
-  `brief.json.brand`. No handle → no handle line. Never invent one.
+- **End-card copy is per-brand**: offer line from `inputs/cta/cta.md` (typed answer), brand name
+  and handle from `brief.json.brand`. No handle → no handle line. Never invent one.
 - Kitchen words are banned in anything owner-facing (`reason` texts, captions, chapter titles).
 
 ## Style defaults
@@ -106,10 +139,10 @@ ask). When the owner answers, the harness reruns the step from scratch.
 | `speed` | `1.0` | Narration speed (1.0–1.25). |
 | `broll_coverage` | `80` | Minimum % of runtime with b-roll / GFX over the avatar (hook and final CTA beat exempt). |
 | `num_gfx` | `6` | GFX cards to render (stat reveals, quotes, CTA banner). |
-| `num_images` | `4` | AI stills via `c-ai-media` (Kie) to supplement GFX. `0` disables. |
+| `num_images` | `4` | AI stills via `c-ai-media` (Kie) to supplement GFX. `0` disables; with no Kie key GFX cards take their place. |
 | `sfx` | `on` | Subtle SFX bed (intro sting, section transitions) at −18 dB under the voice. |
 | `remotion` | `off` for vsl/demo, `on` for tutorial | Render animated diagram sections. |
-| `pip_mode` | `corner` | `full` (talking head fills frame), `corner` (PIP card), `none` (voice only). |
+| `pip_mode` | `corner` | `full` (talking head fills frame), `corner` (PIP card), `none` (no PIP card: footage fills the frame under the narration). |
 
 ## Tool notes
 

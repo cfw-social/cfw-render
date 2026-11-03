@@ -8,9 +8,12 @@ Nothing creative happens here; a failing gate means the video is NOT delivered.
 
 - `prior/mastered_video.mp4` — the finished video.
 - `prior/broll_plan.json` — rows (which beats are PIP / full-avatar / GFX, for the vision pass).
-- `prior/transcripts.json` — `sections` (chapters), `words` (post text source).
+- `prior/transcripts.json` — `sections` (chapters), `words` (post text source), `avatar_mode`
+  (`supplied`, `avatar` or `voice`).
 - `prior/section_map.json` — `format`.
-- `inputs/cta/cta.json` — CTA text / brand name / handle when supplied; else `brief.json.brand`.
+- `inputs/cta/cta.md` — the typed offer line as raw text (the worker stages every typed answer as
+  `<id>.md`; `cta.json` `{"text","brandName","handle"}` and `cta.txt` are read too); brand name
+  and handle come from `brief.json.brand` unless the JSON form carries them; else the brand only.
 - `brief.json` — `targets`, `brand.slug`, intent, `options.broll_coverage`.
 
 ## You must produce
@@ -88,6 +91,17 @@ bands; (f) captions (when on) legible with the accent active word, inside the lo
 avatar beats; (k) no green fringe anywhere colorkey ran. A failed item means you stop and report
 which — do not "fix" the picture here (that is a rerun of an earlier step).
 
+**Avatar items depend on `avatar_mode`** (from `prior/transcripts.json`). Report an item that does
+not apply as skipped, never as failed:
+
+- (b) whole face — judged only when `avatar_mode = avatar` (a HeyGen render). Skipped on `voice`
+  (no presenter) and on `supplied` (the framing of the owner's clip is theirs).
+- (c) PIP card and (d) graphics clear of it — judged only on beats where the plan has a PIP card.
+  With no PIP rows (a voice-only run, or `pip_mode = none`) they are skipped.
+- (j) lip sync — judged where a presenter is visible (`avatar`, `supplied`); skipped on `voice`.
+- (k) green fringe — judged where colorkey ran (a green-screen clip); skipped on `voice` and on an
+  opaque clip.
+
 ### 3. QA gate — `c-eval-runner` (mandatory)
 
 ```bash
@@ -140,3 +154,6 @@ timestamp so the right earlier step can be rerun.
 - Perceptual (vision pass): `bg_not_black`, `avatar_full_whole_face`, `pip_card_on_screen`,
   `gfx_clears_pip`, `bg_fills_frame`, `captions_legible` (skipped when captions are off),
   `frame0_moneyshot`, `broll_coverage`, `cta_visible_end`, `lipsync_plausible`, `no_green_fringe`.
+  The avatar ones (`avatar_full_whole_face`, `pip_card_on_screen`, `gfx_clears_pip`,
+  `lipsync_plausible`, `no_green_fringe`) are skipped when the run has no presenter or no PIP
+  card, as listed under the visual QA frames.

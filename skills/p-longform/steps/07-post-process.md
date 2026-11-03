@@ -9,7 +9,9 @@ that touches loudness.
 - `prior/composite_video.mp4` — the assembled video (+ outro).
 - `prior/transcripts.json` — `words` and `srt` for captions.
 - `prior/broll_plan.json` — `pip_side` per row (captions must clear the PIP corner of each beat).
-- `inputs/captions/captions.json` — `{"choice": "on|off"}`; dir absent → `off`.
+- `inputs/captions/captions.md` — the choice as raw text, `on` or `off` (the worker stages every
+  typed answer as `<id>.md`; `captions.json` `{"choice": "on|off"}` and `captions.txt` are read
+  too); dir absent → `off`.
 - `brief.json` — `options.sfx` (on), `brand` accent colour.
 
 ## You must produce
@@ -23,7 +25,15 @@ that touches loudness.
 mkdir -p work saves
 SKILL_DIR="$CFW_RENDER_SKILLS_DIR/p-longform"
 IN=prior/composite_video.mp4
-CAPS=$(python3 -c "import json,os;p='inputs/captions/captions.json';print(json.load(open(p)).get('choice','off') if os.path.exists(p) else 'off')")
+CAPS=$(python3 - <<'PY'
+import glob, json, os
+j = "inputs/captions/captions.json"
+if os.path.exists(j): v = json.load(open(j, encoding="utf-8")).get("choice") or ""
+else: v = next((open(f, encoding="utf-8").read() for f in sorted(glob.glob("inputs/captions/*")) if f.endswith((".md", ".txt"))), "")
+v = v.strip().lower()
+print("on" if v in ("on", "yes", "true", "1") or v.startswith("yes") else "off")
+PY
+)
 SFX=$(python3 -c "import json;print((json.load(open('brief.json')).get('options') or {}).get('sfx','on'))")
 ```
 
@@ -44,16 +54,17 @@ ffmpeg -y -i "$IN" -i work/sfx.wav -filter_complex "[1:a]volume=-18dB[s];[0:a][s
 ### 2. Two-pass loudnorm to −14 LUFS
 
 ```bash
-ffmpeg -i work/mixed.mp4 -af loudnorm=I=-14:LRA=11:TP=-1.5:print_format=json -f null - 2> work/ln1.txt
+ffmpeg -hide_banner -nostats -i work/mixed.mp4 -af loudnorm=I=-14:LRA=11:TP=-1.5:print_format=json -f null - 2> work/ln1.txt
 eval "$(python3 -c "
-import json,re; j=json.loads(re.search(r'\{[^{}]*\}\s*$', open('work/ln1.txt').read(), re.S).group(0))
+import json,re; j=json.loads(re.findall(r'\{[^{}]*\}', open('work/ln1.txt').read())[-1])
 print(' '.join(f'{k}={j[v]}' for k,v in (('MI','input_i'),('MT','input_tp'),('ML','input_lra'),('MTH','input_thresh'))))")"
 ffmpeg -y -i work/mixed.mp4 -af "loudnorm=I=-14:LRA=11:TP=-1.5:measured_I=$MI:measured_LRA=$ML:measured_TP=$MT:measured_thresh=$MTH:linear=true" \
   -c:v copy -c:a aac -b:a 192k -ar 48000 -ac 2 work/loudnorm.mp4
 ffmpeg -i work/loudnorm.mp4 -af loudnorm=I=-14:LRA=11:TP=-1.5:print_format=json -f null - 2>&1 | grep -o '"input_i" : "[^"]*"'
 ```
 
-The verify line must read −14 ± 0.5. No clipping (`TP ≤ −1.0`), no silence gap > 2 s
+(`-nostats` keeps ffmpeg's progress line out of `work/ln1.txt`, so the JSON measurement is the
+last thing in it; the parser takes the last `{...}` either way.) The verify line must read −14 ± 0.5. No clipping (`TP ≤ −1.0`), no silence gap > 2 s
 (`silencedetect=n=-45dB:d=2` reports nothing before the outro).
 
 ### 3. Captions — when `captions = on`

@@ -6,14 +6,21 @@ HyperFrames / Remotion concept compositions and HTML slides. The format decides 
 
 ## You receive
 
-- `prior/transcripts.json` — `sections` in seconds, `words` (what is said when).
+- `prior/transcripts.json` — `sections` in seconds, `words` (what is said when), `avatar_mode`
+  (`supplied`, `avatar` or `voice`).
 - `prior/section_map.json` — section types.
-- `inputs/cta/cta.json` — `{"text","brandName","handle"}` when supplied; else `brief.json.brand`.
+- `inputs/cta/cta.md` — the typed offer line as raw text (the worker stages every typed answer as
+  `<id>.md`; `cta.json` `{"text","brandName","handle"}` and `cta.txt` are read too); else
+  `brief.json.brand`. Brand name and handle come from the brand unless the JSON form carries
+  them; when the typed line already holds a handle or URL, do not add the brand handle.
 - `brief.json` — `brand` palette / typography / brief, `options.num_gfx` (6), `options.num_images`
   (4), `options.remotion`, `options.pip_mode`.
 
-`KIE_API_KEY` for AI stills comes ONLY from the environment; unset with `num_images > 0` → render
-GFX cards in place of the stills and say so in the log (not a failure).
+`KIE_AI_API_KEY` (the brand's key, exported by the worker; no other name is read) for AI stills
+comes ONLY from the environment. Stills cost Kie credits (about 0.8 each on the default model), so they
+are made only when `num_images > 0` AND a key is set; with no key, render GFX cards in place of
+the stills and say so in the log (not a failure). When `avatar_mode` is `voice`, or
+`pip_mode = none`, no PIP card is drawn, so every card's `clear_zone` is `none`.
 
 ## You must produce
 
@@ -60,12 +67,29 @@ corner noted in `clear_zone` (`pip-left` / `pip-right`, alternating per beat; `n
 `pip_mode = none`). Render: `npx hyperframes@0.7.5 render work/visuals/<id>/index.html --fps 25
 --duration <seconds> --out work/visuals/<id>.mp4`. Verify 1920×1080 with `ffprobe`.
 
-### 3. AI stills (`c-ai-media`, Kie) — `num_images` of them
+### 3. AI stills (`c-ai-media`, Kie) — `num_images` of them, only with a key
 
 For sections that need atmosphere rather than data (problem, agitation, overview), generate
-`num_images` on-brand stills via `python3 "$SKILL_DIR/.hub/c-ai-media/scripts/generate.py"
---provider kie --aspect 16:9 --prompt "<brand-ref prompt>" --out work/visuals/img_NN.png`,
-upscale / letterbox-fill to 1920×1080 (blurred-fill, no bars). Embed as `png_b64`.
+`num_images` on-brand stills, one `generate.py` call each (one call = one image = one charge;
+an image already on disk is never requested again), then upscale / letterbox-fill each to
+1920×1080 (blurred-fill, no bars). Embed as `png_b64`.
+
+```bash
+NIMG=$(python3 -c "import json;print(int((json.load(open('brief.json')).get('options') or {}).get('num_images', 4) or 0))")
+if [ -n "${KIE_AI_API_KEY:-}" ] && [ "$NIMG" -gt 0 ]; then
+  [ -s work/visuals/img_01.png ] || python3 "$SKILL_DIR/.hub/c-ai-media/scripts/generate.py" \
+    --provider kie --aspect 16:9 --prompt "<brand-ref prompt for still 1>" --out work/visuals/img_01.png
+  # ... img_02.png and so on, up to $NIMG
+else
+  echo "no Kie key or num_images = 0: GFX cards in place of $NIMG still(s)"
+fi
+```
+
+`generate.py` ends its output with `IMAGE_FILE: <path>` or `IMAGE_FAILED: <reason>`. Exit 3 means
+there is no Kie key: nothing was sent or spent, and that is NOT a failure of this step (the check
+above normally makes it unreachable) — render cards instead. Exit 1 (a refused or failed paid
+call: no credits, rejected key, timeout) is a failure of this step with that reason; do not swap
+in a card and do not repeat the call.
 
 ### 4. Format-specific layer
 
@@ -78,8 +102,8 @@ upscale / letterbox-fill to 1920×1080 (blurred-fill, no bars). Embed as `png_b6
 
 ### 5. CTA card (always)
 
-From `inputs/cta/cta.json` or `brief.json.brand`: offer line, brand name, handle only when
-present; 8 s, brand palette, animated hero. `is_cta: true`, `section: "cta"`, `at: null` (the
+From `inputs/cta/cta.md` (the offer line) or `brief.json.brand`: offer line, brand name, handle
+only when present; 8 s, brand palette, animated hero. `is_cta: true`, `section: "cta"`, `at: null` (the
 composite pins it to the final 60 s).
 
 ### 6. Contact sheet and manifest
@@ -98,8 +122,9 @@ json.dump(m, open('saves/visuals_manifest.json','w')); print('OK', len(a), 'asse
 ## If you cannot proceed
 
 This step has no `canAsk`. Never write `needs_input.json`. A missing CTA input falls back to the
-brand; a missing Kie key downgrades stills to cards. A HyperFrames render that fails three times
-is a failure — exit non-zero with the card id.
+brand; a missing Kie key (or `num_images = 0`) downgrades stills to cards. A failed Kie call is a
+failure, not a downgrade. A HyperFrames render that fails three times is a failure — exit
+non-zero with the card id.
 
 ## Checks the harness runs
 

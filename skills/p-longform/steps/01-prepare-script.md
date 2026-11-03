@@ -6,10 +6,11 @@ step follows.
 
 ## You receive
 
-- `inputs/script/script.json` — `{"text": "..."}` (a `.txt`/`.md` in the same dir is also
-  acceptable) — OR `prior/approved_script.md` when the owner chose the research-and-write path
-  (use it verbatim).
-- `inputs/format/format.json` — `{"choice": "vsl|demo|tutorial"}`.
+- `inputs/script/script.md` — the typed script as raw text (the worker stages every typed answer
+  as `<id>.md`; `script.json` `{"text": "..."}` and `script.txt` are read too) — OR
+  `prior/approved_script.md` when the owner chose the research-and-write path (use it verbatim).
+- `inputs/format/format.md` — the chosen format as raw text, `vsl`, `demo` or `tutorial` in any
+  case (`format.json` `{"choice": "vsl|demo|tutorial"}` and `format.txt` are read too).
 - `brief.json` — `brand`, `intent`, `options.speed`.
 
 ## You must produce
@@ -45,16 +46,17 @@ walkthrough_*, recap, cta`; `tutorial`: `intro, step_*, recap, cta`.
 ```bash
 mkdir -p work saves
 eval "$(python3 - <<'PY'
-import glob, json, os, shlex
-def text_input(i):
+import glob, json, os, re, shlex
+def raw_input_value(i, key):
+    # typed answers are staged as inputs/<id>/<id>.md (raw text); also read <id>.json and <id>.txt
     j = f"inputs/{i}/{i}.json"
-    if os.path.exists(j): return (json.load(open(j)).get("text") or "").strip()
+    if os.path.exists(j): return (json.load(open(j, encoding="utf-8")).get(key) or "").strip()
     for f in sorted(glob.glob(f"inputs/{i}/*")):
-        if f.endswith((".txt", ".md")): return open(f).read().strip()
+        if f.endswith((".md", ".txt")): return open(f, encoding="utf-8").read().strip()
     return ""
-fmt = ""
-if os.path.exists("inputs/format/format.json"): fmt = json.load(open("inputs/format/format.json")).get("choice") or ""
-script = text_input("script") or (open("prior/approved_script.md").read().strip() if os.path.exists("prior/approved_script.md") else "")
+m = re.match(r"(vsl|demo|tutorial)\b", raw_input_value("format", "choice").lower())
+fmt = m.group(1) if m else ""
+script = raw_input_value("script", "text") or (open("prior/approved_script.md", encoding="utf-8").read().strip() if os.path.exists("prior/approved_script.md") else "")
 print("SCRIPT=" + shlex.quote(script)); print("FMT=" + shlex.quote(fmt))
 PY
 )"
