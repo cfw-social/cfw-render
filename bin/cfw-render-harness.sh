@@ -374,6 +374,74 @@ cr_h_run_with_timeout() {
   return "$rc"
 }
 
+# WI2.152 / B14: the ONE scrub for every place claim data is serialized for the
+# model (prompt.md "Brief"/"Answers"/"Feedback" and brief.json). Python source,
+# run with exec(os.environ["CR_H_SCRUB_SRC"]) so the prompt and the brief can
+# never drift apart again. It
+#   (1) drops any dict key that names a secret (token, secret, password,
+#       credential, apikey, privatekey, accesskey, authorization, providerkey,
+#       workerkey, a provider-named key such as falKey, or an env-style name
+#       ending _KEY/_TOKEN/_SECRET/_PASSWORD such as FAL_KEY),
+#   (2) learns every secret VALUE in the claim (providerKeys[].value, any string
+#       under a secret-named key at any depth, the worker key from the env) and
+#       masks those values wherever they appear inside any printed string.
+# No single quotes inside: the source lives in a single-quoted bash string.
+CR_H_SCRUB_PY='
+import os, re
+SECRETS = set()
+SECRET_PARTS = ("token", "secret", "password", "credential", "apikey", "privatekey",
+                "accesskey", "authkey", "signingkey", "bearer", "authorization",
+                "providerkey", "workerkey")
+# falKey, heygen_key, elevenlabsToken: a provider name then key/token/secret.
+PROVIDER_KEY = re.compile(r"^(heygen|elevenlabs|kie|gemini|fal|replicate|openai|anthropic|composio)(key|token|secret)s?$")
+# Env-var style names such as HEYGEN_API_KEY or FAL_KEY. Lower/camel names like
+# cache_key or sortKey are ordinary recipe data and are kept.
+ENV_NAME = re.compile(r"^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*_(KEY|TOKEN|SECRET|PASSWORD)S?$")
+
+def secret_key(key):
+    name = str(key)
+    folded = name.lower().replace("-", "").replace("_", "").replace(" ", "")
+    return (any(part in folded for part in SECRET_PARTS)
+            or bool(PROVIDER_KEY.match(folded)) or bool(ENV_NAME.match(name)))
+
+def learn_secrets(value, inside=False):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            hot = inside or secret_key(key)
+            if isinstance(item, str):
+                if secret_key(key) or (inside and key == "value"):
+                    SECRETS.add(item); SECRETS.add(item.strip())
+            else:
+                learn_secrets(item, hot)
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, str):
+                if inside:
+                    SECRETS.add(item); SECRETS.add(item.strip())
+            else:
+                learn_secrets(item, inside)
+
+def claim_secrets(order):
+    learn_secrets(order)
+    SECRETS.add(os.environ.get("CFW_RENDER_WORKER_KEY", ""))
+    for gone in [s for s in SECRETS if len(s) < 8]:
+        SECRETS.discard(gone)
+
+def mask(text):
+    for secret in sorted(SECRETS, key=len, reverse=True):
+        text = text.replace(secret, "[redacted]")
+    return text
+
+def scrub(value, drop=True):
+    if isinstance(value, dict):
+        return {key: scrub(item, drop) for key, item in value.items() if not (drop and secret_key(key))}
+    if isinstance(value, list):
+        return [scrub(item, drop) for item in value]
+    if isinstance(value, str):
+        return mask(value)
+    return value
+'
+
 # cr_h_build_prompt <stepId> <workdir> <order-file> — writes workdir/prompt.md.
 cr_h_build_prompt() {
   local step_id="$1" workdir="$2" order_file="$3" instr prompt
@@ -388,9 +456,11 @@ print(s.get("instructions") or "")' "$order_file" "$step_id")"
   if [[ -n "$instr" && -f "$CR_H_RECIPE_DIR/$instr" ]]; then
     printf '\n' >> "$prompt"; cat "$CR_H_RECIPE_DIR/$instr" >> "$prompt"
   fi
-  python3 - "$order_file" "$step_id" "$workdir" >> "$prompt" <<'PY'
+  CR_H_SCRUB_SRC="$CR_H_SCRUB_PY" python3 - "$order_file" "$step_id" "$workdir" >> "$prompt" <<'PY'
 import json, os, sys
 o = json.load(open(sys.argv[1])); sid = sys.argv[2]; wd = sys.argv[3]
+exec(os.environ["CR_H_SCRUB_SRC"])
+claim_secrets(o)
 s = next((s for s in (o.get("manifest") or {}).get("steps", []) if s.get("id") == sid), {})
 ext = {"video": "mp4", "image": "png", "audio": "mp3", "json": "json", "text": "md"}
 def listing(d):
@@ -400,11 +470,11 @@ def listing(d):
             p = os.path.join(root, f); out.append(f"- {os.path.relpath(p, wd)} ({os.path.getsize(p)} bytes)")
     return "\n".join(out) or "- (none)"
 print("\n## Order\n")
-print("Brief:\n```json\n" + json.dumps(o.get("taskOrder") or {}, indent=1) + "\n```\n")
+print("Brief:\n```json\n" + json.dumps(scrub(o.get("taskOrder") or {}), indent=1) + "\n```\n")
 print("Inputs:\n" + listing(os.path.join(wd, "inputs")) + "\n")
-print("Answers:\n```json\n" + json.dumps(o.get("answers") or {}) + "\n```\n")
+print("Answers:\n```json\n" + json.dumps(scrub(o.get("answers") or {}, drop=False)) + "\n```\n")
 fb = o.get("feedback")
-if fb: print("Feedback:\n" + str(fb) + "\n")
+if fb: print("Feedback:\n" + mask(str(fb)) + "\n")
 print("Prior saves:\n" + listing(os.path.join(wd, "prior")) + "\n")
 print("## You must produce\n")
 for sv in s.get("saves") or []:
@@ -426,8 +496,8 @@ PY
 # heygen/elevenlabs ids when the brand has them) and options. Credentials
 # and provider keys are left in order.json; they are not copied here.
 cr_h_write_brief() {
-  python3 - "$2" "$1/brief.json" <<'PY'
-import json, sys
+  CR_H_SCRUB_SRC="$CR_H_SCRUB_PY" python3 - "$2" "$1/brief.json" <<'PY'
+import json, os, sys
 
 def as_dict(value):
     return value if isinstance(value, dict) else {}
@@ -435,18 +505,7 @@ def as_dict(value):
 def text(value):
     return value if isinstance(value, str) and value else None
 
-def secret_key(key):
-    folded = str(key).lower().replace("-", "").replace("_", "")
-    return any(part in folded for part in (
-        "token", "secret", "password", "credential", "apikey", "privatekey",
-        "authorization", "providerkey", "workerkey"))
-
-def scrub(value):
-    if isinstance(value, dict):
-        return {key: scrub(item) for key, item in value.items() if not secret_key(key)}
-    if isinstance(value, list):
-        return [scrub(item) for item in value]
-    return value
+exec(os.environ["CR_H_SCRUB_SRC"])
 
 def id_value(block, *names):
     block = as_dict(block)
@@ -457,6 +516,7 @@ def id_value(block, *names):
     return None
 
 order = json.load(open(sys.argv[1]))
+claim_secrets(order)
 task = as_dict(order.get("taskOrder"))
 manifest = as_dict(order.get("manifest"))
 brand_src = as_dict(task.get("brand")) or as_dict(order.get("brand"))
@@ -511,7 +571,7 @@ brief = {
     "options": scrub(options),
 }
 with open(sys.argv[2], "w") as handle:
-    json.dump(brief, handle, indent=2, ensure_ascii=False)
+    json.dump(scrub(brief), handle, indent=2, ensure_ascii=False)
     handle.write("\n")
 PY
 }
@@ -576,7 +636,9 @@ except (OSError, ValueError, TypeError):
 
 # Brand API keys live only in the engine subshell. Never inherit recipe keys
 # from the worker, derive env names from claim data, or treat HeyGen OAuth in
-# taskOrder.credentials as an API key. The NUL stream ends with a success marker:
+# taskOrder.credentials as an API key. A step receives only the providers its
+# manifest `uses` names; a step with no `uses` receives none (WI2.152). The NUL
+# stream ends with a success marker:
 # a failed/truncated parser cannot silently start an engine with partial keys.
 cr_h_export_step_keys() {
   { set +x; } 2>/dev/null
@@ -610,7 +672,7 @@ try:
     if len(matches) != 1:
         raise ValueError("invalid step")
     step = matches[0]
-    allowed = set(ENV)
+    allowed = set()  # a step that declares no `uses` receives no provider key
     if "uses" in step:
         uses = step["uses"]
         if not isinstance(uses, dict):

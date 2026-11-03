@@ -572,6 +572,16 @@ cr_engine_refuse_unsandboxed() {
   return 127
 }
 
+# cr_engine_drop_worker_auth — WI2.152 / B14. Run INSIDE the subshell that execs
+# a model process, never in the worker. The worker's own auth stays in the
+# worker: report/upload/heartbeat calls are made by the worker, and no recipe
+# step needs it (a step reports through the harness, not with the worker key).
+# Provider keys are NOT dropped here; a step still receives the ones its
+# manifest `uses` names (cr_h_export_step_keys).
+cr_engine_drop_worker_auth() {
+  unset CFW_RENDER_WORKER_KEY
+}
+
 # ---------------------------------------------------------------------------
 # cr_engine_run <engine> <prompt-file> <workdir> <log> — run one step prompt.
 # stdout+stderr of the engine are APPENDED to <log>; returns the engine's rc.
@@ -633,6 +643,7 @@ cr_engine_run() {
   fi
   (
     cd "$workdir" || exit 1
+    cr_engine_drop_worker_auth
     export CFW_RENDER_ENGINE_PROMPT_FILE="$prompt_file" CFW_ENGINE_NAME="$engine"
     export CLAUDE_CONFIG_DIR="$CR_CODER_CLAUDE_DIR" CODEX_HOME="$CR_CODER_CODEX_DIR"
     export TMPDIR="$CR_CODER_TMP" TMP="$CR_CODER_TMP" TEMP="$CR_CODER_TMP"
@@ -680,6 +691,7 @@ cr_engine_run_gemini() {
   fi
   (
     cd "$workdir" || exit 1
+    cr_engine_drop_worker_auth
     export CFW_RENDER_ENGINE_PROMPT_FILE="$prompt_file" CFW_ENGINE_NAME=gemini
     if [[ -n "$k" ]]; then
       env GEMINI_API_KEY="$k" "${CR_ENGINE_BIN[@]}" -p < "$prompt_file" >> "$log" 2>&1
@@ -718,6 +730,7 @@ TOML
   cr_engine_bin codex
   (
     cd "$workdir" || exit 1
+    cr_engine_drop_worker_auth
     export CFW_RENDER_ENGINE_PROMPT_FILE="$prompt_file" CFW_ENGINE_NAME="$engine"
     env CODEX_HOME="$ch" "$envkey=$k" "${CR_ENGINE_BIN[@]}" exec --skip-git-repo-check -C "$workdir" \
       -c "model_provider=$engine" --dangerously-bypass-approvals-and-sandbox - < "$prompt_file" >> "$log" 2>&1

@@ -793,7 +793,8 @@ if result.get("isError"):
     sys.exit(1)
 content = result.get("content", [])
 if not content or "text" not in content[0]:
-    print(f"cfw-render: cr_mcp_call — unexpected result shape: {result}", file=sys.stderr)
+    # Shape only: a claim reply carries providerKeys, and the err log is plain text.
+    print(f"cfw-render: cr_mcp_call — unexpected result shape (keys: {sorted(result) if isinstance(result, dict) else type(result).__name__})", file=sys.stderr)
     sys.exit(1)
 # The inner text is itself JSON — validate then print verbatim.
 inner = content[0]["text"]
@@ -860,7 +861,7 @@ if result.get("isError"):
     print(text or json.dumps(result))
     sys.exit(70)
 if not text:
-    print(f"unexpected result shape: {result}")
+    print(f"unexpected result shape (keys: {sorted(result) if isinstance(result, dict) else type(result).__name__})")
     sys.exit(70)
 json.loads(text)
 sys.stdout.write(text)
