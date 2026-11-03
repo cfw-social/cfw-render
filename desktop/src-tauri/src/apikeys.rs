@@ -1,5 +1,10 @@
 //! API keys for key-based AI providers (M3-08). Stored in the login Keychain (service `com.cfw.render`,
 //! account `<engine>`). The key goes to `security -i` on stdin only — never argv, logs, events or return values.
+//!
+//! Claude Code's long-lived sign-in token lives in the same Keychain, under the account `claude-code`. It is
+//! not an API-key engine: the key form (the Tauri commands below) never writes it, and the `*_with` functions
+//! accept it only so `signin` can save, check and delete it. The `security` executable is always passed in
+//! (`sec`), so tests hand in a stub instead of setting process-wide environment variables.
 
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
@@ -7,6 +12,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::chat::keychain::{SECURITY_ENV, SERVICE};
+use crate::signin::CLAUDE_CODE;
 
 /// Engine → where to get a key. Mirrors `desktop/src/providers/registry.ts`.
 pub const KEY_ENGINES: &[(&str, &str)] = &[
@@ -29,7 +35,16 @@ pub fn valid_key(key: &str) -> bool {
     (16..=300).contains(&key.len()) && key.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
-fn security_exe() -> OsString {
+/// Engines whose secret is kept in the Keychain: the API-key engines, plus Claude Code's sign-in token.
+fn stored_engine(engine: &str) -> Result<(), String> {
+    if engine == CLAUDE_CODE {
+        return Ok(());
+    }
+    key_url(engine).map(|_| ())
+}
+
+/// The `security` executable: `CFW_RENDER_SECURITY_CMD` when set, else the system one.
+pub(crate) fn security_exe() -> OsString {
     std::env::var_os(SECURITY_ENV).filter(|v| !v.is_empty()).unwrap_or_else(|| "/usr/bin/security".into())
 }
 
@@ -40,11 +55,13 @@ fn security(exe: &OsStr) -> Command {
 }
 
 pub fn save(engine: &str, key: &str) -> Result<(), String> {
+    key_url(engine)?;
     save_with(&security_exe(), engine, key)
 }
 
-fn save_with(sec: &OsStr, engine: &str, key: &str) -> Result<(), String> {
-    key_url(engine)?;
+/// `engine` may also be Claude Code (its sign-in token); the checked `[A-Za-z0-9._-]{16,300}` shape still applies.
+pub(crate) fn save_with(sec: &OsStr, engine: &str, key: &str) -> Result<(), String> {
+    stored_engine(engine)?;
     if !valid_key(key) {
         return Err("That doesn't look like an API key.".into());
     }
@@ -59,22 +76,24 @@ fn save_with(sec: &OsStr, engine: &str, key: &str) -> Result<(), String> {
 }
 
 pub fn remove(engine: &str) -> Result<(), String> {
+    key_url(engine)?;
     remove_with(&security_exe(), engine)
 }
 
-fn remove_with(sec: &OsStr, engine: &str) -> Result<(), String> {
-    key_url(engine)?;
+pub(crate) fn remove_with(sec: &OsStr, engine: &str) -> Result<(), String> {
+    stored_engine(engine)?;
     let _ = security(sec).args(["delete-generic-password", "-s", SERVICE, "-a", engine]).status();
     Ok(())
 }
 
 /// Exit code only; no `-w`, so the secret is never read.
 pub fn present(engine: &str) -> Result<bool, String> {
+    key_url(engine)?;
     present_with(&security_exe(), engine)
 }
 
-fn present_with(sec: &OsStr, engine: &str) -> Result<bool, String> {
-    key_url(engine)?;
+pub(crate) fn present_with(sec: &OsStr, engine: &str) -> Result<bool, String> {
+    stored_engine(engine)?;
     Ok(security(sec).args(["find-generic-password", "-s", SERVICE, "-a", engine]).status().is_ok_and(|s| s.success()))
 }
 
@@ -190,6 +209,28 @@ esac
         assert!(present_with(&sec(&d), "nope").is_err());
         assert!(open_provider_key_url("evil".into()).is_err());
         assert!(!d.path().join("argv").exists(), "spawned despite rejection");
+    }
+
+    #[test]
+    fn claude_token_is_stored_like_a_key_but_never_through_the_key_form() {
+        let d = stub();
+        const TOKEN: &str = "sk-ant-oat01-TESTTOKEN0123456789abcdefXYZ_-";
+        assert_eq!(present_with(&sec(&d), "claude-code"), Ok(false));
+        save_with(&sec(&d), "claude-code", TOKEN).unwrap();
+        assert_eq!(present_with(&sec(&d), "claude-code"), Ok(true));
+        assert_eq!(present_with(&sec(&d), "openrouter"), Ok(false));
+        remove_with(&sec(&d), "claude-code").unwrap();
+        assert_eq!(present_with(&sec(&d), "claude-code"), Ok(false));
+        let argv = std::fs::read_to_string(d.path().join("argv")).unwrap();
+        assert!(!argv.contains(TOKEN), "token leaked to argv");
+        let stdin = std::fs::read_to_string(d.path().join("stdin")).unwrap();
+        assert!(stdin.contains("-s com.cfw.render -a claude-code -w"));
+        // The key form's public entry points check `key_url` first (before any `security` call), and that
+        // refuses Claude and Codex. The shape rule still applies to the token.
+        assert!(key_url("claude-code").is_err());
+        assert!(key_url("codex").is_err());
+        assert!(save_with(&sec(&d), "claude-code", "short").is_err());
+        assert!(save_with(&sec(&d), "claude-code", "sk-ant-oat01-has space in it 12345").is_err());
     }
 
     #[test]

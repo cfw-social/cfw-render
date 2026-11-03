@@ -1585,7 +1585,7 @@ cr_preflight_hint() { # cr_preflight_hint <tool>
     node|npx)        [[ "$os" == Darwin ]] && echo "brew install node" || echo "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs" ;;
     ffmpeg|ffprobe)  [[ "$os" == Darwin ]] && echo "brew install ffmpeg" || echo "apt-get install -y ffmpeg" ;;
     magick)          [[ "$os" == Darwin ]] && echo "brew install imagemagick" || echo "apt-get install -y imagemagick   (IM6 ships only 'convert' — then add the IM7 verb shim: printf '#!/bin/sh\\nexec convert \"\$@\"\\n' >/usr/local/bin/magick && chmod +x /usr/local/bin/magick)" ;;
-    claude)          echo "npm i -g @anthropic-ai/claude-code   then authenticate on THIS host: claude auth login   (verify: claude auth status)" ;;
+    claude)          echo "npm i -g @anthropic-ai/claude-code   then sign in to Claude from the CFW Renderer app (Providers → Claude → Sign in; it saves a long-lived token in this Mac's Keychain, service com.cfw.render)   (verify: the app's Providers screen shows Claude connected)" ;;
     chromium)
       # The exact pinned version, never a bare `playwright` (that is the newest release,
       # which wants a Chromium revision this computer has not cached: B8).

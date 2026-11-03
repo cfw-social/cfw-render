@@ -162,8 +162,13 @@ The same gate runs automatically in three places:
   explicitly and prints the shim.
 - **`claude`** — the render Director. Skipped when `CFW_RENDER_DIRECTOR_CMD` is
   set (tests / a stub Director). Note the binary being present is **not** proof
-  it is authenticated — after installing, run `claude auth login` on that computer
-  and confirm with `claude auth status` (this was the whole CFW-188 gate).
+  it is authenticated — the worker counts Claude as signed in only when this Mac's
+  Keychain holds the long-lived token the CFW Renderer app saves (Providers →
+  Claude → Sign in; service `com.cfw.render`, account `claude-code`; WI24). Without
+  the app: run `claude setup-token`, then add the printed token to that Keychain
+  item with `security -i` so it never goes on a command line. Each Claude step
+  receives it as `CLAUDE_CODE_OAUTH_TOKEN` in its own environment; `~/.claude` is
+  never read (this was the whole CFW-188 gate).
 - **Chromium** — the **exact** Playwright browser pinned in
   `config/playwright-pin.json` (one file: Playwright version plus the
   `chromium` and `chromium-headless-shell` revisions). The preflight looks only
@@ -191,7 +196,7 @@ then on the Mac:
 
 ```bash
 bin/cfw-render-preflight.sh                 # fix whatever it names, re-run until PASS
-claude auth login && claude auth status
+# Claude: sign in from the CFW Renderer app (Providers → Claude → Sign in), or `claude setup-token` + the Keychain item described above
 install -m 600 config/cfw-render.env.example ~/.cfw-render/cfw-render.env
 #   set CFW_API_BASE=https://app.cfw.social and CFW_RENDER_WORKER_KEY=<this computer's key>
 install/install.sh --mode byoa              # copies to "~/CFW Render/app", writes the LaunchAgent, runs --dry

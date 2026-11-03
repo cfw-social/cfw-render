@@ -9,12 +9,15 @@
 # `cr_engine_run` only.
 #
 # Credential rule ("no credential leaves the computer"): this file NEVER
-# reads, copies or prints ~/.codex/auth.json, ~/.claude/*, the keychain, or
-# any env var that looks like a key. Detection relies solely on each CLI's own
-# status command EXIT CODE; its stdout (which carries the account e-mail) is
-# discarded, never logged. The one sign-in step it takes: a coder run and the
-# codex status probe get a SYMLINK to the codex sign-in file (a path; the file
-# is never opened here). See WI2.109 below.
+# reads, copies or prints ~/.codex/auth.json, ~/.claude/*, or any env var that
+# looks like a key. Detection of codex relies solely on the CLI's own status
+# command EXIT CODE; its stdout (which carries the account e-mail) is
+# discarded, never logged. Detection of Claude and of the API-key engines is
+# the EXIT CODE of a Keychain lookup (no -w), never the secret. The sign-in
+# steps it takes: a codex run and the codex status probe get a SYMLINK to the
+# codex sign-in file (a path; the file is never opened here), and a claude-code
+# run gets its Keychain token in that one child's environment. See WI2.109
+# below.
 #
 # Pinned non-interactive forms — CONFIRMED from `codex exec --help`
 # (codex-cli 0.142.5) and `claude --help` / `claude auth status --help`
@@ -28,7 +31,13 @@
 #              `--dangerously-skip-permissions`: steps shell out to ffmpeg and
 #              fetch inputs over the network, which the workspace-write
 #              sandbox blocks.
-#   claude : claude auth status                     → rc 0 iff signed in
+#   claude : signed in = `claude` is on PATH AND the Keychain item
+#            com.cfw.render / claude-code exists (WI24). Claude Code 2.1.303
+#            keeps its sign-in per config folder, so the empty per-step folder
+#            is never signed in (`claude auth status` exits 1 there). A step
+#            authenticates with CLAUDE_CODE_OAUTH_TOKEN from that item (saved
+#            by the desktop app's Sign in, a `claude setup-token` token),
+#            passed to that child's environment only.
 #            claude -p --dangerously-skip-permissions --output-format text < prompt.md
 #              `-p` with no positional prompt reads it from stdin.
 #
@@ -110,8 +119,17 @@ cr_engine_signed_in() {
   fi
   case "$engine" in codex|claude-code) ;; *) return 1 ;; esac
   [[ -n "${CFW_RENDER_ENGINE_CMD:-}" ]] && return 0
-  # Probe the way cr_engine_run runs: an empty config dir (codex: plus the
-  # sign-in link). A sign-in a run cannot see must not count as signed in.
+  if [[ "$engine" == claude-code ]]; then
+    # Claude Code 2.1.303 keeps its sign-in per config folder, so a fresh empty
+    # folder is never signed in and a `claude auth status` probe there always
+    # says no. A claude-code step authenticates with CLAUDE_CODE_OAUTH_TOKEN
+    # (see WI2.109), so "signed in" means: CLI present AND the Keychain item
+    # the desktop app's Sign in saves. Exit code only; the token is not read.
+    command -v claude >/dev/null 2>&1 && cr_engine_has_key claude-code && return 0
+    return 1
+  fi
+  # Probe the way cr_engine_run runs: an empty config dir plus the sign-in
+  # link. A sign-in a run cannot see must not count as signed in.
   local probe rc=1
   probe="$(mktemp -d "${TMPDIR:-/tmp}/cfw-engine-probe.XXXXXX")" || return 1
   case "$engine" in
@@ -119,11 +137,6 @@ cr_engine_signed_in() {
       if command -v codex >/dev/null 2>&1 && mkdir -p "$probe/codex"; then
         cr_engine_link_codex_signin "$probe/codex" || true
         CODEX_HOME="$probe/codex" codex login status >/dev/null 2>&1 < /dev/null && rc=0
-      fi
-      ;;
-    claude-code)
-      if command -v claude >/dev/null 2>&1 && mkdir -p "$probe/claude"; then
-        CLAUDE_CONFIG_DIR="$probe/claude" claude auth status >/dev/null 2>&1 < /dev/null && rc=0
       fi
       ;;
   esac
@@ -388,12 +401,20 @@ print(json.dumps({"engine": sys.argv[1], "os": sys.argv[2], "manifests": json.lo
 # holds a path, never a token, and codex rewrites auth.json in place when
 # it refreshes (open + truncate, not rename). OpenAI refresh tokens are
 # single-use, so a refreshed copy would leave the owner's file holding a
-# spent token. The write profile allows that one file. Claude Code does
-# not find its sign-in under an empty CLAUDE_CONFIG_DIR (2.1.303: `claude
-# auth status` exits 1), so a claude-code run sees only token variables in
-# its environment (CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY).
-# cr_engine_signed_in probes with the same isolated dirs, so the worker
-# advertises only an engine its runs can use.
+# spent token. The write profile allows that one file.
+# Claude Code 2.1.303 keeps its sign-in per config folder, so the empty
+# per-step CLAUDE_CONFIG_DIR is never signed in. A claude-code step
+# authenticates with CLAUDE_CODE_OAUTH_TOKEN from the worker's Keychain item
+# (service com.cfw.render, account claude-code; saved by the desktop app's
+# Sign in, a `claude setup-token` token). cr_engine_run reads it outside the
+# sandbox and passes it to that one child's environment only (`env VAR=...`
+# in front of the exec). It never reaches the step log, the worker log, the
+# write profile or the argv of anything but `env`, and nothing is written into
+# the step folder. No shared Claude folder exists: every step keeps its own
+# empty one (WI24).
+# cr_engine_signed_in advertises codex only when its isolated probe (empty
+# CODEX_HOME plus the sign-in link) passes, and Claude only when that Keychain
+# item exists, so the worker advertises only an engine its runs can use.
 #
 # Writes go through sandbox-exec. The profile allows writes only under the
 # work folder, the isolated config dirs and a private tmp dir (plus device
@@ -556,7 +577,7 @@ cr_engine_refuse_unsandboxed() {
 # stdout+stderr of the engine are APPENDED to <log>; returns the engine's rc.
 # ---------------------------------------------------------------------------
 cr_engine_run() {
-  local engine="$1" prompt_file="$2" workdir="$3" log="$4"
+  local engine="$1" prompt_file="$2" workdir="$3" log="$4" k=""
   [[ -f "$prompt_file" ]] || { cr_log "cr_engine_run: prompt file missing: $prompt_file"; return 2; }
   mkdir -p "$workdir" "$(dirname "$log")"
   printf '=== %s engine=%s prompt=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$engine" "$(basename "$prompt_file")" >> "$log"
@@ -604,6 +625,12 @@ cr_engine_run() {
     cr_log "cr_engine_run: no usable engine ('$engine')"
     return 2
   fi
+  # claude-code: the long-lived token from the Keychain (WI24). Read here, after
+  # every refusal above, so a refused run never touches it. Same read as gemini.
+  # It is a shell variable, not exported: only the `env` below hands it on.
+  if [[ "$engine" == claude-code ]] && cr_engine_has_key claude-code; then
+    k="$("$(cr_engine_security)" find-generic-password -s com.cfw.render -a claude-code -w 2>/dev/null < /dev/null || true)"
+  fi
   (
     cd "$workdir" || exit 1
     export CFW_RENDER_ENGINE_PROMPT_FILE="$prompt_file" CFW_ENGINE_NAME="$engine"
@@ -615,10 +642,17 @@ cr_engine_run() {
     export HYPERFRAMES_FONT_CACHE_DIR="$CR_CODER_TMP/hyperframes-fonts"
     export CFW_RENDER_CODER_SANDBOX="$CR_ENGINE_SANDBOX_MODE"
     if [[ "$CR_ENGINE_SANDBOX_MODE" == "apply" ]]; then
+      if [[ -n "$k" ]]; then
+        exec env CLAUDE_CODE_OAUTH_TOKEN="$k" /usr/bin/sandbox-exec -f "$CR_CODER_ROOT/profile.sb" "${cmd[@]}" < "$prompt_file" || exit $?
+      fi
       exec /usr/bin/sandbox-exec -f "$CR_CODER_ROOT/profile.sb" "${cmd[@]}" < "$prompt_file" || exit $?
+    fi
+    if [[ -n "$k" ]]; then
+      exec env CLAUDE_CODE_OAUTH_TOKEN="$k" "${cmd[@]}" < "$prompt_file" || exit $?
     fi
     exec "${cmd[@]}" < "$prompt_file" || exit $?
   ) >> "$log" 2>&1 || rc=$?
+  k=""; unset k
   if [[ -n "$signin" && -e "$CR_CODER_CODEX_DIR/auth.json" && ! -L "$CR_CODER_CODEX_DIR/auth.json" ]]; then
     cr_log "cr_engine_run: codex replaced the sign-in link with a file; $signin may hold a spent token (check: codex login status)"
   fi

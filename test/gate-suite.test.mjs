@@ -30,6 +30,7 @@ const CHECKS = [
   { name: 'python3 test/harness-conditions.py', command: 'python3', args: ['test/harness-conditions.py'], timeoutMs: 4 * 60 * 1000 },
   { name: 'python3 test/recipe-landing-regression.py', command: 'python3', args: ['test/recipe-landing-regression.py'], timeoutMs: 8 * 60 * 1000 },
   { name: 'node --test test/playwright-pin.test.mjs', command: 'node', args: ['--test', 'test/playwright-pin.test.mjs'], timeoutMs: 2 * 60 * 1000 },
+  { name: 'bash test/engine-claude-token.test.sh', command: 'bash', args: ['test/engine-claude-token.test.sh'], timeoutMs: 2 * 60 * 1000 },
 ];
 
 const owned = new Set();
