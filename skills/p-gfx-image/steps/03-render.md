@@ -40,7 +40,7 @@ for i in $(seq 1 "$N"); do
     "$CHROME" --headless --screenshot="work/shot-$i.png" --window-size="$W,$((H+140))" \
       --hide-scrollbars --no-sandbox "file://$PWD/work/card-$i.html" 2>/dev/null
   else
-    npx -y playwright screenshot --viewport-size="$W,$H" "file://$PWD/work/card-$i.html" "work/shot-$i.png"
+    npx -y "playwright@${CFW_PLAYWRIGHT_PIN:?CFW_PLAYWRIGHT_PIN is not set (worker exports it from config/playwright-pin.json)}" screenshot --viewport-size="$W,$H" "file://$PWD/work/card-$i.html" "work/shot-$i.png"
   fi
   ffmpeg -y -v error -i "work/shot-$i.png" -vf "crop=${W}:${H}:0:0" "work/img-$i.png"
   ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "work/img-$i.png"

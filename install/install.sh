@@ -182,6 +182,25 @@ echo "install.sh: OS=$OS prefix=$PREFIX env-file=$ENV_FILE user=$RUN_USER mode=$
 # looks installed and burns real work.
 # shellcheck source=/dev/null
 source "$REPO_DIR/bin/cfw-render-lib.sh"
+
+# ── [B8/B10] The pinned Playwright browser, BEFORE the preflight. The preflight now
+# requires the exact Chromium revision config/playwright-pin.json names, and a fresh
+# computer has none cached. Install exactly that pin here: a bare `npx playwright
+# install chromium` fetches whatever is newest, and the carousel render then dies at
+# chromium.launch() (R-7LU5). No npx (rc 2) falls through: the preflight below names
+# node and the exact command. A failed install stops here with npx's own output.
+if ! cr_preflight_chromium >/dev/null; then
+  app_step checking started "Installing the browser CFW Render needs (one time)"
+  pw_rc=0
+  cr_install_pinned_chromium || pw_rc=$?
+  if (( pw_rc == 1 )); then
+    (( FROM_APP )) && app_fail checking 4 "Could not install the browser CFW Render needs" "Check your internet connection and try again"
+    echo "install.sh: ABORTING — the pinned Playwright browser could not be installed (see above)." >&2
+    echo "  Nothing was installed. Fix the error above and re-run install.sh." >&2
+    exit 1
+  fi
+fi
+
 if (( FROM_APP )); then
   if ! pf_err="$(cr_preflight 2>&1 >/dev/null)"; then
     printf '%s\n' "$pf_err" >&2
@@ -222,6 +241,8 @@ mkdir -p "$PREFIX/bin" "$PREFIX/lib" "$PREFIX/config" "$PREFIX/scripts"
 cp -a "$REPO_DIR"/bin/*.sh "$REPO_DIR"/bin/*.py "$PREFIX/bin/"
 cp -a "$REPO_DIR"/lib/*.md "$REPO_DIR"/lib/*.py "$PREFIX/lib/"
 cp -a "$REPO_DIR/config/agent-guides.json" "$PREFIX/config/"
+# The Playwright pin: the installed worker's preflight and recipe steps read it.
+cp -a "$REPO_DIR/config/playwright-pin.json" "$PREFIX/config/"
 # scripts/ (verify-skills-bundle.sh, gen-skills-manifest.sh) — the worker's
 # cr_verify_skills_bundle shells out to verify-skills-bundle.sh at $PREFIX/scripts.
 cp -a "$REPO_DIR"/scripts/*.sh "$PREFIX/scripts/" 2>/dev/null || true

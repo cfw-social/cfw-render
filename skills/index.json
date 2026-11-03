@@ -460,7 +460,7 @@
     },
     "p-carousel": {
       "version": "2026.10.3",
-      "checksum": "sha256:b62b55001ddc6f50212edc11efab0d481eef2fdc3654dcd6fe7511ce07bf1fdb",
+      "checksum": "sha256:5bfe8b272b8b282889b487e74f1d55e2deb504f1775688a9188d7a932ccfa027",
       "files": [
         ".hub/c-eval-runner/LEARNINGS.md",
         ".hub/c-eval-runner/SKILL.md",
@@ -498,8 +498,8 @@
         ".hub/c-script/SKILL.md": "sha256:ba1d83d551ec02cd7ae634fe6b5fd9017f74433f54ada1a8b7b689d355efdf0c",
         ".hub/c-vision-qa/SKILL.md": "sha256:328c298e86f09327f3c6156218e32426b1653897d117e6b8057b50e15edeefc3",
         ".hub/c-vision-qa/scripts/precheck.sh": "sha256:fed240467d8c01c2b94893b272d539054fb9afad42a880f33b804e38d70a8fc8",
-        "LEARNINGS.md": "sha256:c08dad82109e4d7e27585915a040b250918bd873ffd8d940e4ce5f88c4e44320",
-        "SKILL.md": "sha256:744734dcb111d8fac0bf0d5d5914c97e5a70f0641c6660bc83a6bf815a391c37",
+        "LEARNINGS.md": "sha256:96d3c30bd872a5489dd9ae90ffa0c9f75369017b7f15d28aa2d21bada4a3e1c2",
+        "SKILL.md": "sha256:a5d6bc7bea2d10c1d430eb7833d1e023d094d6a70d2016efe84052e76997d9a3",
         "acceptance.json": "sha256:8c8750eaa27f126a24e1840c67f6b57413d6997d2ad613c41b37d94f726681dc",
         "brand-overrides/README.md": "sha256:ba96dcd60132107bfdb629031252b2b0a53c3f603b9ca3f87336dbec4a36c02c",
         "brand-overrides/b-vasanth/brand.json": "sha256:5b20043e4db5030c8f401c739efd0c30f53689ad65d3ef2c16e7c76e4a4c0a80",
@@ -510,9 +510,9 @@
         "render.mjs": "sha256:645aa08fbf408121b262e30b22df4992712165947f52168b1235c3723351fbcf",
         "steps/01-outline.md": "sha256:745c407c5abeecd019a1b5ee2b11edb4306ce3d029042472d6740a592678a442",
         "steps/02-author-slides.md": "sha256:92c62ae87a2b59453f1411781065d691633847a392a660c97189e9f2435486eb",
-        "steps/03-render-slides.md": "sha256:f1756d5a6c2415a3312ea75ee26d4408d0d2882477628cbc62c7ef0afee979a6",
+        "steps/03-render-slides.md": "sha256:754eac1363b8c4e45ae0b26bc1efc5707a631c578c5742db698a69bd2a6c6f58",
         "steps/04-captions.md": "sha256:c5954bbbe64e7772305766e964442f694e6c77ce68ec44733875b406e1cfcc27",
-        "steps/_shared.md": "sha256:2a32c387049d261b57f3d6ab33f9a8985e70b97aa7f3f9f8ff0d0aed505877b2",
+        "steps/_shared.md": "sha256:a98f1dfd6ffe9e5226b8232879a195375f9d739e6768a2edcf175d61ad1de281",
         "template.html": "sha256:c6260bca8cd6cc4009dc69ad664059fbd2ede417a4c1339099a81307746e2668"
       },
       "providers": [],
@@ -525,7 +525,7 @@
     },
     "p-gfx-image": {
       "version": "1.0.0",
-      "checksum": "sha256:83e286ac4b08fa78dc97fa59292b03d5ac2e076b0be053d647b10e2b94a0405f",
+      "checksum": "sha256:15b48c5590bf640618df2dd68882a41adf98a7659fecdf66dd7b6497774f9da1",
       "files": [
         ".hub/c-banner/SKILL.md",
         ".hub/c-eval-runner/LEARNINGS.md",
@@ -660,7 +660,7 @@
         "manifest.json": "sha256:b3b9c7f34f239048ed6cd8c2975ed7ce3f7e30b4d4c88050b7de5d5e0037163f",
         "steps/01-plan-cards.md": "sha256:14e9af1dc425bd95338289592ac770b78965541539410fa6327dd32989331605",
         "steps/02-author-html.md": "sha256:cf6167c8d108be729e0e9196735be6be231b5c0ecf51c089b443056c85e3d6b5",
-        "steps/03-render.md": "sha256:aa6a18f378f65144b86406019944edc5f960b0479805436c59ec8d5d9b162031",
+        "steps/03-render.md": "sha256:ec06be49d3d2b0aab24b8573d9cf64803c159ae35110b05122aca86e5f614b06",
         "steps/04-qa-gate.md": "sha256:badfa2b403ff0cd2c5f88d7650823b91f25ee38583414aa922eeee54d022a83d",
         "steps/_shared.md": "sha256:afe99d8ab55553fa846eb0b69f08d202bd41160b16cfd73f298153c5776d6f5e"
       },

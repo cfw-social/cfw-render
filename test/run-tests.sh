@@ -1350,11 +1350,14 @@ export CFW_RENDER_PMSET_CMD="$FAKE_BIN/pmset"
 # layout. A box with a real cache keeps using it, so the preflight cases still
 # exercise the real discovery there.
 if ! ( source "$REPO_DIR/bin/cfw-render-lib.sh"; cr_preflight_chromium ) >/dev/null 2>&1; then
+  # The preflight wants the EXACT pinned revision folders, finished (B8/B10), so the
+  # fixture is named from config/playwright-pin.json. Nothing here is ever launched.
   FAKE_PLAYWRIGHT="$(mktemp -d)"
-  mkdir -p "$FAKE_PLAYWRIGHT/chromium_headless_shell-fixture/chrome-mac"
-  printf '#!/usr/bin/env bash\n# test fixture standing in for a Playwright headless shell; never launched\nexit 0\n' \
-    > "$FAKE_PLAYWRIGHT/chromium_headless_shell-fixture/chrome-mac/chrome-headless-shell"
-  chmod +x "$FAKE_PLAYWRIGHT/chromium_headless_shell-fixture/chrome-mac/chrome-headless-shell"
+  fake_pw_crev="$( source "$REPO_DIR/bin/cfw-render-lib.sh"; cr_playwright_pin_field chromiumRevision )"
+  fake_pw_hrev="$( source "$REPO_DIR/bin/cfw-render-lib.sh"; cr_playwright_pin_field chromiumHeadlessShellRevision )"
+  mkdir -p "$FAKE_PLAYWRIGHT/chromium-$fake_pw_crev" "$FAKE_PLAYWRIGHT/chromium_headless_shell-$fake_pw_hrev"
+  : > "$FAKE_PLAYWRIGHT/chromium-$fake_pw_crev/INSTALLATION_COMPLETE"
+  : > "$FAKE_PLAYWRIGHT/chromium_headless_shell-$fake_pw_hrev/INSTALLATION_COMPLETE"
   export PLAYWRIGHT_BROWSERS_PATH="$FAKE_PLAYWRIGHT"
   echo "note: no Playwright browser is visible to this run; preflight uses the fixture under PLAYWRIGHT_BROWSERS_PATH"
 fi

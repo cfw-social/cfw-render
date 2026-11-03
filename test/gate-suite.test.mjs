@@ -29,12 +29,16 @@ const CHECKS = [
   { name: 'python3 test/provider-keys.py', command: 'python3', args: ['test/provider-keys.py'], timeoutMs: 8 * 60 * 1000 },
   { name: 'python3 test/harness-conditions.py', command: 'python3', args: ['test/harness-conditions.py'], timeoutMs: 4 * 60 * 1000 },
   { name: 'python3 test/recipe-landing-regression.py', command: 'python3', args: ['test/recipe-landing-regression.py'], timeoutMs: 8 * 60 * 1000 },
+  { name: 'node --test test/playwright-pin.test.mjs', command: 'node', args: ['--test', 'test/playwright-pin.test.mjs'], timeoutMs: 2 * 60 * 1000 },
 ];
 
 const owned = new Set();
 
 function checkEnv() {
   const env = { ...process.env };
+  // This runner is itself a node:test child. A nested `node --test` that inherits
+  // NODE_TEST_CONTEXT skips its files and exits 0, so a failing node check would pass.
+  delete env.NODE_TEST_CONTEXT;
   const parts = (env.PATH || '/usr/bin:/bin').split(':').filter(Boolean);
   const rest = parts.filter((dir) => !BASH4_DIRS.includes(dir));
   env.PATH = [...BASH4_DIRS, ...rest].join(':');

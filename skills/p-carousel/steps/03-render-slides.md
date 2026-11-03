@@ -37,8 +37,18 @@ SKILL_DIR="$CFW_RENDER_SKILLS_DIR/$RECIPE"
 cp prior/carousel_html.md work/carousel.html
 AR=$(python3 -c "import json;print(json.load(open('prior/slide_copy.json'))['aspect_ratio'])")
 W=1080; H=1350; [ "$AR" = "1:1" ] && H=1080
-cd work && { [ -d node_modules/playwright ] || npm i playwright >/dev/null 2>&1; } && cd ..
+# Playwright is PINNED. The worker exports CFW_PLAYWRIGHT_PIN from config/playwright-pin.json,
+# the one file the preflight and the installer also read. A bare `npm i playwright` takes the
+# newest release, which needs a Chromium revision this computer has not cached (B8).
+PW="${CFW_PLAYWRIGHT_PIN:?CFW_PLAYWRIGHT_PIN is not set: the worker exports the Playwright version from config/playwright-pin.json}"
+(cd work && [ "$(python3 -c "import json;print(json.load(open('node_modules/playwright/package.json'))['version'])" 2>/dev/null)" = "$PW" ] \
+  || npm i --no-save --no-audit --no-fund "playwright@$PW" >npm-install.log 2>&1) \
+  || { tail -n 5 work/npm-install.log >&2; echo "playwright@$PW did not install" >&2; false; }
 ```
+
+Install exactly that version and never another. If `render.mjs` reports that the Chromium
+executable is missing, the step has failed: say so in the failure text and stop. Do not run
+`npx playwright install` or download a browser; the worker's preflight owns that.
 
 ### 1. Render
 

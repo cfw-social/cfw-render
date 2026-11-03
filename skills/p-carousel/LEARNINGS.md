@@ -77,3 +77,6 @@ Must say: the worker delivers ordered `saves/slide_1.png` … `saves/slide_N.png
 - Google Fonts are fetched over the network by both `template.html` and the Blueprint override — the fleet box blocks outbound fetches, so ship `@font-face` files (Inter, JetBrains Mono, Poppins) inside the recipe or accept system-font fallback.
 - Both ⛔ CHECKPOINTs (outline, caption) must be pre-answered by the order: pass the full slide outline in `directives`/`intent` and `caption_autoapprove=true`; a headless Director cannot wait.
 - Brand template: `brand-overrides/b-vasanth/template.html` (Blueprint exemplar) — use it instead of the recipe `template.html` for that brand.
+
+### 2026-11-03 — B8 Playwright pinned in one file (cfw WI2.147)
+- A fresh Mac ran an unpinned `npm i playwright` (1.64.1), which needs `chromium_headless_shell-1248`, while the Mac's cache held only revision 1194; `chromium.launch()` failed three times and no slide rendered. The Playwright version and its Chromium revisions now live in cfw-render `config/playwright-pin.json`. The worker exports the version as `CFW_PLAYWRIGHT_PIN`, step 3 installs exactly that version, the preflight requires the pinned revision folders in the cache, and the installer installs them. Never `npm i playwright` without the pin.

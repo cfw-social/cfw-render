@@ -1,0 +1,6 @@
+{
+  "_comment": "The ONE pin for Playwright and the Chromium it needs (B8/B10, WI2.147). Read by: the recipe step (the worker exports playwright as CFW_PLAYWRIGHT_PIN), bin/cfw-render-lib.sh (preflight requires these exact cache folders), install/install.sh (installs them on a fresh Mac). To bump: change all three together; the two revisions are the chromium and chromium-headless-shell revisions in that Playwright version's playwright-core/browsers.json.",
+  "playwright": "1.64.1",
+  "chromiumRevision": "1248",
+  "chromiumHeadlessShellRevision": "1248"
+}
