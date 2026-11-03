@@ -6,6 +6,10 @@
 # state. Exit 0 iff every case passes.
 set -u
 
+# The runner sandbox allows writes only under its TMPDIR and refuses /tmp.
+# Remember the directory now: a later step must not make tempfile fall back.
+SUITE_TMPDIR="${TMPDIR-}"
+
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$TEST_DIR/.." && pwd)"
 
@@ -14,6 +18,1313 @@ PASS_COUNT=0
 
 pass() { printf '  PASS  %s\n' "$1"; PASS_COUNT=$((PASS_COUNT+1)); }
 fail() { printf '  FAIL  %s — %s\n' "$1" "$2"; FAILURES=$((FAILURES+1)); }
+
+# Only recorded children of this runner may be cleaned up. No command matching.
+stop_test_tree() {
+  local owner
+  owner="$(exec python3 -c 'import os; print(os.getppid())')" || return 1
+  python3 "$TEST_DIR/stop-owned-tree.py" "$1" "$owner" || return 1
+  # SIGKILL is the expected fixture shutdown, not a failed assertion.
+  if wait "$1" 2>/dev/null; then :; fi
+}
+landing_regressions_case() {
+  python3 "$TEST_DIR/harness-conditions.py" &&
+    python3 "$TEST_DIR/provider-keys.py" &&
+    python3 "$TEST_DIR/recipe-landing-regression.py"
+}
+if [[ "${1:-}" == --landing-regressions ]]; then
+  landing_regressions_case
+  exit $?
+fi
+if [[ -z "${1:-}" ]]; then
+  if landing_regressions_case; then pass "landing regressions"; else fail "landing regressions" "regression failed"; fi
+fi
+
+process_cleanup_case() {
+  python3 - "$TEST_DIR" <<'PY'
+import importlib.util, os, pathlib, subprocess, sys, tempfile, time
+spec = importlib.util.spec_from_file_location('cleanup', pathlib.Path(sys.argv[1])/'stop-owned-tree.py')
+cleanup = importlib.util.module_from_spec(spec); spec.loader.exec_module(cleanup)
+# Linux procfs parsing must retain identity even when comm includes spaces or
+# parentheses. A PID reused after the first lookup must never receive a signal.
+from unittest.mock import patch
+stat = '123 (fixture ) with spaces) S 42 ' + '0 ' * 17 + '9876 0'
+assert cleanup._linux_identity(stat) == (42, (9876, 0))
+for malformed in ('', '123 fixture', '123 (fixture) S 42'):
+    try:
+        cleanup._linux_identity(malformed)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('accepted malformed proc identity')
+with patch.object(cleanup, 'processes', side_effect=[{123: (42, (1, 0))}, {123: (42, (2, 0))}]), \
+     patch.object(cleanup.os, 'kill') as send_signal:
+    cleanup.stop_owned_tree(123, 42)
+    send_signal.assert_not_called()
+with tempfile.TemporaryDirectory() as tmp:
+    marker = pathlib.Path(tmp)/'child'
+    unrelated = subprocess.Popen(['sleep', '30'])
+    root = subprocess.Popen(['bash', '-c', 'sleep 30 & echo $! > "$1"; wait', '_', str(marker)])
+    try:
+        for _ in range(100):
+            if marker.exists() and marker.read_text().strip(): break
+            time.sleep(.01)
+        child = int(marker.read_text())
+        try:
+            cleanup.stop_owned_tree(unrelated.pid, os.getpid()+1)
+            raise AssertionError('accepted a non-owned process')
+        except ValueError:
+            pass
+        cleanup.stop_owned_tree(root.pid, os.getpid())
+        root.wait(timeout=5)
+        for _ in range(100):
+            if child not in cleanup.processes(): break
+            time.sleep(.01)
+        assert child not in cleanup.processes(), 'descendant survived cleanup'
+        assert unrelated.poll() is None, 'unrelated sleep 30 was stopped'
+    finally:
+        if root.poll() is None: cleanup.stop_owned_tree(root.pid, os.getpid())
+        root.wait(timeout=5)
+        unrelated.terminate(); unrelated.wait(timeout=5)
+print('PASS: exact owned tree stopped; unrelated matching command survives; foreign owner rejected')
+PY
+}
+if [[ "${1:-}" == --process-cleanup ]]; then
+  process_cleanup_case
+  exit $?
+fi
+if [[ -z "${1:-}" ]]; then
+  if process_cleanup_case; then pass "test-owned process cleanup"; else fail "test cleanup" "unsafe cleanup"; exit 1; fi
+fi
+
+# Deterministic scheduling regression: run the real loop/backoff implementation
+# with only time, server replies and machine state replaced by local fixtures.
+short_tick_wake_case() {
+  python3 - "$REPO_DIR" <<'PY'
+import os, pathlib, subprocess, sys, tempfile
+source=(pathlib.Path(sys.argv[1])/'bin/cfw-render.sh').read_text()
+loop=source[source.index('loop_sleep() {'):]
+with tempfile.TemporaryDirectory() as tmp:
+    root=pathlib.Path(tmp)
+    script=r'''
+set -u
+CR_CAPACITY_IDLE_CLAIM_SECS=0.3
+CR_CLAIM_BACKOFF_BASE_SECS=0.3
+CR_CLAIM_BACKOFF_MAX_SECS=3
+CR_WAKE_GAP_SECS=30
+LAST_PAUSE_STATE=none
+STARTED=0
+CFW_RENDER_STATE_DIR="$ROOT"
+cr_tick_lock_touch() { :; }
+prune_running() { RUNNING=0; }
+cr_pause_state() { echo none; }
+cr_log() { printf '%s\n' "$*" >> "$ROOT/log"; }
+cr_now_epoch() { if [[ -f "$ROOT/jumped" ]]; then echo 131; else echo 100; fi; }
+sleep() {
+  if [[ "$backoff" == 3 && ! -f "$ROOT/jumped" ]]; then
+    [[ "$1" == 0.300 ]] || exit 8
+    : > "$ROOT/jumped"
+  fi
+}
+gated_claim_round() {
+  if [[ -f "$ROOT/jumped" ]]; then
+    [[ "$backoff" == 0 && "$CR_WOKE" == 1 ]] || exit 9
+    echo claim >> "$ROOT/claims"
+    exit 0
+  fi
+  return 2
+}
+'''
+    p=subprocess.run(['bash','-c',script+loop],env={**os.environ,'ROOT':str(root)},capture_output=True,text=True,timeout=10)
+    assert p.returncode==0,(p.returncode,p.stdout,p.stderr)
+    log=(root/'log').read_text()
+    assert 'retrying every 3s' in log and 'woke from sleep (31s gap)' in log
+    assert log.count('claim back-off: reset after sleep')==1
+    assert (root/'claims').read_text()=='claim\n'
+    print('PASS: real loop reaches 3s cap; tick 0.3 + 31s jump resets backoff before next claim')
+PY
+}
+if [[ "${1:-}" == --wake-short-tick ]]; then short_tick_wake_case; exit $?; fi
+
+# Hermetic groups that run scripts under a bash of their own choosing use the
+# bash running this suite ($BASH, a full path). /bin/bash 3.2 keeps here-doc
+# and here-string temp files in the system temp dir whatever TMPDIR says; the
+# runner sandbox refuses that dir, while this suite's own here-docs work.
+TEST_SUITE_BASH="$BASH"
+export TEST_SUITE_BASH
+
+if [[ "${1:-}" == --app-key-retry ]]; then
+  python3 "$TEST_DIR/app-key-retry.py"
+  exit $?
+fi
+if [[ -z "${1:-}" ]]; then
+  if python3 "$TEST_DIR/app-key-retry.py"; then pass "durable setup key replacement retries"; else fail "key replacement retry" "regression failed"; fi
+fi
+
+# Negotiated checkpoint fixtures only: no production manifest/version changes.
+local_checkpoint_cases() {
+  python3 - "$REPO_DIR" <<'PY'
+import copy, importlib.util, json, os, pathlib, shutil, subprocess, sys, tempfile, time
+# A loaded Mac exceeded 60 s on this helper while the rest of the suite was still running.
+LOCAL_CHECKPOINT_RUN_TIMEOUT_S = 180
+repo = pathlib.Path(sys.argv[1])
+helper = repo/'bin/cfw-render-checkpoint.py'
+spec = importlib.util.spec_from_file_location('checkpoint', helper)
+cp = importlib.util.module_from_spec(spec); spec.loader.exec_module(cp)
+script = r'''
+set -uo pipefail
+source "$REPO/bin/cfw-render-lib.sh"
+source "$REPO/bin/cfw-render-engine.sh"
+source "$REPO/bin/cfw-render-harness.sh"
+cr_engine_detect() { echo codex; }
+cr_engine_limit_detect() { return 1; }
+cr_engine_limit_until() { echo ''; }
+cr_harness_heartbeat_start() { :; }
+cr_harness_heartbeat_stop() { :; }
+cr_h_run_with_timeout() { shift; "$@"; }
+cr_report_step() {
+  python3 -c 'import json,sys; print(json.dumps({"attempt":sys.argv[1],"seq":sys.argv[2],"event":sys.argv[3],"extra":json.loads(sys.argv[4])}))' "$3" "$4" "$5" "$6" >> "$ROOT/reports"
+  if [[ "${LOSE_ACK:-}" == "$5" && ! -e "$ROOT/.lost-ack" ]]; then touch "$ROOT/.lost-ack"; return 75; fi
+  if [[ "${REVOKE:-0}" == 1 && "$5" == step_started ]]; then printf '{"ok":true,"directive":"stop_after_step"}'; return; fi
+  printf '{"ok":true,"directive":"continue"}'
+}
+cr_h_upload_with_retry() { echo unexpected-upload >> "$ROOT/network"; return 1; }
+cr_h_restore_saved_outputs() { echo unexpected-download >> "$ROOT/network"; return 1; }
+cr_harness_run "$JOB/order.json" "$JOB" "$RECIPE"
+'''
+with tempfile.TemporaryDirectory(prefix='cfw-local-checkpoints-') as tmp:
+    root = pathlib.Path(tmp).resolve()
+    recipe = root/'recipe'; (recipe/'steps').mkdir(parents=True); (recipe/'checks').mkdir()
+    for sid in ('a','b','c'): (recipe/'steps'/f'{sid}.md').write_text('Synthetic offline test.')
+    (recipe/'checks/valid.sh').write_text('[[ -s "$1/saves/image.png" ]]\n')
+    image = root/'fixture.png'
+    subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','color=white:s=16x16','-frames:v','1',str(image)],check=True)
+    engine = root/'engine'
+    engine.write_text('''#!/usr/bin/env bash
+set -eu
+printf '%s\\n' "$CFW_STEP_ID" >> "$ROOT/engines"
+for save in $CFW_STEP_SAVES; do
+  name="${save/:/.}"
+  case "$name" in
+    *.png) cp "$ROOT/fixture.png" "saves/$name" ;;
+    *) printf '{"instagram":{"caption":"Synthetic caption","hashtags":["#test"]}}' > "saves/$name" ;;
+  esac
+done
+if [[ "${FAIL_STEP:-}" == "$CFW_STEP_ID" ]]; then printf invalid > saves/image.png; fi
+'''); engine.chmod(0o700)
+    manifest = {'recipe':'fixture','recipeVersion':'1.0.0','steps':[
+        {'id':'a','runsOn':'computer','instructions':'steps/a.md','saves':[{'id':'x','kind':'json'}]},
+        {'id':'b','runsOn':'computer','instructions':'steps/b.md','when':{'inputPresent':'unused'},'saves':[]},
+        {'id':'c','runsOn':'computer','instructions':'steps/c.md','saves':[{'id':'image','kind':'image'},{'id':'copy','kind':'json'}],
+         'checks':[{'id':'valid'}]}],
+        'finalOutputs':[{'stepId':'c','saveId':'image','role':'deliverable'},{'stepId':'c','saveId':'copy','role':'captions'}]}
+    env = {'PATH':os.environ['PATH'],'TMPDIR':os.environ.get('TMPDIR','/tmp'),'HOME':str(root),'REPO':str(repo),'ROOT':str(root),'RECIPE':str(recipe),
+           'CFW_WORKER_ID':'install-A','CFW_RENDER_LOCAL_CHECKPOINTS':'1','CFW_RENDER_ENGINE_CMD':str(engine),
+           'CFW_RENDER_STATE_DIR':str(root/'state'),'CFW_RENDER_LOG_DIR':str(root/'logs')}
+    def claim(name, attempt='att1', action='start', generation=0, resume='a'):
+        d = root/name; d.mkdir(exist_ok=True)
+        o = {'id':name,'brandId':'brand1','recipeVersion':'1.0.0','manifest':copy.deepcopy(manifest),
+             'attempt':{'id':attempt},'checkpoint':{'mode':'local-v1','action':action,'generation':generation},
+             'resumeFromStepId':resume,'taskOrder':{}}
+        (d/'order.json').write_text(json.dumps(o)); return d, o
+    def put(d, o): (d/'order.json').write_text(json.dumps(o))
+    def run(d, expected=0, **extra):
+        p = subprocess.run(['bash','-c',script],env={**env,'JOB':str(d),**extra},capture_output=True,text=True,timeout=LOCAL_CHECKPOINT_RUN_TIMEOUT_S)
+        assert p.returncode == expected, (p.returncode,expected,p.stdout,p.stderr[-4000:])
+        return json.loads(p.stdout) if expected == 0 else None
+    def command(d, cmd, *args, worker='install-A', expected=0):
+        p = subprocess.run([sys.executable,str(helper),cmd,str(d),worker,*args],capture_output=True,text=True)
+        assert p.returncode == expected, (cmd,p.stderr)
+        return json.loads(p.stdout) if not expected else None
+    d,o = claim('job')
+    run(d,30,FAIL_STEP='c')
+    assert (root/'engines').read_text().splitlines() == ['a','c']
+    d,o = claim('job','att2','resume',resume='c'); outputs=run(d)
+    assert (root/'engines').read_text().splitlines() == ['a','c','c']
+    assert [x['id'] for x in outputs] == ['image','copy']
+    d,o = claim('job','att3','finalize-only',resume=''); assert run(d) == outputs
+    assert (root/'engines').read_text().splitlines() == ['a','c','c']
+    assert not (root/'network').exists()
+    state = json.loads((d/'checkpoint.json').read_text())
+    assert state['identity']['workerId']=='install-A' and state['stages']['b']['event']=='step_skipped'
+    reports = [json.loads(x) for x in (root/'reports').read_text().splitlines()]
+    for att in ('att1','att2','att3'):
+        seqs=[int(x['seq']) for x in reports if x['attempt']==att]; assert seqs==sorted(set(seqs))
+    command(d,'init',worker='install-B',expected=31)
+    saved=d/'steps/a/saves/x.json'; original=saved.read_bytes()
+    for bad in (b'',b'changed'):
+        saved.write_bytes(bad); run(d,31)
+    saved.unlink(); saved.symlink_to(image); run(d,31); saved.unlink(); run(d,31); saved.write_bytes(original)
+    bad_version=copy.deepcopy(o); bad_version['manifest']['recipeVersion']='2'; put(d,bad_version); run(d,31); put(d,o)
+    # Every range form rejects before engine, even an apparently full range or null.
+    before=(root/'engines').read_bytes()
+    for field,value in [('stageRange',{'fromStepId':'a','toStepId':'c'}),('stageRange',None),
+                        ('stopAfterStepId','a'),('stageRangeCompleted',True),
+                        ('taskOrder',{'stageRange':{'fromStepId':'a','toStepId':'a'}})]:
+        bounded=copy.deepcopy(o); bounded[field]=value; put(d,bounded); run(d,31)
+        command(d,'init',expected=31)
+    put(d,o); run(d,31,CFW_RENDER_LOCAL_CHECKPOINTS='0')
+    unknown=copy.deepcopy(o); unknown['checkpoint']['mode']='unknown'; put(d,unknown); run(d,31); put(d,o)
+    assert before==(root/'engines').read_bytes()
+    for refs in ([],[{'stepId':'a','saveId':'x','role':'deliverable'}],
+                 [{'stepId':'c','saveId':'missing','role':'deliverable'}]):
+        f,bad=claim('mapping'+str(len(json.dumps(refs)))); bad['manifest']['finalOutputs']=refs; put(f,bad); run(f,31)
+    # Lost acknowledgement is replayed at the same seq; new attempts never reuse it.
+    lost,lo=claim('lost'); run(lost,31,LOSE_ACK='step_completed')
+    pending=command(lost,'pending'); run(lost)
+    assert pending[0]['event']=='step_completed' and command(lost,'pending')==[]
+    old,oo=claim('old'); (root/'.lost-ack').unlink(); run(old,31,LOSE_ACK='step_completed')
+    pending=command(old,'pending'); old,oo=claim('old','att2','resume'); run(old)
+    st=json.loads((old/'checkpoint.json').read_text())
+    assert st['attempts']['att1']['pending']==pending and st['stages']['a']['acknowledgedAttempts']==['att2']
+    rev,ro=claim('revision','att1','resume',resume='c')
+    ro['taskOrder']['resume']={'fromOrderId':'old','fromGeneration':0,'fromStepId':'c'}; put(rev,ro); run(rev)
+    revoked,ro=claim('revoked'); before=(root/'engines').read_bytes(); run(revoked,22,REVOKE='1')
+    assert before==(root/'engines').read_bytes()
+    print('PASS: gated local resume/finalize-only, identity, corruption, range rejection, outbox replay and revocation')
+    # Restore terminal acknowledgement after deliberate failed recovery probes.
+    run(d)
+    # Real final report with only offline upload/HTTP boundaries replaced.
+    report_bin=root/'report-bin'; report_bin.mkdir()
+    for name in ('cfw-render-report.sh','cfw-render-checkpoint.py'): shutil.copy2(repo/'bin'/name,report_bin/name)
+    (report_bin/'cfw-render-lib.sh').write_text('''
+CFW_RENDER_DIRECTOR_MODEL=sonnet
+cr_log() { :; }
+cr_heartbeat_stop_if_pending() { :; }
+cr_mcp_call() { printf '%s\\n' "$2" >> "$ROOT/completions"; [[ "${LOSE_COMPLETE:-0}" == 1 ]] && return 75; printf '{"ok":true}'; }
+''')
+    uploader=report_bin/'cfw-render-upload.sh'
+    uploader.write_text('#!/usr/bin/env bash\nprintf upload >> "$ROOT/uploads"\nprintf "https://media.cfw.social/image.png"\n'); uploader.chmod(0o700)
+    report_env={**env,'CFW_ORDER_ID':'job','CFW_ATTEMPT_ID':'att3','CFW_API_BASE':'http://127.0.0.1:1',
+                'CFW_RENDER_WORKER_KEY':'test-only','CFW_CAPTIONS_FILE':outputs[1]['path']}
+    def deliver(expected, files=None, **extra):
+        p=subprocess.run(['bash',str(report_bin/'cfw-render-report.sh'),'complete',*(files or [outputs[0]['path']])],
+                         cwd=d,env={**report_env,**extra},capture_output=True,text=True)
+        assert p.returncode==expected,(p.returncode,p.stderr)
+    deliver(1,files=[str(image)])
+    assert not (root/'uploads').exists()
+    captions=pathlib.Path(outputs[1]['path']); original_captions=captions.read_bytes()
+    captions.write_text('{}'); deliver(1); assert not (root/'uploads').exists(); captions.write_bytes(original_captions)
+    deliver(1,LOSE_COMPLETE='1'); attempts=(root/'completions').read_bytes()
+    deliver(1); assert (root/'completions').read_bytes()==attempts
+    assert json.loads(attempts)['captions']=={'instagram':'Synthetic caption\n\n#test'}
+    run(d,31)  # even finalize-only cannot repeat uncertain terminal delivery
+    # Cleanup must retain the uncertainty marker as well as paid outputs.
+    def life(cmd, path, *args, expected=0):
+        p=subprocess.run([sys.executable,str(helper),cmd,str(path),*args],capture_output=True,text=True)
+        assert p.returncode==expected,(cmd,p.stderr)
+    life('active',d,str(os.getpid())); life('active',d,str(os.getpid()),expected=31)
+    life('finish',d,'local-v1',str(os.getpid()+100000),expected=31)
+    life('finish',d,'local-v1',str(os.getpid()))
+    assert not (d/'order.json').exists() and not (d/'.active.json').exists()
+    assert (d/'.delivery-started').exists() and pathlib.Path(outputs[0]['path']).exists()
+    scratch=root/'scratch'; brand=scratch/'brand'; brand.mkdir(parents=True)
+    for name in ('stale','active','recent','uncertain','complete','blocked'):
+        p=brand/name; p.mkdir(); age=time.time()-3*86400
+        (p/'.activity.json').write_text(json.dumps({'at':time.time() if name=='recent' else age}))
+        if name=='active': (p/'.active.json').write_text(json.dumps({'pid':os.getpid()}))
+        if name in ('uncertain','complete','blocked'): (p/'.delivery-started').mkdir()
+        if name in ('complete','blocked'): (p/'.outcome').write_text('complete' if name=='complete' else 'block')
+        os.utime(p,(age,age))
+    life('janitor',scratch)
+    assert sorted(p.name for p in brand.iterdir())==['active','recent','uncertain']
+    link=brand/'link'; link.symlink_to(root/'outside'); (root/'outside').mkdir()
+    life('active',link/'job',str(os.getpid()),expected=31); assert not (root/'outside/job').exists()
+    print('PASS: ordered/caption delivery gate, lost completion is not retried, ownership/scrubbing and retained uncertainty')
+    # Missing validators and corrupt nonempty media fail; one script invocation.
+    check_work=root/'check-work'; (check_work/'saves').mkdir(parents=True)
+    (check_work/'saves/x.json').write_text('{"ok":true}')
+    decl={'recipe':'fixture','steps':[{'id':'a','saves':[{'id':'x','kind':'json'}],'checks':[{'id':'required'}]}]}
+    order=root/'checks.json'; order.write_text(json.dumps({'manifest':decl}))
+    def validate(expected):
+        p=subprocess.run([sys.executable,str(repo/'bin/cfw-render-checks.py'),'run',str(order),str(recipe),str(check_work),'a'],capture_output=True,text=True)
+        assert p.returncode==expected,(p.stdout,p.stderr)
+        assert str(root) not in p.stdout and 'private-log' not in p.stdout
+    validate(1)
+    validator=recipe/'checks/required.sh'; validator.write_text('printf run >> "$1/count"\necho private-log\nexit 1\n')
+    validate(1); assert (check_work/'count').read_text()=='run'
+    validator.write_text('printf run >> "$1/count"\n'); validate(0)
+    for kind,suffix in [('json','json'),('image','png'),('video','mp4')]:
+        decl['steps'][0]['saves']=[{'id':'bad','kind':kind}]
+        (check_work/f'saves/bad.{suffix}').write_text('corrupt but nonempty')
+        order.write_text(json.dumps({'manifest':decl})); validate(1)
+    for path in (repo/'skills').glob('p-*/manifest.json'):
+        real=json.loads(path.read_text()); assert 'finalOutputs' not in real
+    caps=subprocess.run(['bash','-c','source "$REPO/bin/cfw-render-engine.sh"; cr_engine_manifests_json() { echo "[]"; }; cr_engines_json() { echo "[]"; }; cr_engine_capabilities_json codex "$RECIPE"'],env=env,capture_output=True,text=True,check=True)
+    assert 'checkpointProtocols' not in json.loads(caps.stdout)
+    print('PASS: missing validator, corrupt saves, single invocation, unchanged recipes and no advertised checkpoint capability')
+PY
+}
+if [[ "${1:-}" == --local-checkpoints ]]; then
+  local_checkpoint_cases
+  exit $?
+fi
+if [[ -z "${1:-}" ]]; then
+  if local_checkpoint_cases; then pass "negotiated local checkpoints"; else fail "local checkpoints" "regression failed"; fi
+fi
+
+# CFW-316: disposable, offline regression coverage.
+if [[ -z "${1:-}" || "${1:-}" == --timeout-recovery ]]; then
+if python3 - "$REPO_DIR" <<'PY'
+import json, os, pathlib, shutil, subprocess, sys, tempfile
+repo = pathlib.Path(sys.argv[1])
+lib = repo/'bin/cfw-render-lib.sh'
+def shell(code, root, extra=None):
+    # TMPDIR: bash writes here-documents to $TMPDIR (else /tmp, which the runner
+    # sandbox refuses); hand the runner's choice through to these minimal envs.
+    env = {'PATH': os.environ['PATH'], 'TMPDIR': os.environ.get('TMPDIR', '/tmp'), 'HOME': str(root), 'REPO': str(repo),
+           'ROOT': str(root), 'CFW_API_BASE': 'http://127.0.0.1:1',
+           'CFW_RENDER_WORKER_KEY': 'cfw_render_test_only', 'CFW_WORKER_ID': 'test-worker',
+           'CFW_ORDER_ID': 'test-order', 'CFW_ATTEMPT_ID': 'test-attempt',
+           'CFW_RENDER_DIRECTOR_MODEL': 'sonnet', 'CFW_RENDER_STATE_DIR': str(root),
+           'CFW_RENDER_SCRATCH_DIR': str(root), 'CFW_RENDER_PROVIDER_BUDGET_HEYGEN': '4',
+           'CFW_RENDER_PROVIDER_WAIT_CAP': '2', 'CFW_RENDER_FINISH_GRACE_SECS': '3'}
+    env.update(extra or {})
+    return subprocess.run(['bash','-c',code], env=env, cwd=root, text=True,
+                          capture_output=True, timeout=20)
+with tempfile.TemporaryDirectory(prefix='cfw-budget-recovery-') as tmp:
+    root = pathlib.Path(tmp)
+    def run(code, extra=None):
+        p = shell('source "$REPO/bin/cfw-render-lib.sh"\n'+code, root, extra)
+        assert p.returncode == 0, (p.stdout, p.stderr)
+        return p.stdout.strip()
+    wait = root/'wait.tsv'
+    for content, expected in [('',0), ('start\theygen\t100\nend\theygen\t140\n',40),
+        ('start\theygen\t900\n',100),
+        ('start\theygen\t100\nstart\theygen\t110\nend\theygen\t140\n',40),
+        ('start\theygen\t1\nend\theygen\t2000\n',900),
+        ('start\tunknown\t100\nend\tunknown\t140\n',0),
+        ('start\theygen\t100\nend\theygen\t140\nstart\theygen\t120\nend\theygen\t160\n',60),
+        ('start\theygen\tnot-a-date\n',0)]:
+        wait.write_text(content)
+        assert run('cr_provider_wait_excluded "$ROOT/wait.tsv" 100 1000') == str(expected)
+    wait.unlink()
+    assert run('cr_provider_wait_excluded "$ROOT/wait.tsv" 100 1000') == '0'
+    wait.symlink_to(lib)
+    assert run('cr_provider_wait_excluded "$ROOT/wait.tsv" 100 1000') == '0'
+    wait.unlink()
+    assert run('cr_recipe_budget 3 p-reels-pip-heygen video') == '7'
+    assert run('cr_recipe_budget 3 p-reels-pip-heygen image') == '3'
+    assert run('cr_recipe_budget 3 unknown video') == '3'
+    print('  PASS  budgets: missing/malformed/overlapping waits, lifetime clamp and image exclusion')
+
+    # Run the actual watchdog against a virtual clock. No processes are killed.
+    watch = '''
+printf 100 > clock
+: > kills
+sleep() { local n; n=$(cat clock); printf '%s' "$((n + $1))" > clock; }
+date() { cat clock; }
+cr_kill_tree() { printf '%s %s %s\\n' "$1" "$2" "$(cat clock)" >> kills; }
+cr_budget_watchdog 999999 3 "$ROOT/wait.tsv" "$ROOT" "${DIRECTIVE:-}"
+cat kills
+'''
+    assert 'TERM 103' in run(watch)
+    wait.write_text('start\theygen\t100\n')
+    assert 'TERM 105' in run(watch)  # open wait hits the absolute outer cap
+    wait.write_text('start\theygen\t100\nend\theygen\t102\n')
+    assert 'TERM 105' in run(watch)
+    wait.write_text('')
+    (root/'final').mkdir()
+    (root/'final/cover.png').write_text('not a full carousel')
+    assert 'TERM 103' in run(watch)  # final files alone grant no grace
+    (root/'.delivery-started').mkdir()
+    assert 'TERM 106' in run(watch)
+    (root/'directive').write_text('cancel')
+    assert 'TERM 101' in run(watch, {'DIRECTIVE':str(root/'directive')})
+    (root/'.delivery-started').rmdir()
+    print('  PASS  watchdog: bounded open waits, explicit finish grace and cancellation priority')
+
+    # Real harness timeout: only this test-owned engine group is signalled.
+    (root/'order.json').write_text('{"recipe":"fixture","kind":"image"}')
+    (root/'directive').write_text('continue')
+    p = shell('''source "$REPO/bin/cfw-render-lib.sh"
+source "$REPO/bin/cfw-render-harness.sh"
+CR_H_ORDER_DIR="$ROOT"
+cr_h_run_with_timeout 1 bash -c 'sleep 8'
+rc=$?
+[[ "$rc" == 143 || "$rc" == 137 ]] && [[ -f .retain-artifacts ]]
+''', root)
+    assert p.returncode == 0, p.stderr
+    print('  PASS  manifest engine timeout retains artifacts and reaps its process group')
+
+    # Real report logic with file-only mock transport/upload. No network calls.
+    bins = root/'bin'; bins.mkdir()
+    shutil.copy(repo/'bin/cfw-render-report.sh', bins)
+    (bins/'cfw-render-lib.sh').write_text(lib.read_text()+'''\ncr_heartbeat_stop_if_pending() { :; }
+cr_mcp_call() {
+  printf '%s\\n' "$2" >> "$ROOT/calls"
+  if [[ "${LOST_REPLY:-0}" == 1 ]]; then return 1; fi
+  printf '{"ok":true}'
+}
+''')
+    upload = bins/'cfw-render-upload.sh'
+    upload.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$1" >> "$ROOT/uploads"\nprintf "https://media.cfw.social/%s" "$(basename "$1")"\n')
+    upload.chmod(0o755)
+    (root/'final/slide-2.png').write_text('slide two')
+    (root/'final/captions.json').write_text('{"instagram":"caption"}')
+    command = 'bash "$ROOT/bin/cfw-render-report.sh" complete final/slide-2.png final/cover.png final/captions.json'
+    p = shell(command, root, {'LOST_REPLY':'1'})
+    assert p.returncode != 0 and not (root/'.outcome').exists()
+    assert (root/'.delivery-started/files.json').exists()
+    p = shell(command, root)
+    assert p.returncode != 0
+    calls = (root/'calls').read_text().splitlines()
+    assert len(calls) == 1, calls
+    d = json.loads(calls[0])
+    assert d['attemptId'] == 'test-attempt'
+    assert [x['url'].split('/')[-1] for x in d['outputs']] == ['slide-2.png','cover.png']
+    assert d['captions']['instagram'] == 'caption'
+    assert len((root/'uploads').read_text().splitlines()) == 2
+    assert shell('bash "$ROOT/bin/cfw-render-report.sh" block timeout', root).returncode != 0
+    # Independent clean order: acknowledgement precedes optional local copy.
+    clean = root/'clean'; clean.mkdir()
+    p = shell('cd "$ROOT/clean"; bash "$ROOT/bin/cfw-render-report.sh" complete https://media.cfw.social/slide.png', root)
+    assert p.returncode == 0, p.stderr
+    assert (clean/'.outcome').read_text().strip() == 'complete'
+    print('  PASS  lost completion reply: no retry/upload/block; explicit ordered outputs and attempt identity preserved')
+
+    # The production transport must also avoid its ordinary curl retries for
+    # terminal completion, even if the connection dies after server commit.
+    run('''curl() { echo called >> curl-count; return 28; }
+cr_mcp_call complete_render_order '{}' >/dev/null 2>&1
+[[ "$(wc -l < curl-count | tr -d ' ')" == 1 ]]
+''')
+    # Provider event path containment and strict provider name validation.
+    wait.write_text('')
+    p = shell('bash "$ROOT/bin/cfw-render-report.sh" provider-wait-start heygen', root,
+              {'CFW_RENDER_WAIT_FILE':str(wait)})
+    assert p.returncode == 0 and 'start\theygen\t' in wait.read_text(), p.stderr
+    p = shell('bash "$ROOT/bin/cfw-render-report.sh" provider-wait-start unknown', root,
+              {'CFW_RENDER_WAIT_FILE':str(wait)})
+    assert p.returncode == 2
+    p = shell('bash "$ROOT/bin/cfw-render-report.sh" provider-wait-start heygen', root,
+              {'CFW_RENDER_WAIT_FILE':str(lib)})
+    assert p.returncode == 2
+    source = (repo/'bin/cfw-render.sh').read_text()
+    assert 'complete final/*' not in source
+    identity_code = source.split('CFW_ATTEMPT_ID="$(python3 -c \'', 1)[1].split("' <<<", 1)[0]
+    for order, expected in [({'attempt':{'id':'a'}}, 'a'),
+        ({'attempt':{'id':'a'},'manifest':{'steps':[]}}, ''),
+        ({'attempt':{'id':'a'},'manifest':{'steps':[]},'taskOrder':{'stageRange':{'fromStepId':'one'}}}, 'a')]:
+        p = subprocess.run([sys.executable, '-c', identity_code], input=json.dumps(order), capture_output=True, text=True)
+        assert p.returncode == 0 and p.stdout.strip() == expected, p.stderr
+    # Step 7 moved retention into the shared checkpoint lifecycle helper.
+    # Exercise that helper, rather than asserting the old inline implementation.
+    retained = root/'retention/brand/order'; retained.mkdir(parents=True)
+    (retained/'.delivery-started').mkdir()
+    os.utime(retained, (1, 1))
+    p = subprocess.run([sys.executable, str(repo/'bin/cfw-render-checkpoint.py'),
+                        'janitor', str(root/'retention')], capture_output=True, text=True)
+    assert p.returncode == 0 and (retained/'.delivery-started').is_dir(), p.stderr
+    # A known upload failure occurs before any terminal RPC. It may block, but
+    # its delivery lock still prevents re-upload or accidental duplicate delivery.
+    rejected = root/'rejected'; rejected.mkdir()
+    upload.write_text('#!/usr/bin/env bash\nexit 1\n')
+    failed_command = 'cd "$ROOT/rejected"; bash "$ROOT/bin/cfw-render-report.sh" complete "$ROOT/final/slide-2.png"'
+    before = (root/'calls').read_text()
+    assert shell(failed_command, root).returncode != 0
+    assert (rejected/'.delivery-started/upload-failed').is_file()
+    assert (root/'calls').read_text() == before
+    assert shell('cd "$ROOT/rejected"; bash "$ROOT/bin/cfw-render-report.sh" block "Upload failed"', root).returncode == 0
+    assert (rejected/'.outcome').read_text().strip() == 'block'
+    before = (root/'calls').read_text()
+    assert shell(failed_command, root).returncode != 0
+    assert (root/'calls').read_text() == before
+    # A genuinely new admitted attempt may replace a positively acknowledged
+    # block. Use the real report command, not a stub overwriting .outcome.
+    def life(command, folder, *args):
+        p = subprocess.run([sys.executable, str(repo/'bin/cfw-render-checkpoint.py'),
+                            command, str(folder), *args], capture_output=True, text=True)
+        assert p.returncode == 0, p.stderr
+    life('active', rejected, str(os.getpid()))
+    assert not (rejected/'.outcome').exists() and not (rejected/'.delivery-started').exists()
+    upload.write_text('#!/usr/bin/env bash\necho https://media.cfw.social/retry.png\n')
+    assert shell(failed_command, root).returncode == 0
+    assert (rejected/'.outcome').read_text().strip() == 'complete'
+    life('finish', rejected, '', str(os.getpid()))
+    assert not rejected.exists(), 'acknowledged nonlocal success leaked scratch'
+    assert source.index('previous delivery needs reconciliation') < source.index('printf \'%s\' "$order_json" > "$order_dir/order.json"')
+    print('  PASS  completion transport is single-shot; wait writes contained; uncertain artifacts protected')
+PY
+then
+  pass "bounded timeouts and fail-closed delivery recovery"
+else
+  fail "bounded timeouts and fail-closed delivery recovery" "offline regression failed"
+fi
+if [[ "${1:-}" == --timeout-recovery ]]; then
+  (( FAILURES == 0 ))
+  exit $?
+fi
+fi
+
+# Exercise the real pause gate + soft-call parser without starting workers,
+# hitting a network, or running the legacy suite's broad process cleanup.
+# --pause-retry-only runs just this regression block.
+if python3 - "$REPO_DIR" <<'PY'
+import json, os, pathlib, subprocess, sys, tempfile
+repo = pathlib.Path(sys.argv[1])
+source = (repo/'bin/cfw-render.sh').read_text()
+assert source.count('LAST_PAUSE_STATE="__unset__"') == 1
+gate = source.split('LAST_PAUSE_STATE="__unset__"', 1)[1].split('\nif (( ! LOOP ));', 1)[0]
+gate = 'LAST_PAUSE_STATE="__unset__"' + gate
+success = json.dumps({'result': {'content': [{'text': '{"ok":true}'}]}})
+def tool_error(text):
+    return json.dumps({'result': {'isError': True, 'content': [{'text': text}]}})
+cases = [
+    ('database error', tool_error('{"ok":false,"error":"update_failed"}'), '200', 1, 3, 1),
+    ('server error', json.dumps({'error': {'code': -32603, 'message': 'Temporary failure'}}), '200', 1, 3, 1),
+    ('malformed reply', 'not-json', '200', 1, 3, 1),
+    ('HTTP failure', '{}', '503', 3, 5, 1),
+    ('old server', json.dumps({'error': {'code': -32601, 'message': 'Unknown tool: set_computer_paused'}}), '200', 1, 1, 0),
+    ('SDK missing tool', tool_error('MCP error -32602: Tool set_computer_paused not found'), '200', 1, 1, 0),
+    ('RPC missing tool', json.dumps({'error': {'code': -32602, 'message': 'Tool set_computer_paused not found'}}), '200', 1, 1, 0),
+    ('unrelated error', json.dumps({'error': {'code': -32603, 'message': 'Unknown tool: set_computer_paused'}}), '200', 1, 3, 1),
+]
+harness = '''source "$REPO/bin/cfw-render-lib.sh"
+curl() {
+  local n
+  n=$(cat "$COUNT_FILE"); n=$((n+1)); printf '%s' "$n" > "$COUNT_FILE"
+  if (( n <= FAIL_CALLS )); then printf '%s\\n%s' "$FIRST_REPLY" "$HTTP_CODE"
+  else printf '%s\\n200' "$SUCCESS_REPLY"; fi
+}
+sleep() { :; }
+cr_pause_state() { printf '%s' "$PAUSE_REASON"; }
+cr_on_battery() { [[ "$PAUSE_REASON" == battery ]]; }
+cr_log() { :; }
+cr_reach_set() { REACH="$1"; }
+prune_running() { RUNNING=0; }
+claim_round() { echo 'Unexpected claim' >&2; exit 99; }
+cr_status_write() { printf '%s %s %s %s\\n' "$PING_SUPPORTED" "$REACH" "$CR_STATUS_LAST_ERROR" "$(cat "$COUNT_FILE")"; }
+CLAIM_MAX=1
+CR_STATUS_LAST_ERROR=keep-existing-error
+''' + gate + '''
+gated_claim_round
+gated_claim_round
+gated_claim_round
+'''
+for reason in ('owner', 'battery'):
+    for name, reply, http, failures, calls, supported in cases:
+        with tempfile.TemporaryDirectory(prefix='cfw-pause-retry-') as tmp:
+            counter = pathlib.Path(tmp)/'calls'
+            counter.write_text('0')
+            env = {'PATH': os.environ['PATH'], 'TMPDIR': os.environ.get('TMPDIR', '/tmp'), 'HOME': tmp, 'REPO': str(repo),
+                   'CFW_RENDER_STATE_DIR': tmp, 'CFW_API_BASE': 'http://127.0.0.1:1',
+                   'CFW_RENDER_WORKER_KEY': 'test-only', 'COUNT_FILE': str(counter),
+                   'FIRST_REPLY': reply, 'SUCCESS_REPLY': success, 'HTTP_CODE': http,
+                   'FAIL_CALLS': str(failures), 'PAUSE_REASON': reason}
+            result = subprocess.run(['bash', '-s'], input=harness, env=env,
+                                    capture_output=True, text=True, timeout=20)
+            assert result.returncode == 0, (name, reason, result.stderr)
+            rows = result.stdout.splitlines()
+            assert len(rows) == 3, (name, rows)
+            assert rows[-1] == f'{supported} ok keep-existing-error {calls}', (name, reason, rows)
+            assert rows[0].split()[1] == ('unreachable' if http == '503' else 'ok'), (name, rows)
+            assert int(counter.read_text()) == calls
+            print(f'  PASS  pause retry: {reason}, {name}')
+PY
+then
+  pass "pause retries recover; only explicit missing-tool replies disable check-ins"
+else
+  fail "pause retry" "retry, old-server or reachability contract failed"
+fi
+if [[ "${1:-}" == --pause-retry-only ]]; then
+  (( FAILURES == 0 ))
+  exit $?
+fi
+
+# Legacy feedback compatibility must not grant new tool/security permissions.
+if python3 - "$REPO_DIR" <<'PY'
+import pathlib, sys
+repo = pathlib.Path(sys.argv[1])
+prompt = (repo/'lib/director-prompt.md').read_text()
+assert '`feedback` (top level or\n`taskOrder.feedback`)' in prompt
+assert 'Make the whole piece again from the brief' in prompt
+assert 'Where creative requirements conflict with the brief, feedback wins.' in prompt
+assert 'Feedback never overrides the self-contained mandate, execution restrictions,\nor security rules.' in prompt
+assert '"$SELF_DIR/../lib/director-prompt.md"' in (repo/'bin/cfw-render.sh').read_text()
+PY
+then
+  pass "legacy owner feedback applies to creative requirements, not security rules"
+else
+  fail "legacy owner feedback" "feedback compatibility or security precedence missing"
+fi
+
+# Reporting instructions are tested independently of the deferred checkpoint runtime.
+if python3 - "$REPO_DIR" <<'PY'
+import json, os, pathlib, subprocess, sys, tempfile
+repo = pathlib.Path(sys.argv[1])
+with tempfile.TemporaryDirectory(prefix='cfw-reporting-prompts-') as tmp:
+    work = pathlib.Path(tmp)
+    manifests = sorted((repo/'skills').glob('p-*/manifest.json'))
+    assert len(manifests) == 13
+    for path in manifests:
+        m = json.loads(path.read_text())
+        assert 'RECIPE-STAGE-REPORTING.md' in (path.parent/'SKILL.md').read_text()
+        for stage in m['steps']:
+            if stage.get('runsOn') == 'server':
+                continue
+            (work/'order.json').write_text(json.dumps({'manifest':m,'taskOrder':{'intent':'synthetic'}}))
+            p = subprocess.run(['bash','-c', '''source "$REPO/bin/cfw-render-harness.sh"
+CR_H_RECIPE_DIR="$RECIPE"
+cr_h_build_prompt "$STAGE" "$WORK" "$WORK/order.json"
+'''], env={**os.environ,'REPO':str(repo),'RECIPE':str(path.parent),'STAGE':stage['id'],'WORK':str(work)},
+                capture_output=True,text=True)
+            assert p.returncode == 0, (m['recipe'], stage['id'], p.stderr)
+            prompt = (work/'prompt.md').read_text()
+            assert 'The harness alone calls `report_render_step`' in prompt
+            assert 'The harness uploads exactly these files, then runs' not in prompt
+            assert 'missing validators, missing evidence' in prompt
+            assert (path.parent/stage['instructions']).read_text() in prompt
+    longform = json.loads((repo/'skills/p-longform/manifest.json').read_text())
+    visuals = next(s for s in longform['steps'] if s['id'] == 'build_visuals')
+    assert visuals['uses']['optionalProviders'] == ['kie']
+    assert 'kie' not in longform['needs']['providers']
+PY
+then
+  pass "all 13 recipe entry points and real managed prompts carry single-owner reporting; Longform Kie stays optional"
+else
+  fail "recipe reporting instructions" "entry point, prompt ownership or optional-provider contract failed"
+fi
+
+# Run: bash test/run-tests.sh --stage-range
+# Hermetic stage-range regression group: fake engine/report/upload functions and
+# an in-memory HTTP opener. No services, credentials, installs or live network.
+stage_range_tests() {
+  python3 - "$REPO_DIR" "$TEST_SUITE_BASH" <<'PY'
+import hashlib
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+from urllib.request import Request
+
+repo = Path(sys.argv[1])
+# The suite's own bash (see TEST_SUITE_BASH): the scripts below use here-docs
+# and here-strings, which /bin/bash 3.2 would park in the system temp dir.
+suite_bash = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else "bash"
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("stage", repo / "bin/cfw-render-stage.py")
+stage = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(stage)
+
+
+class StageRangeTests(unittest.TestCase):
+    def order(self, **changes):
+        manifest = json.loads((repo / "test/fixtures/manifests/harness-3step/manifest.json").read_text())
+        result = {"id": "order-test", "attempt": {"id": "attempt-test"},
+                  "recipe": "harness-3step", "kind": "video", "brandId": "brand-test",
+                  "manifest": manifest, "taskOrder": {"brand": {"slug": "brand-test"}}}
+        result.update(changes)
+        return result
+
+    def bounds(self, start="a", end="b"):
+        return {"fromStepId": start, "toStepId": end}
+
+    def harness(self, order, outer=False, missing="", reject="", directive=""):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "order.json").write_text(json.dumps(order))
+            (root / "reports").write_text("")
+            # Source only these existing function definitions, not the worker tick.
+            worker = (repo / "bin/cfw-render.sh").read_text()
+            functions = worker[worker.index("sanitize_slug() {"):worker.index("\nspawn_pids=()")]
+            (root / "worker-functions.sh").write_text(functions)
+            (root / "bin").mkdir()
+            (root / "bin/cfw-render-checkpoint.py").write_bytes((repo / "bin/cfw-render-checkpoint.py").read_bytes())
+            report = root / "bin/cfw-render-report.sh"
+            report.write_text('#!/bin/bash\nprintf "%s\\n" "$1" >> "$TEST_ROOT/final-calls"\n')
+            report.chmod(0o755)
+            script = r'''
+set -euo pipefail
+source "$REPO/bin/cfw-render-harness.sh"
+cr_log() { :; }
+cr_engine_detect() { echo test; }
+cr_harness_heartbeat_start() { :; }
+cr_harness_heartbeat_stop() { :; }
+cr_h_run_with_timeout() { shift; "$@"; }
+cr_h_stage_inputs() { :; }
+cr_h_build_prompt() { : > "$2/prompt.md"; }
+cr_engine_limit_detect() { return 1; }
+cr_engine_limit_until() { :; }
+cr_engine_run() {
+  [[ "$CFW_STEP_ID" == "$MISSING" ]] && return 0
+  local save
+  for save in $CFW_STEP_SAVES; do
+    printf 'saved bytes' > "$3/saves/${save/:/.}"
+  done
+}
+cr_h_upload_with_retry() { echo https://media.cfw.social/result; }
+cr_report_step() {
+  python3 - "$4" "$5" "$6" "$TEST_ROOT/reports" <<'REPORT'
+import json,sys
+with open(sys.argv[4], "a") as f:
+    f.write(json.dumps({"seq": int(sys.argv[1]), "event": sys.argv[2], **json.loads(sys.argv[3])}) + "\n")
+REPORT
+  if [[ "$5" == attempt_completed && "$REJECT" == offline ]]; then return 75; fi
+  if [[ "$5" == attempt_completed && "$REJECT" == reject ]]; then
+    echo '{"ok":false,"code":"invalid_stage_range","directive":"continue"}'
+  elif [[ "$5" == attempt_completed && "$REJECT" == schema ]]; then
+    echo '{"ok":false,"code":"invalid_params","error":"Invalid report schema"}'
+  elif [[ "$5" == attempt_completed && "$REJECT" == malformed_ack ]]; then
+    echo '{"ok":"false","directive":"continue"}'
+  elif [[ "$5" == step_completed && -n "$DIRECTIVE" ]]; then
+    printf '{"ok":true,"directive":"%s"}' "$DIRECTIVE"
+  else echo '{"ok":true,"directive":"continue"}'; fi
+}
+if [[ "$OUTER" == 1 ]]; then
+  source "$TEST_ROOT/worker-functions.sh"
+  # WI2.45: spawn_director calls cr_select_deliverables from the shared lib.
+  # shellcheck disable=SC1091
+  source "$REPO/bin/cfw-render-lib.sh"
+  cr_recipe_needs_heygen() { return 1; }
+  cr_verify_skills_bundle() { return 0; }
+  cr_keep_output_dir() { echo "$TEST_ROOT/kept"; }
+  cr_recent_append() { :; }
+  SELF_DIR="$TEST_ROOT/bin"
+  JOURNAL="$TEST_ROOT/journal"
+  spawn_director "$(cat "$TEST_ROOT/order.json")"
+else
+  cr_harness_run "$TEST_ROOT/order.json" "$TEST_ROOT" "$TEST_ROOT/recipe"
+fi
+'''
+            env = {"PATH": str(Path(sys.executable).parent) + os.pathsep + os.defpath,
+                   "TMPDIR": os.environ.get("TMPDIR", "/tmp"),   # bash here-documents need it
+                   "HOME": directory, "TEST_ROOT": directory, "REPO": str(repo),
+                   "OUTER": str(int(outer)), "MISSING": missing, "REJECT": reject,
+                   "DIRECTIVE": directive, "CFW_WORKER_ID": "test-worker", "CFW_API_BASE": "",
+                   "CFW_RENDER_WORKER_KEY": "", "CFW_RENDER_STATE_DIR": directory,
+                   "CFW_RENDER_LOG_DIR": directory, "CFW_RENDER_SCRATCH": str(root / "scratch"),
+                   "CFW_RENDER_SKILLS_DIR": str(root / "skills")}
+            result = subprocess.run([suite_bash, "--noprofile", "--norc", "-c", script],
+                                    env=env, text=True, capture_output=True, timeout=30)
+            events = [json.loads(line) for line in (root / "reports").read_text().splitlines()]
+            completed = (root / "final-calls").read_text() if (root / "final-calls").exists() else ""
+            return result, events, completed
+
+    def test_inclusive_range_and_stop(self):
+        for changes, expected in [
+            ({"stageRange": self.bounds("a", "a"), "stopAfterStepId": "a"}, ["a"]),
+            ({"stopAfterStepId": "a"}, ["a"]),
+            ({"stageRange": self.bounds("b", "b")}, []),
+        ]:
+            with self.subTest(changes=changes):
+                result, events, _ = self.harness(self.order(**changes))
+                self.assertEqual(result.returncode, 25, result.stderr)
+                self.assertEqual([e["stepId"] for e in events if e["event"] == "step_started"], expected)
+                self.assertEqual(events[-1]["event"], "attempt_completed")
+
+    def test_resume_clamp_and_final(self):
+        order = self.order(stageRange=self.bounds("b", "c"), resumeFromStepId="a")
+        result, events, _ = self.harness(order)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([e["stepId"] for e in events if e["event"] == "step_started"], ["c"])
+        self.assertEqual(events[0]["event"], "step_skipped")
+        self.assertEqual(json.loads(result.stdout)[0]["id"], "z")
+
+    def test_legacy_spotlight_resume_at_first_server_step(self):
+        manifest = json.loads((repo / "skills/p-reels-spotlight/manifest.json").read_text())
+        self.assertEqual((manifest["steps"][0]["id"], manifest["steps"][0]["runsOn"]),
+                         ("research", "server"))
+        order = self.order(manifest=manifest, resumeFromStepId="research",
+                           inputs={"broll": [{"url": "https://media.cfw.social/test-broll"}]})
+        expected = [s["id"] for s in manifest["steps"] if s["runsOn"] == "computer"]
+        self.assertEqual(stage.plan(order)["stepIds"], expected)
+        self.assertEqual(stage.plan(order)["resume"], "prepare_footage")
+        result, events, _ = self.harness(order)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([e["stepId"] for e in events if e["event"] == "step_started"], expected)
+        self.assertTrue(all(e.get("stepId") not in ("research", "script") for e in events))
+
+    def test_resume_at_server_step_after_range_never_reruns(self):
+        order = self.order(stageRange=self.bounds("a", "a"), resumeFromStepId="review")
+        order["manifest"]["steps"].insert(1, {"id": "review", "runsOn": "server"})
+        self.assertEqual(stage.plan(order)["stepIds"], [])
+        result, events, _ = self.harness(order)
+        self.assertEqual(result.returncode, 25, result.stderr)
+        self.assertEqual([e["event"] for e in events], ["attempt_completed"])
+
+    def test_completed_range_never_reruns_or_crosses_endpoint(self):
+        for changes in [{"resumeFromStepId": "c"},
+                        {"resumeFromStepId": "a", "stageRangeCompleted": True}]:
+            result, events, _ = self.harness(self.order(stageRange=self.bounds(), **changes))
+            self.assertEqual(result.returncode, 25, result.stderr)
+            self.assertEqual([e["event"] for e in events], ["attempt_completed"])
+        result, events, _ = self.harness(self.order(stageRange=self.bounds("c", "c"), stageRangeCompleted=True))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([e["event"] for e in events], ["attempt_completed"])
+
+    def test_invalid_bounds_fail_before_engine_or_reports(self):
+        cases = [{"stageRange": self.bounds("c", "a")}, {"stageRange": self.bounds("missing", "b")},
+                 {"stageRange": self.bounds(), "stopAfterStepId": "c"}, {"resumeFromStepId": "missing"}]
+        for changes in cases:
+            result, events, _ = self.harness(self.order(**changes))
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertEqual(events, [])
+
+    def test_endpoint_saves_required_even_without_checks(self):
+        result, events, _ = self.harness(self.order(stageRange=self.bounds("a", "a")), missing="a")
+        self.assertEqual(result.returncode, 30, result.stderr)
+        self.assertEqual(events[-1]["event"], "attempt_failed")
+        self.assertNotIn("attempt_completed", [e["event"] for e in events])
+
+    def test_terminal_ack_required(self):
+        for reject in ("reject", "offline", "schema", "malformed_ack"):
+            result, _, _ = self.harness(self.order(stageRange=self.bounds()), reject=reject)
+            self.assertEqual(result.returncode, 1, result.stderr)
+
+    def test_revocation_and_cancel_still_win(self):
+        for directive, code in [("cancel", 20), ("stop_after_step", 22), ("superseded", 23)]:
+            result, events, _ = self.harness(self.order(stageRange=self.bounds()), directive=directive)
+            self.assertEqual(result.returncode, code, result.stderr)
+            self.assertNotIn("attempt_completed", [e["event"] for e in events])
+
+    def test_nonfinal_skips_complete_and_final_calls_it(self):
+        for end, complete in [("a", ""), ("c", "complete\n")]:
+            result, _, completed = self.harness(self.order(stageRange=self.bounds("a", end)), outer=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(completed, complete)
+        order = self.order(stageRange=self.bounds())
+        del order["manifest"]
+        result, events, completed = self.harness(order, outer=True)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual((events, completed), ([], ""))
+
+    def test_new_output_checksum(self):
+        result, events, _ = self.harness(self.order(stageRange=self.bounds("a", "a")))
+        self.assertEqual(result.returncode, 25, result.stderr)
+        output = next(e["outputs"][0] for e in events if e["event"] == "step_completed")
+        self.assertEqual(output["checksum"], "sha256:" + hashlib.sha256(b"saved bytes").hexdigest())
+
+    def test_report_outputs_use_save_id_and_local_outputs_keep_id(self):
+        order = self.order()
+        result, events, _ = self.harness(order)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        completed = [e for e in events if e["event"] == "step_completed"]
+        self.assertEqual([e["stepId"] for e in completed], ["a", "c"])
+        # Validate the actual cr_report_step payload, not a constructed example.
+        for event in completed:
+            declared = next(s["saves"] for s in order["manifest"]["steps"] if s["id"] == event["stepId"])
+            self.assertEqual([o["saveId"] for o in event["outputs"]], [s["id"] for s in declared])
+            for output in event["outputs"]:
+                self.assertEqual(set(output), {"saveId", "url", "checksum"})
+                self.assertIsInstance(output["saveId"], str)
+                self.assertTrue(output["url"].startswith("https://media.cfw.social/"))
+                self.assertRegex(output["checksum"], r"^sha256:[0-9a-f]{64}$")
+        local_outputs = json.loads(result.stdout)
+        self.assertEqual([o["id"] for o in local_outputs], ["x", "z"])
+        self.assertTrue(all("saveId" not in o for o in local_outputs))
+
+    def saved_order(self):
+        return self.order(stageRange=self.bounds("c", "c"), savedOutputs=[
+            {"stepId": "a", "saveId": "x", "url": "https://media.cfw.social/a"},
+            {"stepId": "b", "saveId": "y", "url": "https://media.cfw.social/b"}])
+
+    def test_restore_all_prior_outputs_and_legacy_checksum(self):
+        order = self.saved_order()
+        order["savedOutputs"][1]["checksum"] = "sha256:" + hashlib.sha256(b"saved").hexdigest()
+        with tempfile.TemporaryDirectory() as directory, patch.object(stage.urllib.request.OpenerDirector, "open", side_effect=lambda *a, **k: io.BytesIO(b"saved")) as fetch:
+            restored = stage.restore(order, Path(directory))
+            self.assertEqual([o["id"] for o in restored], ["x", "y"])
+            self.assertEqual(fetch.call_count, 2)
+            self.assertTrue(all(Path(o["path"]).read_bytes() == b"saved" for o in restored))
+
+    def test_restore_audio_uses_harness_media_extension(self):
+        order = self.saved_order()
+        order['manifest']['steps'][0]['saves'][0]['kind'] = 'audio'
+        with tempfile.TemporaryDirectory() as directory, patch.object(stage.urllib.request.OpenerDirector, 'open', side_effect=lambda *a, **k: io.BytesIO(b'saved')):
+            restored = stage.restore(order, Path(directory))
+            self.assertEqual(Path(restored[0]['path']).suffix, '.mp3')
+            self.assertEqual(Path(restored[0]['path']).read_bytes(), b'saved')
+
+    def test_restore_excludes_stale_later_outputs(self):
+        order = self.saved_order()
+        order["stageRange"] = self.bounds("b", "c")
+        order["resumeFromStepId"] = "a"
+        order["savedOutputs"][1]["url"] = "https://not-approved.example/stale"
+        with tempfile.TemporaryDirectory() as directory, patch.object(stage.urllib.request.OpenerDirector, "open", side_effect=lambda *a, **k: io.BytesIO(b"saved")) as fetch:
+            self.assertEqual([o["id"] for o in stage.restore(order, Path(directory))], ["x"])
+            self.assertEqual(fetch.call_count, 1)
+
+    def test_invalid_restore_paths_known_ids_and_urls(self):
+        for field, value in [("stepId", "../outside"), ("saveId", "unknown"),
+                             ("url", "file:///tmp/local"), ("url", "https://unapproved.example/save"),
+                             ("url", "http://media.cfw.social/save"), ("checksum", "sha256:bad")]:
+            order = self.saved_order()
+            order["savedOutputs"][0][field] = value
+            with tempfile.TemporaryDirectory() as directory, patch.object(stage.urllib.request.OpenerDirector, "open") as fetch:
+                with self.assertRaises(ValueError):
+                    stage.restore(order, Path(directory))
+                fetch.assert_not_called()
+                self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_restore_symlink_and_checksum_failure_preserve_files(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
+            root = Path(directory)
+            (root / "steps").symlink_to(outside, target_is_directory=True)
+            with patch.object(stage.urllib.request.OpenerDirector, "open") as fetch:
+                with self.assertRaises(ValueError):
+                    stage.restore(self.saved_order(), root)
+                fetch.assert_not_called()
+            (root / "steps").unlink()
+            dest = root / "steps/a/saves/x.json"
+            dest.parent.mkdir(parents=True)
+            dest.write_bytes(b"previous")
+            order = self.saved_order()
+            order["savedOutputs"][0]["checksum"] = "sha256:" + "0" * 64
+            with patch.object(stage.urllib.request.OpenerDirector, "open", side_effect=lambda *a, **k: io.BytesIO(b"wrong")):
+                with self.assertRaises(ValueError):
+                    stage.restore(order, root)
+            self.assertEqual(dest.read_bytes(), b"previous")
+            self.assertEqual(list(dest.parent.iterdir()), [dest])
+
+    def test_redirect_policy_including_loopback_seam(self):
+        handler = stage.MediaRedirect("", "")
+        req = Request("https://media.cfw.social/first")
+        for url in ("http://media.cfw.social/next", "https://other.example/next", "file:///tmp/next",
+                    "https://user:pass@media.cfw.social/next", "https://media.cfw.social:444/next"):
+            with self.assertRaises(ValueError):
+                handler.redirect_request(req, None, 302, "", {}, url)
+        self.assertEqual(handler.redirect_request(req, None, 302, "", {}, "https://media.cfw.social/next").full_url,
+                         "https://media.cfw.social/next")
+        self.assertTrue(stage.approved_url("https://custom.example/save", "https://custom.example"))
+        self.assertFalse(stage.approved_url("http://127.0.0.1:1234/save"))
+        handler = stage.MediaRedirect("", "http://127.0.0.1:1234")
+        self.assertIsNotNone(handler.redirect_request(req, None, 302, "", {}, "http://127.0.0.1:1234/save"))
+        with self.assertRaises(ValueError):
+            handler.redirect_request(req, None, 302, "", {}, "http://127.0.0.1:1235/save")
+
+    def test_capabilities_and_version(self):
+        result = subprocess.run(["bash", "--noprofile", "--norc", "-c", '''
+source "$1/bin/cfw-render-engine.sh"
+cr_engine_manifests_json() { echo '[]'; }
+cr_engines_json() { echo '[]'; }
+cr_engine_capabilities_json codex "$1/skills"
+''', "test", str(repo)], text=True, capture_output=True, check=True,
+            env={"PATH": str(Path(sys.executable).parent) + os.pathsep + os.defpath,
+                 "TMPDIR": os.environ.get("TMPDIR", "/tmp")})
+        self.assertEqual(json.loads(result.stdout)["features"], ["stage-range-v1"])
+        self.assertEqual((repo / "VERSION").read_text().strip(), "1.2.0")
+        # Exercise only the bin copy line against a disposable destination;
+        # never execute installer setup, launchctl or provider calls here.
+        lines = (repo / "install/install.sh").read_text().splitlines()
+        copies = [line for line in lines if line.startswith('cp -a ') and line.endswith('"$PREFIX/bin/"')]
+        self.assertEqual(len(copies), 1)
+        with tempfile.TemporaryDirectory(prefix="cfw-stage-package-") as tmp:
+            (Path(tmp) / "bin").mkdir()
+            subprocess.run(["bash", "--noprofile", "--norc", "-c", copies[0]], check=True,
+                env={"PATH": os.defpath, "REPO_DIR": str(repo), "PREFIX": tmp})
+            for helper in ("cfw-render-stage.py", "cfw-render-redact.py"):
+                self.assertEqual((Path(tmp) / "bin" / helper).read_bytes(), (repo / "bin" / helper).read_bytes())
+
+
+unittest.main(argv=[sys.argv[0]], verbosity=2)
+PY
+}
+
+if stage_range_tests; then
+  pass "stage-range: hermetic regression group"
+else
+  fail "stage-range" "hermetic regression group failed"
+fi
+if [[ "${1:-}" == --stage-range ]]; then
+  (( FAILURES == 0 )); exit $?
+fi
+
+recent_identity_cases() {
+  python3 - "$REPO_DIR" <<'PY'
+import datetime, json, os, pathlib, signal, subprocess, sys, tempfile
+repo = pathlib.Path(sys.argv[1])
+source = (repo/'bin/cfw-render.sh').read_text()
+functions = source[source.index('sanitize_slug() {'):source.index('# [M2-04] Claims with capacity')]
+with tempfile.TemporaryDirectory(prefix='cfw-recent-') as tmp:
+    root = pathlib.Path(tmp)
+    (root/'logs with spaces/runs').mkdir(parents=True)
+    (root/'state').mkdir()
+    director = root/'director'
+    director.write_text('''#!/bin/bash
+printf '%s' "$TEST_OUTCOME" > .outcome
+printf 'synthetic transcript %s\\n' "$TEST_ATTEMPT"
+# Completion must not rediscover identity from this now-reused claim file.
+printf '{"id":"wrong-order","attempt":{"id":"wrong-attempt"}}' > order.json
+''')
+    director.chmod(0o700)
+    # TMPDIR: bash writes here-documents to $TMPDIR (else /tmp, which the runner
+    # sandbox refuses); hand the runner's choice through to these minimal envs.
+    env = {'PATH': os.environ['PATH'], 'TMPDIR': os.environ.get('TMPDIR', '/tmp'), 'HOME': str(root), 'REPO': str(repo),
+        'TEST_ROOT': str(root), 'CFW_RENDER_SCRATCH': str(root/'scratch'),
+        'CFW_RENDER_STATE_DIR': str(root/'state'), 'CFW_RENDER_LOG_DIR': str(root/'logs with spaces'),
+        'CFW_RENDER_SKILLS_DIR': str(root/'skills'), 'CFW_RENDER_COMPUTER_NAME': 'Synthetic Mac',
+        'CFW_WORKER_ID': 'synthetic-worker', 'CFW_API_BASE': 'http://unused.invalid',
+        'CFW_RENDER_WORKER_KEY': 'synthetic-key', 'CFW_RENDER_DIRECTOR_CMD': str(director),
+        'CFW_RENDER_TIMEOUT_IMAGE': '60', 'CFW_RENDER_TIMEOUT_VIDEO': '60',
+        'CFW_RENDER_GATE_FAIL_CAP': '1', 'CFW_RENDER_FANOUT_MODELS': '',
+        'CFW_RENDER_OLLAMA_KEYS_FILE': str(root/'absent'), 'CFW_RENDER_KEEP_OUTPUTS': '0',
+        'TEST_OUTCOME': 'blocked', 'TEST_ATTEMPT': 'attempt-A', 'TEST_GATE': '', 'TEST_HARNESS_RC': '30'}
+    setup = '''
+set -u
+SELF_DIR="$REPO/bin"
+source "$SELF_DIR/cfw-render-lib.sh"
+RUNS_DIR="$CFW_RENDER_LOG_DIR/runs"
+JOURNAL="$CFW_RENDER_STATE_DIR/journal.tsv"
+cr_recipe_needs_heygen() { [[ "$TEST_GATE" == provider ]]; }
+cr_verify_skills_bundle() { [[ "$TEST_GATE" != integrity ]]; }
+cr_mcp_call() { return 0; }
+cr_event() { :; }
+cr_heartbeat_start() { :; }
+cr_heartbeat_stop() { :; }
+cr_keep_output_dir() { echo "$TEST_ROOT/kept/$2"; }
+cr_harness_run() { return "$TEST_HARNESS_RC"; }
+# Force transcript allocations into one clock second, but leave observed UTC
+# starts/finishes real. No sleeps/timing assumptions in the collision test.
+date() { if [[ "${1:-}" == +%s ]]; then echo 1234567890; else command date "$@"; fi; }
+'''
+    def run(script, **extra):
+        p = subprocess.Popen(['bash', '-c', setup + script], env={**env, **extra},
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+        try:
+            out, err = p.communicate(timeout=30)
+            return p.returncode, out, err
+        finally:
+            # Only this test session, never a name-based kill of real workers.
+            try: os.killpg(p.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            p.wait()
+    claim = {'id': 'order-1', 'shortCode': 'R-FAIL', 'brandId': 'b1', 'brandName': 'Brand A',
+             'taskOrder': {'brand': {'slug': 'brand-a'}, 'credentials': {'test': 'synthetic-provider-secret'}},
+             'recipe': 'reel', 'kind': 'image', 'attempt': {'id': 'attempt-A'}, 'attemptId': 'wrong-flat-id',
+             'reason': 'private failure detail', 'providerKeys': ['synthetic-provider-secret'],
+             'unrelated': 'do-not-copy', 'startedAt': '1999-01-01T00:00:00Z', 'directorLog': 'invented.out'}
+    fields = set('shortCode brand result finishedAt orderId attemptId brandSlug recipe kind reason startedAt directorLog'.split())
+    def rows(): return [json.loads(s) for s in (root/'state/recent.ndjson').read_text().splitlines()]
+    def spawn(order, rc=0, **extra):
+        before = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+        result, out, err = run(functions + '\nspawn_director "$TEST_CLAIM"\nrc=$?\ncr_status_write\nexit "$rc"\n',
+                               TEST_CLAIM=json.dumps(order), **extra)
+        assert result == rc, (result, rc, err)
+        row = rows()[-1]
+        assert set(row) == fields, row
+        assert before <= datetime.datetime.fromisoformat(row['startedAt'].replace('Z', '+00:00')) <= datetime.datetime.now(datetime.timezone.utc)
+        assert row['attemptId'] == order.get('attempt', {}).get('id', order.get('attemptId'))
+        assert row['orderId'] == order['id'] and row['recipe'] == order['recipe']
+        for path in ('recent.ndjson', 'status.json'):
+            data = (root/'state'/path).read_text()
+            assert all(s not in data for s in ('synthetic-provider-secret', 'private failure detail', 'do-not-copy', 'wrong-order', 'wrong-attempt'))
+            assert (root/'state'/path).stat().st_mode & 0o777 == 0o600
+        return row
+    a = spawn(claim)
+    assert a['result'] == 'failed' and a['directorLog']
+    assert (root/'scratch/brand-a/order-1').is_dir()
+    first_log = root/'logs with spaces/runs'/a['directorLog']
+    first_bytes = first_log.read_bytes()
+    assert first_bytes == b'synthetic transcript attempt-A\n'
+    b = spawn({**claim, 'attempt': {'id': 'attempt-B'}}, TEST_OUTCOME='complete', TEST_ATTEMPT='attempt-B')
+    assert b['result'] == 'done' and b['brand'] == 'Brand A' and b['brandSlug'] == 'brand-a'
+    assert not (root/'scratch/brand-a/order-1').exists()
+    assert rows()[:2] == [a, b]
+    assert a['directorLog'] != b['directorLog']
+    assert all(r['directorLog'].startswith('order-1-1234567890-') and r['directorLog'].endswith('.out') for r in (a,b))
+    assert first_log.read_bytes() == first_bytes
+    assert (root/'logs with spaces/runs'/b['directorLog']).read_bytes() == b'synthetic transcript attempt-B\n'
+    assert first_log.stat().st_mode & 0o777 == 0o600
+    status = json.loads((root/'state/status.json').read_text())
+    assert status['recent'] == [b, a]
+    for gate in ('provider', 'integrity', 'brand'):
+        order = {**claim, 'id': 'gate-'+gate}
+        if gate == 'brand': order.update(brandId='', taskOrder={})
+        r = spawn(order, rc=1, TEST_GATE=gate)
+        assert r['result'] == 'failed' and r['directorLog'] is None
+    for code, outcome in ((20,'stopped'), (21,'stopped'), (22,'stopped'), (23,'failed'), (24,'stopped'), (25,'done'), (30,'failed'), (31,'failed')):
+        r = spawn({**claim, 'id': 'harness-'+str(code), 'manifest': {'steps': []}}, TEST_HARNESS_RC=str(code))
+        assert r['result'] == outcome and r['directorLog'] is None
+        if code in (22,23,24): assert not (root/'scratch/brand-a'/('harness-'+str(code))).exists()
+    # Bad identifiers are refused before either scratch or a transcript exists.
+    count = len(rows())
+    for oid in ('../escape', 'bad/name', 'bad\\name', 'bad id', '.hidden'):
+        rc, _, _ = run(functions + '\nspawn_director "$TEST_CLAIM"\n', TEST_CLAIM=json.dumps({**claim, 'id': oid}))
+        assert rc == 1 and len(rows()) == count
+    assert not (root/'escape').exists()
+    # No Director or heartbeat starts when exclusive allocation fails, and no
+    # shared-name fallback is created. Cover absent, non-directory and readonly.
+    (root/'not-directory').write_text('untouched')
+    (root/'readonly/runs').mkdir(parents=True)
+    (root/'readonly/runs').chmod(0o500)
+    try:
+        for folder in ('missing', 'not-directory', 'readonly'):
+            r = spawn({**claim, 'id': 'allocation-'+folder}, rc=1, CFW_RENDER_LOG_DIR=str(root/folder))
+            assert r['result'] == 'failed' and r['directorLog'] is None
+            assert not (root/'scratch/brand-a'/('allocation-'+folder)/'.outcome').exists()
+        assert (root/'not-directory').read_text() == 'untouched'
+        assert not list((root/'readonly/runs').iterdir())
+    finally:
+        (root/'readonly/runs').chmod(0o700)
+    # Old callers keep their file-derived identity but never guess start/log.
+    legacy = root/'legacy.json'
+    legacy.write_text(json.dumps(claim))
+    rc, _, err = run('cr_recent_append "$TEST_ROOT/legacy.json" complete fallback\n')
+    assert rc == 0, err
+    assert rows()[-1]['attemptId'] == 'attempt-A'
+    assert rows()[-1]['startedAt'] is None and rows()[-1]['directorLog'] is None
+    rc, _, err = run('cr_recent_append "" blocked legacy\n')
+    assert rc == 0, err
+    r = rows()[-1]
+    assert r['orderId'] == 'legacy' and all(r[k] is None for k in fields - {'orderId','result','finishedAt'})
+    # Explicit invalid/missing identity cannot fall back to stale scratch.
+    for identity in ('', '[]', '{', json.dumps({'orderId': {'secret': 'do-not-copy'}, 'brand': ['do-not-copy'],
+            'startedAt': 'not-a-date', 'directorLog': '../outside.out', 'reason': 'private failure detail'})):
+        rc, _, err = run('cr_recent_append "$TEST_ROOT/legacy.json" blocked fallback "$TEST_IDENTITY"\n', TEST_IDENTITY=identity)
+        assert rc == 0, err
+        r = rows()[-1]
+        assert all(r[k] is None for k in fields - {'result','finishedAt'}), r
+    # Fifth argument is a distinct owner-safe summary, never identity JSON.
+    identity = json.dumps({'orderId': 'reason-order', 'attemptId': 'reason-attempt'})
+    rc, _, err = run('cr_recent_append "" failed reason-order "$TEST_IDENTITY" "missing input cfw_render_synthetic_test_key"\n', TEST_IDENTITY=identity)
+    assert rc == 0, err
+    r = rows()[-1]
+    assert r['attemptId'] == 'reason-attempt' and r['reason'] == 'missing input cfw_render_[redacted]'
+    rc, _, err = run('cr_recent_append "" complete reason-order "$TEST_IDENTITY" "not a failure"\n', TEST_IDENTITY=identity)
+    assert rc == 0 and rows()[-1]['reason'] is None, err
+    assert len(rows()) <= 50
+    print('PASS: attempt identity survives reuse/cleanup; nested IDs, early gates, harness, legacy/null and secret exclusions')
+    print('PASS: same-second exclusive transcripts preserve bytes; spaced paths, unsafe IDs and allocation failures')
+    # Consumed by the desktop regression: actual worker-produced status, no logs.
+    print('STATUS_FIXTURE=' + json.dumps(status))
+PY
+}
+if [[ "${1:-}" == --recent-identity ]]; then
+  recent_identity_cases && (( FAILURES == 0 ))
+  exit $?
+fi
+
+# Existing M3-05a-3 update case, selectable without starting workers/services.
+# This is file-copy coverage, NOT native app/updater or LaunchAgent acceptance.
+installer_update_case() {
+  python3 - "$REPO_DIR" <<'PY'
+import hashlib, json, os, pathlib, subprocess, sys, tempfile
+repo = pathlib.Path(sys.argv[1])
+pin = next(d for d in json.loads((repo/'config/agent-guides.json').read_text())['documents']
+           if d['path'] == 'lib/render-debug.md')
+assert hashlib.sha256((repo/pin['path']).read_bytes()).hexdigest() == pin['sha256']
+with tempfile.TemporaryDirectory(prefix='cfw-update-test-') as tmp:
+    root = pathlib.Path(tmp)
+    guards = root/'guards'; guards.mkdir()
+    # Defense in depth: even a regressed skip flag must not touch real services.
+    for name in ('launchctl', 'curl', 'claude', 'codex'):
+        stub = guards/name
+        stub.write_text('#!/bin/bash\nprintf "%s\\n" "$0" >> "$HOME/unexpected-command"\nexit 97\n')
+        stub.chmod(0o700)
+    for guide_state in ('missing', 'stale'):
+        home = root/guide_state; home.mkdir()
+        prefix = home/'CFW Render/app'
+        (prefix/'bin').mkdir(parents=True)
+        (prefix/'lib').mkdir()
+        (prefix/'config').mkdir()
+        for name in ('cfw-render.sh', 'cfw-render-lib.sh'):
+            (prefix/'bin'/name).write_text('old worker\n')
+        if guide_state == 'stale':
+            (prefix/'lib/render-debug.md').write_text('old guide\n')
+        # Only synthetic settings/evidence, all confined to this test directory.
+        preserved = {
+            'CFW Render/app/config/local-only.json': b'{"local":true}\n',
+            '.cfw-render/app-settings.json': b'{"autoUpdate":false,"workerSyncedVersion":"old"}\n',
+            '.cfw-render/cfw-render.env': b'CFW_RENDER_WORKER_KEY=synthetic-only\n',
+            '.cfw-render/worker-id': b'synthetic-worker\n',
+            '.cfw-render/recent.ndjson': b'{"attemptId":"attempt-A"}\n',
+            '.cfw-render/status.json': b'{"schema":1,"recent":[]}\n',
+            '.cfw-render/scratch/brand/order/order.json': b'{"id":"order"}\n',
+            'CFW Render/logs/runs/order-123-old.out': b'synthetic prior evidence\n',
+            'CFW Render/outputs/brand/output.txt': b'synthetic output\n',
+            'Library/LaunchAgents/com.cfw.render.plist': b'synthetic plist, never loaded\n',
+        }
+        for name, data in preserved.items():
+            path = home/name; path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data); path.chmod(0o600)
+        env = {'HOME': str(home), 'PATH': str(guards)+os.pathsep+os.environ['PATH'],
+               'TMPDIR': os.environ.get('TMPDIR', '/tmp'),
+               'CFW_RENDER_SKIP_LAUNCHCTL': '1', 'CFW_RENDER_INSTALL_NO_LAUNCHCTL': '1'}
+        with (home/'stdin').open('w+b') as stdin:
+            stdin.write(b'KEEP-THIS-LINE\n'); stdin.seek(0)
+            result = subprocess.run(['bash', str(repo/'install/install.sh'), '--mode', 'byoa',
+                '--non-interactive', '--from-app', '--update'], env=env, cwd=home,
+                stdin=stdin, capture_output=True, timeout=60)
+            assert result.returncode == 0, (guide_state, result.returncode, result.stderr.decode())
+            assert stdin.read() == b'KEEP-THIS-LINE\n', 'update consumed stdin'
+        assert [json.loads(line) for line in result.stdout.splitlines()] == [
+            {'step': 'ready', 'state': 'done', 'message': 'Updated'}]
+        for name in ('bin/cfw-render.sh', 'bin/cfw-render-lib.sh', 'VERSION',
+                     'lib/render-debug.md', 'lib/render-debug.py', 'bin/cfw-render-redact.py',
+                     'bin/cfw-render-stage.py', 'config/agent-guides.json'):
+            assert (prefix/name).read_bytes() == (repo/name).read_bytes(), name
+        assert hashlib.sha256((prefix/pin['path']).read_bytes()).hexdigest() == pin['sha256']
+        for name, data in preserved.items():
+            assert (home/name).read_bytes() == data, name
+            assert (home/name).stat().st_mode & 0o777 == 0o600, name
+        assert not (home/'unexpected-command').exists(), 'external command attempted'
+        print('PASS: update from '+guide_state+' guide restores pinned guide and worker; settings/state/evidence preserved; stdin untouched; no services')
+PY
+}
+if [[ "${1:-}" == --installer-update ]]; then
+  installer_update_case && (( FAILURES == 0 ))
+  exit $?
+fi
+
+debug_lookup_case() {
+  python3 - "$REPO_DIR" <<'PY'
+import datetime, importlib.util, json, pathlib, subprocess, sys, tempfile
+repo = pathlib.Path(sys.argv[1])
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location('render_debug', repo/'lib/render-debug.py')
+mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+with tempfile.TemporaryDirectory(prefix='cfw-debug-lookup-') as tmp:
+    root = pathlib.Path(tmp); logs = root/'custom logs'; runs = logs/'runs'; runs.mkdir(parents=True)
+    scratch = root/'scratch'; folder = scratch/'brand-a/o1'; folder.mkdir(parents=True)
+    def iso(epoch): return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).isoformat()
+    identity = dict(orderId='o1', attemptId='a1', brandSlug='brand-a', startedAt=iso(100), finishedAt=iso(110))
+    def locate(**changes): return mod.locate({**identity, **changes}, logs, scratch)
+    for name in ('o1-105.out', 'o1-205.out', 'o10-105.out'):
+        (runs/name).write_text('synthetic evidence')
+    order = dict(id='o1', attempt=dict(id='a1'), taskOrder=dict(brand=dict(slug='brand-a'), credentials='DO-NOT-OUTPUT'))
+    (folder/'order.json').write_text(json.dumps(order))
+    found = locate()
+    assert found['directorLog'] == str(runs/'o1-105.out') and found['scratchDirectory'] == str(folder)
+    assert 'DO-NOT-OUTPUT' not in json.dumps(found)
+    for changes in ({'startedAt': None}, {'finishedAt': iso(99)}, {'orderId': '../o1'}):
+        assert locate(**changes)['directorLog'] is None
+    for changes in ({'brandSlug': '../brand-a'}, {'attemptId': 'a2'}, {'attemptId': None}):
+        assert locate(**changes)['scratchDirectory'] is None
+    (runs/'o1-105-second.out').write_text('same-second retry')
+    assert locate()['directorLog'] is None
+    for name in ('o1-105.out', 'o1-105-second.out'):
+        assert locate(directorLog=name)['directorLog'] == str(runs/name)
+    for name in ('o1-106-missing.out', '../o1-105.out', 'o10-105.out'):
+        assert locate(directorLog=name)['directorLog'] is None
+    (runs/'o1-107.out').symlink_to(runs/'o1-205.out')
+    assert locate(directorLog='o1-107.out')['directorLog'] is None
+    (root/'linked logs').mkdir(); (root/'linked logs/runs').symlink_to(runs)
+    assert mod.locate({**identity, 'directorLog': 'o1-105.out'}, root/'linked logs', scratch)['directorLog'] is None
+    order['attempt']['id'] = 'a2'; (folder/'order.json').write_text(json.dumps(order))
+    assert locate()['scratchDirectory'] is None
+    for invalid in ([], {'attempt': []}, {'taskOrder': []}):
+        (folder/'order.json').write_text(json.dumps(invalid))
+        assert locate()['scratchDirectory'] is None
+    cli = subprocess.run([sys.executable, str(repo/'lib/render-debug.py'), '--log-dir', str(logs), '--scratch-dir', str(scratch)],
+        input=json.dumps({**identity, 'directorLog': 'o1-105.out'}), text=True, capture_output=True, check=True)
+    assert json.loads(cli.stdout)['directorLog'] == str(runs/'o1-105.out')
+print('PASS: exact, legacy, ambiguous, missing, symlink, reused scratch and custom-path debug lookup')
+PY
+}
+if [[ "${1:-}" == --debug-lookup ]]; then
+  debug_lookup_case && (( FAILURES == 0 ))
+  exit $?
+fi
+if recent_identity_cases; then pass "frozen identity and owner-safe reason"; else fail "recent identity" "regression failed"; fi
+if installer_update_case; then pass "pinned helpers survive update"; else fail "installer update" "regression failed"; fi
+if debug_lookup_case; then pass "contained exact-attempt lookup"; else fail "debug lookup" "regression failed"; fi
 
 FAKE_BIN="$(mktemp -d)"
 cp "$TEST_DIR/fake-claude.sh" "$FAKE_BIN/claude"
@@ -30,6 +1341,23 @@ if [[ -e "${FAKE_PMSET_BATTERY:-/nonexistent}" ]]; then echo "Now drawing from '
 EOF2
 chmod +x "$FAKE_BIN/pmset"
 export CFW_RENDER_PMSET_CMD="$FAKE_BIN/pmset"
+
+# cr_preflight_chromium looks for a Playwright browser under $HOME (or under
+# PLAYWRIGHT_BROWSERS_PATH). The runner sandbox hides the host's cache, so every
+# tick would refuse to claim ("no Playwright/Chromium browser found") although
+# no case renders with a real browser: engines and Directors are fakes. When
+# the inherited environment shows no browser, point the search at a fixture
+# layout. A box with a real cache keeps using it, so the preflight cases still
+# exercise the real discovery there.
+if ! ( source "$REPO_DIR/bin/cfw-render-lib.sh"; cr_preflight_chromium ) >/dev/null 2>&1; then
+  FAKE_PLAYWRIGHT="$(mktemp -d)"
+  mkdir -p "$FAKE_PLAYWRIGHT/chromium_headless_shell-fixture/chrome-mac"
+  printf '#!/usr/bin/env bash\n# test fixture standing in for a Playwright headless shell; never launched\nexit 0\n' \
+    > "$FAKE_PLAYWRIGHT/chromium_headless_shell-fixture/chrome-mac/chrome-headless-shell"
+  chmod +x "$FAKE_PLAYWRIGHT/chromium_headless_shell-fixture/chrome-mac/chrome-headless-shell"
+  export PLAYWRIGHT_BROWSERS_PATH="$FAKE_PLAYWRIGHT"
+  echo "note: no Playwright browser is visible to this run; preflight uses the fixture under PLAYWRIGHT_BROWSERS_PATH"
+fi
 
 # The worker skips normal claims while the 1-minute load average is above the
 # CPU count (cr_capacity_ok). On a busy dev Mac that made the capacity cases
@@ -148,6 +1476,7 @@ run_case() {
   (
     export PATH="$REPO_DIR/bin:$FAKE_BIN:$PATH"
     export CFW_API_BASE="http://127.0.0.1:$port"
+    export CFW_RENDER_TEST_MEDIA_BASE_URL="$CFW_API_BASE"
     export CFW_RENDER_WORKER_KEY="cfw_render_test0000000000000000"
     export CFW_RENDER_ENV="/nonexistent-cfw-render-env-for-tests"
     export CFW_RENDER_STATE_DIR="$cr_state"
@@ -632,9 +1961,11 @@ if [[ "$(calls_count complete_render_order)" == "1" ]]; then
 else
   fail "heartbeat: complete" "expected 1 complete_render_order, got $(calls_count complete_render_order)"
 fi
-if ! pgrep -f "cfw-render" >/dev/null 2>&1 || true; then :; fi
+# No process-table lookups here: the suite never matches commands by name, and
+# the runner sandbox refuses setuid tools such as ps. Cleanup goes through
+# stop_test_tree / test/stop-owned-tree.py (libproc via ctypes) only.
 
-echo "=== Case 4e: block carries `needs` (CFW-146) ==="
+echo '=== Case 4e: block carries `needs` (CFW-146) ==='
 run_case "needs-ingredient" "needs-ingredient" "order_fixture order-needs-1 brand-1 video" true
 needs_check="$(python3 -c '
 import json, sys
@@ -1333,7 +2664,7 @@ _q291_relocate_bin() {
 }
 
 echo "=== Case Q6: install.sh renders the resolved WORKER_PATH into the macOS plist ==="
-q6_real_home="$HOME"
+q6_browser_cache="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/Library/Caches/ms-playwright}"
 q6_home="$(mktemp -d)"
 q6_prefix="$(mktemp -d)"
 q6_custom="$(mktemp -d)"
@@ -1364,7 +2695,7 @@ q6_expected_worker_path="$(
   # chromium/fonts preflight rows still PASS on a dev box that has Playwright
   # installed under the real $HOME — this test is about WORKER_PATH
   # rendering, not about re-testing chromium discovery.
-  export PLAYWRIGHT_BROWSERS_PATH="$q6_real_home/Library/Caches/ms-playwright"
+  export PLAYWRIGHT_BROWSERS_PATH="$q6_browser_cache"
   # [M2-04] install.sh now bootout/bootstraps the LaunchAgent on re-run; never
   # load a real job from the test suite.
   export CFW_RENDER_INSTALL_NO_LAUNCHCTL=1
@@ -1435,7 +2766,7 @@ chmod 644 "$q6b_env"
 (
   export HOME="$q6b_home"
   export PATH="$q6_test_path"
-  export PLAYWRIGHT_BROWSERS_PATH="$q6_real_home/Library/Caches/ms-playwright"
+  export PLAYWRIGHT_BROWSERS_PATH="$q6_browser_cache"
   # [M2-04] install.sh now bootout/bootstraps the LaunchAgent on re-run; never
   # load a real job from the test suite.
   export CFW_RENDER_INSTALL_NO_LAUNCHCTL=1
@@ -1502,7 +2833,7 @@ printf 'CFW_API_BASE=http://127.0.0.1:1\nCFW_RENDER_WORKER_KEY=cfw_render_q6ckey
 (
   export HOME="$q6c_home"
   export PATH="$q6_test_path"
-  export PLAYWRIGHT_BROWSERS_PATH="$q6_real_home/Library/Caches/ms-playwright"
+  export PLAYWRIGHT_BROWSERS_PATH="$q6_browser_cache"
   # [M2-04] install.sh now bootout/bootstraps the LaunchAgent on re-run; never
   # load a real job from the test suite.
   export CFW_RENDER_INSTALL_NO_LAUNCHCTL=1
@@ -1530,6 +2861,14 @@ if "$REPO_DIR/scripts/lint.sh"; then
   pass "scripts/lint.sh"
 else
   fail "scripts/lint.sh" "lint failed"
+fi
+
+echo ""
+echo "=== Case 36: scripts/verify-skills-bundle.sh — committed skills/ bundle matches its index.json hashes (M2-06) ==="
+if "$REPO_DIR/scripts/verify-skills-bundle.sh" --skills-dir "$REPO_DIR/skills" >/dev/null 2>&1; then
+  pass "scripts/verify-skills-bundle.sh"
+else
+  fail "scripts/verify-skills-bundle.sh" "bundle verify failed — run it for the mismatch list"
 fi
 
 echo ""
@@ -1743,7 +3082,9 @@ else
   fail "Spotlight manifest: instructions files" "missing:$c16_missing_ins"
 fi
 # [M2-06 batch 1] the five new manifests + Spotlight: OK lines, instructions files, providers, no c-composio.
-c16_batch="p-reels-spotlight p-reels-pip p-reels-split p-reels-spotlight-heygen p-reels-pip-heygen p-reels-split-heygen"
+# M2-06 batch 1 (reels family), batch 2 (image recipes) and p-reels-faceless (batch 3, landed with batch 2 — the
+# sync regenerates the whole bundle, so every complete manifest at the source library ships together).
+c16_batch="p-reels-spotlight p-reels-pip p-reels-split p-reels-spotlight-heygen p-reels-pip-heygen p-reels-split-heygen p-carousel p-ai-image p-gfx-image p-ai-character p-reels-faceless p-clone-reel p-longform"
 for c16_r in $c16_batch; do
   c16_m="$REPO_DIR/skills/$c16_r/manifest.json"
   if grep -q "OK .*skills/$c16_r/manifest.json" <<< "$c16_out"; then
@@ -1765,6 +3106,10 @@ for c16_r in $c16_batch; do
   case "$c16_r" in
     p-reels-split-heygen) c16_prov_want="elevenlabs,heygen" ;;
     *-heygen)             c16_prov_want="heygen" ;;
+    p-ai-image|p-ai-character) c16_prov_want="kie" ;;
+    p-reels-faceless)     c16_prov_want="elevenlabs" ;;
+    p-clone-reel)         c16_prov_want="elevenlabs,heygen" ;;
+    p-longform)           c16_prov_want="elevenlabs,heygen" ;;
     *)                    c16_prov_want="" ;;
   esac
   if [[ "$c16_prov" == "$c16_prov_want" ]]; then
@@ -1791,6 +3136,47 @@ if [[ "$c16_shape_h" == "$c16_shape_h_want" ]]; then
   pass "-heygen manifests: leading generate_avatar (computer, canAsk script/avatar_id/voice_id), script neededAt start, weights sum to 100"
 else
   fail "-heygen manifest shape" "expected '$c16_shape_h_want', got '$c16_shape_h'"
+fi
+# M2-06 batch 2: image recipes — deliverable.kind image, first input neededAt start, weights sum to 100.
+c16_shape_i="$(python3 -c '
+import json, sys
+for r in sys.argv[1:]:
+    m = json.load(open(r)); st = m["steps"]
+    print(r.split("/")[-2], m["deliverable"]["kind"], len(st), m["inputs"][0]["id"], m["inputs"][0]["neededAt"], sum(s["weight"] for s in st))
+' "$REPO_DIR/skills/p-carousel/manifest.json" "$REPO_DIR/skills/p-ai-image/manifest.json" "$REPO_DIR/skills/p-gfx-image/manifest.json" "$REPO_DIR/skills/p-ai-character/manifest.json" 2>/dev/null)"
+c16_shape_i_want="p-carousel image 4 topic start 100
+p-ai-image image 3 prompt start 100
+p-gfx-image image 4 topic start 100
+p-ai-character image 4 story_concept start 100"
+if [[ "$c16_shape_i" == "$c16_shape_i_want" ]]; then
+  pass "batch-2 image manifests: kind image, first input at start, weights sum to 100"
+else
+  fail "batch-2 image manifest shape" "expected '$c16_shape_i_want', got '$c16_shape_i'"
+fi
+# M2-06 batch 3: p-reels-faceless — research/script server alternative like Spotlight, script input at start.
+c16_shape_f="$(python3 -c '
+import json, sys
+m = json.load(open(sys.argv[1])); st = m["steps"]
+print(st[0]["id"], st[0]["runsOn"], st[1]["id"], st[1]["runsOn"], m["inputs"][0]["id"], m["inputs"][0]["neededAt"], sum(s["weight"] for s in st))
+' "$REPO_DIR/skills/p-reels-faceless/manifest.json" 2>/dev/null)"
+if [[ "$c16_shape_f" == "research server script server script start 100" ]]; then
+  pass "p-reels-faceless manifest: research+script server steps, script input at start, weights sum to 100"
+else
+  fail "p-reels-faceless manifest shape" "got '$c16_shape_f'"
+fi
+# M2-06 batch 3: p-clone-reel + p-longform — first input at start, deliverable aspect, weights sum to 100.
+c16_shape_b3="$(python3 -c '
+import json, sys
+for r in sys.argv[1:]:
+    m = json.load(open(r)); st = m["steps"]
+    print(r.split("/")[-2], m["deliverable"]["aspect"], len(st), m["inputs"][0]["id"], m["inputs"][0]["neededAt"], sum(s["weight"] for s in st))
+' "$REPO_DIR/skills/p-clone-reel/manifest.json" "$REPO_DIR/skills/p-longform/manifest.json" 2>/dev/null)"
+c16_shape_b3_want="p-clone-reel 9:16 5 source_reel start 100
+p-longform 16:9 10 script start 100"
+if [[ "$c16_shape_b3" == "$c16_shape_b3_want" ]]; then
+  pass "batch-3 manifests: first input at start, aspect declared, weights sum to 100"
+else
+  fail "batch-3 manifest shape" "expected '$c16_shape_b3_want', got '$c16_shape_b3'"
 fi
 if python3 "$c16_validator" "$c16_fixtures/valid-minimal/manifest.json" >/dev/null 2>&1; then
   pass "validate-manifests.py: valid-minimal fixture passes (exit 0)"
@@ -1861,6 +3247,55 @@ if grep -q '^RC=1$' <<< "$c16d_nojs" && grep -q 'FAIL — 4 of 5' <<< "$c16d_noj
   pass "validate-manifests.py: without jsonschema, hand-written checks still fail exactly the 4 bad fixtures"
 else
   fail "validate-manifests.py: no-jsonschema mode" "expected RC=1 and 'FAIL — 4 of 5' in: $c16d_nojs"
+fi
+
+echo "=== Case 16e: validate-manifests.py — per-stage uses (providers, optional providers, tools) ==="
+# Each stage says which provider keys it needs (groups: any ONE of a group is enough),
+# which it uses only when present, and which local tools it runs. The validator ties
+# them to needs.* so a recipe can't ask for a key no stage uses, or a stage run a tool
+# the computer was never checked for.
+c16e_ok="$(python3 "$c16_validator" "$c16_fixtures/uses-ok/manifest.json" 2>&1)"
+c16e_ok_rc=$?
+if [[ "$c16e_ok_rc" == "0" ]]; then
+  pass "validate-manifests.py: uses with an any-one-of group + an optional provider is valid"
+else
+  fail "validate-manifests.py: uses-ok" "expected exit 0, got $c16e_ok_rc: $c16e_ok"
+fi
+c16e_check() {
+  # c16e_check <fixture> <expected error substring> <description>
+  local out rc
+  out="$(python3 "$c16_validator" "$c16_fixtures/$1/manifest.json" 2>&1)"
+  rc=$?
+  if [[ "$rc" == "1" ]] && grep -qF "$2" <<< "$out"; then
+    pass "validate-manifests.py: $3"
+  else
+    fail "validate-manifests.py: $1" "expected exit 1 + '$2', got rc=$rc: $out"
+  fi
+}
+c16e_check bad-uses-unknown-tool "steps[prepare].uses.tools: 'yt-dlp' is not listed in needs.tools" \
+  "a stage tool missing from needs.tools is refused, naming the stage and tool"
+c16e_check bad-uses-orphan-provider "needs.providers: 'kie' is not required by any stage" \
+  "a provider key no stage requires is refused (optional keys never go in needs.providers)"
+c16e_check bad-uses-half-annotated "steps[finish].uses: required once any computer step declares uses" \
+  "a half-annotated recipe is refused, naming the stage without uses"
+c16e_check bad-uses-required-and-optional "steps[prepare].uses.optionalProviders: 'heygen' is also required by this stage" \
+  "a provider both required and optional on one stage is refused"
+c16e_nojs="$(python3 - "$c16_validator" "$c16_fixtures" <<'PY' 2>&1
+import runpy, sys
+validator, fixtures = sys.argv[1], sys.argv[2]
+sys.modules["jsonschema"] = None
+bad = ["bad-uses-unknown-tool", "bad-uses-orphan-provider", "bad-uses-half-annotated", "bad-uses-required-and-optional"]
+sys.argv = [validator] + [f"{fixtures}/{b}/manifest.json" for b in bad] + [f"{fixtures}/uses-ok/manifest.json"]
+try:
+    runpy.run_path(validator, run_name="__main__")
+except SystemExit as e:
+    print(f"RC={e.code}")
+PY
+)"
+if grep -q '^RC=1$' <<< "$c16e_nojs" && grep -q 'FAIL — 4 of 5' <<< "$c16e_nojs"; then
+  pass "validate-manifests.py: without jsonschema, the uses rules fail exactly the 4 bad fixtures"
+else
+  fail "validate-manifests.py: uses no-jsonschema mode" "expected RC=1 and 'FAIL — 4 of 5' in: $c16e_nojs"
 fi
 
 echo "=== Case 18: step harness mock — capability-gated claim, report_render_step, control files (M1-08 b) ==="
@@ -1951,6 +3386,12 @@ fi
 kill "$c18_pid" 2>/dev/null; wait "$c18_pid" 2>/dev/null
 rm -rf "$c18_dir"
 
+if local_checkpoint_cases; then
+  pass "local checkpoint persistence and gated recovery"
+else
+  fail "local checkpoint persistence and gated recovery" "see offline assertions above"
+fi
+
 echo "=== Case 19: step harness end-to-end — cfw-render.sh claim branch + cr_harness_run + fake engine (M1-08 c) ==="
 c19_manifest="$REPO_DIR/test/fixtures/manifests/harness-3step/manifest.json"
 # c19_setup <dir> <port> [inputs-json] — seed a manifest order, skills dir, start mock. Sets c19_pid/c19_ctl/c19_state.
@@ -1975,6 +3416,7 @@ c19_worker() {
   (
     export PATH="$REPO_DIR/bin:$FAKE_BIN:$PATH"
     export CFW_API_BASE="http://127.0.0.1:$port"
+    export CFW_RENDER_TEST_MEDIA_BASE_URL="$CFW_API_BASE"
     export CFW_RENDER_WORKER_KEY="cfw_render_test0000000000000000"
     export CFW_RENDER_ENV="/nonexistent-cfw-render-env-for-tests"
     export CFW_RENDER_STATE_DIR="$dir/cr-state"
@@ -2118,6 +3560,113 @@ else
   fail "harness: credential leak" "$(grep -rl 'sk-abc123\|codex-fake-auth' "$c19h/cr-scratch" "$c19_ctl/reports.ndjson" "$c19h/worker.out" 2>/dev/null)"
 fi
 rm -rf "$c19h"
+
+echo "--- 19j: render_slides workdir gets brief.json from the order, without secrets"
+c19j="$(mktemp -d)"
+mkdir -p "$c19j/skills/p-carousel/steps" "$c19j/mockstate" "$c19j/control" "$c19j/cr-scratch" "$c19j/cr-state"
+python3 -c '
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+manifest = {
+    "recipe": "p-carousel",
+    "recipeVersion": "9.9.9",
+    "steps": [
+        {"id": "outline", "runsOn": "computer", "weight": 20, "instructions": "steps/01-outline.md",
+         "saves": [{"id": "outline", "kind": "json"}]},
+        {"id": "render_slides", "runsOn": "computer", "weight": 80, "instructions": "steps/03-render-slides.md",
+         "saves": [{"id": "cover", "kind": "image"}], "maxCheckRetries": 0,
+         "checks": [{"id": "slide_dims"}]},
+    ],
+}
+recipe = root / "skills" / "p-carousel"
+(recipe / "manifest.json").write_text(json.dumps(manifest))
+(recipe / "steps" / "01-outline.md").write_text("outline\n")
+(recipe / "steps" / "03-render-slides.md").write_text("render\n")
+token = "brief-must-not-copy-token"
+brand_key = "brief-must-not-copy-brandkey"
+option_key = "brief-must-not-copy-optionkey"
+task = {
+    "version": 1, "orderId": "order-brief-1",
+    "brand": {
+        "id": "brand-1", "slug": "test-brand", "name": "Test Brand", "brief": "brand brief text",
+        "palette": {"bg": "#0F172A", "accent": "#F97316", "apiKey": brand_key},
+        "typography": {"body": "Inter", "display": "Oswald"},
+        "imageStyle": "editorial daylight", "apiKey": brand_key,
+        "heygen": {"avatarId": "avatar-ok", "voiceId": "voice-ok", "accessToken": token},
+        "elevenlabs": {"voiceId": "el-voice-ok", "apiKey": brand_key},
+    },
+    "kind": "image", "recipe": "p-carousel", "workspaceId": "ws-1",
+    "intent": "listing open house", "ingredients": [], "targets": ["instagram", "linkedin"],
+    "options": {"num_slides": 5, "apiKey": option_key},
+    "credentials": {"heygen": {"accessToken": token, "mode": "oauth"}},
+    "providerKeys": {"kie": brand_key},
+}
+order = {
+    "id": "order-brief-1", "brandId": "brand-1", "brandName": "Test Brand", "workspaceId": "ws-1",
+    "kind": "image", "recipe": "p-carousel", "recipeVersion": "9.9.9",
+    "manifest": str(recipe / "manifest.json"), "inputs": {}, "status": "queued",
+    "priority": 0, "attempts": 1, "taskOrder": task,
+}
+(root / "queue.json").write_text(json.dumps([order]))
+' "$c19j"
+c19_state="$c19j/mockstate"; c19_ctl="$c19j/control"
+c19j_port=$((MOCK_PORT_BASE + 930))
+c19_pid="$(CFW_MOCK_CONTROL_DIR="$c19_ctl" start_mock "$c19j/queue.json" "$c19_state" "$c19j_port")"
+c19_worker "$c19j" "$c19j_port" FAKE_ENGINE_FAIL_STEP=render_slides FAKE_ENGINE_FAIL_CHECK_TIMES=1
+kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
+c19j_ev="$(c19_events "$c19_ctl/reports.ndjson")"
+if python3 -c '
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+order_dir = root / "cr-scratch" / "test-brand" / "order-brief-1"
+needles = ("brief-must-not-copy-token", "brief-must-not-copy-brandkey", "brief-must-not-copy-optionkey")
+problems = []
+for step in ("outline", "render_slides"):
+    path = order_dir / "steps" / step / "brief.json"
+    if not path.is_file():
+        problems.append(step + " brief.json missing")
+        continue
+    raw = path.read_text()
+    if any(needle in raw for needle in needles):
+        problems.append(step + " brief.json contains a planted secret")
+    data = json.loads(raw)
+    brand = data.get("brand") if isinstance(data.get("brand"), dict) else {}
+    heygen = brand.get("heygen") if isinstance(brand.get("heygen"), dict) else {}
+    eleven = brand.get("elevenlabs") if isinstance(brand.get("elevenlabs"), dict) else {}
+    palette = brand.get("palette") if isinstance(brand.get("palette"), dict) else {}
+    typography = brand.get("typography") if isinstance(brand.get("typography"), dict) else {}
+    if data.get("recipe") != "p-carousel":
+        problems.append(step + " recipe")
+    if data.get("intent") != "listing open house":
+        problems.append(step + " intent")
+    if data.get("targets") != ["instagram", "linkedin"]:
+        problems.append(step + " targets")
+    if brand.get("slug") != "test-brand" or brand.get("name") != "Test Brand" or brand.get("brief") != "brand brief text":
+        problems.append(step + " brand text")
+    if palette.get("bg") != "#0F172A" or "apiKey" in palette:
+        problems.append(step + " palette")
+    if typography.get("body") != "Inter":
+        problems.append(step + " typography")
+    if brand.get("imageStyle") != "editorial daylight":
+        problems.append(step + " imageStyle")
+    if heygen.get("avatarId") != "avatar-ok" or heygen.get("voiceId") != "voice-ok" or "accessToken" in heygen:
+        problems.append(step + " heygen ids")
+    if eleven.get("voiceId") != "el-voice-ok" or "apiKey" in eleven:
+        problems.append(step + " elevenlabs id")
+    if data.get("options") != {"num_slides": 5}:
+        problems.append(step + " options")
+    for banned in ("credentials", "providerKeys", "apiKey", "accessToken"):
+        if banned in data or banned in brand:
+            problems.append(step + " banned " + banned)
+if problems:
+    sys.stderr.write("brief.json checks failed: " + ", ".join(problems) + "\n")
+    sys.exit(1)
+' "$c19j" && [[ "$c19j_ev" == *"step_started:render_slides"* ]]; then
+  pass "harness: render_slides workdir brief.json has recipe=p-carousel and intent, and no secrets"
+else
+  fail "harness: render_slides brief.json" "events=$c19j_ev; $(tail -n 5 "$c19j/worker.out" 2>/dev/null)"
+fi
+rm -rf "$c19j"
 
 echo "--- 19i: the five real batch-1 manifests (M2-06) — every computer step starts and completes against the mock"
 # c19i_setup <dir> <port> <recipe> — like c19_setup but on a real skills/<recipe> (manifest + steps copied in),
@@ -2380,6 +3929,7 @@ c21_worker() {
   (
     export PATH="$REPO_DIR/bin:$FAKE_BIN:$PATH"
     export CFW_API_BASE="http://127.0.0.1:$port"
+    export CFW_RENDER_TEST_MEDIA_BASE_URL="$CFW_API_BASE"
     export CFW_RENDER_WORKER_KEY="cfw_render_test0000000000000000"
     export CFW_RENDER_ENV="/nonexistent-cfw-render-env-for-tests"
     export CFW_RENDER_STATE_DIR="$dir/cr-state"
@@ -2393,9 +3943,13 @@ c21_worker() {
     export CFW_RENDER_CONCURRENCY=1
     export CFW_WORKER_ID="w-m2"
     export CFW_RENDER_UPLOAD_MODE=multipart
+    # Pin the load-average seam: a busy dev box (load > ncpu) otherwise makes
+    # every normal claim skip and the M2-04 cases flake on host load.
+    export CFW_RENDER_CAPACITY_LOAD=0
     export CFW_RENDER_SECURITY_CMD=/usr/bin/false   # [M3-08b] no Keychain keys unless a case adds a stub
     for kv in "$@"; do export "${kv?}"; done
-    "$REPO_DIR/bin/cfw-render.sh" "$mode" > "$dir/worker.out" 2>&1
+    # Test seam: one case points this at a scratch copy of the worker.
+    "${CFW_RENDER_WORKER_BIN:-$REPO_DIR/bin/cfw-render.sh}" "$mode" > "$dir/worker.out" 2>&1
   )
 }
 # c21_claims <dir> — "running/max" per claim call, space-separated, in order
@@ -2478,6 +4032,44 @@ rm -rf "$c23"
 # 23b: --loop with the floor breached from the 2nd round on: round 1 claims
 # normally (teaches the worker the server honours capacity), later rounds
 # make only the full ask (2/2) and o2 stays queued.
+#
+# c23b_wait_past_round1 <dir>
+# Round 1's claims are "0/2 1/2 2/2". The next round starts when that work
+# winds down. A fixed sleep 3 stopped the worker first on a busy Mac, so the
+# log never showed "normal claims skipped, urgent only" and no later ask was
+# recorded. Poll every 0.5s for up to 60s. The skip line is written just
+# before the full ask, so the line alone is not a reason to stop. Stop once
+# that later ask is on disk and the line is too, or once a later ask is not
+# a full one (the strict check below then fails). Time running out still
+# falls through to that same check.
+c23b_wait_past_round1() {
+  local dir="$1" deadline now tail uniq
+  deadline=$((SECONDS + 60))
+  while (( SECONDS < deadline )); do
+    now="$(c21_claims "$dir")"
+    if [[ "$now" == 0/2\ 1/2\ 2/2\ * ]]; then
+      tail="$(sed -E 's/^0\/2 1\/2 2\/2 ?//' <<< "$now")"
+      uniq="$(tr ' ' '\n' <<< "$tail" | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+      if [[ "$uniq" == "2/2" ]] && grep -q "normal claims skipped, urgent only" "$dir/cr-state/cfw-render.log" 2>/dev/null; then
+        return 0
+      fi
+      if [[ -n "$uniq" && "$uniq" != "2/2" ]]; then
+        return 0
+      fi
+    elif grep -q "normal claims skipped, urgent only" "$dir/cr-state/cfw-render.log" 2>/dev/null; then
+      : # floor path started; the ask that follows the line is not in the log yet
+    fi
+    sleep 0.5
+  done
+}
+# c23b_floor_held <dir> — strict: round 1, then only full asks, and the skip line.
+c23b_floor_held() {
+  local dir="$1" claims tail uniq
+  claims="$(c21_claims "$dir")"
+  tail="$(sed -E 's/^0\/2 1\/2 2\/2 ?//' <<< "$claims")"
+  uniq="$(tr ' ' '\n' <<< "$tail" | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+  [[ "$claims" == 0/2\ 1/2\ 2/2* && "$uniq" == "2/2" ]] && grep -q "normal claims skipped, urgent only" "$dir/cr-state/cfw-render.log"
+}
 c23b="$(mktemp -d)"
 c21_setup "$c23b" $((MOCK_PORT_BASE + 923)) harness-3step '[{"id":"o1"},{"id":"o2"}]' CFW_MOCK_ORDERS_ARRAY=1 CFW_MOCK_MAX_PER_CLAIM=1
 c23b_floor="$c23b/floor"; : > "$c23b_floor"
@@ -2485,20 +4077,67 @@ c21_worker "$c23b" $((MOCK_PORT_BASE + 923)) --loop CFW_RENDER_CONCURRENCY=2 CFW
 c23b_w=$!
 for _ in $(seq 1 100); do grep -q '"tool": "claim_render_order"' "$c23b/mockstate/calls.jsonl" 2>/dev/null && break; sleep 0.1; done
 printf '1000' > "$c23b_floor"
-sleep 3
-pkill -P "$c23b_w" 2>/dev/null; kill "$c23b_w" 2>/dev/null; wait "$c23b_w" 2>/dev/null
-pkill -f "cfw-render.sh --loop" 2>/dev/null || true
+c23b_wait_past_round1 "$c23b"
+stop_test_tree "$c23b_w" || { fail "loop cleanup" "could not stop owned tree"; exit 1; }
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 c23b_claims="$(c21_claims "$c23b")"
 # Round 1 fills the computer one order per reply (0/2, 1/2, then the full
 # ask 2/2); once the floor is breached every later ask is the full one.
-c23b_tail="$(sed -E 's/^0\/2 1\/2 2\/2 ?//' <<< "$c23b_claims")"
-if [[ "$c23b_claims" == 0/2\ 1/2\ 2/2* && "$(tr ' ' '\n' <<< "$c23b_tail" | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//')" == "2/2" ]] && grep -q "normal claims skipped, urgent only" "$c23b/cr-state/cfw-render.log"; then
+if c23b_floor_held "$c23b"; then
   pass "capacity: floor breached after round 1 → only full asks (2/2) afterwards; logged"
 else
   fail "capacity: floor (loop)" "claims='$c23b_claims' (want '0/2 1/2 2/2' then only '2/2'); log: $(grep capacity "$c23b/cr-state/cfw-render.log" | tail -3)"
 fi
 rm -rf "$c23b"
+# Scratch copy: cr_capacity_ok always says the host is free, so normal claims
+# continue after floor=1000. The same check must still fail. The broken copy
+# lives only in this temp dir.
+c23s_bin="$(mktemp -d)"
+mkdir -p "$c23s_bin/bin"
+cp -R "$REPO_DIR/bin/." "$c23s_bin/bin/"
+if ! python3 - "$c23s_bin/bin/cfw-render-lib.sh" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+start = text.find("cr_capacity_ok() {")
+end = text.find("\n}\n", start)
+if start < 0 or end < 0:
+    raise SystemExit(1)
+broken = (
+    "cr_capacity_ok() {\n"
+    "  # Scratch break: ignore the free-memory floor and the load ceiling.\n"
+    "  return 0\n"
+    "}"
+)
+path.write_text(text[:start] + broken + text[end + 2:])
+needle = "cr_capacity_ok() {\n  # Scratch break:"
+if needle not in path.read_text():
+    raise SystemExit(1)
+PY
+then
+  fail "capacity: floor (scratch)" "could not break cr_capacity_ok on the scratch copy"
+  rm -rf "$c23s_bin"
+else
+  c23s="$(mktemp -d)"
+  c21_setup "$c23s" $((MOCK_PORT_BASE + 1100)) harness-3step '[{"id":"o1"},{"id":"o2"}]' CFW_MOCK_ORDERS_ARRAY=1 CFW_MOCK_MAX_PER_CLAIM=1
+  c23s_floor="$c23s/floor"; : > "$c23s_floor"
+  c21_worker "$c23s" $((MOCK_PORT_BASE + 1100)) --loop CFW_RENDER_CONCURRENCY=2 CFW_RENDER_CAPACITY_UNIT_SECS=0.05 CFW_RENDER_CAPACITY_FREE_MB_FILE="$c23s_floor" CFW_RENDER_WORKER_BIN="$c23s_bin/bin/cfw-render.sh" &
+  c23s_w=$!
+  for _ in $(seq 1 100); do grep -q '"tool": "claim_render_order"' "$c23s/mockstate/calls.jsonl" 2>/dev/null && break; sleep 0.1; done
+  printf '1000' > "$c23s_floor"
+  c23b_wait_past_round1 "$c23s"
+  stop_test_tree "$c23s_w" || { fail "loop cleanup" "could not stop owned tree"; exit 1; }
+  kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+  c23s_claims="$(c21_claims "$c23s")"
+  c23s_tail="$(sed -E 's/^0\/2 1\/2 2\/2 ?//' <<< "$c23s_claims")"
+  c23s_uniq="$(tr ' ' '\n' <<< "$c23s_tail" | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+  if ! c23b_floor_held "$c23s" && [[ -n "$c23s_uniq" && "$c23s_uniq" != "2/2" ]] && ! grep -q "normal claims skipped, urgent only" "$c23s/cr-state/cfw-render.log"; then
+    pass "capacity: scratch worker ignores the floor and keeps normal claims → the floor check still fails (claims='$c23s_claims')"
+  else
+    fail "capacity: floor (scratch)" "expected continued normal claims to fail the check; claims='$c23s_claims' tail='$c23s_uniq'"
+  fi
+  rm -rf "$c23s" "$c23s_bin"
+fi
 
 echo "=== Case 25: stop_after_step → step finishes, uploads, attempt_released revoked, folder gone (M2-04, D76) ==="
 c24="$(mktemp -d)"
@@ -2587,8 +4226,7 @@ for _ in $(seq 1 60); do grep -q 'retrying every 0.5s' "$c28/cr-state/cfw-render
 c28_at_cap="$(grep -c '"tool": "claim_render_order"' "$c28/mockstate/calls.jsonl" 2>/dev/null || true)"
 for _ in $(seq 1 40); do [[ "$(grep -c '"tool": "claim_render_order"' "$c28/mockstate/calls.jsonl" 2>/dev/null || true)" -gt "$c28_at_cap" ]] && break; sleep 0.5; done
 # the loop runs cfw-render.sh under a subshell; stop the whole tree
-pkill -P "$c28_w" 2>/dev/null; kill "$c28_w" 2>/dev/null; wait "$c28_w" 2>/dev/null
-pkill -f "cfw-render.sh --loop" 2>/dev/null || true
+stop_test_tree "$c28_w" || { fail "loop cleanup" "could not stop owned tree"; exit 1; }
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 c28_steps="$(grep 'claim back-off: claim_render_order keeps failing' "$c28/cr-state/cfw-render.log" | sed -E 's/.*retrying every ([0-9.]+)s.*/\1/' | tr '\n' ' ' | sed 's/ $//')"
 c28_tries="$(grep -c '"tool": "claim_render_order"' "$c28/mockstate/calls.jsonl" 2>/dev/null || true)"
@@ -2605,6 +4243,139 @@ else
 fi
 rm -rf "$c28"
 
+echo "=== Case 30: resume — saved output 404 → step_failed lands on the step that needs it (plan_broll), with the reason; worker exits cleanly (M2-04) ==="
+c30="$(mktemp -d)"
+c21_setup "$c30" $((MOCK_PORT_BASE + 928)) harness-resume '[{"id":"o1"}]' CFW_MOCK_RESUME_FROM=plan_broll CFW_MOCK_RESUME_404=a/x
+c21_worker "$c30" $((MOCK_PORT_BASE + 928)) --once && c30_rc=0 || c30_rc=$?
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+c30_fail="$(python3 -c '
+import json, sys
+for l in open(sys.argv[1]):
+    d = json.loads(l)
+    if d["event"] == "step_failed": print(d.get("stepId"), "|", d.get("message"))' "$c21_ctl/reports.ndjson" 2>/dev/null)"
+c30_blocked="$(grep -c '"tool": "block_render_order"\|"tool": "release_render_order"\|"tool": "complete_render_order"' "$c30/mockstate/calls.jsonl" 2>/dev/null || true)"
+c30_done="$(grep -c '"tool": "complete_render_order".*"ok": true' "$c30/mockstate/calls.jsonl" 2>/dev/null || true)"
+if [[ "$c30_rc" == "0" && "$c30_fail" == "plan_broll | Saved result from step a is missing" && "$c30_done" == "0" ]] && ! grep -qiE 'unbound variable|syntax error|Traceback' "$c30/worker.out"; then
+  pass "resume 404: exactly one step_failed {stepId: plan_broll, message: 'Saved result from step a is missing'}; worker exit 0, no crash, no completion (terminal calls=$c30_blocked)"
+else
+  fail "resume 404 (step + reason)" "rc=$c30_rc step_failed='$c30_fail' done=$c30_done; $(tail -3 "$c30/worker.out")"
+fi
+rm -rf "$c30"
+
+echo "=== Case 31: old server (single \`order\`, no \`orders[]\`) at max 1 with an urgent order queued → exactly one claim, one order, no urgent re-ask (M2-04, M1 parity) ==="
+c31="$(mktemp -d)"
+c21_setup "$c31" $((MOCK_PORT_BASE + 929)) harness-3step '[{"id":"o1"},{"id":"o2","urgent":true}]' CFW_MOCK_IGNORE_CAPACITY=1
+c21_worker "$c31" $((MOCK_PORT_BASE + 929)) --once CFW_RENDER_CONCURRENCY=1
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+c31_claims="$(c21_claims "$c31")"
+c31_done="$(grep -c '"tool": "complete_render_order".*"ok": true' "$c31/mockstate/calls.jsonl" 2>/dev/null || true)"
+c31_orders="$(python3 -c '
+import json, sys
+print(" ".join(sorted({json.loads(l)["orderId"] for l in open(sys.argv[1]) if l.strip()})))' "$c21_ctl/reports.ndjson" 2>/dev/null)"
+if [[ "$c31_claims" == "0/1" && "$c31_done" == "1" && "$c31_orders" == "o1" ]] && ! grep -q "urgent ask" "$c31/cr-state/cfw-render.log"; then
+  pass "old server, max 1: one claim (0/1), one order (o1) run to completion, no urgent re-ask while full"
+else
+  fail "old server max 1" "claims='$c31_claims' (want '0/1') done=$c31_done orders='$c31_orders'; $(grep -i urgent "$c31/cr-state/cfw-render.log" | tail -2)"
+fi
+rm -rf "$c31"
+
+# c3x_install <home> — runs install/install.sh --mode byoa into a throwaway
+# HOME with launchctl disabled (never loads a real job, never touches the
+# real ~/Library/LaunchAgents). Plist lands at <home>/Library/LaunchAgents.
+c3x_install() {
+  local home="$1" prefix env
+  prefix="$home/prefix"; env="$home/test.env"; mkdir -p "$prefix"
+  cat > "$env" <<EOF2
+CFW_API_BASE=http://127.0.0.1:1
+CFW_RENDER_WORKER_KEY=[REDACTED]
+CFW_RENDER_STATE_DIR=$home/cfw-render-state
+CFW_RENDER_SCRATCH=$home/cfw-render-scratch
+EOF2
+  (
+    export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/Library/Caches/ms-playwright}"
+    export HOME="$home"
+    export PATH="$REPO_DIR/bin:$FAKE_BIN:$PATH"
+    export CFW_RENDER_INSTALL_NO_LAUNCHCTL=1
+    export CFW_RENDER_TEST_OS=Darwin
+    "$REPO_DIR/install/install.sh" --mode byoa --prefix "$prefix" --env-file "$env" >"$home/install.log" 2>&1
+  )
+}
+# c3x_plist <plist> <python expr over d> — plistlib-parsed value
+c3x_plist() { python3 -c 'import plistlib,sys; d=plistlib.load(open(sys.argv[1],"rb")); print(eval(sys.argv[2]))' "$1" "$2" 2>/dev/null; }
+
+echo "=== Case 32: idle computer claims within ~60 s — default idle cadence <= 60 s, plist runs the --loop (no schedule > 60 s), idle loop keeps re-claiming (M2-04, D89) ==="
+c32_idle="$(env -u CFW_RENDER_CAPACITY_UNIT_SECS bash -c 'source "$1/bin/cfw-render-lib.sh"; echo "$CR_CAPACITY_IDLE_CLAIM_SECS"' _ "$REPO_DIR")"
+if awk -v s="$c32_idle" 'BEGIN { exit !(s > 0 && s <= 60) }'; then
+  pass "idle claim cadence default = ${c32_idle}s (<= 60)"
+else
+  fail "idle claim cadence" "CR_CAPACITY_IDLE_CLAIM_SECS='$c32_idle' (want 0 < s <= 60)"
+fi
+c32_home="$(mktemp -d)"
+c3x_install "$c32_home"
+c32_plist="$c32_home/Library/LaunchAgents/com.cfw.render.plist"
+c32_shape="$(c3x_plist "$c32_plist" '(d["ProgramArguments"][1:], "StartCalendarInterval" in d, d.get("StartInterval", 0) <= 60, d.get("RunAtLoad"))')"
+if [[ "$c32_shape" == "(['--loop'], False, True, True)" ]]; then
+  pass "generated plist: ProgramArguments --loop, RunAtLoad, no StartCalendarInterval, no StartInterval > 60"
+else
+  fail "plist cadence" "got '$c32_shape'; install.log: $(tail -3 "$c32_home/install.log" 2>/dev/null)"
+fi
+rm -rf "$c32_home"
+c32="$(mktemp -d)"
+c21_setup "$c32" $((MOCK_PORT_BASE + 930)) harness-3step '[]' CFW_MOCK_ORDERS_ARRAY=1
+c21_worker "$c32" $((MOCK_PORT_BASE + 930)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=0.2 &
+c32_w=$!
+# Wall-clock deadline: worker start-up on a loaded Mac can consume a short poll.
+c32_wait_start=$SECONDS
+while [[ $((SECONDS - c32_wait_start)) -lt 60 ]]; do
+  [[ "$(grep -c '"tool": "claim_render_order"' "$c32/mockstate/calls.jsonl" 2>/dev/null || true)" -ge 3 ]] && break
+  sleep 0.1
+done
+stop_test_tree "$c32_w" || { fail "loop cleanup" "could not stop owned tree"; exit 1; }
+kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+c32_n="$(grep -c '"tool": "claim_render_order"' "$c32/mockstate/calls.jsonl" 2>/dev/null || true)"
+if [[ "$c32_n" -ge 3 ]]; then
+  pass "idle --loop re-claims every idle unit ($c32_n claims within a 60 s deadline at unit 0.2 s)"
+else
+  fail "idle loop re-claim" "claims=$c32_n (want >= 3); $(tail -3 "$c32/cr-state/cfw-render.log" 2>/dev/null)"
+fi
+rm -rf "$c32"
+
+echo "=== Case 33: generated plist is kept alive — KeepAlive true + ThrottleInterval > 0 (restart on kill, throttled) (M2-04, D89) ==="
+c33_home="$(mktemp -d)"
+c3x_install "$c33_home"
+c33_ka="$(c3x_plist "$c33_home/Library/LaunchAgents/com.cfw.render.plist" '(d.get("KeepAlive") is True, isinstance(d.get("ThrottleInterval"), int) and d["ThrottleInterval"] > 0)')"
+if [[ "$c33_ka" == "(True, True)" ]]; then
+  pass "generated plist: KeepAlive=true, ThrottleInterval=$(c3x_plist "$c33_home/Library/LaunchAgents/com.cfw.render.plist" 'd["ThrottleInterval"]')"
+else
+  fail "plist KeepAlive/Throttle" "got '$c33_ka'; install.log: $(tail -3 "$c33_home/install.log" 2>/dev/null)"
+fi
+rm -rf "$c33_home"
+
+echo "=== Case 34: claim back-off production defaults — base 60 s, cap 600 s (the 10-minute cap Case 29 reaches in test units) (M2-04, D89) ==="
+c34="$(env -u CFW_RENDER_CAPACITY_UNIT_SECS bash -c 'source "$1/bin/cfw-render-lib.sh"; echo "$CR_CLAIM_BACKOFF_BASE_SECS $CR_CLAIM_BACKOFF_MAX_SECS"' _ "$REPO_DIR")"
+if [[ "$c34" == "60 600" ]]; then
+  pass "back-off defaults: base 60 s → cap 600 s"
+else
+  fail "back-off defaults" "got '$c34' (want '60 600')"
+fi
+
+echo "=== Case 35: re-running install over an old-schedule (--once + StartCalendarInterval) plist rewrites it to the kept-alive loop (M2-04, D89) ==="
+c35_home="$(mktemp -d)"
+mkdir -p "$c35_home/Library/LaunchAgents"
+c35_plist="$c35_home/Library/LaunchAgents/com.cfw.render.plist"
+python3 -c '
+import plistlib, sys
+plistlib.dump({"Label": "com.cfw.render", "ProgramArguments": ["/old/bin/cfw-render.sh", "--once"],
+  "StartCalendarInterval": [{"Minute": m} for m in (5, 20, 35, 50)], "RunAtLoad": True}, open(sys.argv[1], "wb"))' "$c35_plist"
+c3x_install "$c35_home"
+c35_shape="$(c3x_plist "$c35_plist" '(d["ProgramArguments"][1:], "StartCalendarInterval" in d, d.get("KeepAlive"), d.get("ThrottleInterval", 0) > 0)')"
+if [[ "$c35_shape" == "(['--loop'], False, True, True)" ]] && grep -q 'launchctl bootout.*launchctl bootstrap' "$c35_home/install.log"; then
+  pass "old-schedule plist rewritten: --loop, no StartCalendarInterval, KeepAlive + ThrottleInterval; reload (bootout → bootstrap) surfaced"
+else
+  fail "old plist rewrite" "got '$c35_shape'; install.log: $(tail -3 "$c35_home/install.log" 2>/dev/null)"
+fi
+rm -rf "$c35_home"
+
 
 # ---------------------------------------------------------------------------
 # M3-01a: pause / battery / run-now / version / updateRequired
@@ -2613,7 +4384,16 @@ FAKE_CAFFEINATE_LOG="$(mktemp)"; export FAKE_CAFFEINATE_LOG
 cat > "$FAKE_BIN/caffeinate" <<'EOF2'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${FAKE_CAFFEINATE_LOG:-/dev/null}"
-exec sleep 30
+# Mirror caffeinate -w: exit when this specific worker exits, not after an
+# arbitrary sleep requiring a host-wide cleanup. Never invoke real caffeinate.
+exec python3 - "$3" <<'PY'
+import os, sys, time
+pid = int(sys.argv[1])
+for _ in range(300):
+    try: os.kill(pid, 0)
+    except ProcessLookupError: break
+    time.sleep(.1)
+PY
 EOF2
 chmod +x "$FAKE_BIN/caffeinate"
 # m3_tool_count <dir> <tool>
@@ -2669,8 +4449,7 @@ m3_after="$m3_before"
 for _ in $(seq 1 15); do m3_after="$(m3_tool_count "$m3" claim_render_order)"; [[ "$m3_after" -gt "$m3_before" ]] && break; sleep 0.1; done
 m3_flag=0; [[ -e "$m3/cr-state/run-now" ]] && m3_flag=1
 m3_last="$(m3_status "$m3" 'd["lastCheckAt"]')"
-pkill -P "$m3_w" 2>/dev/null; kill "$m3_w" 2>/dev/null; wait "$m3_w" 2>/dev/null
-pkill -f "cfw-render.sh --loop" 2>/dev/null || true
+stop_test_tree "$m3_w" || { fail "loop cleanup" "could not stop owned tree"; exit 1; }
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 if [[ "$m3_after" -gt "$m3_before" && "$m3_flag" == "0" && -n "$m3_last" && "$m3_last" != "None" ]]; then
   pass "run-now: claims ${m3_before}→${m3_after} within 1.5s, flag consumed, lastCheckAt=$m3_last"
@@ -2690,8 +4469,8 @@ import json,sys
 for l in open(sys.argv[1]):
     d=json.loads(l)
     if d["tool"]=="claim_render_order": print(d["args"].get("capabilities",{}).get("workerVersion")); break' "$m4/mockstate/calls.jsonl" 2>/dev/null)"
-if [[ "$m4_ver" == "1.0.0" && "$(m3_status "$m4" 'd["workerVersion"]')" == "1.0.0" ]]; then
-  pass "version: claim capabilities.workerVersion=1.0.0, status.json version=1.0.0"
+if [[ "$m4_ver" == "1.2.0" && "$(m3_status "$m4" 'd["workerVersion"]')" == "1.2.0" ]]; then
+  pass "version: claim capabilities.workerVersion=1.2.0, status.json version=1.2.0"
 else
   fail "version" "workerVersion='$m4_ver' status=$(m3_status "$m4" 'd["workerVersion"]')"
 fi
@@ -2700,7 +4479,7 @@ if grep -q -- '-i -w ' "$FAKE_CAFFEINATE_LOG"; then
 else
   fail "caffeinate" "log: $(cat "$FAKE_CAFFEINATE_LOG")"
 fi
-pkill -f 'sleep 30' 2>/dev/null || true
+# The fake caffeinate exits with its recorded worker; no host-wide cleanup.
 rm -rf "$m4"
 
 echo "=== Case M3-01a-5: updateRequired reply → no orders, status.json updateRequired + lastError ==="
@@ -2729,6 +4508,254 @@ else
   fail "old server M3" "rc=$m6_rc lines=$m6_lines claims=$(m3_tool_count "$m6" claim_render_order); $(tail -3 "$m6/cr-state/cfw-render.log")"
 fi
 rm -rf "$m6"
+
+# ---------------------------------------------------------------------------
+# Handshake: a paused computer keeps checking in; `cfwReach` (ok |
+# unreachable) comes only from real server calls and never touches lastError;
+# plugging in, waking and the network coming back all claim promptly.
+# ---------------------------------------------------------------------------
+# A fake `date` whose +%s jumps by the seconds in $FAKE_DATE_OFFSET_FILE (as
+# after the lid was shut). Named fake-date so PATH's date stays the real one.
+cat > "$FAKE_BIN/fake-date" <<'EOF2'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "+%s" ]]; then
+  off="$(cat "${FAKE_DATE_OFFSET_FILE:-/nonexistent}" 2>/dev/null || echo 0)"
+  [[ "$off" =~ ^[0-9]+$ ]] || off=0   # mid-write reads must yield a number
+  now=$(( $(/bin/date +%s) + off ))
+  echo "$now"
+  # Optional barrier: the test can jump only after a loop sample was taken.
+  [[ -z "${FAKE_DATE_TICK_FILE:-}" ]] || printf '%s\n' "$now" >> "$FAKE_DATE_TICK_FILE"
+else
+  exec /bin/date "$@"
+fi
+EOF2
+chmod +x "$FAKE_BIN/fake-date"
+# m3_until <tries> <sleep> <cmd...> — retry cmd until it succeeds; rc 1 when it never did.
+m3_until() { local n="$1" s="$2" i; shift 2; for (( i = 0; i < n; i++ )); do "$@" && return 0; sleep "$s"; done; return 1; }
+# m3_count <dir> <fixed string> — matching lines in calls.jsonl
+m3_count() { grep -cF -- "$2" "$1/mockstate/calls.jsonl" 2>/dev/null || true; }
+m3_count_ge() { (( $(m3_count "$1" "$2") >= $3 )); }
+m3_log_count() { grep -cF -- "$2" "$1/cr-state/cfw-render.log" 2>/dev/null || true; }
+m3_conn_is() { [[ "$(m3_status "$1" 'd.get("cfwReach")')" == "$2" ]]; }
+m3_err_set() { local e; e="$(m3_status "$1" 'd.get("lastError")')"; [[ -n "$e" && "$e" != "None" ]]; }
+# m3_stop_loop <worker pid> — stop the loop's whole tree and this case's mock
+m3_stop_loop() {
+  stop_test_tree "$1" || { fail "loop cleanup" "could not stop owned tree"; exit 1; }
+  kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
+}
+M3_PING_BATTERY='"tool": "set_computer_paused", "args": {"paused": true, "reason": "battery"}'
+M3_RESUME='"tool": "set_computer_paused", "args": {"paused": false}'
+M3_CLAIM='"tool": "claim_render_order"'
+
+echo "=== Case M3-01a-7: --loop on battery → a battery check-in every round, 0 claims; lastCheckAt advances; cfwReach ok ==="
+p7="$(mktemp -d)"
+c21_setup "$p7" $((MOCK_PORT_BASE + 946)) harness-3step '[]'
+touch "$FAKE_PMSET_BATTERY"
+c21_worker "$p7" $((MOCK_PORT_BASE + 946)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=0.3 &
+p7_w=$!
+m3_until 100 0.1 m3_count_ge "$p7" "$M3_PING_BATTERY" 1
+m3_until 50 0.1 m3_conn_is "$p7" ok   # status.json lands after the call
+p7_first="$(m3_status "$p7" 'd.get("lastCheckAt")')"
+m3_until 100 0.1 m3_count_ge "$p7" "$M3_PING_BATTERY" 3
+sleep 1.2   # lastCheckAt has one-second resolution
+p7_last="$(m3_status "$p7" 'd.get("lastCheckAt")')"
+p7_conn="$(m3_status "$p7" 'd.get("cfwReach")')"
+m3_stop_loop "$p7_w"
+rm -f "$FAKE_PMSET_BATTERY"
+p7_pings="$(m3_count "$p7" "$M3_PING_BATTERY")"; p7_claims="$(m3_count "$p7" "$M3_CLAIM")"
+if [[ "$p7_pings" -ge 3 && "$p7_claims" == "0" && -n "$p7_first" && "$p7_first" != "None" && "$p7_last" > "$p7_first" && "$p7_conn" == "ok" ]]; then
+  pass "paused check-in: $p7_pings battery pings, 0 claims, lastCheckAt $p7_first → $p7_last, cfwReach ok"
+else
+  fail "paused check-in" "pings=$p7_pings claims=$p7_claims lastCheckAt '$p7_first' → '$p7_last' cfwReach=$p7_conn; $(tail -3 "$p7/cr-state/cfw-render.log")"
+fi
+rm -rf "$p7"
+
+echo "=== Case M3-01a-8: paused, CFW unreachable → cfwReach unreachable (one log line); back → ok (one log line) ==="
+p8="$(mktemp -d)"
+c21_setup "$p8" $((MOCK_PORT_BASE + 947)) harness-3step '[]'
+touch "$FAKE_PMSET_BATTERY"
+c21_worker "$p8" $((MOCK_PORT_BASE + 947)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=0.3 &
+p8_w=$!
+m3_until 100 0.1 m3_conn_is "$p8" ok
+touch "$p8/control/down"
+m3_until 100 0.1 m3_conn_is "$p8" unreachable; p8_down_ok=$?
+p8_since="$(m3_status "$p8" 'd.get("cfwReachSince")')"
+# More failed check-ins must add no log line. Wait for an observable later
+# round instead of a fixed sleep: lastCheckAt is stamped at the start of every
+# round (one-second resolution) and a failed check-in spends >2 s in its
+# retries, so the next status write after this one carries a later stamp.
+p8_check0="$(m3_status "$p8" 'd.get("lastCheckAt")')"
+m3_check_after() { local at; at="$(m3_status "$1" 'd.get("lastCheckAt")')"; [[ -n "$at" && "$at" > "$2" ]]; }
+m3_until 100 0.1 m3_check_after "$p8" "$p8_check0"; p8_more_ok=$?
+p8_still="$(m3_status "$p8" 'd.get("cfwReach")')"
+rm -f "$p8/control/down"
+p8_t0=$SECONDS
+# Recovery bound: the round in flight may still spend its remaining soft-call
+# retries (1 s apart) on 503s before the next round, 0.3 s later, reaches the
+# server. 100 x 0.1 s is the same bound the outage detection above uses; the
+# measured time is printed so a slow recovery stays visible.
+m3_until 100 0.1 m3_conn_is "$p8" ok; p8_up_ok=$?
+p8_secs=$(( SECONDS - p8_t0 ))
+m3_stop_loop "$p8_w"
+rm -f "$FAKE_PMSET_BATTERY"
+p8_lost="$(m3_log_count "$p8" "connection: can't reach CFW")"
+p8_back="$(m3_log_count "$p8" "connection: reached CFW again")"
+if [[ "$p8_down_ok" == 0 && "$p8_more_ok" == 0 && "$p8_still" == unreachable && "$p8_up_ok" == 0 && -n "$p8_since" && "$p8_since" != "None" && "$p8_lost" == 1 && "$p8_back" == 1 ]]; then
+  pass "paused offline: unreachable since $p8_since (1 line over repeated check-ins), ok again within ${p8_secs}s (1 line)"
+else
+  fail "paused offline" "down_ok=$p8_down_ok more_ok=$p8_more_ok still=$p8_still up_ok=$p8_up_ok since='$p8_since' lost_lines=$p8_lost back_lines=$p8_back; $(tail -4 "$p8/cr-state/cfw-render.log")"
+fi
+rm -rf "$p8"
+
+# m3_keep_err <label> <dir> <port> <expected lastError glob> [mock env...] — run
+# unpaused until lastError is set (no claim for an AI limit), then on battery,
+# CFW down, CFW back: lastError reads the same at every checkpoint.
+m3_keep_err() {
+  local label="$1" dir="$2" port="$3" want="$4" w e0 e1 e2 e3 c1 c2 c3; shift 4
+  c21_setup "$dir" "$port" harness-3step '[]' "$@"
+  [[ -n "${M3_LIMITS_JSON:-}" ]] && printf '%s' "$M3_LIMITS_JSON" > "$dir/cr-state/engine-limits.json"
+  c21_worker "$dir" "$port" --loop CFW_RENDER_CAPACITY_UNIT_SECS=0.3 &
+  w=$!
+  m3_until 100 0.1 m3_err_set "$dir"
+  e0="$(m3_status "$dir" 'd.get("lastError")')"
+  touch "$FAKE_PMSET_BATTERY"
+  m3_until 100 0.1 m3_count_ge "$dir" "$M3_PING_BATTERY" 1
+  m3_until 50 0.1 m3_conn_is "$dir" ok; c1="$(m3_status "$dir" 'd.get("cfwReach")')"
+  e1="$(m3_status "$dir" 'd.get("lastError")')"
+  touch "$dir/control/down"
+  m3_until 100 0.1 m3_conn_is "$dir" unreachable; c2="$(m3_status "$dir" 'd.get("cfwReach")')"
+  e2="$(m3_status "$dir" 'd.get("lastError")')"
+  rm -f "$dir/control/down"
+  m3_until 100 0.1 m3_conn_is "$dir" ok; c3="$(m3_status "$dir" 'd.get("cfwReach")')"
+  e3="$(m3_status "$dir" 'd.get("lastError")')"
+  m3_stop_loop "$w"
+  rm -f "$FAKE_PMSET_BATTERY"
+  # shellcheck disable=SC2053 # $want is a glob on purpose
+  if [[ "$e0" == $want && "$e1" == "$e0" && "$e2" == "$e0" && "$e3" == "$e0" && "$c1/$c2/$c3" == "ok/unreachable/ok" ]]; then
+    pass "$label: lastError '$e0' unchanged through battery, offline, online (cfwReach $c1/$c2/$c3)"
+  else
+    fail "$label" "lastError '$e0' / '$e1' / '$e2' / '$e3' (want $want) cfwReach $c1/$c2/$c3; $(tail -3 "$dir/cr-state/cfw-render.log")"
+  fi
+}
+M3_HOUR="$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+
+echo "=== Case M3-01a-9a: AI limit lastError survives the check-in's cfwReach flips ==="
+p9a="$(mktemp -d)"
+M3_LIMITS_JSON="{\"codex\":{\"until\":\"$M3_HOUR\"},\"claude-code\":{\"until\":\"$M3_HOUR\"}}" \
+  m3_keep_err "AI limit" "$p9a" $((MOCK_PORT_BASE + 948)) 'AI limit reached; resumes *'
+rm -rf "$p9a"
+
+echo "=== Case M3-01a-9b: AI credit lastError survives the check-in's cfwReach flips ==="
+p9b="$(mktemp -d)"
+M3_LIMITS_JSON='{"codex":{"until":null,"reason":"credit"},"claude-code":{"until":null,"reason":"credit"}}' \
+  m3_keep_err "AI credit" "$p9b" $((MOCK_PORT_BASE + 949)) 'AI credit ran out; add credit or pick another AI'
+rm -rf "$p9b"
+
+echo "=== Case M3-01a-9c: update-required lastError survives the check-in's cfwReach flips ==="
+p9c="$(mktemp -d)"
+M3_LIMITS_JSON="" m3_keep_err "update required" "$p9c" $((MOCK_PORT_BASE + 955)) 'Update this computer' CFW_MOCK_UPDATE_REQUIRED=1
+rm -rf "$p9c"
+
+echo "=== Case M3-01a-10: update required, claim fails then succeeds → cfwReach flips, lastError kept ==="
+p10="$(mktemp -d)"
+c21_setup "$p10" $((MOCK_PORT_BASE + 956)) harness-3step '[]' CFW_MOCK_UPDATE_REQUIRED=1
+c21_worker "$p10" $((MOCK_PORT_BASE + 956)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=0.3 &
+p10_w=$!
+m3_until 100 0.1 m3_conn_is "$p10" ok
+touch "$p10/control/down"
+m3_until 200 0.1 m3_conn_is "$p10" unreachable; p10_c1="$(m3_status "$p10" 'd.get("cfwReach")')"
+p10_e1="$(m3_status "$p10" 'd.get("lastError")')"
+rm -f "$p10/control/down"
+m3_until 200 0.1 m3_conn_is "$p10" ok; p10_c2="$(m3_status "$p10" 'd.get("cfwReach")')"
+p10_e2="$(m3_status "$p10" 'd.get("lastError")')"
+m3_stop_loop "$p10_w"
+if [[ "$p10_c1/$p10_c2" == "unreachable/ok" && "$p10_e1" == "Update this computer" && "$p10_e2" == "Update this computer" ]]; then
+  pass "claim path: cfwReach unreachable → ok, lastError 'Update this computer' both times"
+else
+  fail "claim path" "cfwReach $p10_c1/$p10_c2 lastError '$p10_e1' / '$p10_e2'; $(tail -4 "$p10/cr-state/cfw-render.log")"
+fi
+rm -rf "$p10"
+
+echo "=== Case M3-01a-11: charger back in mid-loop → one {paused:false} and a claim within 1.5 s ==="
+p11="$(mktemp -d)"
+c21_setup "$p11" $((MOCK_PORT_BASE + 957)) harness-3step '[]'
+touch "$FAKE_PMSET_BATTERY"
+c21_worker "$p11" $((MOCK_PORT_BASE + 957)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=0.3 &
+p11_w=$!
+m3_until 100 0.1 m3_count_ge "$p11" "$M3_PING_BATTERY" 2
+rm -f "$FAKE_PMSET_BATTERY"
+m3_until 15 0.1 m3_count_ge "$p11" "$M3_CLAIM" 1; p11_ok=$?
+p11_resume_at="$(m3_count "$p11" "$M3_RESUME")"
+sleep 1   # more rounds: still exactly one resume
+p11_resume="$(m3_count "$p11" "$M3_RESUME")"; p11_claims="$(m3_count "$p11" "$M3_CLAIM")"
+m3_stop_loop "$p11_w"
+if [[ "$p11_ok" == 0 && "$p11_resume_at" == 1 && "$p11_resume" == 1 && "$p11_claims" -ge 1 ]]; then
+  pass "plugged in: {paused:false} once, $p11_claims claim(s), first within 1.5 s"
+else
+  fail "plugged in" "within=$p11_ok resume=$p11_resume_at/$p11_resume claims=$p11_claims; $(tail -3 "$p11/cr-state/cfw-render.log")"
+fi
+rm -rf "$p11"
+
+echo "=== Case M3-01a-12: wake from sleep mid back-off → claim within 3 s, back-off reset ==="
+p12="$(mktemp -d)"
+c21_setup "$p12" $((MOCK_PORT_BASE + 958)) harness-3step '[]'
+printf '0\n' > "$p12/date-offset.tmp" && mv "$p12/date-offset.tmp" "$p12/date-offset"
+touch "$p12/control/down"
+c21_worker "$p12" $((MOCK_PORT_BASE + 958)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=30 \
+  CFW_RENDER_DATE_CMD="$FAKE_BIN/fake-date" FAKE_DATE_OFFSET_FILE="$p12/date-offset" &
+p12_w=$!
+m3_until 200 0.1 grep -qs 'retrying every 30s' "$p12/cr-state/cfw-render.log"; p12_backoff=$?
+rm -f "$p12/control/down"
+sleep 0.3
+printf '3600\n' > "$p12/date-offset.tmp" && mv "$p12/date-offset.tmp" "$p12/date-offset"
+m3_until 30 0.1 m3_count_ge "$p12" "$M3_CLAIM" 1; p12_ok=$?
+p12_woke="$(m3_log_count "$p12" "woke from sleep")"; p12_reset="$(m3_log_count "$p12" "claim back-off: reset after sleep")"
+m3_stop_loop "$p12_w"
+if [[ "$p12_backoff" == 0 && "$p12_ok" == 0 && "$p12_woke" -ge 1 && "$p12_reset" -ge 1 ]]; then
+  pass "wake: 'woke from sleep', back-off reset, claim within 3 s of the clock jump (not after the 30 s back-off)"
+else
+  fail "wake" "backoff_seen=$p12_backoff claimed=$p12_ok woke=$p12_woke reset=$p12_reset"
+  # flake forensics: dump everything relevant while the dir still exists
+  echo "--- p12 date-offset: $(cat "$p12/date-offset" 2>/dev/null); fake-date now: $(FAKE_DATE_OFFSET_FILE="$p12/date-offset" "$FAKE_BIN/fake-date" +%s 2>&1); real: $(/bin/date +%s)"
+  echo "--- p12 control: $(ls "$p12/control" 2>/dev/null)"; echo "--- p12 status.json: $(cat "$p12/cr-state/status.json" 2>/dev/null)"
+  echo "--- p12 worker log:"; tail -25 "$p12/cr-state/cfw-render.log" 2>/dev/null
+  echo "--- p12 calls: $(cat "$p12/mockstate/calls.jsonl" 2>/dev/null)"
+fi
+rm -rf "$p12"
+
+echo "=== Case M3-01a-12b: a 31 s clock jump exceeds a sub-two-second tick + wake gap ==="
+# The old 15s real-time wait measured how quickly Python/MCP fixtures reached
+# the cap, not the 31s wake boundary, and expired under parallel test load.
+# Keep every scheduling assertion against the real production loop, with a
+# deterministic clock. Cases 12 and 13 still exercise the real HTTP/loop path.
+if short_tick_wake_case; then
+  pass "wake: a 31 s jump exceeds tick 0.3 s + gap 30 s; back-off reset and a new claim"
+else
+  fail "short-tick wake" "real loop failed exact cap/tick/reset/claim assertions"
+fi
+
+echo "=== Case M3-01a-13: network back at the back-off cap → a claim within cap + one claim round ==="
+p13="$(mktemp -d)"
+c21_setup "$p13" $((MOCK_PORT_BASE + 959)) harness-3step '[]'
+touch "$p13/control/down"
+c21_worker "$p13" $((MOCK_PORT_BASE + 959)) --loop CFW_RENDER_CAPACITY_UNIT_SECS=0.05 &
+p13_w=$!
+m3_until 120 0.5 grep -qs 'retrying every 0.5s' "$p13/cr-state/cfw-render.log"; p13_cap=$?
+rm -f "$p13/control/down"
+p13_t0=$SECONDS
+# This mock returns a nonempty HTTP 503, so cr_mcp_call does not sleep/retry.
+# Assert a successful claim AND its status within cap 0.5 s + 2 s slack.
+m3_recovered() { m3_count_ge "$1" "$M3_CLAIM" 1 && m3_conn_is "$1" ok; }
+m3_until 25 0.1 m3_recovered "$p13"; p13_ok=$?
+p13_conn="$p13_ok"
+p13_secs=$(( SECONDS - p13_t0 ))
+m3_stop_loop "$p13_w"
+if [[ "$p13_cap" == 0 && "$p13_ok" == 0 && "$p13_conn" == 0 ]]; then
+  pass "at the cap: claim succeeded ${p13_secs}s after the network came back (bound 0.5 s + one round), cfwReach ok"
+else
+  fail "at the cap" "cap_seen=$p13_cap claimed=$p13_ok conn_ok=$p13_conn after ${p13_secs}s; $(tail -4 "$p13/cr-state/cfw-render.log")"
+fi
+rm -rf "$p13"
 # ===========================================================================
 # M3-07a — private toolchain: tools/current/bin PATH precedence + verify.sh
 # ===========================================================================
@@ -2944,8 +4971,7 @@ mb6_req=""
 for _ in $(seq 1 120); do mb6_req="$(m3_status "$mb6" '" ".join("%s/%s/%s" % (r["step"], r["steps"], r["stepLabel"]) for r in d["now"])')"; [[ -n "$mb6_req" ]] && break; sleep 0.1; done
 mb6_after="x"
 for _ in $(seq 1 200); do mb6_after="$(m3_status "$mb6" 'len(d["now"])')"; [[ "$mb6_after" == "0" ]] && grep -q '"event": "attempt_completed"' "$mb6/control/reports.ndjson" 2>/dev/null && break; sleep 0.1; done
-pkill -P "$mb6_w" 2>/dev/null; kill "$mb6_w" 2>/dev/null; wait "$mb6_w" 2>/dev/null
-pkill -f "cfw-render.sh --loop" 2>/dev/null || true
+stop_test_tree "$mb6_w" || { fail "loop cleanup" "could not stop owned tree"; exit 1; }
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 mb6_want="$(python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); s=[x for x in m["steps"] if x.get("runsOn","computer")=="computer"]; print("1/%d/%s" % (len(s), s[0].get("label")))' "$REPO_DIR/test/fixtures/manifests/harness-3step/manifest.json")"
 if [[ "$mb6_req" == "$mb6_want"* && "$mb6_after" == "0" && "$(m3_status "$mb6" 'd["activeEngine"]')" == "codex" ]]; then
@@ -3012,7 +5038,7 @@ c21_setup "$mc1" $((MOCK_PORT_BASE + 960)) harness-3step '[]'
 c21_worker "$mc1" $((MOCK_PORT_BASE + 960)) --once CFW_RENDER_ENGINE=none CFW_RENDER_COMPUTER_NAME="Test Mac"
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 mc1_keys="$(m3_status "$mc1" '",".join(sorted(d))')"
-mc1_want="$(python3 -c 'print(",".join(sorted("schema workerVersion engines activeEngine computer brands now next recent lastCheckAt lastError".split())))')"
+mc1_want="$(python3 -c 'print(",".join(sorted("schema workerVersion engines activeEngine computer brands now next recent lastCheckAt lastError cfwReach cfwReachSince connection".split())))')"
 mc1_eng="$(m3_status "$mc1" 'all("label" in e and e["auth"] == "signin" for e in d["engines"])')"
 mc1_rest="$(m3_status "$mc1" '(d["schema"], d["activeEngine"], d["computer"]["name"], d["next"])')"
 if [[ "$mc1_keys" == "$mc1_want" && "$mc1_eng" == "True" && "$mc1_rest" == "(1, None, 'Test Mac', [])" ]]; then
@@ -3027,7 +5053,7 @@ mc2="$(mktemp -d)"
 c21_setup "$mc2" $((MOCK_PORT_BASE + 961)) harness-3step '[]' 'CFW_MOCK_COMPUTER_BRANDS=[{"id":"b1","name":"Brand A"}]'
 c21_worker "$mc2" $((MOCK_PORT_BASE + 961)) --once
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
-mc2_b="$(m3_status "$mc2" 'd["brands"] == [{"id": "b1", "name": "Brand A", "serving": True}]')"
+mc2_b="$(m3_status "$mc2" 'd["brands"] == [{"id": "b1", "name": "Brand A", "serving": True, "slug": None}]')"
 if [[ "$mc2_b" == "True" ]]; then
   pass "status brands from computerBrands"
 else
@@ -3041,13 +5067,30 @@ c21_setup "$mc3" $((MOCK_PORT_BASE + 962)) harness-3step '[{"id":"o1"}]' 'CFW_MO
 c21_worker "$mc3" $((MOCK_PORT_BASE + 962)) --once
 c21_worker "$mc3" $((MOCK_PORT_BASE + 962)) --once
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
-mc3_r="$(m3_status "$mc3" 'sorted(d["recent"][0]) == ["brand","finishedAt","result","shortCode"] and (d["recent"][0]["shortCode"], d["recent"][0]["brand"], d["recent"][0]["result"]) == ("R-TEST","Brand A","done") and d["recent"][0]["finishedAt"].endswith("Z")')"
+mc3_r="$(m3_status "$mc3" 'sorted(d["recent"][0]) == ["attemptId","brand","brandSlug","directorLog","finishedAt","kind","orderId","reason","recipe","result","shortCode","startedAt"] and (d["recent"][0]["shortCode"], d["recent"][0]["brand"], d["recent"][0]["result"]) == ("R-TEST","Brand A","done") and d["recent"][0]["finishedAt"].endswith("Z") and d["recent"][0]["orderId"] == "o1" and d["recent"][0]["attemptId"] == "att_1" and d["recent"][0]["brandSlug"] == "test-brand" and d["recent"][0]["recipe"] == "harness-3step" and d["recent"][0]["startedAt"].endswith("Z") and d["recent"][0]["directorLog"] is None and d["recent"][0]["reason"] is None')"
 if [[ "$mc3_r" == "True" ]]; then
   pass "status recent: R-TEST / Brand A / done"
 else
   fail "status recent" "status=$(head -c 600 "$mc3/cr-state/status.json" 2>/dev/null) ndjson=$(cat "$mc3/cr-state/recent.ndjson" 2>/dev/null)"
 fi
 rm -rf "$mc3"
+
+st_py() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$CASE_STATE/status.json" "$1" 2>/dev/null; }
+echo "=== Case M3-01c-6: Up next comes from CFW's list_render_queue; an older server shows nothing stale ==="
+CFW_MOCK_QUEUE='[{"id":"q1","shortCode":"R-Q1","brandName":"Brand B","brandSlug":"brand-b","kind":"image","recipe":"p-gfx-image","status":"needs_input","needs":"Waiting for your input","createdAt":"2026-10-13T00:00:00Z","urgent":false}]' \
+  run_case "queue" "happy" "echo []" true
+q="$(st_py 'd["next"]')"
+if [[ "$q" == "[{'orderId': 'q1', 'shortCode': 'R-Q1', 'brand': 'Brand B', 'brandSlug': 'brand-b', 'kind': 'image', 'recipe': 'p-gfx-image', 'status': 'needs_input', 'needs': 'Waiting for your input', 'createdAt': '2026-10-13T00:00:00Z'}]" ]]; then
+  pass "status next: the waiting list across brands, with needs-you rows"
+else
+  fail "status next" "$q calls=$(grep list_render_queue "$CASE_MOCKSTATE/calls.jsonl" | head -2)"
+fi
+run_case "queue-old-server" "happy" "echo []" true
+if [[ "$(st_py 'd["next"]')" == "[]" && ! -e "$CASE_STATE/next.json" ]]; then
+  pass "status next: a server without list_render_queue → empty, no stale file"
+else
+  fail "status next old server" "$(st_py 'd["next"]')"
+fi
 
 echo "=== Case M3-01c-4: status.json never holds the worker key or the word token ==="
 mc4="$(mktemp -d)"
@@ -3066,7 +5109,7 @@ fi
 rm -rf "$mc4"
 
 # ── M3-04a: install.sh --from-app (app-driven, no prompts, JSON steps) ──
-m4_real_home="$HOME"
+m4_browser_cache="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/Library/Caches/ms-playwright}"
 # m4_setup <dir> <port> [mock KEY=VALUE...] — temp HOME + mock server.
 m4_setup() {
   local dir="$1" port="$2"; shift 2
@@ -3083,7 +5126,7 @@ m4_run() {
   (
     export HOME="$dir/home"
     export PATH="$REPO_DIR/bin:$FAKE_BIN:$PATH"
-    export PLAYWRIGHT_BROWSERS_PATH="$m4_real_home/Library/Caches/ms-playwright"
+    export PLAYWRIGHT_BROWSERS_PATH="$m4_browser_cache"
     export CFW_RENDER_DIRECTOR_CMD="$TEST_DIR/fake-director.sh"
     export CFW_RENDER_API_BASE="http://127.0.0.1:$port"
     export CFW_RENDER_SKIP_LAUNCHCTL=1 CFW_RENDER_PROBE_POLL_SEC=0.1
@@ -3099,13 +5142,15 @@ print(" ".join(f"{(o:=json.loads(l))["step"]}:{o["state"]}" for l in open(sys.ar
 
 echo "=== Case M3-04a-1/2: --from-app happy path; brand key never leaks ==="
 m4a="$(mktemp -d)"
-m4a_key="cfw_m4brand$(python3 -c 'import secrets;print(secrets.token_hex(8))')"
+# Real CFW keys are base64url (~40% contain '-'): always include one here.
+m4a_key="cfw_m4-brand$(python3 -c 'import secrets;print(secrets.token_hex(8))')"
 printf '%s\n' "$m4a_key" > "$m4a/stdin"
 m4_setup "$m4a" $((MOCK_PORT_BASE + 970))
-( for _ in $(seq 1 600); do ps -axo args 2>/dev/null; sleep 0.05; done ) > "$m4a/ps.log" 2>/dev/null &
+# Inspect only this test runner's descendants, never unrelated host argv.
+( for _ in $(seq 1 600); do python3 "$TEST_DIR/stop-owned-tree.py" --arguments "$$"; sleep 0.05; done ) > "$m4a/ps.log" 2>/dev/null &
 m4a_ps=$!
 m4_run "$m4a" $((MOCK_PORT_BASE + 970)) "$m4a/stdin"
-kill "$m4a_ps" 2>/dev/null; wait "$m4a_ps" 2>/dev/null || true
+stop_test_tree "$m4a_ps" || { fail "argv watcher cleanup" "could not stop owned tree"; exit 1; }
 kill "$m4_pid" 2>/dev/null; wait "$m4_pid" 2>/dev/null || true
 rm -f "$m4a/stdin"
 m4a_steps="$(m4_steps "$m4a")"
@@ -3124,7 +5169,7 @@ if [[ "$m4_rc" == "0" && "$m4a_steps" == "$m4a_want" ]]; then
 else
   fail "from-app happy path" "rc=$m4_rc steps=$m4a_steps err=$(tail -15 "$m4a/err.log")"
 fi
-if grep -q '^CFW_RENDER_WORKER_KEY=cfw_render_mockexchanged000$' "$m4a_envf" 2>/dev/null && [[ "$m4a_mode" == "600" ]]; then
+if grep -q '^CFW_RENDER_WORKER_KEY=cfw_render_mock-brand_xchg-0Ab9_Zq1$' "$m4a_envf" 2>/dev/null && [[ "$m4a_mode" == "600" ]]; then
   pass "from-app: env file holds the exchanged render key, mode 600"
 else
   fail "from-app env file" "mode=$m4a_mode"
@@ -3141,7 +5186,71 @@ if ! grep -rqF "$m4a_key" "$m4a/out.jsonl" "$m4a/err.log" "$m4a/home" "$m4a/pref
 else
   fail "from-app brand key leak" "$(grep -rlF "$m4a_key" "$m4a" 2>/dev/null)"
 fi
+if cmp -s "$REPO_DIR/VERSION" "$m4a/prefix/VERSION" \
+   && cmp -s "$REPO_DIR/lib/render-debug.py" "$m4a/prefix/lib/render-debug.py" \
+   && cmp -s "$REPO_DIR/bin/cfw-render-stage.py" "$m4a/prefix/bin/cfw-render-stage.py"; then
+  pass "fresh app install preserves version, debug and bounded-stage helpers"
+else
+  fail "fresh app install bundle" "missing or stale VERSION/debug/stage helper"
+fi
+if python3 - "$m4a/home/.cfw-render/connection.json" <<'PY_CONNECTION'
+import json, sys
+c = json.load(open(sys.argv[1]))
+assert set(c) == {"scope", "keyName", "keyHint", "connectedAt"}
+assert c["scope"] == "brand" and c["connectedAt"].endswith("Z")
+assert c["keyHint"].startswith("cfw_render_") and len(c["keyHint"]) <= 18
+assert "xchg-0Ab9" not in json.dumps(c)
+PY_CONNECTION
+then
+  pass "connection metadata contains reach and short hint, not exchanged secret"
+else
+  fail "connection metadata" "wrong shape, reach or key hint"
+fi
 rm -rf "$m4a"
+
+echo "=== Case M3-04a-2c: a fresh computer opens its setup session first; the probe report names the tested brand ==="
+m4f="$(mktemp -d)"
+printf '%s\n' "cfw_m4-fresh$(python3 -c 'import secrets;print(secrets.token_hex(8))')" > "$m4f/stdin"
+m4_setup "$m4f" $((MOCK_PORT_BASE + 976)) CFW_MOCK_REQUIRE_SETUP_SESSION=1 CFW_MOCK_PROBE_BRAND=brand_tested_1 CFW_MOCK_EXCHANGE_SCOPE=user
+m4_run "$m4f" $((MOCK_PORT_BASE + 976)) "$m4f/stdin"
+kill "$m4_pid" 2>/dev/null; wait "$m4_pid" 2>/dev/null || true
+m4f_seq="$(python3 -c '
+import json, sys
+c = [json.loads(l) for l in open(sys.argv[1])]
+setup = [x for x in c if x["tool"] in ("get_byoa_setup_instructions", "report_byoa_setup_step")]
+first = setup[0]["tool"] if setup else None
+probe = [x["args"].get("brandId") for x in c if x["tool"] == "report_byoa_setup_step" and x["args"].get("step") == "probe_render"]
+# probe_render polls answer "not done" until the probe finishes; every other setup call must succeed.
+print(first, all(x["ok"] for x in setup if x["args"].get("step") != "probe_render"), sorted(set(probe)))' "$m4f/mockstate/calls.jsonl" 2>/dev/null)"
+if [[ "$m4_rc" == "0" && "$m4f_seq" == "get_byoa_setup_instructions True ['brand_tested_1']" ]]; then
+  pass "from-app: setup session opened before any report; probe_render reports carry the tested brandId"
+else
+  fail "from-app setup session" "rc=$m4_rc seq=$m4f_seq err=$(tail -5 "$m4f/err.log")"
+fi
+rm -rf "$m4f"
+
+echo "=== Case M3-04a-2b: switching keys (all brands) turns off this Mac's old key after the test render ==="
+m4s="$(mktemp -d)"
+m4s_old="cfw_render_oldkey_$(python3 -c 'import secrets;print(secrets.token_hex(4))')"
+m4s_key="cfw_m4-acct$(python3 -c 'import secrets;print(secrets.token_hex(8))')"
+printf '%s\n' "$m4s_key" > "$m4s/stdin"
+m4_setup "$m4s" $((MOCK_PORT_BASE + 975)) CFW_MOCK_EXCHANGE_SCOPE=user
+mkdir -p "$m4s/home/.cfw-render"
+( umask 077; printf 'CFW_API_BASE=http://127.0.0.1:%s\nCFW_RENDER_WORKER_KEY=%s\n' $((MOCK_PORT_BASE + 975)) "$m4s_old" > "$m4s/home/.cfw-render/cfw-render.env" )
+m4_run "$m4s" $((MOCK_PORT_BASE + 975)) "$m4s/stdin"
+kill "$m4_pid" 2>/dev/null; wait "$m4_pid" 2>/dev/null || true
+m4s_revoked="$(python3 -c '
+import json, sys
+print([json.loads(l)["args"]["keyTail"] for l in open(sys.argv[1]) if "revoke_key_used" in l])' "$m4s/mockstate/calls.jsonl" 2>/dev/null)"
+m4s_scope="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["scope"])' "$m4s/home/.cfw-render/connection.json" 2>/dev/null)"
+if [[ "$m4_rc" == "0" && "$m4s_revoked" == "['${m4s_old: -6}']" && "$m4s_scope" == "user" ]] \
+   && grep -q '^CFW_RENDER_WORKER_KEY=cfw_render_mock-brand_xchg' "$m4s/home/.cfw-render/cfw-render.env" \
+   && ! grep -qF "$m4s_old" "$m4s/home/.cfw-render/cfw-render.env" "$m4s/out.jsonl" "$m4s/err.log"; then
+  pass "from-app re-setup: new key saved, old key revoked with itself (once), connection says all brands"
+else
+  fail "from-app re-setup" "rc=$m4_rc revoked=$m4s_revoked scope=$m4s_scope err=$(tail -5 "$m4s/err.log")"
+fi
+rm -rf "$m4s"
 
 echo "=== Case M3-04a-3: bad key → connecting failed, exit 5, no key written ==="
 m4b="$(mktemp -d)"
@@ -3296,11 +5405,16 @@ fi
 rm -rf "$m6g"
 
 echo "=== Case M3-06a-4: redactor fixture parity ==="
-if diff <(python3 "$REPO_DIR/bin/cfw-render-redact.py" < "$REPO_DIR/desktop/src-tauri/tests/fixtures/redact-input.txt") \
-     "$REPO_DIR/desktop/src-tauri/tests/fixtures/redact-expected.txt" >/dev/null; then
+# Plain files on both sides: the runner sandbox refuses the /dev/fd path that a
+# <( ) process substitution hands to diff.
+m6_redact_out="$(mktemp)"
+python3 "$REPO_DIR/bin/cfw-render-redact.py" < "$REPO_DIR/desktop/src-tauri/tests/fixtures/redact-input.txt" > "$m6_redact_out" 2>&1
+m6_redact_diff="$(diff "$m6_redact_out" "$REPO_DIR/desktop/src-tauri/tests/fixtures/redact-expected.txt" 2>&1)"; m6_redact_rc=$?
+rm -f "$m6_redact_out"
+if [[ "$m6_redact_rc" == 0 ]]; then
   pass "cfw-render-redact.py output == redact-expected.txt"
 else
-  fail "redactor parity" "diff vs redact-expected.txt"
+  fail "redactor parity" "diff vs redact-expected.txt (rc=$m6_redact_rc): $(printf '%s\n' "$m6_redact_diff" | head -6 | tr '\n' '|')"
 fi
 
 echo "=== Case M3-06a-5: send-logs uploads, LOG-TEST, render key never leaks ==="
@@ -3309,12 +5423,12 @@ m6e_key="cfw_render_m6e$(python3 -c 'import secrets;print(secrets.token_hex(8))'
 m6_setup "$m6e" "$m6e_key"
 m6e_port=$((MOCK_PORT_BASE + 983))
 m6e_pid="$(start_mock "$m6e/queue.json" "$m6e/mockstate" "$m6e_port")"
-( for _ in $(seq 1 200); do ps -axo args 2>/dev/null; sleep 0.05; done ) > "$m6e/ps.log" 2>/dev/null &
+( for _ in $(seq 1 200); do python3 "$TEST_DIR/stop-owned-tree.py" --arguments "$$"; sleep 0.05; done ) > "$m6e/ps.log" 2>/dev/null &
 m6e_ps=$!
 ( export HOME="$m6e/home" CFW_RENDER_API_BASE="http://127.0.0.1:$m6e_port"
   "$REPO_DIR/bin/cfw-render-ctl.sh" send-logs --yes > "$m6e/out.log" 2> "$m6e/err.log" )
 m6e_rc=$?
-kill "$m6e_ps" 2>/dev/null; wait "$m6e_ps" 2>/dev/null || true
+stop_test_tree "$m6e_ps" || { fail "argv watcher cleanup" "could not stop owned tree"; exit 1; }
 kill "$m6e_pid" 2>/dev/null; wait "$m6e_pid" 2>/dev/null || true
 mkdir -p "$m6e/x"; tar -xzf "$m6e/mockstate/logs-upload.gz" -C "$m6e/x" 2>/dev/null
 if [[ "$m6e_rc" == "0" ]] && grep -q "Reference: LOG-TEST — quote it to CFW support." "$m6e/out.log" \
@@ -3420,11 +5534,16 @@ echo '{"order":["zai","codex","claude-code"]}' > "$m8c/cr-state/engines.json"
 c21_worker "$m8c" $((MOCK_PORT_BASE + 991)) --once CFW_RENDER_SECURITY_CMD="$m8c/security" FAKE_ENGINE_LIMIT_ENGINE=zai FAKE_ENGINE_LIMIT_STEP=a
 kill "$c21_pid" 2>/dev/null; wait "$c21_pid" 2>/dev/null
 m8c_started="$(m3b_started "$m8c" o1)"
+# Window length is CR_ENGINE_LIMIT_WINDOW_MIN (15) from the write, not the
+# minutes still left. A loaded Mac can spend minutes in the rest of --once
+# after zai is limited; until-minus-now then reads 10 and the 14/15 check flakes.
 m8c_min="$(python3 -c '
-import json, sys, datetime
-u = json.load(open(sys.argv[1]))["zai"]["until"]
+import json, os, sys, datetime
+p = sys.argv[1]
+u = json.load(open(p))["zai"]["until"]
 t = datetime.datetime.fromisoformat(u.replace("Z", "+00:00"))
-print(round((t - datetime.datetime.now(datetime.timezone.utc)).total_seconds() / 60))' "$m8c/cr-state/engine-limits.json" 2>/dev/null)"
+wrote = datetime.datetime.fromtimestamp(os.stat(p).st_mtime, datetime.timezone.utc)
+print(round((t - wrote).total_seconds() / 60))' "$m8c/cr-state/engine-limits.json" 2>/dev/null)"
 if [[ "$m8c_started" == "a:zai a:codex "* && "$m8c_min" =~ ^1[45]$ ]]; then
   pass "apikey 429: zai limited ${m8c_min} min, failover a:zai → a:codex"
 else
@@ -3580,6 +5699,8059 @@ else
   fail "install.sh --update" "$(cat "$r5c/rc") out=$(cat "$r5c/out.jsonl") rest=$(cat "$r5c/rest") $(head -c 400 "$r5c/err.log")"
 fi
 rm -rf "$r5c"
+
+echo "=== Case M3-05a-4: --update reloads the worker even when launchd refuses the first bootstrap; a worker that never loads is reported ==="
+r5d="$(mktemp -d)"
+mkdir -p "$r5d/home/CFW Render/app/bin" "$r5d/home/Library/LaunchAgents" "$r5d/bin"
+printf '<plist/>\n' > "$r5d/home/Library/LaunchAgents/com.cfw.render.plist"
+# Fake launchctl: logs every call; bootstrap fails while $r5d/fail-left > 0.
+cat > "$r5d/bin/launchctl" <<'EOF_LC'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")/.." && pwd)"
+echo "$*" >> "$d/launchctl.log"
+if [[ "$1" == "bootstrap" ]]; then
+  n="$(cat "$d/fail-left" 2>/dev/null || echo 0)"
+  if (( n > 0 )); then echo $((n - 1)) > "$d/fail-left"; echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; fi
+  touch "$d/loaded"
+fi
+exit 0
+EOF_LC
+chmod +x "$r5d/bin/launchctl"
+r5d_run() { ( export HOME="$r5d/home" PATH="$r5d/bin:$PATH" CFW_RENDER_BOOTSTRAP_WAIT_SEC=0 CFW_RENDER_BOOTSTRAP_TRIES=3
+  "$REPO_DIR/install/install.sh" --mode byoa --non-interactive --from-app --update > "$r5d/out.jsonl" 2> "$r5d/err.log" < /dev/null
+  echo "$?" > "$r5d/rc" ); }
+echo 1 > "$r5d/fail-left"; r5d_run
+r5d_a_rc="$(cat "$r5d/rc")"; r5d_a_out="$(cat "$r5d/out.jsonl")"
+r5d_a_boots="$(grep -c '^bootstrap' "$r5d/launchctl.log" 2>/dev/null)"; r5d_a_loaded=0; [[ -f "$r5d/loaded" ]] && r5d_a_loaded=1
+rm -f "$r5d/launchctl.log" "$r5d/loaded"; echo 99 > "$r5d/fail-left"; r5d_run
+r5d_b_rc="$(cat "$r5d/rc")"; r5d_b_out="$(cat "$r5d/out.jsonl")"; r5d_b_boots="$(grep -c '^bootstrap' "$r5d/launchctl.log" 2>/dev/null)"
+if [[ "$r5d_a_rc" == "0" && "$r5d_a_out" == '{"step": "ready", "state": "done", "message": "Updated"}' && "$r5d_a_boots" == "2" && "$r5d_a_loaded" == "1" ]]; then
+  pass "install.sh --update: first bootstrap refused (I/O error) → retried, worker loaded, Updated"
+else
+  fail "install.sh --update bootstrap retry" "rc=$r5d_a_rc boots=$r5d_a_boots loaded=$r5d_a_loaded out=$r5d_a_out"
+fi
+if [[ "$r5d_b_rc" == "6" && "$r5d_b_boots" == "3" ]] && grep -q '"state": "failed"' <<< "$r5d_b_out" && ! grep -q '"message": "Updated"' <<< "$r5d_b_out"; then
+  pass "install.sh --update: a worker that never loads is reported as failed (exit 6), never 'Updated'"
+else
+  fail "install.sh --update never-loads" "rc=$r5d_b_rc boots=$r5d_b_boots out=$r5d_b_out"
+fi
+rm -rf "$r5d"
+
+echo "=== Case 37: carousel render.mjs loads Playwright from the work folder (WI2.38) ==="
+# The step runs `node "$SKILL_DIR/render.mjs"` with cwd = work/, after installing
+# Playwright into work/node_modules. The skill folder itself has no node_modules.
+# Before the loader, Node reported ERR_MODULE_NOT_FOUND from the script path.
+wi238="$(mktemp -d)"
+wi238_skill="$wi238/skill"
+wi238_work="$wi238/work"
+mkdir -p "$wi238_skill" "$wi238_work/node_modules/playwright"
+cp "$REPO_DIR/skills/p-carousel/render.mjs" "$wi238_skill/render.mjs"
+if [[ ! -e "$wi238_skill/node_modules" ]]; then
+  pass "render.mjs resolution: skill folder has no node_modules"
+else
+  fail "render.mjs resolution: skill node_modules" "the skill folder must not supply playwright"
+fi
+cat > "$wi238_work/node_modules/playwright/package.json" <<'EOF'
+{
+  "name": "playwright",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "index.js",
+  "exports": { ".": "./index.js" }
+}
+EOF
+cat > "$wi238_work/node_modules/playwright/index.js" <<'EOF'
+export const chromium = {
+  launch() {
+    throw new Error("WI238_PLAYWRIGHT_FROM_WORK");
+  },
+};
+EOF
+wi238_out="$(
+  cd "$wi238_work" && SCALE=1 node "$wi238_skill/render.mjs" carousel.html 2>&1 || true
+)"
+if [[ "$wi238_out" == *WI238_PLAYWRIGHT_FROM_WORK* && "$wi238_out" != *ERR_MODULE_NOT_FOUND* ]]; then
+  pass "render.mjs resolves the work-folder playwright stub when run from work"
+else
+  fail "render.mjs work-folder playwright" "${wi238_out:0:700}"
+fi
+
+wi238_miss="$(mktemp -d)"
+mkdir -p "$wi238_miss/skill" "$wi238_miss/work"
+cp "$REPO_DIR/skills/p-carousel/render.mjs" "$wi238_miss/skill/render.mjs"
+wi238_miss_out="$(
+  cd "$wi238_miss/work" && SCALE=1 node "$wi238_miss/skill/render.mjs" carousel.html 2>&1 || true
+)"
+if [[ "$wi238_miss_out" == *"/work/node_modules/playwright"* \
+   && "$wi238_miss_out" == *"/skill/node_modules/playwright"* \
+   && "$wi238_miss_out" == *"Cannot find package 'playwright'"* \
+   && "$wi238_miss_out" != *ERR_MODULE_NOT_FOUND* ]]; then
+  pass "render.mjs names the work folder and the script folder when playwright is missing"
+else
+  fail "render.mjs missing playwright" "${wi238_miss_out:0:700}"
+fi
+
+# Re-sync must keep the loader. The fixture source has no render.mjs, so plant
+# the pre-fix import block into a copy and let sync-skills.py rewrite it.
+wi238_src="$(mktemp -d)"
+cp -R "$TEST_DIR/fixtures/skills-src/." "$wi238_src/"
+python3 - "$REPO_DIR/skills/p-carousel/render.mjs" "$wi238_src/p-fixture-recipe/render.mjs" <<'PY'
+import pathlib, sys
+fixed = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+start = fixed.index("import { createRequire } from 'node:module';\n")
+end = fixed.index("const HTML")
+static = (
+    "import { chromium } from 'playwright';\n"
+    "import { mkdir } from 'node:fs/promises';\n"
+    "import { execFileSync } from 'node:child_process';\n"
+    "\n"
+)
+pathlib.Path(sys.argv[2]).write_text(fixed[:start] + static + fixed[end:], encoding="utf-8")
+PY
+wi238_sync="$(mktemp -d)"
+wi238_sync_rc=0
+wi238_sync_log="$(
+  CFW_SKILLS_SRC="$wi238_src" "$REPO_DIR/scripts/sync-skills.sh" \
+    --recipes "$TEST_DIR/fixtures/fixture-recipes.json" --out-dir "$wi238_sync" --skip-manifest 2>&1
+)" || wi238_sync_rc=$?
+if [[ "$wi238_sync_rc" == "0" ]] && cmp -s "$REPO_DIR/skills/p-carousel/render.mjs" "$wi238_sync/p-fixture-recipe/render.mjs"; then
+  pass "sync-skills.py keeps the work-folder Playwright loader on re-sync"
+else
+  wi238_diff="$(diff -u "$REPO_DIR/skills/p-carousel/render.mjs" "$wi238_sync/p-fixture-recipe/render.mjs" 2>&1 || true)"
+  fail "sync-skills.py playwright loader" "rc=$wi238_sync_rc diff=${wi238_diff:0:500} log=${wi238_sync_log:0:400}"
+fi
+rm -rf "$wi238" "$wi238_miss" "$wi238_src" "$wi238_sync"
+
+echo "=== Case 38: manifest completion sees settings-file worker values, and a failed hand-off blocks (WI2.40) ==="
+# The smoke ran the worker with these three unset in the process and present
+# only as plain assignments in the CFW_RENDER_ENV file. cr_load_config sources
+# that file. The step subshell exports them; the completion subshell must too.
+wi240_key="cfw_render_wi240fileonly0000"
+wi240_worker_id="w-wi240-file"
+wi240_link_bin() {
+  local dest="$1"
+  rm -rf "$dest"
+  mkdir -p "$dest"
+  local f base
+  for f in "$REPO_DIR/bin/"*; do
+    [[ -f "$f" ]] || continue
+    base="$(basename "$f")"
+    [[ "$base" == "cfw-render-report.sh" ]] && continue
+    cp "$f" "$dest/$base"
+  done
+  cat > "$dest/cfw-render-report.sh" <<'EOF'
+#!/usr/bin/env bash
+# Test stand-in placed where the completion subshell finds cfw-render-report.sh.
+# Records the three worker settings (never the key value) then runs the real script.
+set -u
+rec="${CFW_WI240_RECORD:?}"
+verb="${1:-}"
+{
+  printf 'verb=%s\n' "$verb"
+  printf 'api=%s\n' "${CFW_API_BASE:-}"
+  printf 'worker=%s\n' "${CFW_WORKER_ID:-}"
+  if [[ -n "${CFW_RENDER_WORKER_KEY:-}" && "${CFW_RENDER_WORKER_KEY}" == "${CFW_WI240_EXPECT_KEY:-}" ]]; then
+    printf 'key=match\n'
+  else
+    printf 'key=absent\n'
+  fi
+} >> "$rec"
+if [[ "$verb" == "complete" && "${CFW_WI240_FAIL_COMPLETE:-}" == "1" ]]; then
+  exit 1
+fi
+exec "${CFW_WI240_REAL_REPORT:?}" "$@"
+EOF
+  chmod +x "$dest/cfw-render-report.sh"
+}
+wi240_field() {
+  python3 -c '
+import sys
+want, key = sys.argv[2], sys.argv[3]
+cur = {}
+found = None
+def take():
+    global found
+    if cur.get("verb") == want:
+        found = dict(cur)
+for line in open(sys.argv[1]):
+    k, sep, v = line.strip().partition("=")
+    if not sep:
+        continue
+    if k == "verb" and cur:
+        take()
+        cur = {}
+    cur[k] = v
+take()
+print("" if found is None else found.get(key, ""))
+' "$1" "$2" "$3"
+}
+wi240_worker() {
+  local dir="$1" port="$2" fail_complete="$3"
+  local settings="$dir/settings.env" record="$dir/report-env.txt"
+  wi240_link_bin "$dir/bin"
+  printf 'CFW_API_BASE=http://127.0.0.1:%s\nCFW_WORKER_ID=%s\nCFW_RENDER_WORKER_KEY=%s\n' \
+    "$port" "$wi240_worker_id" "$wi240_key" > "$settings"
+  chmod 600 "$settings"
+  : > "$record"
+  (
+    unset CFW_API_BASE CFW_WORKER_ID CFW_RENDER_WORKER_KEY
+    export CFW_RENDER_ENV="$settings"
+    export CFW_RENDER_TEST_MEDIA_BASE_URL="http://127.0.0.1:$port"
+    export CFW_RENDER_STATE_DIR="$dir/cr-state"
+    export CFW_RENDER_LOG_DIR="$dir/cr-state"
+    export CFW_RENDER_KEEP_OUTPUTS=0
+    export CFW_RENDER_SCRATCH="$dir/cr-scratch"
+    export CFW_RENDER_SKILLS_DIR="$dir/skills"
+    export CFW_RENDER_OLLAMA_KEYS_FILE="$OLLAMA_KEYS_FIXTURE"
+    export CFW_RENDER_DIRECTOR_CMD="$TEST_DIR/fake-director.sh"
+    export CFW_RENDER_ENGINE_CMD="$TEST_DIR/fake-engine.sh"
+    export CFW_RENDER_HEARTBEAT_SEC=1
+    export CFW_RENDER_HEARTBEAT_SECS=0
+    export CFW_RENDER_CONCURRENCY=1
+    export CFW_RENDER_UPLOAD_MODE=multipart
+    export CFW_WI240_RECORD="$record"
+    export CFW_WI240_EXPECT_KEY="$wi240_key"
+    export CFW_WI240_REAL_REPORT="$REPO_DIR/bin/cfw-render-report.sh"
+    export CFW_WI240_FAIL_COMPLETE="$fail_complete"
+    "$dir/bin/cfw-render.sh" > "$dir/worker.out" 2>&1
+  )
+}
+wi240_leaked() {
+  local dir="$1"
+  grep -qF "$wi240_key" "$dir/worker.out" "$dir/report-env.txt" "$dir/cr-state/cfw-render.log" "$dir/mockstate/calls.jsonl" 2>/dev/null
+}
+wi240_hint() {
+  python3 -c '
+import pathlib, sys
+key, path = sys.argv[1], sys.argv[2]
+file = pathlib.Path(path)
+text = file.read_text(errors="replace")[-400:] if file.is_file() else ""
+print(text.replace(key, "[key]").replace("\n", " | ")[-300:])
+' "$wi240_key" "$1"
+}
+
+echo "--- 38a: completion report receives the three values from the settings file only"
+wi240a="$(mktemp -d)"
+wi240a_port=$((MOCK_PORT_BASE + 1010))
+c19_setup "$wi240a" "$wi240a_port"
+wi240_worker "$wi240a" "$wi240a_port" 0
+kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
+wi240a_api="$(wi240_field "$wi240a/report-env.txt" complete api)"
+wi240a_wid="$(wi240_field "$wi240a/report-env.txt" complete worker)"
+wi240a_key="$(wi240_field "$wi240a/report-env.txt" complete key)"
+wi240a_call="$(python3 -c '
+import json, sys
+want_id, want_worker = sys.argv[1], sys.argv[2]
+n = 0
+ok = False
+for line in open(sys.argv[3]):
+    d = json.loads(line)
+    if d.get("tool") != "complete_render_order":
+        continue
+    n += 1
+    a = d.get("args") or {}
+    if d.get("ok") is True and a.get("orderId") == want_id and a.get("workerId") == want_worker:
+        ok = True
+print("ok" if ok and n == 1 else "n=%s ok=%s" % (n, ok))
+' "order-h1" "$wi240_worker_id" "$wi240a/mockstate/calls.jsonl" 2>/dev/null || echo "parse-error")"
+if [[ "$wi240a_api" == "http://127.0.0.1:$wi240a_port" && "$wi240a_wid" == "$wi240_worker_id" && "$wi240a_key" == "match" && "$wi240a_call" == "ok" ]] && ! wi240_leaked "$wi240a"; then
+  pass "completion report: CFW_API_BASE, CFW_WORKER_ID and CFW_RENDER_WORKER_KEY come from the settings file"
+else
+  fail "completion report settings file" "api='$wi240a_api' worker='$wi240a_wid' keyflag='$wi240a_key' call='$wi240a_call' log=$(wi240_hint "$wi240a/worker.out")"
+fi
+rm -rf "$wi240a"
+
+echo "--- 38b: a failed completion blocks the order instead of only logging"
+wi240b="$(mktemp -d)"
+wi240b_port=$((MOCK_PORT_BASE + 1011))
+c19_setup "$wi240b" "$wi240b_port"
+wi240_worker "$wi240b" "$wi240b_port" 1
+kill "$c19_pid" 2>/dev/null; wait "$c19_pid" 2>/dev/null
+wi240b_block="$(python3 -c '
+import json, sys
+want_id, want_worker, want_reason = sys.argv[1], sys.argv[2], sys.argv[3]
+blocked = False
+completed = 0
+for line in open(sys.argv[4]):
+    d = json.loads(line)
+    if d.get("tool") == "complete_render_order":
+        completed += 1
+    if d.get("tool") != "block_render_order":
+        continue
+    a = d.get("args") or {}
+    if d.get("ok") is True and a.get("orderId") == want_id and a.get("workerId") == want_worker and a.get("reason") == want_reason:
+        blocked = True
+print("ok" if blocked and completed == 0 else "blocked=%s completed=%s" % (blocked, completed))
+' "order-h1" "$wi240_worker_id" "could not hand off the finished render" "$wi240b/mockstate/calls.jsonl" 2>/dev/null || echo "parse-error")"
+wi240b_journal=0
+grep -q $'\tfailed\t' "$wi240b/cr-state/journal.tsv" 2>/dev/null && wi240b_journal=1
+wi240b_api="$(wi240_field "$wi240b/report-env.txt" block api)"
+wi240b_wid="$(wi240_field "$wi240b/report-env.txt" block worker)"
+wi240b_key="$(wi240_field "$wi240b/report-env.txt" block key)"
+if [[ "$wi240b_block" == "ok" && "$wi240b_journal" == "1" && "$wi240b_api" == "http://127.0.0.1:$wi240b_port" && "$wi240b_wid" == "$wi240_worker_id" && "$wi240b_key" == "match" ]] && ! wi240_leaked "$wi240b"; then
+  pass "failed completion: block_render_order with a reason, order not left claimed"
+else
+  fail "failed completion block" "block='$wi240b_block' journal=$wi240b_journal api='$wi240b_api' worker='$wi240b_wid' keyflag='$wi240b_key' log=$(wi240_hint "$wi240b/worker.out")"
+fi
+rm -rf "$wi240b"
+
+echo "=== Case 39: p-carousel completion sends N slides in order, never cover/sheet (WI2.43) ==="
+# Smoke 10 delivered only cover.png + slide_sheet.png because the harness lists
+# every media save and the recipe only declared those two images. The worker must
+# select saves/slide_1..slide_N from slides.json instead.
+wi243="$(mktemp -d)"
+mkdir -p "$wi243/steps/render_slides/saves" "$wi243/steps/captions/saves" "$wi243/bin"
+cp "$REPO_DIR/bin/cfw-render-lib.sh" "$wi243/bin/cfw-render-lib.sh"
+cp "$REPO_DIR/bin/cfw-render-report.sh" "$wi243/bin/cfw-render-report.sh"
+cat > "$wi243/steps/render_slides/saves/slides.json" <<'JSON'
+{"width":1080,"height":1350,"count":3,"slides":[{"n":1,"sha256":"a","bytes":1},{"n":2,"sha256":"b","bytes":1},{"n":3,"sha256":"c","bytes":1}]}
+JSON
+printf 'slide-one' > "$wi243/steps/render_slides/saves/slide_1.png"
+printf 'slide-two' > "$wi243/steps/render_slides/saves/slide_2.png"
+printf 'slide-three' > "$wi243/steps/render_slides/saves/slide_3.png"
+printf 'preview-cover' > "$wi243/steps/render_slides/saves/cover.png"
+printf 'preview-sheet' > "$wi243/steps/render_slides/saves/slide_sheet.png"
+printf '{"instagram":"Carousel caption","default":"Carousel caption"}' > "$wi243/steps/captions/saves/captions.json"
+wi243_h_out="$(python3 -c '
+import json, sys
+root = sys.argv[1]
+print(json.dumps([
+  {"id":"cover","path":root+"/steps/render_slides/saves/cover.png"},
+  {"id":"slide_sheet","path":root+"/steps/render_slides/saves/slide_sheet.png"},
+  {"id":"slides","path":root+"/steps/render_slides/saves/slides.json"},
+  {"id":"qa_report","path":root+"/steps/render_slides/saves/qa_report.json"},
+  {"id":"captions","path":root+"/steps/captions/saves/captions.json"},
+]))
+' "$wi243")"
+wi243_sel="$(
+  # shellcheck disable=SC1091
+  source "$wi243/bin/cfw-render-lib.sh"
+  cr_select_deliverables "$wi243" "$wi243_h_out"
+)"
+wi243_sel_check="$(python3 -c '
+import os, sys
+root = sys.argv[1]
+lines = [l for l in sys.argv[2].splitlines() if l.strip()]
+want = [
+  root + "/steps/render_slides/saves/slide_1.png\tmedia",
+  root + "/steps/render_slides/saves/slide_2.png\tmedia",
+  root + "/steps/render_slides/saves/slide_3.png\tmedia",
+  root + "/steps/captions/saves/captions.json\tcaptions",
+]
+bad = []
+if lines != want:
+  bad.append("selected=%r want=%r" % (lines, want))
+joined = "\n".join(lines)
+if "cover.png" in joined or "slide_sheet.png" in joined:
+  bad.append("preview leaked into selection")
+print("ok" if not bad else "; ".join(bad))
+' "$wi243" "$wi243_sel")"
+if [[ "$wi243_sel_check" == "ok" ]]; then
+  pass "carousel select: ordered slide_1..slide_3 + captions, no cover/sheet"
+else
+  fail "carousel select ordered slides" "$wi243_sel_check"
+fi
+
+# Missing individual slides with slides.json present must not fall back to previews.
+rm -f "$wi243/steps/render_slides/saves/slide_2.png"
+wi243_missing="$(
+  source "$wi243/bin/cfw-render-lib.sh"
+  cr_select_deliverables "$wi243" "$wi243_h_out"
+)"
+if [[ -z "$wi243_missing" ]]; then
+  pass "carousel select: refuses cover/sheet fallback when a slide PNG is missing"
+else
+  fail "carousel select missing slide" "expected empty, got: $wi243_missing"
+fi
+printf 'slide-two' > "$wi243/steps/render_slides/saves/slide_2.png"
+
+# Full complete_render_order payload: N slides in order, never cover/sheet.
+wi243_calls="$wi243/calls.jsonl"
+: > "$wi243_calls"
+cat > "$wi243/bin/cfw-render-upload.sh" <<'EOF'
+#!/usr/bin/env bash
+printf "https://media.cfw.social/%s\n" "$(basename "$1")"
+EOF
+chmod +x "$wi243/bin/cfw-render-upload.sh"
+cp "$REPO_DIR/bin/cfw-render-lib.sh" "$wi243/bin/cfw-render-lib.sh"
+cat >> "$wi243/bin/cfw-render-lib.sh" <<EOF
+cr_mcp_call() {
+  printf '%s\n' "\$2" >> "$wi243_calls"
+  printf '{"ok":true}'
+}
+cr_heartbeat_stop_if_pending() { :; }
+EOF
+wi243_files=()
+wi243_captions=""
+while IFS=$'\t' read -r f role; do
+  [[ -n "$f" ]] || continue
+  if [[ "$role" == "captions" ]]; then wi243_captions="$f"; else wi243_files+=("$f"); fi
+done < <(
+  # shellcheck disable=SC1091
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_select_deliverables "$wi243" "$wi243_h_out"
+)
+wi243_complete_err="$wi243/complete.err"
+(
+  cd "$wi243" || exit 1
+  export CFW_ORDER_ID="order-wi243" CFW_WORKER_ID="w-wi243" CFW_ATTEMPT_ID="attempt-wi243"
+  export CFW_API_BASE="http://127.0.0.1:9" CFW_RENDER_WORKER_KEY="cfw_render_wi243testkey0000"
+  export CFW_RENDER_DIRECTOR_MODEL="sonnet"
+  export CFW_CAPTIONS_FILE="${wi243_captions}"
+  PATH="$wi243/bin:$PATH"
+  bash "$wi243/bin/cfw-render-report.sh" complete "${wi243_files[@]}"
+) >"$wi243/complete.out" 2>"$wi243_complete_err"
+wi243_payload="$(python3 -c '
+import json, pathlib, sys
+calls = pathlib.Path(sys.argv[1])
+err = pathlib.Path(sys.argv[2]).read_text(errors="replace")[-400:] if pathlib.Path(sys.argv[2]).is_file() else ""
+if not calls.is_file() or not calls.read_text().strip():
+    print("parse-error: empty calls; stderr=%r" % err.replace("\n", " | "))
+    raise SystemExit(0)
+rows = [json.loads(l) for l in calls.read_text().splitlines() if l.strip()]
+assert len(rows) == 1, rows
+d = rows[0]
+names = [u.split("/")[-1] for u in d.get("outputUrls", [])]
+roles = [o.get("role") for o in d.get("outputs", [])]
+bad = []
+if names != ["slide_1.png", "slide_2.png", "slide_3.png"]:
+  bad.append("names=%r" % names)
+if "cover.png" in names or "slide_sheet.png" in names:
+  bad.append("preview in outputUrls")
+if roles != ["cover", "slide", "slide"]:
+  bad.append("roles=%r" % roles)
+caps = d.get("captions") or {}
+if caps.get("instagram") != "Carousel caption":
+  bad.append("captions=%r" % caps)
+print("ok" if not bad else "; ".join(bad))
+' "$wi243_calls" "$wi243_complete_err" 2>/dev/null || echo "parse-error")"
+if [[ "$wi243_payload" == "ok" ]]; then
+  pass "carousel complete: N slides in order, roles cover/slide/slide, no cover.png or slide_sheet.png"
+else
+  fail "carousel complete ordered slides" "$wi243_payload"
+fi
+
+# Recipe step still requires ordered slide_N saves (instruction contract).
+wi243_recipe_ok=1
+grep -q 'saves/slide_1.png' "$REPO_DIR/skills/p-carousel/steps/03-render-slides.md" || wi243_recipe_ok=0
+grep -q 'saves/slide_N.png' "$REPO_DIR/skills/p-carousel/steps/03-render-slides.md" || wi243_recipe_ok=0
+grep -q 'preview only' "$REPO_DIR/skills/p-carousel/steps/03-render-slides.md" || wi243_recipe_ok=0
+grep -q 'cover.png' "$REPO_DIR/skills/p-carousel/SKILL.md" || wi243_recipe_ok=0
+grep -q 'slide_sheet.png' "$REPO_DIR/skills/p-carousel/SKILL.md" || wi243_recipe_ok=0
+grep -q 'never' "$REPO_DIR/skills/p-carousel/SKILL.md" || grep -qi 'Never' "$REPO_DIR/skills/p-carousel/SKILL.md" || wi243_recipe_ok=0
+if [[ "$wi243_recipe_ok" == "1" ]] && grep -q 'slide_N.png' "$REPO_DIR/skills/p-carousel/SKILL.md"; then
+  pass "carousel recipe: render_slides saves slide_N; cover/sheet are previews only"
+else
+  fail "carousel recipe slide_N contract" "03-render-slides.md or SKILL.md missing ordered-slide delivery wording"
+fi
+
+# Non-carousel: without slides.json, reel cover.png remains a deliverable.
+wi243_reel="$(mktemp -d)"
+mkdir -p "$wi243_reel/final"
+printf 'video' > "$wi243_reel/final/out.mp4"
+printf 'poster' > "$wi243_reel/final/cover.png"
+wi243_reel_out="$(
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_select_deliverables "$wi243_reel" "$(python3 -c '
+import json, sys
+root = sys.argv[1]
+print(json.dumps([
+  {"id":"video","path":root+"/final/out.mp4"},
+  {"id":"cover","path":root+"/final/cover.png"},
+]))
+' "$wi243_reel")"
+)"
+if [[ "$wi243_reel_out" == *$'\tmedia'* && "$wi243_reel_out" == *"/final/out.mp4"$'\tmedia'* && "$wi243_reel_out" == *"/final/cover.png"$'\tmedia'* ]]; then
+  pass "non-carousel select: reel cover.png stays a deliverable when slides.json is absent"
+else
+  fail "non-carousel reel cover" "got: $wi243_reel_out"
+fi
+rm -rf "$wi243_reel"
+rm -rf "$wi243"
+
+echo "=== Case 39b: p-gfx-image select keeps image_1, drops preview sheet and final (WI2.51) ==="
+# Smoke 12 delivered image_1.png plus contact_sheet.png and final.png. The
+# recipe manifest marks contact_sheet and final preview:true. image_1 is the
+# graphic and must be the only media line. A result with only those previews
+# selects nothing (no fallback). contact_sheet is matched by basename stem
+# because that harness item has no id.
+wi251="$(mktemp -d)"
+mkdir -p "$wi251/steps/render/saves" "$wi251/steps/qa_gate/saves" "$wi251/steps/captions/saves"
+printf 'graphic' > "$wi251/steps/render/saves/image_1.png"
+printf 'sheet' > "$wi251/steps/render/saves/contact_sheet.png"
+printf 'qa-final' > "$wi251/steps/qa_gate/saves/final.png"
+printf '{"instagram":"Graphic caption","default":"Graphic caption"}' > "$wi251/steps/captions/saves/captions.json"
+python3 - "$wi251/order.json" "$REPO_DIR/skills/p-gfx-image/manifest.json" <<'PY'
+import json, sys
+dest, man_path = sys.argv[1], sys.argv[2]
+man = json.load(open(man_path))
+json.dump({
+    "id": "order-wi251",
+    "recipe": man.get("recipe"),
+    "recipeVersion": man.get("recipeVersion"),
+    "manifest": man,
+}, open(dest, "w"))
+PY
+wi251_h="$(python3 -c '
+import json, sys
+root = sys.argv[1]
+print(json.dumps([
+  {"id": "image_1", "path": root + "/steps/render/saves/image_1.png"},
+  {"path": root + "/steps/render/saves/contact_sheet.png"},
+  {"id": "final", "path": root + "/steps/qa_gate/saves/final.png"},
+  {"id": "captions", "path": root + "/steps/captions/saves/captions.json"},
+]))
+' "$wi251")"
+wi251_sel="$(
+  # shellcheck disable=SC1091
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_select_deliverables "$wi251" "$wi251_h"
+)"
+wi251_sel_check="$(python3 - "$wi251" "$wi251_sel" "$REPO_DIR/skills/p-gfx-image/manifest.json" <<'PY'
+import json, os, sys
+root, text, man_path = sys.argv[1], sys.argv[2], sys.argv[3]
+man = json.load(open(man_path))
+flags = {}
+for step in man.get("steps") or []:
+    for save in step.get("saves") or []:
+        flags[save.get("id")] = save.get("preview")
+lines = [l for l in text.splitlines() if l.strip()]
+want = [
+    root + "/steps/render/saves/image_1.png\tmedia",
+    root + "/steps/captions/saves/captions.json\tcaptions",
+]
+bad = []
+if flags.get("contact_sheet") is not True or flags.get("final") is not True:
+    bad.append("manifest preview flags changed: %r" % {k: flags.get(k) for k in ("image_1", "contact_sheet", "final")})
+if lines != want:
+    bad.append("selected=%r want=%r" % (lines, want))
+joined = "\n".join(lines)
+if "contact_sheet" in joined or "final.png" in joined:
+    bad.append("preview leaked into selection")
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi251_sel_check" == "ok" ]]; then
+  pass "gfx select: image_1.png + captions, no contact_sheet or final"
+else
+  fail "gfx select drops preview saves" "$wi251_sel_check"
+fi
+wi251_only_preview="$(
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_select_deliverables "$wi251" "$(python3 -c '
+import json, sys
+root = sys.argv[1]
+print(json.dumps([
+  {"path": root + "/steps/render/saves/contact_sheet.png"},
+  {"id": "final", "path": root + "/steps/qa_gate/saves/final.png"},
+]))
+' "$wi251")"
+)"
+if [[ -z "$wi251_only_preview" ]]; then
+  pass "gfx select: preview-only result selects nothing (no sheet/final fallback)"
+else
+  fail "gfx select preview-only" "expected empty, got: $wi251_only_preview"
+fi
+rm -rf "$wi251"
+
+echo "=== Case 40: WI2.45 — one selector, resume with clean work, slide saves, version ==="
+# Finding 1: worker must call the tested cr_select_deliverables (no inline copy).
+if grep -q 'cr_select_deliverables' "$REPO_DIR/bin/cfw-render.sh" \
+  && ! grep -q 'slides_json = os.path.join' "$REPO_DIR/bin/cfw-render.sh"; then
+  pass "worker uses shared cr_select_deliverables (no inline slides.json selector)"
+else
+  fail "worker selector shared" "cfw-render.sh must call cr_select_deliverables and must not inline slides_json selection"
+fi
+
+# Finding 2: manifest declares per-slide saves; resume with clean work/ still delivers.
+wi245_manifest_ok=1
+for n in 1 2 3 4 5 6 7 8 9 10; do
+  grep -q "\"id\": \"slide_${n}\"" "$REPO_DIR/skills/p-carousel/manifest.json" || wi245_manifest_ok=0
+done
+grep -q '"recipeVersion": "2026.10.3"' "$REPO_DIR/skills/p-carousel/manifest.json" || wi245_manifest_ok=0
+if [[ "$wi245_manifest_ok" == "1" ]]; then
+  pass "carousel manifest: slide_1..slide_10 declared; recipeVersion 2026.10.3"
+else
+  fail "carousel manifest slide saves" "manifest missing slide_1..slide_10 or recipeVersion 2026.10.3"
+fi
+
+wi245="$(mktemp -d)"
+mkdir -p "$wi245/steps/render_slides/saves" "$wi245/steps/captions/saves"
+# Real sha256 values so the work/ fallback check can reuse this fixture.
+python3 - "$wi245" <<'PY'
+import hashlib, json, os, sys
+root = sys.argv[1]
+saves = os.path.join(root, "steps", "render_slides", "saves")
+slides = []
+for n, body in enumerate((b"slide-one", b"slide-two", b"slide-three"), 1):
+    path = os.path.join(saves, "slide_%d.png" % n)
+    open(path, "wb").write(body)
+    slides.append({"n": n, "sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body)})
+json.dump({"width": 1080, "height": 1350, "count": 3, "slides": slides},
+          open(os.path.join(saves, "slides.json"), "w"))
+PY
+printf 'preview-cover' > "$wi245/steps/render_slides/saves/cover.png"
+printf 'preview-sheet' > "$wi245/steps/render_slides/saves/slide_sheet.png"
+printf '{"instagram":"Resume caption","default":"Resume caption"}' > "$wi245/steps/captions/saves/captions.json"
+# Clean work folder: resume restored saves only; work/ is gone.
+rm -rf "$wi245/steps/render_slides/work"
+wi245_h_out='[]'
+wi245_sel="$(
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_select_deliverables "$wi245" "$wi245_h_out"
+)"
+wi245_resume_check="$(python3 -c '
+import sys
+root, text = sys.argv[1], sys.argv[2]
+lines = [l for l in text.splitlines() if l.strip()]
+want = [
+  root + "/steps/render_slides/saves/slide_1.png\tmedia",
+  root + "/steps/render_slides/saves/slide_2.png\tmedia",
+  root + "/steps/render_slides/saves/slide_3.png\tmedia",
+  root + "/steps/captions/saves/captions.json\tcaptions",
+]
+print("ok" if lines == want else "got=%r want=%r" % (lines, want))
+' "$wi245" "$wi245_sel")"
+if [[ "$wi245_resume_check" == "ok" ]]; then
+  pass "carousel resume: clean work folder still delivers slide_1..slide_N from saves"
+else
+  fail "carousel resume clean work" "$wi245_resume_check"
+fi
+
+# Finding 4: work/slides/slide-N.png fallback only when sha256 matches slides.json.
+rm -f "$wi245/steps/render_slides/saves/slide_2.png"
+mkdir -p "$wi245/steps/render_slides/work/slides"
+printf 'slide-two' > "$wi245/steps/render_slides/work/slides/slide-2.png"
+wi245_work_ok="$(
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_select_deliverables "$wi245" "$wi245_h_out"
+)"
+if [[ "$wi245_work_ok" == *"/work/slides/slide-2.png"$'\tmedia'* ]]; then
+  pass "carousel select: work/slides fallback accepted when sha256 matches slides.json"
+else
+  fail "carousel work fallback match" "expected work slide-2 in selection, got: $wi245_work_ok"
+fi
+printf 'tampered' > "$wi245/steps/render_slides/work/slides/slide-2.png"
+wi245_work_bad="$(
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  cr_select_deliverables "$wi245" "$wi245_h_out"
+)"
+if [[ -z "$wi245_work_bad" ]]; then
+  pass "carousel select: work/slides fallback refused when sha256 mismatches slides.json"
+else
+  fail "carousel work fallback mismatch" "expected empty, got: $wi245_work_bad"
+fi
+
+# Finding 3: sync-skills.py re-applies the p-carousel contract after copy_tree.
+# Plant an upstream-shaped p-carousel (no slide_N saves, old step wording) and
+# show the synced tree gains slide_1..slide_10, recipeVersion 2026.10.3, and the
+# render/captions delivery wording.
+wi245_src="$(mktemp -d)"
+wi245_sync="$(mktemp -d)"
+wi245_recipes="$wi245_src/recipes.json"
+mkdir -p "$wi245_src/p-carousel/steps"
+printf '%s\n' '{' \
+  '  "source": "test-wi245",' \
+  '  "recipes": [ { "name": "p-carousel", "version": "1.0.0", "providers": [] } ]' \
+  '}' > "$wi245_recipes"
+cat > "$wi245_src/p-carousel/SKILL.md" <<'EOF'
+---
+name: p-carousel
+dependsOn: []
+---
+# p-carousel (WI2.45 sync fixture — upstream shape)
+
+### Step 8 — Deliver ⛔ CHECKPOINT
+
+Deliver: slide PNGs (cover first, in order) + PDF last + `final/captions.json`
+**Gate: User approves caption before scheduling.**
+
+## Self-Improvement Feedback Loop
+
+After completing this skill's task:
+1. Ask the user for feedback.
+EOF
+python3 - "$wi245_src/p-carousel/manifest.json" <<'PY'
+import json, sys
+json.dump({
+  "manifestFormat": 1,
+  "recipe": "p-carousel",
+  "recipeVersion": "2026.10.2",
+  "label": "Carousel",
+  "deliverable": {"kind": "image", "aspect": "4:5", "width": 1080, "height": 1350},
+  "needs": {"os": ["macos"], "engines": ["codex"], "tools": ["python3"], "providers": []},
+  "inputs": [],
+  "steps": [
+    {"id": "outline", "label": "Outline", "weight": 15, "runsOn": "computer",
+     "when": "always", "instructions": "steps/01-outline.md",
+     "saves": [{"id": "outline", "kind": "json", "preview": False}]},
+    {"id": "author_slides", "label": "Author", "weight": 25, "runsOn": "computer",
+     "when": "always", "instructions": "steps/02-author-slides.md",
+     "saves": [{"id": "carousel_html", "kind": "text", "preview": False}]},
+    {"id": "render_slides", "label": "Render", "weight": 40, "runsOn": "computer",
+     "when": "always", "instructions": "steps/03-render-slides.md",
+     "saves": [
+       {"id": "cover", "kind": "image", "preview": True},
+       {"id": "slide_sheet", "kind": "image", "preview": True},
+       {"id": "slides", "kind": "json", "preview": False},
+       {"id": "qa_report", "kind": "json", "preview": False}
+     ]},
+    {"id": "captions", "label": "Captions", "weight": 20, "runsOn": "computer",
+     "when": "always", "instructions": "steps/04-captions.md",
+     "saves": [{"id": "captions", "kind": "json", "preview": False}]},
+  ],
+}, open(sys.argv[1], "w"), indent=2)
+open(sys.argv[1].replace("manifest.json", "steps/01-outline.md"), "w").write("# outline\n")
+open(sys.argv[1].replace("manifest.json", "steps/02-author-slides.md"), "w").write("# author\n")
+open(sys.argv[1].replace("manifest.json", "steps/03-render-slides.md"), "w").write(
+  "# Render\n\n## You must produce\n\n"
+  "- `saves/cover.png` — slide 1.\n"
+  "- `saves/slide_sheet.png` — contact sheet.\n"
+  "- `saves/slides.json` — metadata.\n"
+  "- `saves/qa_report.json` — QA.\n\n"
+  "## How\n\n```bash\nmkdir -p work saves\n```\n\n"
+  "### 4. Write the saves\n\n```bash\n"
+  "cp work/slides/slide-1.png saves/cover.png\n"
+  "```\n\n"
+  "Keep `work/qa_report.json` up to date.\n\n"
+  "## If you cannot proceed\n\nFail.\n"
+)
+open(sys.argv[1].replace("manifest.json", "steps/04-captions.md"), "w").write(
+  "# Write the post captions\n\n"
+  "Write captions.\n\n"
+  "## You receive\n\n- `prior/slides.json`\n\n"
+  "## You must produce\n\n- `saves/captions.json`\n"
+)
+PY
+wi245_sync_rc=0
+wi245_sync_log="$(
+  CFW_SKILLS_SRC="$wi245_src" "$REPO_DIR/scripts/sync-skills.sh" \
+    --recipes "$wi245_recipes" --out-dir "$wi245_sync" --skip-manifest 2>&1
+)" || wi245_sync_rc=$?
+wi245_sync_check="$(python3 - "$wi245_sync" <<'PY'
+import json, os, sys
+root = sys.argv[1]
+man = json.load(open(os.path.join(root, "p-carousel", "manifest.json")))
+bad = []
+if man.get("recipeVersion") != "2026.10.3":
+    bad.append("recipeVersion=%r" % man.get("recipeVersion"))
+step = next(s for s in man["steps"] if s["id"] == "render_slides")
+ids = [s["id"] for s in step["saves"]]
+want = ["slide_%d" % n for n in range(1, 11)]
+if ids[:10] != want:
+    bad.append("saves=%r" % ids)
+render = open(os.path.join(root, "p-carousel", "steps", "03-render-slides.md")).read()
+if "saves/slide_1.png" not in render or "pad any unused" not in render.lower():
+    bad.append("03-render-slides missing slide_1/pad wording")
+if "MAX_SLIDES = 10" not in render:
+    bad.append("03-render-slides missing pad-to-10 save writer")
+cap = open(os.path.join(root, "p-carousel", "steps", "04-captions.md")).read()
+if "## Delivery boundary" not in cap or "saves/slide_1.png" not in cap:
+    bad.append("04-captions missing Delivery boundary")
+skill = open(os.path.join(root, "p-carousel", "SKILL.md")).read()
+if "cover.png" not in skill or "Never" not in skill:
+    bad.append("SKILL.md missing never-cover delivery wording")
+idx = json.load(open(os.path.join(root, "index.json")))
+if idx["recipes"]["p-carousel"]["version"] != "2026.10.3":
+    bad.append("index.version=%r" % idx["recipes"]["p-carousel"]["version"])
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi245_sync_rc" == "0" && "$wi245_sync_check" == "ok" ]]; then
+  pass "sync-skills.py re-applies p-carousel slide saves and delivery wording after copy"
+else
+  fail "sync-skills p-carousel contract" "rc=$wi245_sync_rc check=$wi245_sync_check log=${wi245_sync_log:0:500}"
+fi
+rm -rf "$wi245_src" "$wi245_sync"
+
+# Finding 2 (review): drive the real harness save-check / restore path with an
+# order.json built from the bundled p-carousel manifest — not grep alone.
+wi245h="$(mktemp -d)"
+mkdir -p "$wi245h/media" "$wi245h/order" "$wi245h/bin"
+python3 - "$REPO_DIR" "$wi245h" <<'PY'
+import hashlib, json, os, sys
+repo, root = sys.argv[1], sys.argv[2]
+man = json.load(open(os.path.join(repo, "skills", "p-carousel", "manifest.json")))
+assert man["recipeVersion"] == "2026.10.3"
+assert [s["id"] for s in next(s for s in man["steps"] if s["id"] == "render_slides")["saves"]][:10] == [
+    "slide_%d" % n for n in range(1, 11)
+]
+media = os.path.join(root, "media")
+bodies = {
+    "slide_1.png": b"slide-one",
+    "slide_2.png": b"slide-two",
+    "slide_3.png": b"slide-three",
+    "slide_4.png": b"pad-four",
+    "slide_5.png": b"pad-five",
+    "slide_6.png": b"pad-six",
+    "slide_7.png": b"pad-seven",
+    "slide_8.png": b"pad-eight",
+    "slide_9.png": b"pad-nine",
+    "slide_10.png": b"pad-ten",
+    "cover.png": b"preview-cover",
+    "slide_sheet.png": b"preview-sheet",
+    "slides.json": b"",
+    "qa_report.json": b'{"rounds":1,"slides":[{"n":1,"verdict":"PASS","notes":[]},{"n":2,"verdict":"PASS","notes":[]},{"n":3,"verdict":"PASS","notes":[]}]}',
+    "captions.json": b'{"instagram":"Harness caption","default":"Harness caption"}',
+    "outline.json": b'{"count":3}',
+    "slide_copy.json": b'{"aspect_ratio":"4:5","slides":[]}',
+    "carousel_html.md": b"<html></html>",
+}
+slides_meta = {
+    "width": 1080, "height": 1350, "count": 3,
+    "slides": [
+        {"n": 1, "sha256": hashlib.sha256(bodies["slide_1.png"]).hexdigest(), "bytes": len(bodies["slide_1.png"])},
+        {"n": 2, "sha256": hashlib.sha256(bodies["slide_2.png"]).hexdigest(), "bytes": len(bodies["slide_2.png"])},
+        {"n": 3, "sha256": hashlib.sha256(bodies["slide_3.png"]).hexdigest(), "bytes": len(bodies["slide_3.png"])},
+    ],
+}
+bodies["slides.json"] = json.dumps(slides_meta).encode()
+for name, body in bodies.items():
+    open(os.path.join(media, name), "wb").write(body)
+# savedOutputs for every declared save before captions (resume at captions).
+saved = []
+ext = {"image": "png", "json": "json", "text": "md"}
+for step in man["steps"]:
+    if step["id"] == "captions":
+        break
+    for sv in step.get("saves") or []:
+        e = ext.get(sv.get("kind"), "bin")
+        fname = "%s.%s" % (sv["id"], e)
+        path = os.path.join(media, fname)
+        if not os.path.isfile(path):
+            open(path, "wb").write(b"x")
+        digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+        saved.append({
+            "stepId": step["id"],
+            "saveId": sv["id"],
+            "url": "PLACEHOLDER/" + fname,
+            "checksum": "sha256:" + digest,
+        })
+order = {
+    "id": "order-wi245h",
+    "attempt": {"id": "attempt-wi245h", "number": 1},
+    "recipe": "p-carousel",
+    "recipeVersion": man["recipeVersion"],
+    "kind": "image",
+    "brandId": "brand-test",
+    "manifest": man,
+    "resumeFromStepId": "captions",
+    "savedOutputs": saved,
+    "taskOrder": {"brand": {"slug": "test-brand"}, "intent": "wi245 harness"},
+}
+open(os.path.join(root, "order", "order.json"), "w").write(json.dumps(order, indent=2))
+open(os.path.join(root, "saved.json"), "w").write(json.dumps(saved))
+PY
+
+# Drive harness helpers in a subshell so sourced functions do not leak.
+wi245h_port=$((MOCK_PORT_BASE + 1045))
+wi245h_result="$(
+  set -euo pipefail
+  python3 - "$wi245h/media" "$wi245h_port" <<'PY' &
+import sys
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+class H(SimpleHTTPRequestHandler):
+    def __init__(self, *a, **k):
+        super().__init__(*a, directory=sys.argv[1], **k)
+    def log_message(self, *a):
+        pass
+ThreadingHTTPServer(("127.0.0.1", int(sys.argv[2])), H).serve_forever()
+PY
+  http_pid=$!
+  trap 'kill "$http_pid" 2>/dev/null; wait "$http_pid" 2>/dev/null' EXIT
+  python3 - "$wi245h" "$wi245h_port" <<'PY'
+import json, sys
+root, port = sys.argv[1], sys.argv[2]
+base = "http://127.0.0.1:%s" % port
+path = root + "/order/order.json"
+order = json.load(open(path))
+for s in order["savedOutputs"]:
+    s["url"] = base + "/" + s["url"].split("/", 1)[-1]
+json.dump(order, open(path, "w"), indent=2)
+PY
+  sleep 0.2
+  # shellcheck disable=SC1091
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  # shellcheck disable=SC1091
+  source "$REPO_DIR/bin/cfw-render-harness.sh"
+  # Used by cr_h_saves_for (reads $CR_H_ORDER_DIR/order.json).
+  # shellcheck disable=SC2034
+  CR_H_ORDER_DIR="$wi245h/order"
+  export CFW_RENDER_TEST_MEDIA_BASE_URL="http://127.0.0.1:$wi245h_port"
+  export CFW_RENDER_MEDIA_BASE_URL=""
+
+  saves="$(cr_h_saves_for render_slides)"
+  saves_ok=1
+  for n in 1 2 3 4 5 6 7 8 9 10; do
+    [[ " $saves " == *" slide_${n}.png "* ]] || saves_ok=0
+  done
+  [[ " $saves " == *" cover.png "* ]] || saves_ok=0
+  [[ " $saves " == *" slide_sheet.png "* ]] || saves_ok=0
+  printf 'SAVES=%s\n' "$saves_ok"
+  printf 'SAVES_DETAIL=%s\n' "$saves"
+
+  rm -rf "$wi245h/order/steps"
+  mkdir -p "$wi245h/order"
+  cr_h_restore_saved_outputs "$wi245h/order/order.json" "$wi245h/order" || true
+  restored_check="$(python3 - "$wi245h/order" <<'PY'
+import os, sys
+root = sys.argv[1]
+restored = open(os.path.join(root, "resume-restored.txt")).read().splitlines()
+missing = open(os.path.join(root, "resume-missing.txt")).read().strip()
+bad = []
+if missing:
+    bad.append("missing=%r" % missing)
+want = ["slide_%d.png" % n for n in range(1, 11)] + ["cover.png", "slide_sheet.png", "slides.json"]
+paths = [os.path.basename(p) for p in restored if "/render_slides/saves/" in p.replace("\\", "/")]
+for name in want:
+    if name not in paths:
+        bad.append("not-restored:%s" % name)
+    else:
+        f = os.path.join(root, "steps", "render_slides", "saves", name)
+        if not os.path.isfile(f) or os.path.getsize(f) == 0:
+            bad.append("empty:%s" % name)
+if os.path.isdir(os.path.join(root, "steps", "render_slides", "work")):
+    bad.append("work-folder-present")
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+  printf 'RESTORE=%s\n' "$restored_check"
+
+  check_ok=1
+  check_detail=""
+  for f in $saves; do
+    if [[ ! -s "$wi245h/order/steps/render_slides/saves/$f" ]]; then
+      check_ok=0
+      check_detail="missing or empty save $f"
+      break
+    fi
+  done
+  printf 'CHECK=%s\n' "$check_ok"
+  printf 'CHECK_DETAIL=%s\n' "$check_detail"
+
+  mkdir -p "$wi245h/order/steps/captions/saves"
+  printf '{"instagram":"Harness caption","default":"Harness caption"}' \
+    > "$wi245h/order/steps/captions/saves/captions.json"
+  sel="$(cr_select_deliverables "$wi245h/order" '[]')"
+  : > "$wi245h/calls.jsonl"
+  cat > "$wi245h/bin/cfw-render-upload.sh" <<'EOF'
+#!/usr/bin/env bash
+printf "https://media.cfw.social/%s\n" "$(basename "$1")"
+EOF
+  chmod +x "$wi245h/bin/cfw-render-upload.sh"
+  cp "$REPO_DIR/bin/cfw-render-lib.sh" "$wi245h/bin/cfw-render-lib.sh"
+  cp "$REPO_DIR/bin/cfw-render-report.sh" "$wi245h/bin/cfw-render-report.sh"
+  cat >> "$wi245h/bin/cfw-render-lib.sh" <<EOF
+cr_mcp_call() {
+  printf '%s\n' "\$2" >> "$wi245h/calls.jsonl"
+  printf '{"ok":true}'
+}
+cr_heartbeat_stop_if_pending() { :; }
+EOF
+  files=()
+  captions=""
+  while IFS=$'\t' read -r f role; do
+    [[ -n "$f" ]] || continue
+    if [[ "$role" == "captions" ]]; then captions="$f"; else files+=("$f"); fi
+  done <<< "$sel"
+  (
+    cd "$wi245h/order" || exit 1
+    export CFW_ORDER_ID="order-wi245h" CFW_WORKER_ID="w-wi245h" CFW_ATTEMPT_ID="attempt-wi245h"
+    export CFW_API_BASE="http://127.0.0.1:9" CFW_RENDER_WORKER_KEY="cfw_render_wi245htestkey000"
+    export CFW_RENDER_DIRECTOR_MODEL="sonnet"
+    export CFW_CAPTIONS_FILE="${captions}"
+    PATH="$wi245h/bin:$PATH"
+    bash "$wi245h/bin/cfw-render-report.sh" complete "${files[@]}"
+  ) >"$wi245h/complete.out" 2>"$wi245h/complete.err"
+  payload="$(python3 -c '
+import json, pathlib, sys
+calls = pathlib.Path(sys.argv[1])
+err = pathlib.Path(sys.argv[2]).read_text(errors="replace")[-400:] if pathlib.Path(sys.argv[2]).is_file() else ""
+if not calls.is_file() or not calls.read_text().strip():
+    print("parse-error: empty calls; stderr=%r" % err.replace("\n", " | "))
+    raise SystemExit(0)
+rows = [json.loads(l) for l in calls.read_text().splitlines() if l.strip()]
+assert len(rows) == 1, rows
+d = rows[0]
+names = [u.split("/")[-1] for u in d.get("outputUrls", [])]
+bad = []
+if names != ["slide_1.png", "slide_2.png", "slide_3.png"]:
+  bad.append("names=%r" % names)
+if "cover.png" in names or "slide_sheet.png" in names:
+  bad.append("preview in outputUrls")
+if any(n.startswith("slide_") and n not in ("slide_1.png", "slide_2.png", "slide_3.png") for n in names):
+  bad.append("pad-slide leaked: %r" % names)
+print("ok" if not bad else "; ".join(bad))
+' "$wi245h/calls.jsonl" "$wi245h/complete.err" 2>/dev/null || echo "parse-error")"
+  printf 'COMPLETE=%s\n' "$payload"
+)"
+wi245h_saves_ok="$(printf '%s\n' "$wi245h_result" | sed -n 's/^SAVES=//p' | tail -1)"
+wi245h_saves_detail="$(printf '%s\n' "$wi245h_result" | sed -n 's/^SAVES_DETAIL=//p' | tail -1)"
+wi245h_restored="$(printf '%s\n' "$wi245h_result" | sed -n 's/^RESTORE=//p' | tail -1)"
+wi245h_check_ok="$(printf '%s\n' "$wi245h_result" | sed -n 's/^CHECK=//p' | tail -1)"
+wi245h_check_detail="$(printf '%s\n' "$wi245h_result" | sed -n 's/^CHECK_DETAIL=//p' | tail -1)"
+wi245h_payload="$(printf '%s\n' "$wi245h_result" | sed -n 's/^COMPLETE=//p' | tail -1)"
+if [[ "$wi245h_saves_ok" == "1" ]]; then
+  pass "harness cr_h_saves_for: bundled manifest lists slide_1..slide_10 (+ cover/sheet)"
+else
+  fail "harness cr_h_saves_for slides" "got: $wi245h_saves_detail"
+fi
+if [[ "$wi245h_restored" == "ok" ]]; then
+  pass "harness restore: slide_1..slide_10 checked into saves/ with clean work folder"
+else
+  fail "harness restore slides" "$wi245h_restored"
+fi
+if [[ "$wi245h_check_ok" == "1" ]]; then
+  pass "harness save-check: every declared render_slides save is present after restore"
+else
+  fail "harness save-check slides" "$wi245h_check_detail"
+fi
+if [[ "$wi245h_payload" == "ok" ]]; then
+  pass "harness completion: slide_1..slide_N in order, never cover or slide_sheet"
+else
+  fail "harness completion ordered slides" "$wi245h_payload"
+fi
+rm -rf "$wi245h"
+
+# Finding 5: skills-version / index version stay aligned with recipeVersion bump.
+wi245_ver="$(python3 - "$REPO_DIR" <<'PY'
+import json, os, sys
+root = sys.argv[1]
+idx = json.load(open(os.path.join(root, "skills", "index.json")))
+sv = json.load(open(os.path.join(root, "config", "skills-version.json")))
+iv = idx["recipes"]["p-carousel"]["version"]
+vv = sv["recipes"]["p-carousel"]["version"]
+ic = idx["recipes"]["p-carousel"]["checksum"]
+vc = sv["recipes"]["p-carousel"]["checksum"]
+bad = []
+if iv != "2026.10.3": bad.append("index.version=%r" % iv)
+if vv != "2026.10.3": bad.append("skills-version.version=%r" % vv)
+if ic != vc: bad.append("checksum mismatch index=%s sv=%s" % (ic, vc))
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi245_ver" == "ok" ]]; then
+  pass "carousel version: index.json and skills-version.json at 2026.10.3 with matching checksum"
+else
+  fail "carousel version alignment" "$wi245_ver"
+fi
+rm -rf "$wi245"
+
+# WI2.32 / WI2.50: the real needs_input path must send count as {min,max}.
+# A bare number >= 0 (and a numeric string of one) becomes {min:n,max:n}. An
+# object with integer min >= 0 and min <= max passes through. No count stays
+# absent. A negative count, a min>max object, and anything else that breaks
+# integer / min>=0 / min<=max is dropped and logged once.
+wi232="$(mktemp -d)"
+wi232_detail="$(
+  root="$wi232"
+  bad=""
+  run_shape() {
+    local shape="$1"
+    local dir="$root/$shape"
+    local rc=0
+    local got=""
+    mkdir -p "$dir/recipe"
+    python3 - "$dir/order.json" <<'PY'
+import json, sys
+json.dump({
+    "id": "ord-wi232",
+    "attempt": {"id": "att-wi232"},
+    "manifest": {"steps": [{
+        "id": "plan_cards",
+        "runsOn": "computer",
+        "instructions": "steps/missing.md",
+        "saves": [{"id": "plan", "kind": "json"}],
+    }]},
+    "taskOrder": {},
+}, open(sys.argv[1], "w"))
+PY
+    CASE_DIR="$dir"
+    ASK_SHAPE="$shape"
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-harness.sh"
+    cr_log() { printf '%s\n' "$*" >> "$CASE_DIR/harness.log"; }
+    cr_engine_detect() { echo test; }
+    cr_engine_limit_detect() { return 1; }
+    cr_harness_heartbeat_start() { :; }
+    cr_harness_heartbeat_stop() { :; }
+    cr_h_run_with_timeout() { shift; "$@"; }
+    cr_engine_run() {
+      python3 - "$ASK_SHAPE" "$3/needs_input.json" <<'PY'
+import json, sys
+shape, path = sys.argv[1], sys.argv[2]
+ask = {"inputId": "topic", "reason": "Need a topic."}
+if shape == "number":
+    ask["count"] = 1
+elif shape == "string":
+    ask["count"] = "1"
+elif shape == "object":
+    ask["count"] = {"min": 2, "max": 4}
+elif shape == "junk":
+    ask["count"] = "soon"
+elif shape == "bool":
+    ask["count"] = True
+elif shape == "negative":
+    ask["count"] = -3
+elif shape == "inverted":
+    ask["count"] = {"min": 4, "max": 1}
+json.dump(ask, open(path, "w"))
+PY
+      return 0
+    }
+    cr_report_step() {
+      python3 -c 'import json,sys; print(json.dumps({"event":sys.argv[1],"extra":json.loads(sys.argv[2])}))' "$5" "$6" >> "$CASE_DIR/events.jsonl"
+      printf '%s' '{"ok":true,"directive":"pause"}'
+    }
+    CFW_WORKER_ID="test-worker" CFW_RENDER_PAUSE_MAX_SEC=0 \
+      cr_harness_run "$dir/order.json" "$dir" "$dir/recipe" >"$dir/harness.out" 2>"$dir/harness.err" || rc=$?
+    got="$(python3 - "$shape" "$dir/events.jsonl" "$dir/harness.log" <<'PY'
+import json, sys
+shape, events_path, log_path = sys.argv[1:]
+try:
+    events = [json.loads(line) for line in open(events_path) if line.strip()]
+except Exception as exc:
+    print("no events: %s" % exc)
+    raise SystemExit(0)
+asks = [event["extra"]["ask"] for event in events if event.get("event") == "needs_input"]
+try:
+    log = open(log_path).read()
+except Exception:
+    log = ""
+drops = log.count("needs_input count dropped")
+if len(asks) != 1:
+    print("needs_input reports=%s" % len(asks))
+    raise SystemExit(0)
+ask = asks[0]
+problems = []
+if ask.get("inputId") != "topic" or ask.get("reason") != "Need a topic.":
+    problems.append("ask=%r" % ask)
+if shape in ("number", "string"):
+    if ask.get("count") != {"min": 1, "max": 1}:
+        problems.append("count=%r" % (ask.get("count"),))
+    if drops:
+        problems.append("unexpected drop")
+elif shape == "object":
+    if ask.get("count") != {"min": 2, "max": 4}:
+        problems.append("count=%r" % (ask.get("count"),))
+    if drops:
+        problems.append("unexpected drop")
+elif shape == "absent":
+    if "count" in ask:
+        problems.append("count=%r" % (ask.get("count"),))
+    if drops:
+        problems.append("unexpected drop")
+elif shape in ("junk", "bool", "negative", "inverted"):
+    if "count" in ask:
+        problems.append("count=%r" % (ask.get("count"),))
+    if drops != 1:
+        problems.append("drops=%s" % drops)
+else:
+    problems.append("unknown shape")
+print("ok" if not problems else "; ".join(problems))
+PY
+)"
+    if [[ "$rc" != "21" || "$got" != "ok" ]]; then
+      bad="${bad}${shape}: rc=${rc} ${got}; "
+    fi
+  }
+  run_shape number
+  run_shape string
+  run_shape object
+  run_shape absent
+  run_shape junk
+  run_shape bool
+  run_shape negative
+  run_shape inverted
+  if [[ -z "$bad" ]]; then printf '%s' ok; else printf '%s' "$bad"; fi
+)"
+if [[ "$wi232_detail" == "ok" ]]; then
+  pass "harness needs_input: numeric count is {min:1,max:1}; object passes through; negative and min>max are dropped"
+else
+  fail "harness needs_input count shape" "$wi232_detail"
+fi
+rm -rf "$wi232"
+
+# WI2.49: a typed start answer is written to inputs/<name>/<name>.md before
+# the step runs. A URL is still downloaded to the basename, and an existing
+# path is still copied. This fails on db62e119, which leaves the typed topic
+# unstaged.
+wi249="$(mktemp -d)"
+wi249_detail="$(
+  dir="$wi249"
+  mkdir -p "$dir/work" "$dir/src"
+  printf 'headshot-bytes' > "$dir/src/headshot.png"
+  python3 - "$dir/order.json" "$dir/src/headshot.png" <<'PY'
+import json, sys
+json.dump({
+    "id": "ord-wi249",
+    "inputs": {
+        "topic": "Three tips for first-time buyers",
+        "logo": "https://cdn.example/brand-logo.png?x=1",
+        "photo": sys.argv[2],
+    },
+}, open(sys.argv[1], "w"))
+PY
+  # shellcheck disable=SC1091
+  source "$REPO_DIR/bin/cfw-render-harness.sh"
+  curl() {
+    local out="" prev="" arg
+    for arg in "$@"; do
+      if [[ "$prev" == "-o" ]]; then out="$arg"; fi
+      prev="$arg"
+    done
+    printf '%s\n' "$prev" > "$dir/curl.url"
+    if [[ -n "$out" ]]; then printf 'downloaded' > "$out"; fi
+  }
+  cr_h_stage_inputs "$dir/work" "$dir/order.json"
+  python3 - "$dir/work" "$dir/src/headshot.png" "$dir/curl.url" <<'PY'
+import pathlib, sys
+work, photo_src, curl_url_path = sys.argv[1:]
+problems = []
+topic = pathlib.Path(work) / "inputs" / "topic" / "topic.md"
+want = b"Three tips for first-time buyers"
+if not topic.is_file():
+    problems.append("topic.md missing")
+elif topic.read_bytes() != want:
+    problems.append("topic.md=%r" % topic.read_bytes())
+logo = pathlib.Path(work) / "inputs" / "logo" / "brand-logo.png"
+if not logo.is_file() or logo.read_bytes() != b"downloaded":
+    problems.append("logo download missing")
+if (pathlib.Path(work) / "inputs" / "logo" / "logo.md").exists():
+    problems.append("logo written as text")
+got_url = pathlib.Path(curl_url_path).read_text(encoding="utf-8").strip() if pathlib.Path(curl_url_path).is_file() else ""
+if got_url != "https://cdn.example/brand-logo.png?x=1":
+    problems.append("curl url=%r" % got_url)
+photo = pathlib.Path(work) / "inputs" / "photo" / "headshot.png"
+src = pathlib.Path(photo_src).read_bytes()
+if not photo.is_file() or photo.read_bytes() != src:
+    problems.append("photo not copied")
+if (pathlib.Path(work) / "inputs" / "photo" / "photo.md").exists():
+    problems.append("photo written as text")
+print("ok" if not problems else "; ".join(problems))
+PY
+)"
+if [[ "$wi249_detail" == "ok" ]]; then
+  pass "harness stage inputs: typed topic is inputs/topic/topic.md; URL still downloads"
+else
+  fail "harness stage inputs typed topic" "$wi249_detail"
+fi
+rm -rf "$wi249"
+
+# WI2.50: Social refusing report_render_step must end the step failed with the
+# refusal text. The directive from step_started stays `continue` on the old
+# path, and the needs_input wait then reruns the step. This fails on be009c3f.
+wi250="$(mktemp -d)"
+wi250_detail="$(
+  dir="$wi250"
+  mkdir -p "$dir/recipe"
+  python3 - "$dir/order.json" <<'PY'
+import json, sys
+json.dump({
+    "id": "ord-wi250",
+    "attempt": {"id": "att-wi250"},
+    "manifest": {"steps": [{
+        "id": "plan_cards",
+        "runsOn": "computer",
+        "instructions": "steps/missing.md",
+        "saves": [{"id": "plan", "kind": "json"}],
+    }]},
+    "taskOrder": {},
+}, open(sys.argv[1], "w"))
+PY
+  # shellcheck disable=SC1091
+  source "$REPO_DIR/bin/cfw-render-harness.sh"
+  cr_log() { printf '%s\n' "$*" >> "$dir/harness.log"; }
+  cr_engine_detect() { echo test; }
+  cr_engine_limit_detect() { return 1; }
+  cr_harness_heartbeat_start() { :; }
+  cr_harness_heartbeat_stop() { :; }
+  cr_h_run_with_timeout() { shift; "$@"; }
+  cr_engine_run() {
+    local n=0
+    if [[ -f "$dir/runs" ]]; then n="$(wc -l < "$dir/runs" | tr -d ' ')"; fi
+    printf '%s\n' "$CFW_STEP_ID" >> "$dir/runs"
+    if [[ "${n:-0}" == "0" ]]; then
+      python3 -c 'import json,sys; json.dump({"inputId":"topic","reason":"Need a topic.","count":1}, open(sys.argv[1],"w"))' "$3/needs_input.json"
+      return 0
+    fi
+    mkdir -p "$3/saves"
+    printf '{"ok":true}\n' > "$3/saves/plan.json"
+    return 0
+  }
+  cr_report_step() {
+    python3 -c 'import json,sys; print(json.dumps({"event":sys.argv[1],"extra":json.loads(sys.argv[2])}))' "$5" "$6" >> "$dir/events.jsonl"
+    if [[ "$5" == "needs_input" ]]; then
+      printf '%s' 'Social refused the step report: ask not allowed'
+      return 70
+    fi
+    printf '%s' '{"ok":true,"directive":"continue"}'
+  }
+  rc=0
+  CFW_WORKER_ID="test-worker" CFW_RENDER_PAUSE_MAX_SEC=0 \
+    cr_harness_run "$dir/order.json" "$dir" "$dir/recipe" >"$dir/harness.out" 2>"$dir/harness.err" || rc=$?
+  python3 - "$rc" "$dir/runs" "$dir/events.jsonl" "$dir/harness.log" <<'PY'
+import json, sys
+rc, runs_path, events_path, log_path = sys.argv[1:]
+problems = []
+if rc != "30":
+    problems.append("rc=%s" % rc)
+try:
+    runs = open(runs_path).read().splitlines()
+except Exception:
+    runs = []
+if runs != ["plan_cards"]:
+    problems.append("runs=%r" % runs)
+try:
+    events = [json.loads(line) for line in open(events_path) if line.strip()]
+except Exception as exc:
+    events = []
+    problems.append("events: %s" % exc)
+started = [event for event in events if event.get("event") == "step_started"]
+if len(started) != 1:
+    problems.append("step_started=%s" % len(started))
+failed = [event for event in events if event.get("event") == "attempt_failed"]
+if len(failed) != 1:
+    problems.append("attempt_failed=%s" % len(failed))
+else:
+    message = failed[0].get("extra", {}).get("message") or ""
+    if "Social refused the step report: ask not allowed" not in message:
+        problems.append("message=%r" % message)
+    if failed[0].get("extra", {}).get("stepId") != "plan_cards":
+        problems.append("stepId=%r" % (failed[0].get("extra"),))
+log = open(log_path).read() if __import__("os").path.isfile(log_path) else ""
+if log.count("tool error:") != 1:
+    problems.append("tool-error logs=%s" % log.count("tool error:"))
+if "Social refused the step report: ask not allowed" not in log:
+    problems.append("refusal missing from log")
+print("ok" if not problems else "; ".join(problems))
+PY
+)"
+if [[ "$wi250_detail" == "ok" ]]; then
+  pass "harness refused step report: ends failed with the refusal text and does not rerun the step"
+else
+  fail "harness refused step report" "$wi250_detail"
+fi
+rm -rf "$wi250"
+
+# WI2.50: number and boolean start answers are staged as text. An input name
+# containing / or .. is refused, so the file cannot land outside inputs/.
+wi250b="$(mktemp -d)"
+wi250b_detail="$(
+  dir="$wi250b"
+  mkdir -p "$dir/typed/work" "$dir/unsafe/work"
+  python3 - "$dir/typed/order.json" <<'PY'
+import json, sys
+json.dump({
+    "id": "ord-wi250-typed",
+    "inputs": {"count": 3, "ready": True, "off": False, "zero": 0, "topic": "Hello"},
+}, open(sys.argv[1], "w"))
+PY
+  python3 - "$dir/unsafe/order.json" <<'PY'
+import json, sys
+json.dump({
+    "id": "ord-wi250-unsafe",
+    "inputs": {
+        "topic": "kept",
+        "../outside": "nope",
+        "nested/name": "nope",
+        "a..b": "nope",
+    },
+}, open(sys.argv[1], "w"))
+PY
+  # shellcheck disable=SC1091
+  source "$REPO_DIR/bin/cfw-render-harness.sh"
+  cr_log() { printf '%s\n' "$*" >> "$dir/harness.log"; }
+  typed_rc=0
+  cr_h_stage_inputs "$dir/typed/work" "$dir/typed/order.json" || typed_rc=$?
+  unsafe_rc=0
+  cr_h_stage_inputs "$dir/unsafe/work" "$dir/unsafe/order.json" || unsafe_rc=$?
+  python3 - "$typed_rc" "$unsafe_rc" "$dir/typed/work" "$dir/unsafe/work" "$dir/harness.log" <<'PY'
+import pathlib, sys
+typed_rc, unsafe_rc, typed_work, unsafe_work, log_path = sys.argv[1:]
+problems = []
+if typed_rc != "0":
+    problems.append("typed rc=%s" % typed_rc)
+typed = pathlib.Path(typed_work)
+expect = {
+    "count/count.md": "3",
+    "ready/ready.md": "true",
+    "off/off.md": "false",
+    "zero/zero.md": "0",
+    "topic/topic.md": "Hello",
+}
+for rel, want in expect.items():
+    path = typed / "inputs" / rel
+    if not path.is_file():
+        problems.append("missing %s" % rel)
+    elif path.read_text(encoding="utf-8") != want:
+        problems.append("%s=%r" % (rel, path.read_text(encoding="utf-8")))
+if unsafe_rc != "1":
+    problems.append("unsafe rc=%s" % unsafe_rc)
+unsafe = pathlib.Path(unsafe_work).resolve()
+for path in unsafe.rglob("*"):
+    if not path.is_file():
+        continue
+    rel = path.relative_to(unsafe).as_posix()
+    if rel != "brief.json" and not rel.startswith("inputs/"):
+        problems.append("escaped %s" % rel)
+    if ".." in rel.split("/"):
+        problems.append("dotdot %s" % rel)
+outside = unsafe / "outside"
+nested = unsafe / "inputs" / "nested"
+dotty = unsafe / "inputs" / "a..b"
+if outside.exists() or nested.exists() or dotty.exists():
+    problems.append("unsafe path was created")
+log = pathlib.Path(log_path).read_text(encoding="utf-8") if pathlib.Path(log_path).is_file() else ""
+lines = [line for line in log.splitlines() if "input name refused" in line]
+if len(lines) != 1:
+    problems.append("refuse logs=%s" % len(lines))
+elif "../outside" not in lines[0] or "nested/name" not in lines[0] or "a..b" not in lines[0]:
+    problems.append("refuse log=%r" % lines[0])
+print("ok" if not problems else "; ".join(problems))
+PY
+)"
+if [[ "$wi250b_detail" == "ok" ]]; then
+  pass "harness stage inputs: number and boolean answers are text; names with / or .. are refused"
+else
+  fail "harness stage inputs typed scalars and unsafe names" "$wi250b_detail"
+fi
+rm -rf "$wi250b"
+
+# WI2.54: Social sends inputs as a list of {inputId, items:[{kind,url}]}.
+# A video item is staged under inputs/<inputId>/. The old dict form still
+# stages. A list inputId with / or .. is refused. An empty list stages nothing.
+wi254="$(mktemp -d)"
+wi254_detail="$(
+  dir="$wi254"
+  mkdir -p "$dir/list/work" "$dir/dict/work" "$dir/empty/work" "$dir/unsafe/work"
+  python3 - "$dir/list/order.json" "$dir/dict/order.json" "$dir/empty/order.json" "$dir/unsafe/order.json" <<'PY'
+import json, sys
+list_path, dict_path, empty_path, unsafe_path = sys.argv[1:]
+json.dump({
+    "id": "ord-wi254-list",
+    "inputs": [{
+        "inputId": "talking_head",
+        "items": [{"kind": "video", "url": "http://127.0.0.1:9/media/talking-head.mp4?sig=1"}],
+    }],
+}, open(list_path, "w"))
+json.dump({
+    "id": "ord-wi254-dict",
+    "inputs": {
+        "topic": "Three tips for first-time buyers",
+        "talking_head": [{"kind": "video", "url": "http://127.0.0.1:9/media/dict-head.mp4"}],
+    },
+}, open(dict_path, "w"))
+json.dump({"id": "ord-wi254-empty", "inputs": []}, open(empty_path, "w"))
+json.dump({
+    "id": "ord-wi254-unsafe",
+    "inputs": [
+        {"inputId": "../outside", "items": [{"kind": "video", "url": "http://127.0.0.1:9/bad.mp4"}]},
+        {"inputId": "nested/name", "items": [{"kind": "video", "url": "http://127.0.0.1:9/bad2.mp4"}]},
+    ],
+}, open(unsafe_path, "w"))
+PY
+  # shellcheck disable=SC1091
+  source "$REPO_DIR/bin/cfw-render-harness.sh"
+  cr_log() { printf '%s\n' "$*" >> "$dir/harness.log"; }
+  curl() {
+    local out="" prev="" arg
+    for arg in "$@"; do
+      if [[ "$prev" == "-o" ]]; then out="$arg"; fi
+      prev="$arg"
+    done
+    printf '%s\n' "$prev" >> "$dir/curl.urls"
+    if [[ -n "$out" ]]; then printf 'video-bytes\n' > "$out"; fi
+  }
+  list_rc=0
+  cr_h_stage_inputs "$dir/list/work" "$dir/list/order.json" || list_rc=$?
+  dict_rc=0
+  cr_h_stage_inputs "$dir/dict/work" "$dir/dict/order.json" || dict_rc=$?
+  empty_rc=0
+  cr_h_stage_inputs "$dir/empty/work" "$dir/empty/order.json" || empty_rc=$?
+  unsafe_rc=0
+  cr_h_stage_inputs "$dir/unsafe/work" "$dir/unsafe/order.json" || unsafe_rc=$?
+  python3 - "$dir" "$list_rc" "$dict_rc" "$empty_rc" "$unsafe_rc" <<'PY'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+list_rc, dict_rc, empty_rc, unsafe_rc = sys.argv[2:]
+problems = []
+if list_rc != "0":
+    problems.append("list rc=%s" % list_rc)
+video = root / "list/work/inputs/talking_head/talking-head.mp4"
+if not video.is_file() or video.read_text(encoding="utf-8") != "video-bytes\n":
+    problems.append("list video missing")
+if (root / "list/work/inputs/talking_head/talking_head.md").exists():
+    problems.append("list video written as text")
+if dict_rc != "0":
+    problems.append("dict rc=%s" % dict_rc)
+topic = root / "dict/work/inputs/topic/topic.md"
+if not topic.is_file() or topic.read_text(encoding="utf-8") != "Three tips for first-time buyers":
+    problems.append("dict topic=%r" % (topic.read_text(encoding="utf-8") if topic.is_file() else None))
+dict_video = root / "dict/work/inputs/talking_head/dict-head.mp4"
+if not dict_video.is_file() or dict_video.read_text(encoding="utf-8") != "video-bytes\n":
+    problems.append("dict video missing")
+if empty_rc != "0":
+    problems.append("empty rc=%s" % empty_rc)
+empty_inputs = root / "empty/work/inputs"
+if empty_inputs.exists() and any(empty_inputs.rglob("*")):
+    problems.append("empty list staged files")
+if unsafe_rc != "1":
+    problems.append("unsafe rc=%s" % unsafe_rc)
+unsafe = (root / "unsafe/work").resolve()
+for path in unsafe.rglob("*"):
+    if not path.is_file():
+        continue
+    rel = path.relative_to(unsafe).as_posix()
+    if rel != "brief.json" and not rel.startswith("inputs/"):
+        problems.append("escaped %s" % rel)
+outside = root / "unsafe/outside"
+nested = root / "unsafe/work/inputs/nested"
+if outside.exists() or nested.exists() or (root / "outside").exists():
+    problems.append("unsafe path was created")
+urls = (root / "curl.urls").read_text(encoding="utf-8") if (root / "curl.urls").is_file() else ""
+if "http://127.0.0.1:9/media/talking-head.mp4?sig=1" not in urls:
+    problems.append("list url not downloaded")
+if "http://127.0.0.1:9/media/dict-head.mp4" not in urls:
+    problems.append("dict url not downloaded")
+if "bad.mp4" in urls or "bad2.mp4" in urls:
+    problems.append("refused url was downloaded")
+print("ok" if not problems else "; ".join(problems))
+PY
+)"
+if [[ "$wi254_detail" == "ok" ]]; then
+  pass "harness stage inputs: list-form video is inputs/talking_head/; dict form still stages"
+else
+  fail "harness stage inputs list form" "$wi254_detail"
+fi
+rm -rf "$wi254"
+
+# WI2.54: a harness exit of 1 must report attempt_failed with a reason.
+# Exit 30 already reported inside the harness, so the worker must not send
+# another attempt_failed. An older harness line in the shared log is not
+# this run's reason.
+wi254w="$(mktemp -d)"
+wi254w_detail="$(
+  python3 - "$REPO_DIR" "$wi254w" <<'PY'
+import json, os, pathlib, subprocess, sys
+repo = pathlib.Path(sys.argv[1])
+root = pathlib.Path(sys.argv[2])
+source = (repo / "bin/cfw-render.sh").read_text()
+functions = source[source.index("sanitize_slug() {"):source.index("\nspawn_pids=()")]
+(root / "state").mkdir()
+(root / "logs").mkdir()
+(root / "scratch").mkdir()
+env = {
+    "PATH": os.environ["PATH"],
+    "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
+    "HOME": str(root),
+    "TEST_ROOT": str(root),
+    "SELF_DIR": str(repo / "bin"),
+    "CFW_RENDER_SCRATCH": str(root / "scratch"),
+    "CFW_RENDER_STATE_DIR": str(root / "state"),
+    "CFW_RENDER_LOG_DIR": str(root / "logs"),
+    "CFW_RENDER_SKILLS_DIR": str(root / "skills"),
+    "CFW_WORKER_ID": "worker-wi254",
+    "CFW_API_BASE": "http://127.0.0.1:9",
+    "CFW_RENDER_WORKER_KEY": "synthetic-key",
+    "CFW_RENDER_COMPUTER_NAME": "Synthetic Mac",
+    "CFW_RENDER_KEEP_OUTPUTS": "0",
+}
+setup = r'''
+set -u
+source "$SELF_DIR/cfw-render-lib.sh"
+JOURNAL="$CFW_RENDER_STATE_DIR/journal.tsv"
+RUNS_DIR="$CFW_RENDER_LOG_DIR/runs"
+mkdir -p "$RUNS_DIR"
+cr_recipe_needs_heygen() { return 1; }
+cr_verify_skills_bundle() { return 0; }
+cr_mcp_call() { return 0; }
+cr_event() { :; }
+cr_keep_output_dir() { echo "$TEST_ROOT/kept/$2"; }
+cr_harness_run() {
+  if [[ "$TEST_LOG_STAGING" == "1" ]]; then
+    cr_log "harness: input staging failed"
+  fi
+  return "$TEST_HARNESS_RC"
+}
+cr_report_step() {
+  python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"attemptId":sys.argv[3],"seq":int(sys.argv[4]),"event":sys.argv[5],"extra":json.loads(sys.argv[6])}))' "$@" >> "$TEST_ROOT/reports.jsonl"
+  printf '%s' '{"ok":true,"directive":"continue"}'
+}
+'''
+script = setup + functions + '\nspawn_director "$TEST_CLAIM"\nexit $?\n'
+
+def claim(order_id):
+    return {
+        "id": order_id,
+        "brandId": "b1",
+        "brandName": "Brand A",
+        "taskOrder": {"brand": {"slug": "brand-a"}},
+        "recipe": "p-reels-pip",
+        "kind": "video",
+        "attempt": {"id": "att-" + order_id},
+        "manifest": {"steps": [{"id": "prepare_footage", "runsOn": "computer"}]},
+    }
+
+def run(order_id, harness_rc, log_staging):
+    reports = root / "reports.jsonl"
+    if reports.exists():
+        reports.unlink()
+    proc = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-c", script],
+        env={**env, "TEST_CLAIM": json.dumps(claim(order_id)),
+             "TEST_HARNESS_RC": harness_rc, "TEST_LOG_STAGING": log_staging},
+        text=True, capture_output=True, timeout=30)
+    rows = []
+    if reports.is_file():
+        rows = [json.loads(line) for line in reports.read_text().splitlines() if line.strip()]
+    return proc, rows
+
+problems = []
+staged, staged_rows = run("order-wi254", "1", "1")
+if staged.returncode != 0:
+    problems.append("stage rc=%s %s" % (staged.returncode, staged.stderr[-400:]))
+if len(staged_rows) != 1:
+    problems.append("stage reports=%s" % staged_rows)
+else:
+    row = staged_rows[0]
+    if row.get("event") != "attempt_failed":
+        problems.append("event=%s" % row.get("event"))
+    if row.get("orderId") != "order-wi254" or row.get("attemptId") != "att-order-wi254":
+        problems.append("identity=%s" % row)
+    if row.get("workerId") != "worker-wi254" or row.get("seq") != 1:
+        problems.append("seq=%s worker=%s" % (row.get("seq"), row.get("workerId")))
+    if (row.get("extra") or {}).get("message") != "harness-failed: input staging failed":
+        problems.append("message=%r" % ((row.get("extra") or {}).get("message")))
+order_dir = root / "scratch/brand-a/order-wi254"
+if not order_dir.is_dir():
+    problems.append("order dir removed")
+journal = (root / "state/journal.tsv").read_text(encoding="utf-8") if (root / "state/journal.tsv").is_file() else ""
+if "order-wi254" not in journal or "harness-failed" not in journal:
+    problems.append("journal=%r" % journal)
+stale, stale_rows = run("order-wi254b", "1", "0")
+if stale.returncode != 0:
+    problems.append("stale rc=%s %s" % (stale.returncode, stale.stderr[-400:]))
+if len(stale_rows) != 1 or (stale_rows[0].get("extra") or {}).get("message") != "harness-failed":
+    problems.append("stale message=%s" % stale_rows)
+elif "input staging failed" in (stale_rows[0].get("extra") or {}).get("message", ""):
+    problems.append("stale reused an older harness line")
+other, other_rows = run("order-wi254c", "30", "1")
+if other.returncode != 0:
+    problems.append("rc30=%s %s" % (other.returncode, other.stderr[-400:]))
+if other_rows:
+    problems.append("rc30 reported %s" % other_rows)
+print("ok" if not problems else "; ".join(problems))
+PY
+)"
+if [[ "$wi254w_detail" == "ok" ]]; then
+  pass "worker: harness exit 1 reports attempt_failed with the harness reason"
+else
+  fail "worker harness exit 1 attempt_failed" "$wi254w_detail"
+fi
+rm -rf "$wi254w"
+
+echo "=== Case 41: WI2.61 — quiet reel audio is sealed to -14 LUFS before the gate ==="
+wi261_detail="$(python3 - "$REPO_DIR" <<'PY'
+import re, subprocess, sys, tempfile
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+checks = (repo / "bin" / "cfw-render-checks.py").read_text()
+harness = (repo / "bin" / "cfw-render-harness.sh").read_text()
+problems = []
+if "-15.5 <= float(values[-1]) <= -12.5" not in checks or "Loudness must be minus 14 LUFS, within 1.5 LUFS." not in checks:
+    problems.append("gate target changed")
+if 'normalize_loudness(self.artifact(), self.recipe)' not in checks:
+    problems.append("evidence does not seal before hashing")
+evidence_body = checks.split("def make_evidence", 1)[1].split("def review", 1)[0]
+if "normalize_loudness" not in evidence_body or evidence_body.find("normalize_loudness") > evidence_body.find("qa/review.json"):
+    problems.append("seal is after evidence is written")
+if 'normalize_loudness(local(work, "saves/final_video.mp4"), recipe)' not in checks or "sealed_evidence" not in checks:
+    problems.append("spotlight run can rewrite hashed evidence")
+if 'FINAL_LOUDNESS_RECIPES = ("p-reels-spotlight", "p-reels-pip")' not in checks:
+    problems.append("pip is not sealed with spotlight")
+if "loudnorm=I=-14:TP=-1.5:LRA=11" not in checks or ":linear=true" not in checks or '"-c:v", "copy"' not in checks:
+    problems.append("two-pass copy seal is missing")
+if 'cr_h_seal_final_loudness "$step_id" "$workdir"' not in harness or "p-reels-spotlight|p-reels-pip" not in harness:
+    problems.append("harness does not seal both recipes before its checks")
+seal_fn = harness.split("cr_h_seal_final_loudness()", 1)[1].split("\ncr_h_run_checks()", 1)[0]
+loudnorm_at = seal_fn.find("loudnorm")
+if loudnorm_at < 0 or "|| return 0" in seal_fn[loudnorm_at:loudnorm_at + 500] or "final loudness normalisation failed" not in seal_fn:
+    problems.append("a real loudnorm failure is swallowed")
+
+def last_lufs(path):
+    probe = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-i", str(path), "-af", "ebur128", "-f", "null", "-"],
+        capture_output=True, text=True)
+    values = re.findall(r"I:\s*(-?[0-9.]+) LUFS", probe.stderr)
+    if probe.returncode != 0 or not values:
+        return None
+    return float(values[-1])
+
+def one_frame(path):
+    frame = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+        capture_output=True)
+    return frame.returncode, frame.stdout
+
+with tempfile.TemporaryDirectory() as tmp:
+    src = Path(tmp) / "quiet.mp4"
+    gen = subprocess.run([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", "color=c=red:s=320x240:r=30:d=8",
+        "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:duration=8",
+        "-filter:a", "volume=-21dB",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+        "-shortest", str(src),
+    ], capture_output=True, text=True)
+    if gen.returncode != 0 or not src.is_file():
+        problems.append("could not generate a quiet sine")
+    else:
+        before_rc, before = one_frame(src)
+        quiet = last_lufs(src)
+        if before_rc != 0 or not before:
+            problems.append("could not read the input frame")
+        if quiet is None or quiet > -20:
+            problems.append("input measured %s LUFS, want about -24" % quiet)
+        seal = subprocess.run(
+            [sys.executable, str(repo / "bin" / "cfw-render-checks.py"), "loudnorm", str(src)],
+            capture_output=True, text=True)
+        if seal.returncode != 0:
+            problems.append("loudnorm failed: %s" % ((seal.stdout or seal.stderr)[-300:]))
+        else:
+            after_rc, after = one_frame(src)
+            if after_rc != 0 or after != before:
+                problems.append("video frame changed; stream copy did not hold")
+            measured = last_lufs(src)
+            if measured is None or not (-15.5 <= measured <= -12.5):
+                problems.append("sealed loudness %s is outside -14 +/- 1.5" % measured)
+            if list(Path(tmp).glob("*.cfw-loudnorm.mp4")):
+                problems.append("loudnorm left a temporary file")
+
+print("ok" if not problems else "; ".join(problems))
+raise SystemExit(0 if not problems else 1)
+PY
+)"
+wi261_rc=$?
+if [[ "$wi261_rc" == "0" && "$wi261_detail" == "ok" ]]; then
+  pass "WI2.61: quiet sine seals inside -14 LUFS +/- 1.5 and the gate target is unchanged"
+else
+  fail "WI2.61 final loudness seal" "$wi261_detail"
+fi
+
+echo "=== Case 42: WI2.61 — spotlight run sees sealed evidence and does not re-encode ==="
+# Python falls back to /tmp when TMPDIR is missing. The sandbox refuses that.
+# Put this case back on the directory the suite started with.
+if [[ -n "${SUITE_TMPDIR}" && -d "${SUITE_TMPDIR}" && -w "${SUITE_TMPDIR}" ]]; then
+  export TMPDIR="${SUITE_TMPDIR}" TMP="${SUITE_TMPDIR}" TEMP="${SUITE_TMPDIR}"
+fi
+wi261b_detail="$(python3 - "$REPO_DIR" <<'PY'
+import hashlib, importlib.util, json, os, shutil, subprocess, sys, tempfile
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+checks_py = repo / "bin" / "cfw-render-checks.py"
+recipe_dir = repo / "skills" / "p-reels-spotlight"
+problems = []
+
+spec = importlib.util.spec_from_file_location("cfw_render_checks_wi261", checks_py)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+if mod.recipe_loudness_target(recipe_dir) != (-14.0, -1.5, 11.0):
+    problems.append("spotlight default target %s" % (mod.recipe_loudness_target(recipe_dir),))
+pip_target = mod.recipe_loudness_target(repo / "skills" / "p-reels-pip")
+if pip_target[0] != -14.0 or pip_target[1] != -1.5:
+    problems.append("pip target %s" % (pip_target,))
+
+def sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+def last_lufs(path):
+    probe = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-i", str(path), "-af", "ebur128", "-f", "null", "-"],
+        capture_output=True, text=True)
+    import re
+    values = re.findall(r"I:\s*(-?[0-9.]+) LUFS", probe.stderr)
+    if probe.returncode != 0 or not values:
+        return None
+    return float(values[-1])
+
+suite_tmp = os.environ.get("TMPDIR") or ""
+if not os.path.isdir(suite_tmp) or not os.access(suite_tmp, os.W_OK):
+    problems.append("suite TMPDIR is not writable")
+    print("; ".join(problems))
+    raise SystemExit(1)
+os.environ["TMPDIR"] = os.environ["TEMP"] = os.environ["TMP"] = suite_tmp
+tempfile.tempdir = suite_tmp
+with tempfile.TemporaryDirectory(dir=suite_tmp) as tmp:
+    root = Path(tmp)
+    custom = root / "custom-recipe"
+    custom.mkdir()
+    (custom / "acceptance.json").write_text(json.dumps({
+        "checks": [
+            {"id": "qa_gate", "type": "qa_gate", "target": -14, "tp": -1.5, "lra": 11},
+        ],
+        "steps": {"voicebed": {"checks": [
+            {"id": "bed_loudness", "type": "loudness", "target": -23, "tol": 1.5},
+        ]}},
+    }))
+    if mod.recipe_loudness_target(custom) != (-14.0, -1.5, 11.0):
+        problems.append("qa_gate target lost %s" % (mod.recipe_loudness_target(custom),))
+    (custom / "acceptance.json").write_text(json.dumps({
+        "checks": [{"id": "qa_gate", "type": "qa_gate", "target": -18, "tp": -2, "lra": 7}],
+    }))
+    if mod.recipe_loudness_target(custom) != (-18.0, -2.0, 7.0):
+        problems.append("declared target %s" % (mod.recipe_loudness_target(custom),))
+
+    src = root / "quiet.mp4"
+    gen = subprocess.run([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", "color=c=red:s=1080x1920:r=30:d=8",
+        "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:duration=8",
+        "-filter:a", "volume=-21dB",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30",
+        "-c:a", "aac", "-b:a", "192k", "-shortest", str(src),
+    ], capture_output=True, text=True)
+    if gen.returncode != 0 or not src.is_file():
+        problems.append("could not generate a quiet reel")
+    else:
+        work = root / "work"
+        (work / "saves").mkdir(parents=True)
+        (work / "prior").mkdir()
+        (work / "inputs" / "broll").mkdir(parents=True)
+        shutil.copy(src, work / "saves" / "final_video.mp4")
+        shutil.copy(src, work / "prior" / "assembled_video.mp4")
+        cover = subprocess.run([
+            "ffmpeg", "-y", "-i", str(src), "-frames:v", "1", str(work / "saves" / "cover.png"),
+        ], capture_output=True, text=True)
+        if cover.returncode != 0:
+            problems.append("could not write cover.png")
+        (work / "prior" / "edit_plan.json").write_text(json.dumps({"takeovers": [], "cover_at": 1.0}))
+        order = root / "order.json"
+        order.write_text(json.dumps({
+            "manifest": {
+                "recipe": "p-reels-spotlight",
+                "steps": [{
+                    "id": "final_checks",
+                    "saves": [{"id": "final_video", "kind": "video"}],
+                    "checks": [{"id": "qa_gate"}, {"id": "grade_is_subtle"}],
+                }],
+            },
+        }))
+        evidence = subprocess.run(
+            [sys.executable, str(checks_py), "evidence", str(recipe_dir), str(work), "final_checks"],
+            capture_output=True, text=True, timeout=180)
+        if evidence.returncode != 0:
+            problems.append("evidence failed: %s" % ((evidence.stdout or evidence.stderr)[-400:]))
+        else:
+            review = json.loads((work / "qa" / "review.json").read_text())
+            for row in review["checks"]:
+                row["status"] = "PASS"
+                row["reviewer"] = "wi261-test"
+                row["observations"] = "Red frame reviewed after the loudness seal."
+            (work / "qa" / "review.json").write_text(json.dumps(review, indent=2) + "\n")
+            video = work / "saves" / "final_video.mp4"
+            sealed = sha(video)
+            measured = last_lufs(video)
+            if measured is None or not (-15.5 <= measured <= -12.5):
+                problems.append("evidence seal loudness %s" % measured)
+            again = subprocess.run(
+                [sys.executable, str(checks_py), "loudnorm", str(video), str(recipe_dir)],
+                capture_output=True, text=True, timeout=120)
+            if again.returncode != 0:
+                problems.append("retry loudnorm failed: %s" % ((again.stdout or again.stderr)[-300:]))
+            elif sha(video) != sealed:
+                problems.append("retry re-encoded final_video")
+
+            def run_mode():
+                proc = subprocess.run(
+                    [sys.executable, str(checks_py), "run", str(order), str(recipe_dir), str(work), "final_checks"],
+                    capture_output=True, text=True, timeout=180)
+                try:
+                    rows = json.loads(proc.stdout)
+                except json.JSONDecodeError:
+                    rows = None
+                return proc, rows
+
+            first, rows = run_mode()
+            if rows is None:
+                problems.append("run output not json: %s" % ((first.stdout or first.stderr)[-400:]))
+            else:
+                stale = [r for r in rows if "stale" in str(r.get("detail") or "").lower()]
+                if stale:
+                    problems.append("stale checks: %s" % stale)
+                by_id = {r["id"]: r for r in rows}
+                for cid in ("qa_gate", "grade_is_subtle"):
+                    if not by_id.get(cid, {}).get("passed"):
+                        problems.append("%s failed: %s" % (cid, by_id.get(cid)))
+                if sha(video) != sealed:
+                    problems.append("run re-encoded final_video")
+                second, rows2 = run_mode()
+                if rows2 is None:
+                    problems.append("retry run output not json: %s" % ((second.stdout or second.stderr)[-300:]))
+                else:
+                    stale2 = [r for r in rows2 if "stale" in str(r.get("detail") or "").lower()]
+                    if stale2:
+                        problems.append("retry stale: %s" % stale2)
+                    if sha(video) != sealed:
+                        problems.append("retry run re-encoded final_video")
+                if last_lufs(video) is None or not (-15.5 <= last_lufs(video) <= -12.5):
+                    problems.append("run loudness %s" % last_lufs(video))
+            if list(work.rglob("*.cfw-loudnorm.mp4")) or list(work.rglob("*.cfw-loudnorm-prev.mp4")):
+                problems.append("loudnorm left a temporary file")
+
+    # Non-local harness: a real media failure is a failed check plus a log line.
+    # A placeholder save is skipped. Local mode does not seal here.
+    wrap = root / "wrap"
+    wrap.mkdir()
+    real = sys.executable
+    (wrap / "python3").write_text(
+        "#!/bin/sh\nfor a in \"$@\"; do\n"
+        "  if [ \"$a\" = \"loudnorm\" ]; then echo \"loudnorm encoder failed\"; exit 1; fi\ndone\n"
+        "exec \"%s\" \"$@\"\n" % real)
+    os.chmod(wrap / "python3", 0o755)
+    order_dir = root / "order-dir"
+    order_dir.mkdir()
+    (order_dir / "order.json").write_text(json.dumps({"manifest": {"recipe": "p-reels-spotlight"}}))
+    fail_wd = root / "fail-wd"
+    (fail_wd / "saves").mkdir(parents=True)
+    shutil.copy(src, fail_wd / "saves" / "final_video.mp4")
+    ph_wd = root / "ph-wd"
+    (ph_wd / "saves").mkdir(parents=True)
+    (ph_wd / "saves" / "final_video.mp4").write_text("placeholder\n")
+    log = root / "harness.log"
+    script = r'''
+source "$REPO/bin/cfw-render-harness.sh"
+cr_log() { printf '%s\n' "$*" >> "$LOG"; }
+export PATH="$WRAP:$PATH"
+CR_H_ORDER_DIR="$ORDER_DIR"
+CR_H_RECIPE_DIR="$RECIPE"
+CR_H_LOCAL=0
+: > "$LOG"
+seal_rc=0
+cr_h_seal_final_loudness final_checks "$FAIL_WD" || seal_rc=$?
+seal_log="$(cat "$LOG")"
+: > "$LOG"
+place_rc=0
+cr_h_seal_final_loudness final_checks "$PH_WD" || place_rc=$?
+place_log="$(cat "$LOG")"
+CR_H_LOCAL=1
+local_rc=0
+cr_h_seal_final_loudness final_checks "$FAIL_WD" || local_rc=$?
+CR_H_LOCAL=0
+: > "$LOG"
+check_rc=0
+check_out="$(cr_h_run_checks final_checks "$FAIL_WD" qa_gate)" || check_rc=$?
+check_log="$(cat "$LOG")"
+printf 'SEAL=%s\nPLACE=%s\nLOCAL=%s\nCHECK=%s\n' "$seal_rc" "$place_rc" "$local_rc" "$check_rc"
+printf 'SEAL_LOG=%s\n' "$seal_log"
+printf 'PLACE_LOG=%s\n' "$place_log"
+printf 'CHECK_OUT=%s\n' "$check_out"
+printf 'CHECK_LOG=%s\n' "$check_log"
+'''
+    env = os.environ.copy()
+    env.update({
+        "REPO": str(repo),
+        "WRAP": str(wrap),
+        "ORDER_DIR": str(order_dir),
+        "RECIPE": str(recipe_dir),
+        "FAIL_WD": str(fail_wd),
+        "PH_WD": str(ph_wd),
+        "LOG": str(log),
+        "PATH": str(wrap) + os.pathsep + env.get("PATH", ""),
+    })
+    harness = subprocess.run(["bash", "--noprofile", "--norc", "-c", script], capture_output=True, text=True, env=env, timeout=60)
+    text = harness.stdout + "\n" + harness.stderr
+    if harness.returncode != 0 and "SEAL=" not in harness.stdout:
+        problems.append("harness probe failed: %s" % text[-500:])
+    else:
+        fields = {}
+        for line in harness.stdout.splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                fields[key] = value
+        if fields.get("SEAL") != "1" or "final loudness normalisation failed" not in fields.get("SEAL_LOG", ""):
+            problems.append("real seal failure hidden: %s" % fields)
+        if "loudnorm encoder failed" not in fields.get("SEAL_LOG", ""):
+            problems.append("seal log dropped the tool error: %s" % fields.get("SEAL_LOG"))
+        if fields.get("PLACE") != "0" or "normalisation failed" in fields.get("PLACE_LOG", ""):
+            problems.append("placeholder was not skipped: %s" % fields)
+        if fields.get("LOCAL") != "0":
+            problems.append("local harness sealed: %s" % fields.get("LOCAL"))
+        if fields.get("CHECK") != "1" or "Final loudness normalisation failed." not in fields.get("CHECK_OUT", ""):
+            problems.append("run_checks hid the seal failure: %s" % fields)
+
+print("ok" if not problems else "; ".join(problems))
+raise SystemExit(0 if not problems else 1)
+PY
+)"
+wi261b_rc=$?
+if [[ "$wi261b_rc" == "0" && "$wi261b_detail" == "ok" ]]; then
+  pass "WI2.61: spotlight run keeps fresh review evidence and a retry does not re-encode"
+else
+  fail "WI2.61 spotlight run after loudness seal" "$wi261b_detail"
+fi
+
+echo "=== Case 43: WI2.62 — harness seals the quiet prior before the final_checks step order ==="
+# Python falls back to /tmp when TMPDIR is missing. The sandbox refuses that.
+if [[ -n "${SUITE_TMPDIR}" && -d "${SUITE_TMPDIR}" && -w "${SUITE_TMPDIR}" ]]; then
+  export TMPDIR="${SUITE_TMPDIR}" TMP="${SUITE_TMPDIR}" TEMP="${SUITE_TMPDIR}"
+fi
+wi262_detail="$(python3 - "$REPO_DIR" <<'PY'
+import json, os, re, shutil, subprocess, sys, tempfile
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+checks_py = repo / "bin" / "cfw-render-checks.py"
+harness = (repo / "bin" / "cfw-render-harness.sh").read_text()
+checks_src = checks_py.read_text()
+problems = []
+
+# Gate target unchanged; WI2.61 guarantees kept.
+if "-15.5 <= float(values[-1]) <= -12.5" not in checks_src:
+    problems.append("gate target changed")
+if 'normalize_loudness(self.artifact(), self.recipe)' not in checks_src:
+    problems.append("evidence seal missing")
+if "final loudness normalisation failed" not in harness:
+    problems.append("harness no longer reports a real loudnorm failure")
+
+# The prior seal runs in the step loop, before the prompt and the agent.
+# The evidence block stays on the local spotlight call. Step docs stay pinned.
+call = harness.find('cr_h_seal_prior_loudness "$step_id" "$workdir"')
+built = harness.find('cr_h_build_prompt "$step_id" "$workdir" "$order_file"', call if call >= 0 else 0)
+engine = harness.find('cr_engine_run "$engine"', built if built >= 0 else 0)
+if call < 0 or built < 0 or engine < 0 or not (call < built < engine):
+    problems.append("prior seal is not before the final_checks agent")
+prior_fn = harness.split("cr_h_seal_prior_loudness()", 1)[1].split("\ncr_h_seal_final_loudness()", 1)[0]
+if "prior/assembled_video.mp4" not in prior_fn or "p-reels-spotlight|p-reels-pip" not in prior_fn:
+    problems.append("prior seal does not cover both reel recipes' OUT_RAW")
+if "CR_H_LOCAL" in prior_fn:
+    problems.append("prior seal skips local or non-local")
+invoke = prior_fn.find('cfw-render-checks.py" loudnorm')
+window = prior_fn[invoke:invoke + 500] if invoke >= 0 else ""
+if invoke < 0 or "|| return 0" in window or "final loudness normalisation failed" not in window:
+    problems.append("a real prior loudnorm failure is swallowed")
+instr = checks_src.split("def instructions", 1)[1].split("\ndef run", 1)[0]
+evidence_at = instr.find("Required local QA evidence")
+local_gate = instr.find('recipe.name != "p-reels-spotlight" or not local')
+if evidence_at < 0 or local_gate < 0 or local_gate > evidence_at:
+    problems.append("Required local QA evidence is not limited to local spotlight prompts")
+if "loudnorm saves/final_video.mp4" in instr:
+    problems.append("instructions still tell the agent to loudnorm final_video")
+prompt_fn = harness.split("cr_h_build_prompt()", 1)[1].split("\ncr_h_write_brief()", 1)[0]
+instr_call = prompt_fn.find('instructions "$CR_H_RECIPE_DIR"')
+local_if = prompt_fn.rfind("CR_H_LOCAL", 0, instr_call if instr_call >= 0 else 0)
+if instr_call < 0 or local_if < 0 or "local >>" not in prompt_fn[instr_call:instr_call + 80]:
+    problems.append("evidence instructions are not passed only for CR_H_LOCAL")
+
+def last_lufs(path):
+    probe = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-i", str(path), "-af", "ebur128", "-f", "null", "-"],
+        capture_output=True, text=True)
+    values = re.findall(r"I:\s*(-?[0-9.]+) LUFS", probe.stderr)
+    if probe.returncode != 0 or not values:
+        return None
+    return float(values[-1])
+
+suite_tmp = os.environ.get("TMPDIR") or ""
+if not os.path.isdir(suite_tmp) or not os.access(suite_tmp, os.W_OK):
+    problems.append("suite TMPDIR is not writable")
+    print("; ".join(problems))
+    raise SystemExit(1)
+os.environ["TMPDIR"] = os.environ["TEMP"] = os.environ["TMP"] = suite_tmp
+tempfile.tempdir = suite_tmp
+
+with tempfile.TemporaryDirectory(dir=suite_tmp) as tmp:
+    root = Path(tmp)
+    # Quiet reel near -16 LUFS (bed convention; outside the -14 +/- 1.5 gate).
+    src = root / "quiet-16.mp4"
+    gen = subprocess.run([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", "color=c=red:s=1080x1920:r=30:d=8",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=8",
+        "-af", "loudnorm=I=-16.5:TP=-1.5:LRA=11",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30",
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+        "-shortest", str(src),
+    ], capture_output=True, text=True)
+    if gen.returncode != 0 or not src.is_file():
+        problems.append("could not generate quiet -16 reel: %s" % (gen.stderr or gen.stdout)[-300:])
+        print("; ".join(problems))
+        raise SystemExit(1)
+    quiet = last_lufs(src)
+    # Must sit near -16 and outside the gate window (-14 +/- 1.5 => [-15.5, -12.5]).
+    if quiet is None or quiet > -15.5 or quiet < -18.0:
+        problems.append("input measured %s LUFS, want about -16 and outside the gate" % quiet)
+
+    def bash_fences(prompt):
+        return re.findall(r"```bash\n(.*?)```", prompt, re.S)
+
+    def one_block(prompt, pred, label):
+        hits = [b for b in bash_fences(prompt) if pred(b)]
+        if len(hits) != 1:
+            problems.append("%s: expected one step block, found %d" % (label, len(hits)))
+            return None
+        return hits[0]
+
+    def run_bash(script, env, timeout):
+        return subprocess.run(
+            ["bash", "--noprofile", "--norc", "-c", script],
+            capture_output=True, text=True, env=env, timeout=timeout)
+
+    skills = str(repo / "skills")
+    for slug in ("p-reels-pip", "p-reels-spotlight"):
+        recipe_dir = repo / "skills" / slug
+        manifest = json.loads((recipe_dir / "manifest.json").read_text())
+        if manifest.get("recipe") != slug:
+            problems.append("%s manifest recipe mismatch" % slug)
+            continue
+        for local_flag in ("0", "1"):
+            label = "%s local=%s" % (slug, local_flag)
+            wd = root / ("%s-%s" % (slug, local_flag))
+            (wd / "prior").mkdir(parents=True)
+            (wd / "inputs").mkdir()
+            shutil.copy(src, wd / "prior" / "assembled_video.mp4")
+            if slug == "p-reels-pip":
+                (wd / "prior" / "beat_list.json").write_text(json.dumps({"cover_at": 1.0, "beats": []}))
+            else:
+                (wd / "prior" / "edit_plan.json").write_text(json.dumps({"cover_at": 1.0, "takeovers": []}))
+            (wd / "brief.json").write_text(json.dumps({
+                "recipe": slug,
+                "brand": {"slug": "test-brand"},
+                "targets": ["instagram"],
+            }))
+            order_dir = root / ("order-%s-%s" % (slug, local_flag))
+            order_dir.mkdir()
+            order = order_dir / "order.json"
+            order.write_text(json.dumps({"manifest": manifest}))
+            log = root / ("h-%s-%s.log" % (slug, local_flag))
+            script = r'''
+source "$REPO/bin/cfw-render-harness.sh"
+cr_log() { printf '%s\n' "$*" >> "$LOG"; }
+CR_H_ORDER_DIR="$ORDER_DIR"
+CR_H_RECIPE_DIR="$RECIPE"
+CR_H_LOCAL="$LOCAL"
+: > "$LOG"
+seal_rc=0
+cr_h_seal_prior_loudness final_checks "$WD" || seal_rc=$?
+prompt_rc=0
+cr_h_build_prompt final_checks "$WD" "$ORDER" || prompt_rc=$?
+printf 'SEAL=%s\nPROMPT=%s\n' "$seal_rc" "$prompt_rc"
+'''
+            env = os.environ.copy()
+            env.update({
+                "REPO": str(repo),
+                "ORDER_DIR": str(order_dir),
+                "RECIPE": str(recipe_dir),
+                "WD": str(wd),
+                "ORDER": str(order),
+                "LOG": str(log),
+                "LOCAL": local_flag,
+                "CFW_RENDER_SKILLS_DIR": skills,
+            })
+            h = run_bash(script, env, 180)
+            if h.returncode != 0 or "SEAL=0" not in h.stdout or "PROMPT=0" not in h.stdout:
+                problems.append("%s harness seal/prompt failed: %s" % (label, (h.stdout + h.stderr)[-500:]))
+                continue
+            sealed = last_lufs(wd / "prior" / "assembled_video.mp4")
+            if sealed is None or not (-15.5 <= sealed <= -12.5):
+                problems.append("%s prior sealed loudness %s" % (label, sealed))
+                continue
+            prompt = (wd / "prompt.md").read_text() if (wd / "prompt.md").is_file() else ""
+            if "OUT_RAW=prior/assembled_video.mp4" not in prompt or "eval-run.sh" not in prompt or "concat-cover.txt" not in prompt:
+                problems.append("%s prompt is not the real final_checks step" % label)
+                continue
+            evidence = "Required local QA evidence" in prompt
+            if local_flag == "1" and slug == "p-reels-spotlight":
+                if not evidence:
+                    problems.append("%s local spotlight prompt missing QA evidence" % label)
+            elif evidence:
+                problems.append("%s prompt includes local QA evidence" % label)
+            setup = one_block(prompt, lambda b: "OUT_RAW=prior/assembled_video.mp4" in b and "concat-cover.txt" not in b, label + " setup")
+            cover = one_block(prompt, lambda b: "concat-cover.txt" in b and "saves/final_video.mp4" in b, label + " cover")
+            gate = one_block(prompt, lambda b: "eval-run.sh" in b and "saves/final_video.mp4" in b, label + " eval")
+            if not setup or not cover or not gate:
+                continue
+            step = wd / "step-order.sh"
+            step.write_text("#!/bin/bash\nset -eu\n" + setup + "\n" + cover + "\nset +e\n" + gate + "\nexit 0\n")
+            ran = subprocess.run(
+                ["bash", "--noprofile", "--norc", str(step)],
+                cwd=str(wd), capture_output=True, text=True, env=env, timeout=240)
+            report = wd / "saves" / "eval" / "qa" / "qa-report.txt"
+            if not (wd / "saves" / "final_video.mp4").is_file() or not report.is_file():
+                problems.append("%s step order did not score: %s" % (label, (ran.stdout + ran.stderr)[-500:]))
+                continue
+            loud_lines = [ln for ln in report.read_text().splitlines() if "loudness" in ln.lower()]
+            first = loud_lines[0] if loud_lines else ""
+            if "[PASS]" not in first or "[FAIL]" in first:
+                problems.append("%s first loudness line is not PASS (prior %s): %s" % (label, sealed, first or report.read_text()[-400:]))
+
+    # A real loudnorm failure on the prior is reported. A placeholder is skipped.
+    wrap = root / "wrap"
+    wrap.mkdir()
+    (wrap / "python3").write_text(
+        "#!/bin/sh\nfor a in \"$@\"; do\n"
+        "  if [ \"$a\" = \"loudnorm\" ]; then echo \"loudnorm encoder failed\"; exit 1; fi\ndone\n"
+        "exec \"%s\" \"$@\"\n" % sys.executable)
+    os.chmod(wrap / "python3", 0o755)
+    fail_wd = root / "fail-prior"
+    (fail_wd / "prior").mkdir(parents=True)
+    shutil.copy(src, fail_wd / "prior" / "assembled_video.mp4")
+    ph_wd = root / "ph-prior"
+    (ph_wd / "prior").mkdir(parents=True)
+    (ph_wd / "prior" / "assembled_video.mp4").write_text("placeholder\n")
+    probe_order = root / "probe-order"
+    probe_order.mkdir()
+    (probe_order / "order.json").write_text(json.dumps({"manifest": {"recipe": "p-reels-pip"}}))
+    probe_log = root / "probe.log"
+    probe = r'''
+source "$REPO/bin/cfw-render-harness.sh"
+cr_log() { printf '%s\n' "$*" >> "$LOG"; }
+export PATH="$WRAP:$PATH"
+CR_H_ORDER_DIR="$ORDER_DIR"
+CR_H_RECIPE_DIR="$RECIPE"
+CR_H_LOCAL=0
+: > "$LOG"
+fail_rc=0
+cr_h_seal_prior_loudness final_checks "$FAIL_WD" || fail_rc=$?
+fail_log="$(cat "$LOG")"
+: > "$LOG"
+place_rc=0
+cr_h_seal_prior_loudness final_checks "$PH_WD" || place_rc=$?
+place_log="$(cat "$LOG")"
+printf 'FAIL=%s\nPLACE=%s\n' "$fail_rc" "$place_rc"
+printf 'FAIL_LOG=%s\n' "$fail_log"
+printf 'PLACE_LOG=%s\n' "$place_log"
+'''
+    probe_env = os.environ.copy()
+    probe_env.update({
+        "REPO": str(repo),
+        "WRAP": str(wrap),
+        "ORDER_DIR": str(probe_order),
+        "RECIPE": str(repo / "skills" / "p-reels-pip"),
+        "FAIL_WD": str(fail_wd),
+        "PH_WD": str(ph_wd),
+        "LOG": str(probe_log),
+        "PATH": str(wrap) + os.pathsep + probe_env.get("PATH", ""),
+    })
+    probed = run_bash(probe, probe_env, 60)
+    fields = {}
+    for line in probed.stdout.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            fields[key] = value
+    if fields.get("FAIL") != "1" or "final loudness normalisation failed" not in fields.get("FAIL_LOG", ""):
+        problems.append("prior seal hid a real failure: %s" % (fields or (probed.stdout + probed.stderr)[-400:]))
+    if "loudnorm encoder failed" not in fields.get("FAIL_LOG", ""):
+        problems.append("prior seal log dropped the tool error: %s" % fields.get("FAIL_LOG"))
+    if fields.get("PLACE") != "0" or "normalisation failed" in fields.get("PLACE_LOG", ""):
+        problems.append("placeholder prior was not skipped: %s" % fields)
+
+print("ok" if not problems else "; ".join(problems))
+raise SystemExit(0 if not problems else 1)
+PY
+)"
+wi262_rc=$?
+if [[ "$wi262_rc" == "0" && "$wi262_detail" == "ok" ]]; then
+  pass "WI2.62: harness seals the quiet prior so the step-doc concat gate loudness is PASS"
+else
+  fail "WI2.62 pre-score loudness seal" "$wi262_detail"
+fi
+
+echo "=== Case 44: WI2.63 — reel complete uploads final_video then cover, never step videos ==="
+# Smoke 20b reached Reviews with outputUrl = voice_track.mp4 because the harness
+# listed every save in step order and report.sh sets outputUrl from urls[0].
+# Run the real harness, selector and complete path for both reel recipes.
+# Fixture bytes make a renamed intermediate obvious. Step progress uploads are
+# not the Reviews list; only the complete upload log is.
+wi263_delivery() {
+  local slug="$1" root recipe h_rc=0 complete_rc=0 captions="" f role
+  local -a files=()
+  root="$(mktemp -d)"
+  recipe="$REPO_DIR/skills/$slug"
+  mkdir -p "$root/fixtures" "$root/bin" "$root/state" "$root/logs"
+  printf 'voice-track-fixture\n' > "$root/fixtures/voice_track.mp4"
+  printf 'assembled-fixture\n' > "$root/fixtures/assembled_video.mp4"
+  printf 'scenes-fixture\n' > "$root/fixtures/rendered_scenes.mp4"
+  printf 'background-fixture\n' > "$root/fixtures/background.mp4"
+  printf 'final-video-fixture\n' > "$root/fixtures/final_video.mp4"
+  printf 'cover-fixture\n' > "$root/fixtures/cover.png"
+  python3 - "$root/engine.sh" <<'PY'
+import pathlib, sys
+pathlib.Path(sys.argv[1]).write_text("""#!/usr/bin/env bash
+set -eu
+cat >/dev/null
+mkdir -p saves
+for sv in ${CFW_STEP_SAVES:-}; do
+  sid="${sv%%:*}"
+  ext="${sv##*:}"
+  dest="saves/${sid}.${ext}"
+  src="${WI263_FIXTURES}/${sid}.${ext}"
+  if [[ -f "$src" ]]; then
+    cp "$src" "$dest"
+  elif [[ "$sid" == captions ]]; then
+    printf '%s\\n' '{"instagram":"Reel caption","default":"Reel caption"}' > "$dest"
+  else
+    printf 'side %s\\n' "$sid" > "$dest"
+  fi
+done
+""")
+PY
+  chmod +x "$root/engine.sh"
+  python3 - "$root/order.json" "$recipe/manifest.json" "$slug" <<'PY'
+import json, sys
+dest, man_path, slug = sys.argv[1:]
+man = json.load(open(man_path))
+json.dump({
+    "id": "order-wi263-" + slug,
+    "attempt": {"id": "att-wi263"},
+    "recipe": slug,
+    "kind": "video",
+    "taskOrder": {},
+    "inputs": {},
+    "manifest": man,
+}, open(dest, "w"))
+PY
+  (
+    export CFW_RENDER_LOG_DIR="$root/logs"
+    export CFW_RENDER_STATE_DIR="$root/state"
+    export CFW_RENDER_ENGINE=codex
+    export CFW_RENDER_ENGINE_CMD="$root/engine.sh"
+    export WI263_FIXTURES="$root/fixtures"
+    export CFW_WORKER_ID="w-wi263"
+    export CFW_ORDER_ID="order-wi263-$slug"
+    export CFW_API_BASE="http://127.0.0.1:9"
+    export CFW_RENDER_WORKER_KEY="cfw_render_wi263testkey0000"
+    export CFW_RENDER_HEARTBEAT_SEC=30
+    export CFW_RENDER_STEP_TIMEOUT_SEC=60
+    unset CFW_RENDER_SKILLS_DIR
+    unset CFW_RENDER_LOCAL_CHECKPOINTS
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-lib.sh"
+    source "$REPO_DIR/bin/cfw-render-engine.sh"
+    source "$REPO_DIR/bin/cfw-render-harness.sh"
+    cr_harness_heartbeat_start() { :; }
+    cr_harness_heartbeat_stop() { :; }
+    cr_h_run_with_timeout() { shift; "$@"; }
+    cr_report_step() { printf '%s' '{"ok":true,"directive":"continue"}'; }
+    cr_h_upload_with_retry() { printf 'https://media.cfw.social/step-%s' "$(basename "$1")"; }
+    cr_engine_limit_detect() { return 1; }
+    cr_harness_run "$root/order.json" "$root" "$recipe" >"$root/harness.out" 2>"$root/harness.err"
+  )
+  h_rc=$?
+  if [[ "$h_rc" != "0" ]]; then
+    python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); t=p.read_text(errors="replace") if p.is_file() else ""; print(t[-500:].replace("\n"," | "))' "$root/harness.err" > "$root/err-tail.txt"
+    python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); t=p.read_text(errors="replace") if p.is_file() else ""; print(t[:300].replace("\n"," | "))' "$root/harness.out" > "$root/out-head.txt"
+    printf 'harness rc %s out=%s err=%s' "$h_rc" "$(cat "$root/out-head.txt")" "$(cat "$root/err-tail.txt")"
+    rm -rf "$root"
+    return 0
+  fi
+  sel="$(
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-lib.sh"
+    cr_select_deliverables "$root" "$(cat "$root/harness.out")"
+  )"
+  printf '%s\n' "$sel" > "$root/select.txt"
+  while IFS=$'\t' read -r f role; do
+    [[ -n "$f" ]] || continue
+    if [[ "$role" == "captions" ]]; then captions="$f"; else files+=("$f"); fi
+  done < "$root/select.txt"
+  cp "$REPO_DIR/bin/cfw-render-report.sh" "$root/bin/cfw-render-report.sh"
+  cp "$REPO_DIR/bin/cfw-render-lib.sh" "$root/bin/cfw-render-lib.sh"
+  cat >> "$root/bin/cfw-render-lib.sh" <<EOF
+cr_mcp_call() {
+  printf '%s\n' "\$2" >> "$root/calls.jsonl"
+  printf '{"ok":true}'
+}
+EOF
+  python3 - "$root/bin/cfw-render-upload.sh" <<'PY'
+import pathlib, sys
+pathlib.Path(sys.argv[1]).write_text("""#!/usr/bin/env bash
+set -eu
+line=""
+IFS= read -r line < "$1" || true
+printf '%s\\t%s\\n' "$(basename "$1")" "$line" >> "$WI263_UPLOADS"
+printf 'https://media.cfw.social/%s\\n' "$(basename "$1")"
+""")
+PY
+  chmod +x "$root/bin/cfw-render-upload.sh"
+  if (( ${#files[@]} > 0 )); then
+    (
+      cd "$root" || exit 1
+      export CFW_ORDER_ID="order-wi263-$slug" CFW_WORKER_ID="w-wi263" CFW_ATTEMPT_ID="att-wi263"
+      export CFW_API_BASE="http://127.0.0.1:9" CFW_RENDER_WORKER_KEY="cfw_render_wi263testkey0000"
+      export CFW_RENDER_DIRECTOR_MODEL="sonnet"
+      export CFW_CAPTIONS_FILE="$captions"
+      export WI263_UPLOADS="$root/uploads.txt"
+      unset CFW_RENDER_KEEP_DIR
+      PATH="$root/bin:$PATH"
+      bash "$root/bin/cfw-render-report.sh" complete "${files[@]}"
+    ) >"$root/complete.out" 2>"$root/complete.err" || complete_rc=$?
+  else
+    printf 'no media from select\n' > "$root/complete.err"
+    complete_rc=2
+  fi
+  printf '%s\n' "$complete_rc" > "$root/complete.rc"
+  python3 - "$root" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+bad = []
+harness_err = ""
+err_path = root / "harness.err"
+if err_path.is_file():
+    harness_err = err_path.read_text(errors="replace")[-400:].replace("\n", " | ")
+complete_err = ""
+cerr = root / "complete.err"
+if cerr.is_file():
+    complete_err = cerr.read_text(errors="replace")[-400:].replace("\n", " | ")
+try:
+    items = json.loads((root / "harness.out").read_text())
+except Exception as exc:
+    bad.append("harness json %s; err=%s" % (exc, harness_err))
+    items = None
+if isinstance(items, list):
+    ids = [i.get("id") for i in items if isinstance(i, dict)]
+    if ids != ["final_video", "cover", "captions"]:
+        bad.append("ids=%r err=%s" % (ids, harness_err))
+    by_id = {i.get("id"): i for i in items if isinstance(i, dict)}
+    for sid, needle in (("final_video", "final-video-fixture"), ("cover", "cover-fixture")):
+        item = by_id.get(sid) or {}
+        path = item.get("path") or ""
+        if "/steps/final_checks/saves/" not in path:
+            bad.append("%s path=%r" % (sid, path))
+        else:
+            lines = pathlib.Path(path).read_text(errors="replace").splitlines()
+            got = lines[0] if lines else ""
+            if got != needle:
+                bad.append("%s bytes=%r" % (sid, got))
+    blob = json.dumps(items)
+    for name in ("voice_track", "assembled_video", "rendered_scenes", "background"):
+        if name in blob:
+            bad.append("harness leaked %s" % name)
+uploads = (root / "uploads.txt").read_text(errors="replace") if (root / "uploads.txt").is_file() else ""
+want_lines = ["final_video.mp4\tfinal-video-fixture", "cover.png\tcover-fixture"]
+if uploads.splitlines() != want_lines:
+    bad.append("uploads=%r complete=%s" % (uploads.splitlines(), complete_err))
+for banned in ("voice_track", "assembled_video", "rendered_scenes", "background", "captions.json"):
+    if banned in uploads:
+        bad.append("upload leaked %s" % banned)
+calls_path = root / "calls.jsonl"
+if not calls_path.is_file() or not calls_path.read_text().strip():
+    bad.append("no complete call; complete=%s" % complete_err)
+else:
+    rows = [json.loads(line) for line in calls_path.read_text().splitlines() if line.strip()]
+    if len(rows) != 1:
+        bad.append("calls=%d" % len(rows))
+    else:
+        data = rows[0]
+        url = data.get("outputUrl") or ""
+        if not str(url).endswith("/final_video.mp4"):
+            bad.append("outputUrl=%r" % url)
+        names = [u.split("/")[-1].split("?")[0] for u in data.get("outputUrls") or []]
+        if names != ["final_video.mp4", "cover.png"]:
+            bad.append("outputUrls=%r" % names)
+        roles = [o.get("role") for o in data.get("outputs") or []]
+        kinds = [o.get("kind") for o in data.get("outputs") or []]
+        if roles != ["cover", "poster"]:
+            bad.append("roles=%r" % roles)
+        if kinds != ["video", "image"]:
+            bad.append("kinds=%r" % kinds)
+        caps = data.get("captions") or {}
+        if caps.get("instagram") != "Reel caption":
+            bad.append("captions=%r" % caps)
+print("ok" if not bad else "; ".join(bad))
+PY
+  rm -rf "$root"
+}
+
+# F22: every video recipe, not only spotlight and pip. Faceless once uploaded
+# voice_bed, body_video and assembled_video to Reviews beside the final file.
+for wi263_slug in p-reels-spotlight p-reels-pip p-reels-faceless p-reels-pip-heygen p-reels-spotlight-heygen p-reels-split p-reels-split-heygen p-clone-reel p-longform; do
+  wi263_detail="$(wi263_delivery "$wi263_slug")"
+  if [[ "$wi263_detail" == "ok" ]]; then
+    if [[ "$wi263_slug" == "p-reels-spotlight" ]]; then
+      pass "WI2.63 spotlight: delivery uploads final_video then cover, no voice_track or assembled or scenes"
+    elif [[ "$wi263_slug" == "p-reels-pip" ]]; then
+      pass "WI2.63 pip: delivery uploads final_video then cover, no voice_track, assembled or background"
+    else
+      pass "F22 $wi263_slug: delivery uploads final_video then cover, no step video"
+    fi
+  else
+    fail "WI2.63 $wi263_slug delivery" "$wi263_detail"
+  fi
+done
+
+wi263_guard="$(python3 - "$REPO_DIR" <<'PY'
+import os, subprocess, sys, pathlib, tempfile, json, textwrap
+repo = pathlib.Path(sys.argv[1])
+script = r'''
+set -u
+source "$REPO/bin/cfw-render-harness.sh"
+got="$(cr_h_reel_delivery_outputs "$ORDER" "$RAW" "$RECIPE")"
+printf '%s\n---\n' "$got"
+got2="$(cr_h_reel_delivery_outputs "$SPOT" "$MISSING" "$SPOT_RECIPE")"
+printf '%s' "$got2"
+'''
+raw = '[{"id":"voice_track","path":"/order/voice_track.mp4"},{"id":"final_video","path":"/order/final_video.mp4"}]'
+missing = '[{"id":"voice_track","path":"/s/voice_track.mp4"},{"id":"final_video","path":"/s/final_video.mp4"},{"id":"captions","path":"/s/captions.json"}]'
+with tempfile.TemporaryDirectory(prefix="wi263-guard-") as tmp:
+    root = pathlib.Path(tmp)
+    order = root / "carousel.json"
+    order.write_text(json.dumps({"recipe": "p-carousel", "manifest": {"recipe": "p-carousel"}}))
+    spot = root / "spot.json"
+    spot.write_text(json.dumps({"manifest": {"recipe": "p-reels-spotlight"}}))
+    env = os.environ.copy()
+    env.update({
+        "REPO": str(repo),
+        "ORDER": str(order),
+        "RAW": raw,
+        "RECIPE": str(repo / "skills" / "p-carousel"),
+        "SPOT": str(spot),
+        "MISSING": missing,
+        "SPOT_RECIPE": str(repo / "skills" / "p-reels-spotlight"),
+    })
+    proc = subprocess.run(["bash", "--noprofile", "--norc", "-c", script], capture_output=True, text=True, env=env, timeout=60)
+parts = proc.stdout.split("\n---\n", 1)
+bad = []
+if proc.returncode != 0:
+    bad.append("guard rc %s %s" % (proc.returncode, proc.stderr[-300:].replace("\n", " | ")))
+elif len(parts) != 2:
+    bad.append("guard shape %r" % proc.stdout[:300])
+else:
+    if parts[0] != raw:
+        bad.append("non-reel changed to %r" % parts[0][:300])
+    want = '[{"id":"captions","path":"/s/captions.json"}]'
+    if parts[1] != want:
+        bad.append("missing cover delivered %r" % parts[1][:300])
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi263_guard" == "ok" ]]; then
+  pass "WI2.63: non-reel harness output is left in caller order"
+  pass "WI2.63: reel missing its cover does not deliver a step video"
+else
+  fail "WI2.63 non-reel and missing-cover delivery" "$wi263_guard"
+fi
+
+echo "=== Case 45: WI2.64 — pip last frame stays bright and captions stop before the CTA ==="
+wi264_rc=0
+wi264_out="$(python3 - "$REPO_DIR" <<'PY'
+import hashlib, importlib.util, json, os, re, shutil, subprocess, sys, tempfile
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+rows = []
+
+def add(name, detail=""):
+    rows.append((name, detail.replace("\n", " | ").replace("\t", " ")[:900]))
+
+def sha256_file(path):
+    return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+def recipe_checksum(recipe):
+    base = repo / "skills" / recipe
+    rels = []
+    for path in base.rglob("*"):
+        if path.is_file() and path.name not in {".DS_Store", "__pycache__", ".git", ".hub"}:
+            rels.append(str(path.relative_to(base)).replace("\\", "/"))
+    rels = sorted(rels)
+    blob = "\n".join("%s=%s" % (rel, sha256_file(base / rel)) for rel in rels)
+    return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+pip_md = (repo / "skills/p-reels-pip/steps/05-composite.md").read_text(encoding="utf-8")
+hey_md = (repo / "skills/p-reels-pip-heygen/steps/05-composite.md").read_text(encoding="utf-8")
+pip_hash = sha256_file(repo / "skills/p-reels-pip/steps/05-composite.md")
+hey_hash = sha256_file(repo / "skills/p-reels-pip-heygen/steps/05-composite.md")
+sys.stderr.write("WI2.64-HASH p-reels-pip steps/05-composite.md %s\n" % pip_hash)
+sys.stderr.write("WI2.64-HASH p-reels-pip-heygen steps/05-composite.md %s\n" % hey_hash)
+sys.stderr.write("WI2.64-CHECKSUM p-reels-pip %s\n" % recipe_checksum("p-reels-pip"))
+sys.stderr.write("WI2.64-CHECKSUM p-reels-pip-heygen %s\n" % recipe_checksum("p-reels-pip-heygen"))
+sys.stderr.flush()
+
+def extract(text, name):
+    marker = "cat > work/%s <<'PY'\n" % name
+    start = text.index(marker) + len(marker)
+    end = text.index("\nPY\n", start)
+    return text[start:end] + "\n"
+
+def run_ff(cwd, args):
+    proc = subprocess.run(
+        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *args],
+        cwd=cwd, capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError("ffmpeg %s :: %s" % (" ".join(args[:8]), (proc.stderr or "")[-400:]))
+
+def probe_durs(path):
+    proc = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type,duration", "-of", "json", str(path)],
+        capture_output=True, text=True,
+    )
+    data = json.loads(proc.stdout or "{}")
+    fmt = float((data.get("format") or {}).get("duration") or 0)
+    vid = None
+    for st in data.get("streams") or []:
+        if st.get("codec_type") == "video" and st.get("duration") not in (None, "N/A", ""):
+            vid = float(st["duration"])
+    return fmt, vid
+
+def last_yavg(path):
+    proc = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-nostats", "-sseof", "-0.2", "-i", str(path),
+         "-vf", "signalstats,metadata=print:key=lavfi.signalstats.YAVG", "-an", "-f", "null", "-"],
+        capture_output=True, text=True,
+    )
+    vals = re.findall(r"lavfi\.signalstats\.YAVG=([0-9.]+)", (proc.stderr or "") + "\n" + (proc.stdout or ""))
+    return float(vals[-1]) if vals else None
+
+def hold(script, video, target=None):
+    cmd = [sys.executable, script, str(video)]
+    if target is not None:
+        cmd.append("%.3f" % target)
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+try:
+    if pip_md != hey_md:
+        add("WI2.64 pip and heygen composite match", "byte mismatch len %d vs %d" % (len(pip_md), len(hey_md)))
+    else:
+        add("WI2.64 pip and heygen composite match")
+    hub = repo / "skills/p-reels-pip-heygen/.hub/p-reels-pip/steps/05-composite.md"
+    hub_hash = sha256_file(hub)
+    if hub_hash != "sha256:3c2ca8a987ea9c6a27037707b8eb562931114bfcd235c5361e1e7c13a7eea1ff":
+        add("WI2.64 heygen hub composite matches generated contract", hub_hash)
+    else:
+        add("WI2.64 heygen hub composite matches generated contract")
+    if "itsoffset \"$CTA_START\"" in pip_md:
+        add("WI2.64 bundled composite drops itsoffset", "itsoffset still present")
+    else:
+        add("WI2.64 bundled composite drops itsoffset")
+
+    spec = importlib.util.spec_from_file_location("sync_skills_wi264", repo / "scripts/sync-skills.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # WI2.79: the caption-phrase P1 note replaces the hunk's first line; its inverse gives it back
+    note_count = pip_md.count(mod._CAPTION_PHRASES_PIP_P1_NOTE)
+    base_md = pip_md.replace(mod._CAPTION_PHRASES_PIP_P1_NOTE, mod._CAPTION_PHRASES_PIP_P1_ANCHOR, 1)
+    inverted = base_md
+    invert_bad = "" if note_count == 1 else "WI2.79 P1 note count %d" % note_count
+    for old, new in reversed(mod.P_REELS_PIP_TAIL_PAIRS):
+        if invert_bad:
+            break
+        count = inverted.count(new)
+        if count != 1:
+            invert_bad = "hunk count %d for %r" % (count, new[:80])
+            break
+        inverted = inverted.replace(new, old, 1)
+    if invert_bad:
+        add("WI2.64 sync transform reproduces the bundled composite", invert_bad)
+    elif 'itsoffset "$CTA_START"' not in inverted:
+        add("WI2.64 sync transform reproduces the bundled composite", "inverted text has no itsoffset overlay")
+    else:
+        with tempfile.TemporaryDirectory(prefix="wi264-tx-") as tmp:
+            root = Path(tmp)
+            recipe = root / "recipe"
+            (recipe / "steps").mkdir(parents=True)
+            target = recipe / "steps/05-composite.md"
+            target.write_text(inverted, encoding="utf-8")
+            mod.apply_p_reels_pip_tail(recipe)
+            got = target.read_text(encoding="utf-8")
+            mod.apply_p_reels_pip_tail(recipe)
+            again = target.read_text(encoding="utf-8")
+            if got != base_md:
+                pos = next((i for i, (a, b) in enumerate(zip(got, base_md)) if a != b), min(len(got), len(base_md)))
+                add("WI2.64 sync transform reproduces the bundled composite",
+                    "at %d got %r want %r lens %d/%d" % (pos, got[max(0, pos-60):pos+60], base_md[max(0, pos-60):pos+60], len(got), len(base_md)))
+            elif again != base_md:
+                add("WI2.64 sync transform reproduces the bundled composite", "second apply changed bytes")
+            else:
+                add("WI2.64 sync transform reproduces the bundled composite")
+                src = root / "src"
+                for name, deps in (("p-reels-pip", "[]"), ("p-reels-pip-heygen", "[p-reels-pip]")):
+                    steps = src / name / "steps"
+                    steps.mkdir(parents=True)
+                    (src / name / "SKILL.md").write_text(
+                        "---\nname: %s\ndependsOn: %s\n---\n# %s\n" % (name, deps, name),
+                        encoding="utf-8",
+                    )
+                    (steps / "05-composite.md").write_text(inverted, encoding="utf-8")
+                recipes = root / "recipes.json"
+                recipes.write_text(json.dumps({
+                    "source": "test-wi264",
+                    "recipes": [
+                        {"name": "p-reels-pip", "version": "1.0.0", "providers": []},
+                        {"name": "p-reels-pip-heygen", "version": "1.0.0", "providers": []},
+                    ],
+                }), encoding="utf-8")
+                out = root / "out"
+                env = os.environ.copy()
+                env["CFW_SKILLS_SRC"] = str(src)
+                proc = subprocess.run(
+                    ["bash", str(repo / "scripts/sync-skills.sh"), "--recipes", str(recipes),
+                     "--out-dir", str(out), "--skip-manifest"],
+                    capture_output=True, text=True, env=env,
+                )
+                paths = [
+                    out / "p-reels-pip/steps/05-composite.md",
+                    out / "p-reels-pip-heygen/steps/05-composite.md",
+                    out / "p-reels-pip-heygen/.hub/p-reels-pip/steps/05-composite.md",
+                ]
+                bad_sync = []
+                if proc.returncode != 0:
+                    bad_sync.append("rc %s %s" % (proc.returncode, (proc.stderr or proc.stdout or "")[-400:]))
+                for path in paths:
+                    # Hub and top-level steps get the same WI2.79 P1 note.
+                    want = pip_md
+                    if not path.is_file():
+                        bad_sync.append("missing %s" % path.name)
+                    elif path.read_text(encoding="utf-8") != want:
+                        got_sync = path.read_text(encoding="utf-8")
+                        pos = next((i for i, (a, b) in enumerate(zip(got_sync, want)) if a != b), min(len(got_sync), len(want)))
+                        bad_sync.append("diff %s at %d" % (path.relative_to(out), pos))
+                if bad_sync:
+                    add("WI2.64 sync-skills.sh re-applies the pip tail on both recipes and the hub copy", "; ".join(bad_sync))
+                else:
+                    add("WI2.64 sync-skills.sh re-applies the pip tail on both recipes and the hub copy")
+
+                # The shipped hub file is the contract. Re-applying the caption
+                # transform, including the helper refresh, must not change it.
+                real_hub = (repo / "skills/p-reels-pip-heygen/.hub/p-reels-pip/steps/05-composite.md").read_text(encoding="utf-8")
+                pinned = root / "pinned-hub" / ".hub" / "p-reels-pip"
+                (pinned / "steps").mkdir(parents=True)
+                pinned_file = pinned / "steps" / "05-composite.md"
+                pinned_file.write_text(real_hub, encoding="utf-8")
+                n_pin = mod.apply_reel_caption_phrases(pinned, "p-reels-pip")
+                pinned_got = pinned_file.read_text(encoding="utf-8")
+                if pinned_got != real_hub or n_pin != 0:
+                    pos = next((i for i, (a, b) in enumerate(zip(pinned_got, real_hub)) if a != b), min(len(pinned_got), len(real_hub)))
+                    add("WI2.64 bundled hub composite matches the caption transform",
+                        "changed=%d at %d lens %d/%d" % (n_pin, pos, len(pinned_got), len(real_hub)))
+                else:
+                    add("WI2.64 bundled hub composite matches the caption transform")
+
+                # A hub copy that does not yet have the caption-phrase section
+                # still receives that section and the same P1 note. The result
+                # is the text after the helper refresh, not the input on disk.
+                bare = base_md
+                bare_bad = ""
+                for chunk in (mod._CAPTION_PHRASES_PIP_SECTION, mod._CAPTION_PHRASES_PIP_CHECK):
+                    count = bare.count(chunk)
+                    if count != 1:
+                        bare_bad = "chunk count %d" % count
+                        break
+                    bare = bare.replace(chunk, "", 1)
+                if not bare_bad:
+                    if bare.count(mod._CAPTION_PHRASES_PIP_PROSE_NEW) != 1:
+                        bare_bad = "prose count %d" % bare.count(mod._CAPTION_PHRASES_PIP_PROSE_NEW)
+                    else:
+                        bare = bare.replace(mod._CAPTION_PHRASES_PIP_PROSE_NEW, mod._CAPTION_PHRASES_PIP_PROSE_OLD, 1)
+                if bare_bad or "Keep caption phrases whole (WI2.76)." in bare:
+                    add("WI2.64 hub without the caption section gets the section and the P1 note",
+                        bare_bad or "section still in the fixture")
+                else:
+                    nosec = root / "nosec" / ".hub" / "p-reels-pip"
+                    (nosec / "steps").mkdir(parents=True)
+                    nosec_file = nosec / "steps" / "05-composite.md"
+                    nosec_file.write_text(bare, encoding="utf-8")
+                    mod.apply_reel_caption_phrases(nosec, "p-reels-pip")
+                    got_nosec = nosec_file.read_text(encoding="utf-8")
+                    n_nosec = mod.apply_reel_caption_phrases(nosec, "p-reels-pip")
+                    again_nosec = nosec_file.read_text(encoding="utf-8")
+                    has_section = "Keep caption phrases whole (WI2.76)." in got_nosec
+                    note_n = got_nosec.count(mod._CAPTION_PHRASES_PIP_P1_NOTE)
+                    if not has_section or note_n != 1 or got_nosec != pip_md or again_nosec != pip_md or n_nosec != 0:
+                        pos = next((i for i, (a, b) in enumerate(zip(got_nosec, pip_md)) if a != b), min(len(got_nosec), len(pip_md)))
+                        add("WI2.64 hub without the caption section gets the section and the P1 note",
+                            "section=%s note=%d at %d second=%d" % (has_section, note_n, pos, n_nosec))
+                    else:
+                        add("WI2.64 hub without the caption section gets the section and the P1 note")
+
+    hold_src = extract(pip_md, "hold_tail.py")
+    clamp_src = extract(pip_md, "clamp_captions.py")
+    with tempfile.TemporaryDirectory(prefix="wi264-pic-") as tmp:
+        d = Path(tmp)
+        (d / "work").mkdir()
+        script = d / "hold_tail.py"
+        script.write_text(hold_src, encoding="utf-8")
+        clamp = d / "clamp_captions.py"
+        clamp.write_text(clamp_src, encoding="utf-8")
+
+        run_ff(d, ["-f", "lavfi", "-i", "color=c=white:s=160x160:r=30:d=2",
+                   "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo:d=2",
+                   "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "vid.mp4"])
+        run_ff(d, ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2.4",
+                   "-c:a", "aac", "tone.m4a"])
+        run_ff(d, ["-i", "vid.mp4", "-i", "tone.m4a", "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "short.mp4"])
+        before_fmt, before_vid = probe_durs(d / "short.mp4")
+        proc = hold(str(script), d / "short.mp4", 2.4)
+        fmt, vid = probe_durs(d / "short.mp4")
+        y = last_yavg(d / "short.mp4")
+        detail = "before fmt %.3f vid %s after fmt %.3f vid %s y %s err %s" % (
+            before_fmt, before_vid, fmt, vid, y, (proc.stderr or "")[-240:])
+        if proc.returncode != 0 or before_vid is None or before_vid > before_fmt - 0.2:
+            add("WI2.64 short picture is held out to the bright bed", detail)
+        elif y is None or y <= 30 or abs(fmt - 2.4) > 0.15 or vid is None or abs(vid - fmt) > 0.1:
+            add("WI2.64 short picture is held out to the bright bed", detail)
+        else:
+            add("WI2.64 short picture is held out to the bright bed")
+
+        run_ff(d, ["-f", "lavfi", "-i", "color=c=white:s=160x160:r=30:d=2",
+                   "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2",
+                   "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "bright.mp4"])
+        run_ff(d, ["-f", "lavfi", "-i", "color=c=black:s=160x160:r=30:d=0.4",
+                   "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=0.4",
+                   "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "black.mp4"])
+        (d / "list.txt").write_text("file 'bright.mp4'\nfile 'black.mp4'\n", encoding="utf-8")
+        run_ff(d, ["-f", "concat", "-safe", "0", "-i", "list.txt",
+                   "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", "tailed.mp4"])
+        tail_before = last_yavg(d / "tailed.mp4")
+        orig_fmt, _orig_vid = probe_durs(d / "tailed.mp4")
+        proc = hold(str(script), d / "tailed.mp4")
+        fmt, vid = probe_durs(d / "tailed.mp4")
+        y = last_yavg(d / "tailed.mp4")
+        detail = "tail before %s after y %s fmt %.3f->%.3f vid %s err %s" % (
+            tail_before, y, orig_fmt, fmt, vid, (proc.stderr or "")[-240:])
+        if proc.returncode != 0 or tail_before is None or tail_before > 16:
+            add("WI2.64 encoded black tail is replaced with the last bright frame", detail)
+        elif y is None or y <= 30 or abs(fmt - orig_fmt) > 0.15 or vid is None or abs(vid - fmt) > 0.1:
+            add("WI2.64 encoded black tail is replaced with the last bright frame", detail)
+        else:
+            add("WI2.64 encoded black tail is replaced with the last bright frame")
+
+        run_ff(d, ["-f", "lavfi", "-i", "color=c=white:s=160x160:r=30:d=2",
+                   "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2",
+                   "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+                   "work/composed.mp4"])
+        run_ff(d, ["-f", "lavfi", "-i", "color=c=white:s=160x160:r=30:d=0.2",
+                   "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", "-an", "cta-w.mp4"])
+        run_ff(d, ["-f", "lavfi", "-i", "color=c=black:s=160x160:r=30:d=0.8",
+                   "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", "-an", "cta-b.mp4"])
+        (d / "cta-list.txt").write_text("file 'cta-w.mp4'\nfile 'cta-b.mp4'\n", encoding="utf-8")
+        run_ff(d, ["-f", "concat", "-safe", "0", "-i", "cta-list.txt",
+                   "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", "work/cta-card.mov"])
+        marker = "ffmpeg -y -i work/composed.mp4 -i work/cta-card.mov"
+        start = pip_md.index(marker)
+        end = pip_md.index("work/with-cta.mp4", start) + len("work/with-cta.mp4")
+        overlay = pip_md[start:end]
+        shell = "set -e\nBED_DUR=2\nCTA_DURATION=0.2\nCTA_START=1.8\n" + overlay + "\n"
+        proc = subprocess.run(["bash", "-c", shell], cwd=d, capture_output=True, text=True)
+        if proc.returncode != 0:
+            add("WI2.64 CTA overlay stops at the bed without a black frame", (proc.stderr or "")[-400:])
+        else:
+            held = hold(str(script), d / "work/with-cta.mp4", 2.0)
+            fmt, vid = probe_durs(d / "work/with-cta.mp4")
+            y = last_yavg(d / "work/with-cta.mp4")
+            detail = "fmt %.3f vid %s y %s err %s" % (fmt, vid, y, (held.stderr or proc.stderr or "")[-240:])
+            if held.returncode != 0 or y is None or y <= 30 or abs(fmt - 2.0) > 0.15 or vid is None or abs(vid - fmt) > 0.1:
+                add("WI2.64 CTA overlay stops at the bed without a black frame", detail)
+            else:
+                add("WI2.64 CTA overlay stops at the bed without a black frame")
+
+        window = d / "cta-window.json"
+        window.write_text(json.dumps({"cta_start": 3.0, "bed_dur": 6.0}), encoding="utf-8")
+        words_src = d / "transcripts.json"
+        words_src.write_text(json.dumps({"words": [
+            {"text": "Hello", "start": 0.2, "end": 1.0},
+            {"text": "still", "start": 2.5, "end": 3.4},
+            {"text": "edge", "start": 3.0, "end": 3.2},
+            {"text": "late", "start": 3.2, "end": 4.0},
+        ]}), encoding="utf-8")
+        plan_path = d / "plan.json"
+        plan_path.write_text(json.dumps({
+            "caption_groups": [
+                {"start": 0.2, "end": 1.0, "words": [{"w": "Hello", "s": 0.2, "e": 1.0}]},
+                {"start": 2.5, "end": 3.4, "words": [{"w": "still", "s": 2.5, "e": 3.4}]},
+                {"start": 3.2, "end": 4.0, "words": [{"w": "over", "s": 3.2, "e": 4.0}]},
+            ],
+            "sfx": [{"id": "whoosh", "start": 3.5, "end": 4.0}],
+        }), encoding="utf-8")
+        env = os.environ.copy()
+        env["CTA_WINDOW"] = str(window)
+        words_out = d / "words.json"
+        wproc = subprocess.run([sys.executable, str(clamp), "words", str(words_src), str(words_out)],
+                               capture_output=True, text=True, env=env)
+        pproc = subprocess.run([sys.executable, str(clamp), "plan", str(plan_path)],
+                               capture_output=True, text=True, env=env)
+        words = json.loads(words_out.read_text(encoding="utf-8")) if words_out.is_file() else []
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        groups = plan.get("caption_groups") or []
+        cue_bad = []
+        for row in words:
+            if float(row["start"]) >= 3.0 - 1e-3 or float(row["end"]) > 3.0 + 1e-6:
+                cue_bad.append("word %s" % row)
+        for g in groups:
+            if float(g["start"]) >= 3.0 - 1e-3 or float(g["end"]) > 3.0 + 1e-6:
+                cue_bad.append("group %s" % g.get("start"))
+            for w in g.get("words") or []:
+                if float(w["s"]) >= 3.0 - 1e-3 or float(w["e"]) > 3.0 + 1e-6:
+                    cue_bad.append("plan word %s" % w)
+        sfx = plan.get("sfx") or []
+        if wproc.returncode != 0 or pproc.returncode != 0 or cue_bad or len(words) != 2 or len(groups) != 2:
+            add("WI2.64 caption cues stop at the CTA window",
+                "rc %s/%s cues %s words %s groups %s" % (wproc.returncode, pproc.returncode, cue_bad, words, groups))
+        elif not sfx or sfx[0].get("start") != 3.5:
+            add("WI2.64 caption cues stop at the CTA window", "sfx changed %s" % sfx)
+        else:
+            add("WI2.64 caption cues stop at the CTA window")
+        off = d / "cta-off.json"
+        off.write_text(json.dumps({"cta_start": None, "bed_dur": 6.0}), encoding="utf-8")
+        env["CTA_WINDOW"] = str(off)
+        off_words = d / "words-off.json"
+        off_src = d / "transcripts-off.json"
+        shutil.copyfile(words_src, off_src)
+        oproc = subprocess.run([sys.executable, str(clamp), "words", str(off_src), str(off_words)],
+                               capture_output=True, text=True, env=env)
+        kept = json.loads(off_words.read_text(encoding="utf-8")) if off_words.is_file() else []
+        if oproc.returncode != 0 or len(kept) != 4:
+            add("WI2.64 card off leaves caption cues unchanged", "rc %s n %s" % (oproc.returncode, len(kept)))
+        else:
+            add("WI2.64 card off leaves caption cues unchanged")
+except Exception as exc:
+    add("WI2.64 pip tail harness", "%s: %s" % (type(exc).__name__, exc))
+
+for name, detail in rows:
+    if detail:
+        print("BAD\t%s\t%s" % (name, detail))
+    else:
+        print("OK\t%s\t." % (name,))
+PY
+)" || wi264_rc=$?
+if [[ "$wi264_rc" != "0" ]]; then
+  fail "WI2.64 pip tail harness" "python exited $wi264_rc"
+fi
+while IFS=$'\t' read -r status name detail; do
+  [[ -z "${status:-}" ]] && continue
+  if [[ "$status" == "OK" ]]; then
+    pass "$name"
+  else
+    fail "$name" "$detail"
+  fi
+done <<EOF
+$wi264_out
+EOF
+
+echo "=== Case 46: WI2.68 — reel whisper model id is whisper-small-mlx ==="
+wi268_rc=0
+wi268_out="$(python3 - "$REPO_DIR" <<'PY'
+import hashlib, importlib.util, json, os, re, shutil, subprocess, sys, tempfile
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+rows = []
+
+def add(name, detail=""):
+    rows.append((name, detail.replace("\n", " | ").replace("\t", " ")[:900]))
+
+def sha256_file(path):
+    return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+def recipe_checksum(recipe):
+    base = repo / "skills" / recipe
+    rels = []
+    for path in base.rglob("*"):
+        if path.is_file() and path.name not in {".DS_Store", "__pycache__", ".git", ".hub"}:
+            rels.append(str(path.relative_to(base)).replace("\\", "/"))
+    rels = sorted(rels)
+    blob = "\n".join("%s=%s" % (rel, sha256_file(base / rel)) for rel in rels)
+    return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+BAD = "mlx-community/whisper-small"
+GOOD = "mlx-community/whisper-small-mlx"
+BAD_RE = re.compile(r"mlx-community/whisper-small(?!-mlx)")
+
+EDITED = [
+    "skills/p-reels-pip/SKILL.md",
+    "skills/p-reels-pip/steps/02-transcribe.md",
+    "skills/p-reels-pip-heygen/steps/02-transcribe.md",
+    "skills/p-reels-spotlight/SKILL.md",
+    "skills/p-reels-spotlight/steps/02-transcribe.md",
+    "skills/p-reels-spotlight-heygen/steps/02-transcribe.md",
+]
+
+try:
+    bad_hits = []
+    for rel in EDITED:
+        text = (repo / rel).read_text(encoding="utf-8")
+        if BAD_RE.search(text):
+            bad_hits.append(rel)
+        if GOOD not in text:
+            bad_hits.append("%s missing good id" % rel)
+        sys.stderr.write("WI2.68-HASH %s %s\n" % (rel, sha256_file(repo / rel)))
+    for recipe in ("p-reels-pip", "p-reels-spotlight", "p-reels-pip-heygen", "p-reels-spotlight-heygen"):
+        sys.stderr.write("WI2.68-CHECKSUM %s %s\n" % (recipe, recipe_checksum(recipe)))
+    sys.stderr.flush()
+    if bad_hits:
+        add("WI2.68 edited reel files name whisper-small-mlx", "; ".join(bad_hits))
+    else:
+        add("WI2.68 edited reel files name whisper-small-mlx")
+
+    idx = json.loads((repo / "skills/index.json").read_text(encoding="utf-8"))
+    hash_mismatches = []
+    checksum_mismatches = []
+    for rel in EDITED:
+        parts = Path(rel).parts  # skills, recipe, ...
+        recipe = parts[1]
+        file_rel = "/".join(parts[2:])
+        actual = sha256_file(repo / rel)
+        expected = (idx.get("recipes", {}).get(recipe, {}).get("fileHashes") or {}).get(file_rel)
+        if expected != actual:
+            hash_mismatches.append("%s/%s expected %s actual %s" % (recipe, file_rel, expected, actual))
+    for recipe in ("p-reels-pip", "p-reels-spotlight", "p-reels-pip-heygen", "p-reels-spotlight-heygen"):
+        actual_cs = recipe_checksum(recipe)
+        expected_cs = (idx.get("recipes", {}).get(recipe) or {}).get("checksum")
+        if expected_cs != actual_cs:
+            checksum_mismatches.append("%s expected %s actual %s" % (recipe, expected_cs, actual_cs))
+    if hash_mismatches:
+        add("WI2.68 index.json fileHashes match edited reel files", "; ".join(hash_mismatches))
+    else:
+        add("WI2.68 index.json fileHashes match edited reel files")
+    if checksum_mismatches:
+        add("WI2.68 index.json recipe checksums match", "; ".join(checksum_mismatches))
+    else:
+        add("WI2.68 index.json recipe checksums match")
+
+    spec = importlib.util.spec_from_file_location("sync_skills_wi268", repo / "scripts/sync-skills.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    sample_bad = 'mlx_whisper x --model mlx-community/whisper-small --output-dir w\n'
+    sample_good = 'mlx_whisper x --model mlx-community/whisper-small-mlx --output-dir w\n'
+    once = mod.rewrite_whisper_small_mlx(sample_bad)
+    twice = mod.rewrite_whisper_small_mlx(once)
+    already = mod.rewrite_whisper_small_mlx(sample_good)
+    if once != sample_good:
+        add("WI2.68 rewrite_whisper_small_mlx rewrites the bad id", repr(once))
+    elif twice != sample_good:
+        add("WI2.68 rewrite_whisper_small_mlx rewrites the bad id", "second pass changed text")
+    elif already != sample_good:
+        add("WI2.68 rewrite_whisper_small_mlx rewrites the bad id", "good id was altered")
+    else:
+        add("WI2.68 rewrite_whisper_small_mlx rewrites the bad id")
+
+    with tempfile.TemporaryDirectory(prefix="wi268-tx-") as tmp:
+        root = Path(tmp)
+        recipe = root / "recipe"
+        (recipe / "steps").mkdir(parents=True)
+        hub = recipe / ".hub" / "p-reels-split" / "steps"
+        hub.mkdir(parents=True)
+        (recipe / "SKILL.md").write_text(
+            "# demo\nmlx_whisper a --model mlx-community/whisper-small --out x\n",
+            encoding="utf-8",
+        )
+        (recipe / "steps" / "02-transcribe.md").write_text(
+            "mlx_whisper b --model mlx-community/whisper-small --out y\n",
+            encoding="utf-8",
+        )
+        (hub / "02-transcribe.md").write_text(
+            "mlx_whisper c --model mlx-community/whisper-small --out z\n",
+            encoding="utf-8",
+        )
+        n1 = mod.apply_whisper_small_mlx(recipe)
+        texts = [
+            (recipe / "SKILL.md").read_text(encoding="utf-8"),
+            (recipe / "steps" / "02-transcribe.md").read_text(encoding="utf-8"),
+            (hub / "02-transcribe.md").read_text(encoding="utf-8"),
+        ]
+        n2 = mod.apply_whisper_small_mlx(recipe)
+        again = [
+            (recipe / "SKILL.md").read_text(encoding="utf-8"),
+            (recipe / "steps" / "02-transcribe.md").read_text(encoding="utf-8"),
+            (hub / "02-transcribe.md").read_text(encoding="utf-8"),
+        ]
+        detail = ""
+        if n1 != 3:
+            detail = "first apply changed %d files" % n1
+        elif any(BAD_RE.search(t) for t in texts) or any(GOOD not in t for t in texts):
+            detail = "first apply left a bad or missing good id"
+        elif n2 != 0:
+            detail = "second apply changed %d files" % n2
+        elif again != texts:
+            detail = "second apply mutated bytes"
+        if detail:
+            add("WI2.68 apply_whisper_small_mlx is idempotent and covers hub copies", detail)
+        else:
+            add("WI2.68 apply_whisper_small_mlx is idempotent and covers hub copies")
+
+        src = root / "src"
+        for name, deps, body in (
+            ("p-reels-pip", "[]", sample_bad),
+            ("p-reels-faceless", "[]", sample_bad),
+            ("p-reels-pip-heygen", "[p-reels-pip]", sample_bad),
+        ):
+            steps = src / name / "steps"
+            steps.mkdir(parents=True)
+            (src / name / "SKILL.md").write_text(
+                "---\nname: %s\ndependsOn: %s\n---\n# %s\n%s" % (name, deps, name, body),
+                encoding="utf-8",
+            )
+            (steps / "02-transcribe.md").write_text(body, encoding="utf-8")
+        recipes = root / "recipes.json"
+        recipes.write_text(json.dumps({
+            "source": "test-wi268",
+            "recipes": [
+                {"name": "p-reels-pip", "version": "1.0.0", "providers": []},
+                {"name": "p-reels-faceless", "version": "1.0.0", "providers": []},
+                {"name": "p-reels-pip-heygen", "version": "1.0.0", "providers": []},
+            ],
+        }), encoding="utf-8")
+        out = root / "out"
+        env = os.environ.copy()
+        env["CFW_SKILLS_SRC"] = str(src)
+        proc = subprocess.run(
+            ["bash", str(repo / "scripts/sync-skills.sh"), "--recipes", str(recipes),
+             "--out-dir", str(out), "--skip-manifest"],
+            capture_output=True, text=True, env=env,
+        )
+        paths = [
+            out / "p-reels-pip/SKILL.md",
+            out / "p-reels-pip/steps/02-transcribe.md",
+            out / "p-reels-faceless/SKILL.md",
+            out / "p-reels-faceless/steps/02-transcribe.md",
+            out / "p-reels-pip-heygen/steps/02-transcribe.md",
+            out / "p-reels-pip-heygen/.hub/p-reels-pip/steps/02-transcribe.md",
+        ]
+        bad_sync = []
+        if proc.returncode != 0:
+            bad_sync.append("rc %s %s" % (proc.returncode, (proc.stderr or proc.stdout or "")[-400:]))
+        for path in paths:
+            if not path.is_file():
+                bad_sync.append("missing %s" % path.relative_to(out))
+                continue
+            text = path.read_text(encoding="utf-8")
+            if BAD_RE.search(text):
+                bad_sync.append("bad id in %s" % path.relative_to(out))
+            if GOOD not in text:
+                bad_sync.append("no good id in %s" % path.relative_to(out))
+        # Idempotent second sync on already-good output: re-copy from a good src
+        # is covered by apply on the out tree directly.
+        n_again = mod.apply_whisper_small_mlx(out / "p-reels-pip")
+        if n_again != 0:
+            bad_sync.append("re-apply on synced pip changed %d" % n_again)
+        if bad_sync:
+            add("WI2.68 sync-skills.sh rewrites whisper-small on reel recipes and hub copies", "; ".join(bad_sync))
+        else:
+            add("WI2.68 sync-skills.sh rewrites whisper-small on reel recipes and hub copies")
+except Exception as exc:
+    add("WI2.68 whisper model harness", "%s: %s" % (type(exc).__name__, exc))
+
+for name, detail in rows:
+    if detail:
+        print("BAD\t%s\t%s" % (name, detail))
+    else:
+        print("OK\t%s\t." % (name,))
+PY
+)" || wi268_rc=$?
+if [[ "$wi268_rc" != "0" ]]; then
+  fail "WI2.68 whisper model harness" "python exited $wi268_rc"
+fi
+while IFS=$'\t' read -r status name detail; do
+  [[ -z "${status:-}" ]] && continue
+  if [[ "$status" == "OK" ]]; then
+    pass "$name"
+  else
+    fail "$name" "$detail"
+  fi
+done <<EOF
+$wi268_out
+EOF
+
+echo "=== Case 47: WI2.66 — a reel missing final_video or cover fails the attempt ==="
+# A reel whose delivery list has no final_video, or no cover, used to report
+# attempt_completed with no media. The worker then blocked. The attempt must
+# fail and the reason must name the missing file. A reel with both still
+# completes, and step videos stay out of that list.
+wi266_run() {
+  local slug="$1" mode="$2" root rc=0 detail=""
+  root="$(mktemp -d)"
+  python3 - "$root/order.json" "$slug" "$mode" <<'PY'
+import json, sys
+dest, slug, mode = sys.argv[1:]
+saves = [{"id": "voice_track", "kind": "video"}]
+if mode != "missing-video":
+    saves.append({"id": "final_video", "kind": "video"})
+if mode != "missing-cover":
+    saves.append({"id": "cover", "kind": "image"})
+saves.append({"id": "captions", "kind": "json"})
+json.dump({
+    "id": "order-wi266",
+    "attempt": {"id": "att-wi266"},
+    "recipe": slug,
+    "kind": "video",
+    "taskOrder": {},
+    "inputs": {},
+    "manifest": {
+        "recipe": slug,
+        "recipeVersion": "2026.10.2",
+        "steps": [{
+            "id": "render",
+            "runsOn": "computer",
+            "when": "always",
+            "saves": saves,
+        }],
+    },
+}, open(dest, "w"))
+PY
+  python3 - "$root/engine.sh" <<'PY'
+import pathlib, sys
+pathlib.Path(sys.argv[1]).write_text("""#!/usr/bin/env bash
+set -eu
+cat >/dev/null
+mkdir -p saves
+for sv in ${CFW_STEP_SAVES:-}; do
+  sid="${sv%%:*}"
+  ext="${sv##*:}"
+  printf '%s\\n' "${sid}-bytes" > "saves/${sid}.${ext}"
+done
+""")
+PY
+  chmod +x "$root/engine.sh"
+  (
+    export CFW_RENDER_LOG_DIR="$root/logs"
+    export CFW_RENDER_STATE_DIR="$root/state"
+    export CFW_RENDER_ENGINE=codex
+    export CFW_RENDER_ENGINE_CMD="$root/engine.sh"
+    export CFW_WORKER_ID="w-wi266"
+    export CFW_ORDER_ID="order-wi266"
+    export CFW_API_BASE="http://127.0.0.1:9"
+    export CFW_RENDER_WORKER_KEY="cfw_render_wi266testkey0000"
+    export CFW_RENDER_HEARTBEAT_SEC=30
+    export CFW_RENDER_STEP_TIMEOUT_SEC=60
+    export WI266_REPORTS="$root/reports.ndjson"
+    unset CFW_RENDER_SKILLS_DIR
+    unset CFW_RENDER_LOCAL_CHECKPOINTS
+    mkdir -p "$root/logs" "$root/state"
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-lib.sh"
+    source "$REPO_DIR/bin/cfw-render-engine.sh"
+    source "$REPO_DIR/bin/cfw-render-harness.sh"
+    cr_harness_heartbeat_start() { :; }
+    cr_harness_heartbeat_stop() { :; }
+    cr_h_run_with_timeout() { shift; "$@"; }
+    cr_engine_limit_detect() { return 1; }
+    cr_h_upload_with_retry() { printf 'https://media.cfw.social/%s' "$(basename "$1")"; }
+    cr_report_step() {
+      python3 -c 'import json,sys
+open(sys.argv[1], "a").write(json.dumps({"event": sys.argv[2], "extra": json.loads(sys.argv[3])}) + "\n")' \
+        "$WI266_REPORTS" "$5" "$6" || return 1
+      printf '%s' '{"ok":true,"directive":"continue"}'
+    }
+    cr_harness_run "$root/order.json" "$root" "$root/recipe" >"$root/harness.out" 2>"$root/harness.err"
+  )
+  rc=$?
+  printf '%s\n' "$rc" > "$root/rc"
+  detail="$(python3 - "$root" "$mode" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+mode = sys.argv[2]
+rc = (root / "rc").read_text(encoding="utf-8").strip() if (root / "rc").is_file() else ""
+err = ""
+err_path = root / "harness.err"
+if err_path.is_file():
+    err = err_path.read_text(errors="replace")[-500:].replace("\n", " | ")
+events = []
+reports = root / "reports.ndjson"
+if reports.is_file():
+    for line in reports.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            events.append(json.loads(line))
+names = [e.get("event") for e in events]
+failed = [e for e in events if e.get("event") == "attempt_failed"]
+completed = [e for e in events if e.get("event") == "attempt_completed"]
+bad = []
+if mode == "complete":
+    if rc != "0":
+        bad.append("rc=%s err=%s" % (rc, err))
+    if names[-1:] != ["attempt_completed"]:
+        bad.append("events=%s err=%s" % (names, err))
+    if failed:
+        bad.append("attempt_failed=%r" % failed)
+    try:
+        items = json.loads((root / "harness.out").read_text(encoding="utf-8"))
+    except Exception as exc:
+        bad.append("stdout %s" % exc)
+        items = None
+    if isinstance(items, list):
+        ids = [i.get("id") for i in items if isinstance(i, dict)]
+        if ids != ["final_video", "cover", "captions"]:
+            bad.append("ids=%r" % ids)
+        if "voice_track" in json.dumps(items):
+            bad.append("leaked voice_track")
+else:
+    want = "final_video" if mode == "missing-video" else "cover"
+    if rc != "30":
+        bad.append("rc=%s err=%s events=%s" % (rc, err, names))
+    if "attempt_completed" in names:
+        bad.append("attempt_completed events=%s" % names)
+    if len(failed) != 1:
+        bad.append("attempt_failed count=%d events=%s err=%s" % (len(failed), names, err))
+    else:
+        msg = (failed[0].get("extra") or {}).get("message") or ""
+        if msg != want + " is missing":
+            bad.append("message=%r" % msg)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+  rm -rf "$root"
+  printf '%s\n' "$detail"
+}
+
+for wi266_slug in p-reels-spotlight p-reels-pip; do
+  wi266_detail="$(wi266_run "$wi266_slug" missing-video)"
+  if [[ "$wi266_detail" == "ok" ]]; then
+    pass "WI2.66 $wi266_slug missing final_video reports attempt_failed, not attempt_completed"
+  else
+    fail "WI2.66 $wi266_slug missing final_video" "$wi266_detail"
+  fi
+  wi266_detail="$(wi266_run "$wi266_slug" missing-cover)"
+  if [[ "$wi266_detail" == "ok" ]]; then
+    pass "WI2.66 $wi266_slug missing cover reports attempt_failed, not attempt_completed"
+  else
+    fail "WI2.66 $wi266_slug missing cover" "$wi266_detail"
+  fi
+  wi266_detail="$(wi266_run "$wi266_slug" complete)"
+  if [[ "$wi266_detail" == "ok" ]]; then
+    pass "WI2.66 $wi266_slug with final_video and cover reports attempt_completed"
+  else
+    fail "WI2.66 $wi266_slug complete reel" "$wi266_detail"
+  fi
+done
+
+echo "=== Case 48: WI2.70 — a failed check on run 1 names itself in the step event and the worker log ==="
+# Run 1 fails picture_review; run 2 passes. The retry count stays one failure
+# then success. The check name and its short message are on the step event
+# detail and on the worker log. A planted secret and a save-file body are not.
+wi270_root="$(mktemp -d)"
+python3 - "$wi270_root" <<'PY'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+(root / "recipe" / "checks").mkdir(parents=True)
+(root / "recipe" / "checks" / "picture_review.sh").write_text("""#!/bin/bash
+nfile="$1/.wi270-runs"
+n=0
+if [[ -f "$nfile" ]]; then n=$(cat "$nfile"); fi
+n=$((n + 1))
+printf '%s' "$n" > "$nfile"
+if [[ "$n" -eq 1 ]]; then
+  printf '%s\\n' "black last frame sk-wi270secretvalue0001"
+  exit 1
+fi
+exit 0
+""")
+order = {
+    "id": "order-wi270",
+    "attempt": {"id": "att-wi270"},
+    "recipe": "wi270-check",
+    "kind": "video",
+    "taskOrder": {},
+    "inputs": {},
+    "manifest": {
+        "recipe": "wi270-check",
+        "recipeVersion": "1.0.0",
+        "steps": [{
+            "id": "final_checks",
+            "runsOn": "computer",
+            "when": "always",
+            "maxCheckRetries": 1,
+            "saves": [{"id": "note", "kind": "text"}],
+            "checks": [{"id": "picture_review"}],
+        }],
+    },
+}
+(root / "order.json").write_text(__import__("json").dumps(order))
+(root / "engine.sh").write_text("""#!/bin/bash
+set -eu
+cat >/dev/null
+mkdir -p saves
+printf '%s\\n' "FILEBODY-wi270-do-not-copy" > saves/note.md
+""")
+PY
+chmod +x "$wi270_root/engine.sh"
+(
+  export CFW_RENDER_LOG_DIR="$wi270_root/logs"
+  export CFW_RENDER_STATE_DIR="$wi270_root/state"
+  export CFW_RENDER_ENGINE=codex
+  export CFW_RENDER_ENGINE_CMD="$wi270_root/engine.sh"
+  export CFW_WORKER_ID="w-wi270"
+  export CFW_ORDER_ID="order-wi270"
+  export CFW_API_BASE="http://127.0.0.1:9"
+  export CFW_RENDER_WORKER_KEY="cfw_render_wi270testkey0000"
+  export CFW_RENDER_HEARTBEAT_SEC=30
+  export CFW_RENDER_STEP_TIMEOUT_SEC=60
+  export WI270_REPORTS="$wi270_root/reports.ndjson"
+  unset CFW_RENDER_SKILLS_DIR
+  unset CFW_RENDER_LOCAL_CHECKPOINTS
+  mkdir -p "$wi270_root/logs" "$wi270_root/state"
+  # shellcheck disable=SC1091
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  source "$REPO_DIR/bin/cfw-render-engine.sh"
+  source "$REPO_DIR/bin/cfw-render-harness.sh"
+  cr_harness_heartbeat_start() { :; }
+  cr_harness_heartbeat_stop() { :; }
+  cr_h_run_with_timeout() { shift; "$@"; }
+  cr_engine_limit_detect() { return 1; }
+  cr_h_upload_with_retry() { printf 'https://media.cfw.social/%s' "$(basename "$1")"; }
+  cr_report_step() {
+    python3 -c 'import json,sys
+open(sys.argv[1], "a").write(json.dumps({"event": sys.argv[2], "extra": json.loads(sys.argv[3])}) + "\n")' \
+      "$WI270_REPORTS" "$5" "$6" || return 1
+    printf '%s' '{"ok":true,"directive":"continue"}'
+  }
+  cr_harness_run "$wi270_root/order.json" "$wi270_root" "$wi270_root/recipe" >"$wi270_root/harness.out" 2>"$wi270_root/harness.err"
+)
+wi270_rc=$?
+wi270_detail="$(python3 - "$wi270_root" "$wi270_rc" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+rc = sys.argv[2]
+bad = []
+err = ""
+err_path = root / "harness.err"
+if err_path.is_file():
+    err = err_path.read_text(errors="replace")[-500:].replace("\n", " | ")
+if rc != "0":
+    bad.append("rc=%s err=%s" % (rc, err))
+events = []
+reports = root / "reports.ndjson"
+if reports.is_file():
+    for line in reports.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            events.append(json.loads(line))
+names = [e.get("event") for e in events]
+started = [e for e in events if e.get("event") == "step_started"]
+completed = [e for e in events if e.get("event") == "step_completed"]
+if names != ["step_started", "step_started", "step_completed", "attempt_completed"]:
+    bad.append("events=%s err=%s" % (names, err))
+if any(e.get("event") == "attempt_failed" for e in events):
+    bad.append("attempt_failed")
+log_path = root / "logs" / "cfw-render.log"
+log = log_path.read_text(encoding="utf-8", errors="replace") if log_path.is_file() else ""
+want = "picture_review: black last frame sk-[redacted]"
+if log.count("checks failed") != 1 or "run 1/2" not in log or want not in log or "retrying" not in log:
+    bad.append("log=%r" % log[-500:])
+details = []
+if len(started) >= 2:
+    details.append((started[1].get("extra") or {}).get("detail") or "")
+if completed:
+    details.append((completed[0].get("extra") or {}).get("detail") or "")
+if not details or any(want not in d for d in details):
+    bad.append("detail=%r" % details)
+blob = log + "\n" + (reports.read_text(encoding="utf-8") if reports.is_file() else "")
+if "sk-wi270secretvalue0001" in blob or "FILEBODY-wi270-do-not-copy" in blob:
+    bad.append("leaked secret or file body")
+runs = root / "steps" / "final_checks" / ".wi270-runs"
+got_runs = runs.read_text(encoding="utf-8") if runs.is_file() else ""
+if got_runs != "2":
+    bad.append("runs=%r" % got_runs)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi270_detail" == "ok" ]]; then
+  pass "WI2.70 failed check on run 1 is named in the step event detail and the worker log; run 2 completes"
+else
+  fail "WI2.70 check failure detail" "$wi270_detail"
+fi
+rm -rf "$wi270_root"
+
+echo "=== Case 49: WI2.71 — reel face clip fills the spotlight frame and the pip card (no pad bars) ==="
+# The owner's HeyGen clip is 1080x1920 with a 16:9 picture between flat light bars.
+# For wide, tall, light-barred and mint-barred clips, the bar helper and fill
+# filters taken from the step docs must leave no flat bar on any edge.
+wi271_root="$(mktemp -d)"
+wi271_detail="$(python3 - "$REPO_DIR" "$wi271_root" <<'PY'
+import importlib.util, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+def ff(*a):
+    subprocess.run(["ffmpeg", "-v", "error", "-y", *a], check=True)
+def frame(src, vf, w, h):
+    out = subprocess.run(["ffmpeg", "-v", "error", "-i", str(src), "-frames:v", "1", "-vf", vf,
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+    if len(out) != w * h * 3:
+        raise RuntimeError("frame size %d != %dx%d" % (len(out), w, h))
+    return out
+def flat(fr, w, pts):
+    ref = None
+    for x, y in pts:
+        i = (y * w + x) * 3; c = fr[i:i + 3]; ref = ref or c
+        if max(abs(c[k] - ref[k]) for k in range(3)) > 12:
+            return False
+    return True
+def edges(fr, w, h):
+    sides = {"top": [(x, 1) for x in range(w)], "bottom": [(x, h - 2) for x in range(w)],
+             "left": [(1, y) for y in range(h)], "right": [(w - 2, y) for y in range(h)]}
+    return [k for k, pts in sides.items() if flat(fr, w, pts)]
+try:
+    clips = {}
+    # noise gives every picture row and column texture; the pad bars stay flat.
+    for name, src, vf in (("wide", "testsrc2=s=1920x1080:d=1:r=5", "noise=alls=60:allf=t"),
+                          ("tall", "testsrc2=s=1080x1920:d=1:r=5", "noise=alls=60:allf=t"),
+                          ("light", "testsrc2=s=1080x608:d=1:r=5", "noise=alls=60:allf=t,pad=1080:1920:0:656:color=0xF4F6FA"),
+                          ("mint", "testsrc2=s=1080x608:d=1:r=5", "noise=alls=60:allf=t,pad=1080:1920:0:656:color=0x9FE2BF")):
+        clips[name] = root / (name + ".mp4")
+        ff("-f", "lavfi", "-i", src, "-vf", vf, "-pix_fmt", "yuv420p", str(clips[name]))
+    docs = {r: (repo / "skills" / r / "steps" / "01-prepare-footage.md").read_text(encoding="utf-8")
+            for r in ("p-reels-spotlight", "p-reels-spotlight-heygen", "p-reels-pip", "p-reels-pip-heygen")}
+    helpers = set()
+    for r, text in docs.items():
+        m = re.search(r"cat > work/bars\.py <<'PY'\n(.*?\n)PY\n", text, re.S)
+        if not m:
+            bad.append("%s: no bars.py helper" % r); continue
+        helpers.add(m.group(1))
+    if len(helpers) != 1:
+        bad.append("bars.py helpers differ across recipes: %d" % len(helpers))
+    helper = root / "bars.py"; helper.write_text(sorted(helpers)[0] if helpers else "", encoding="utf-8")
+    m = re.search(r'-vf "(\$\{CROP\}scale=1080:1920:[^"]*)"', docs["p-reels-spotlight"])
+    spot_vf = m.group(1) if m else ""
+    if "increase,crop=1080:1920" not in spot_vf:
+        bad.append("spotlight bed vf is not fill+crop: %r" % spot_vf)
+    comp = {r: (repo / "skills" / r / "steps" / "05-composite.md").read_text(encoding="utf-8")
+            for r in ("p-reels-pip", "p-reels-pip-heygen")}
+    card = []
+    for r, text in comp.items():
+        heads = re.findall(r'FC="\[1:v\](scale=\$\{CARD_W\}[^\[]*)\[thfit\]', text)
+        if len(heads) != 3 or any("pad=" in h or "decrease" in h or "increase,crop=${CARD_W}:${CARD_H}" not in h for h in heads):
+            bad.append("%s card filters not fill+crop: %r" % (r, heads))
+        card += heads
+    card_vf = (card[-1] if card else "").replace("${CARD_W}", "364").replace("${CARD_H}", "504")
+    for name, clip in clips.items():
+        crop = subprocess.run([sys.executable, "-I", str(helper), str(clip)], capture_output=True, text=True, check=True).stdout.strip()
+        if name in ("light", "mint") and not crop.startswith("crop="):
+            bad.append("%s: bars not found" % name)
+        if name in ("wide", "tall") and crop:
+            bad.append("%s: false bar crop %r" % (name, crop))
+        fr = frame(clip, spot_vf.replace("${CROP}", crop), 1080, 1920)
+        e = edges(fr, 1080, 1920)
+        if e:
+            bad.append("%s spotlight flat edges %s (crop %r)" % (name, e, crop))
+        bed = root / ("bed-" + name + ".mp4")
+        ff("-i", str(clip), "-vf", crop + "fps=30,setsar=1,format=yuv420p", str(bed))
+        fr = frame(bed, card_vf, 364, 504)
+        e = edges(fr, 364, 504)
+        if e:
+            bad.append("%s pip card flat edges %s (crop %r)" % (name, e, crop))
+    spec = importlib.util.spec_from_file_location("wi271_sync", repo / "scripts" / "sync-skills.py")
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    for r in docs:
+        tmp = root / "sync" / r; shutil.copytree(repo / "skills" / r / "steps", tmp / "steps")
+        if mod.apply_reel_fill_frame(tmp, r) != 0:
+            bad.append("%s: sync transform not idempotent" % r)
+except Exception as exc:
+    bad.append("error: %s" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi271_detail" == "ok" ]]; then
+  pass "WI2.71 spotlight frame and pip card are filled for wide, tall and barred clips"
+else
+  fail "WI2.71 reel fill frame" "$wi271_detail"
+fi
+rm -rf "$wi271_root"
+
+echo "=== Case 50: WI2.71 rework — crop only a matched bar pair, keep the face, top-biased pip card ==="
+# Review of the first WI2.71 commit: a speaker on a plain backdrop lost the head
+# (every flat edge was cropped on its own), the pip card centre-cropped the top,
+# rotated clips were read on the coded axes, and the crop was not even. The
+# helper and filters taken from the step docs and SKILL.md must now crop only a
+# matched pair, never a plain backdrop, and keep the top of the picture.
+wi271b_root="$(mktemp -d)"
+wi271b_detail="$(python3 - "$REPO_DIR" "$wi271b_root" <<'PY'
+import importlib.util, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+RECIPES = ("p-reels-spotlight", "p-reels-spotlight-heygen", "p-reels-pip", "p-reels-pip-heygen")
+def ff(*a):
+    subprocess.run(["ffmpeg", "-v", "error", "-y", *a], check=True)
+def frame(src, vf, w, h):
+    out = subprocess.run(["ffmpeg", "-v", "error", "-i", str(src), "-frames:v", "1", "-vf", vf,
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+    if len(out) != w * h * 3:
+        raise RuntimeError("frame size %d != %dx%d" % (len(out), w, h))
+    return out
+def first_busy_row(fr, w, h):
+    # first row from the top that is not one flat colour (the subject's top edge)
+    for y in range(h):
+        row = [fr[(y * w + x) * 3:(y * w + x) * 3 + 3] for x in range(0, w, 2)]
+        if any(max(abs(c[k] - row[0][k]) for k in range(3)) > 12 for c in row):
+            return y
+    return h
+try:
+    steps = {r: (repo / "skills" / r / "steps" / "01-prepare-footage.md").read_text(encoding="utf-8") for r in RECIPES}
+    helpers = {re.search(r"cat > work/bars\.py <<'PY'\n(.*?\n)PY\n", t, re.S).group(1) for t in steps.values()}
+    for r in ("p-reels-spotlight", "p-reels-pip"):
+        m = re.search(r"cat > \"\$W/bars\.py\" <<'PY'\n(.*?\n)PY\n", (repo / "skills" / r / "SKILL.md").read_text(encoding="utf-8"), re.S)
+        if not m:
+            bad.append("%s SKILL.md: no bars.py helper in Step 1.5" % r)
+        else:
+            helpers.add(m.group(1))
+    if len(helpers) != 1:
+        bad.append("bars.py helpers differ across steps/SKILL.md: %d" % len(helpers))
+    helper = root / "bars.py"; helper.write_text(sorted(helpers)[0], encoding="utf-8")
+    spot_vf = re.search(r'-vf "(\$\{CROP\}scale=1080:1920:[^"]*)"', steps["p-reels-spotlight"]).group(1)
+    comp = (repo / "skills" / "p-reels-pip" / "steps" / "05-composite.md").read_text(encoding="utf-8")
+    heads = re.findall(r'FC="\[1:v\](scale=\$\{CARD_W\}[^\[]*)\[thfit\]', comp)
+    skill_heads = re.findall(r'FC="\[1:v\](scale=\$\{CARD_W\}[^\[]*)\[thfit\]',
+                             (repo / "skills" / "p-reels-pip" / "SKILL.md").read_text(encoding="utf-8"))
+    for name, hs in (("05-composite", heads), ("SKILL.md", skill_heads)):
+        if len(hs) != 3 or any("crop=${CARD_W}:${CARD_H}:(iw-ow)/2:0" not in h or "pad=" in h for h in hs):
+            bad.append("p-reels-pip %s card crop not top-biased fill: %r" % (name, hs))
+    card_vf = heads[-1].replace("${CARD_W}", "364").replace("${CARD_H}", "504")
+    subj = "testsrc2=s=%s:d=1:r=5,noise=alls=60:allf=t"
+    clips = {
+        # speaker on a plain backdrop, margins on every side: must NOT be cropped
+        "solid": ("color=c=0x2E7D32:s=1080x1920:d=1:r=5", subj % "520x1400", "overlay=280:260", "", 260),
+        # dark backdrop, body runs off the bottom: must NOT be cropped
+        "dark": ("color=c=black:s=1080x1920:d=1:r=5", subj % "600x1700", "overlay=240:220", "", 220),
+        # 16:9 picture between unequal bars (400 / 912): not a matched pair, no crop
+        "unequal": ("color=c=0xF4F6FA:s=1080x1920:d=1:r=5", subj % "1080x608", "overlay=0:400", "", None),
+        # 9:16 picture between two side bars: a matched left+right pair
+        "pillar": ("color=c=0xF4F6FA:s=1920x1080:d=1:r=5", subj % "608x1080", "overlay=656:0", "crop=608:1080:656:0,", None),
+        # odd bars (655 / 657, lossless so the edge is exact): crop x/y/w/h all even, no bar row kept
+        "odd": ("color=c=0x9FE2BF:s=1080x1920:d=1:r=5", subj % "1080x608", "overlay=0:655", "crop=1080:606:0:656,", None),
+    }
+    for name, (bg, fg, ov, want, subj_top) in clips.items():
+        # the odd clip is lossless RGB (ffv1) so its bar edge lands on exactly row 655
+        lossless = name == "odd"
+        clip = root / (name + (".mkv" if lossless else ".mp4"))
+        fc = "[0:v][1:v]" + ov + (":format=rgb,format=rgb24" if lossless else ",format=yuv420p")
+        ff("-f", "lavfi", "-i", bg, "-f", "lavfi", "-i", fg, "-filter_complex", fc, "-frames:v", "5",
+           *(("-c:v", "ffv1") if lossless else ()), str(clip))
+        crop = subprocess.run([sys.executable, "-I", str(helper), str(clip)], capture_output=True, text=True, check=True).stdout.strip()
+        if crop != want:
+            bad.append("%s: crop %r, want %r" % (name, crop, want)); continue
+        if crop and any(int(v) % 2 for v in crop[5:-1].split(":")):
+            bad.append("%s: crop not even %r" % (name, crop))
+        if subj_top is None:
+            continue
+        src_top = first_busy_row(frame(clip, "null", 1080, 1920), 1080, 1920)
+        spot_top = first_busy_row(frame(clip, spot_vf.replace("${CROP}", crop), 1080, 1920), 1080, 1920)
+        if abs(spot_top - src_top) > 2 or abs(src_top - subj_top) > 6:
+            bad.append("%s spotlight: subject top %d moved to %d (source %d)" % (name, subj_top, spot_top, src_top))
+        bed = root / ("bed-" + name + ".mp4")
+        ff("-i", str(clip), "-vf", crop + "fps=30,setsar=1,format=yuv420p", str(bed))
+        card_top = first_busy_row(frame(bed, card_vf, 364, 504), 364, 504)
+        want_top = subj_top * 364 / 1080
+        if not 1 <= card_top or abs(card_top - want_top) > 4:
+            bad.append("%s pip card: subject top at %d, want ~%.0f (top cut?)" % (name, card_top, want_top))
+    # rotated phone clip: stored 1920x1080 with a 90-degree display tag, shown 1080x1920 with bars
+    raw, rot = root / "rot-raw.mp4", root / "rot.mp4"
+    ff("-f", "lavfi", "-i", "testsrc2=s=1080x608:d=1:r=5",
+       "-vf", "noise=alls=60:allf=t,pad=1080:1920:0:656:color=0xF4F6FA,transpose=1", "-pix_fmt", "yuv420p", str(raw))
+    ff("-display_rotation:v:0", "90", "-i", str(raw), "-c", "copy", str(rot))
+    crop = subprocess.run([sys.executable, "-I", str(helper), str(rot)], capture_output=True, text=True, check=True).stdout.strip()
+    if crop != "crop=1080:608:0:656,":
+        bad.append("rotated: crop %r, want display-axis crop=1080:608:0:656," % crop)
+    # sync transform: pair replacement is specific to each pair and idempotent
+    spec = importlib.util.spec_from_file_location("wi271b_sync", repo / "scripts" / "sync-skills.py")
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    t = mod._apply_pairs("NEW here\nOLD there\n", (("OLD", "NEW"),))
+    if t != "NEW here\nNEW there\n":
+        bad.append("_apply_pairs skipped a pair whose new text was elsewhere: %r" % t)
+    t1 = mod._apply_pairs("a fit b", (("fit", "fit + crop"),))
+    if t1 != "a fit + crop b" or mod._apply_pairs(t1, (("fit", "fit + crop"),)) != t1:
+        bad.append("_apply_pairs not idempotent when new contains old: %r" % t1)
+    for r in RECIPES:
+        tmp = root / "sync" / r; shutil.copytree(repo / "skills" / r / "steps", tmp / "steps")
+        shutil.copy(repo / "skills" / r / "SKILL.md", tmp / "SKILL.md")
+        if mod.apply_reel_fill_frame(tmp, r) != 0:
+            bad.append("%s: sync transform not idempotent on SKILL.md/steps" % r)
+except Exception as exc:
+    bad.append("error: %s" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi271b_detail" == "ok" ]]; then
+  pass "WI2.71 rework crops only matched bar pairs, keeps the face and top-biases the pip card"
+else
+  fail "WI2.71 rework matched bar pairs" "$wi271b_detail"
+fi
+rm -rf "$wi271b_root"
+
+echo "=== Case 51: WI2.75 — a thin flat seam next to a reel bar is trimmed (7+ rows is kept) ==="
+# Review of WI2.71: the owner's clip has a 4-row mid-grey seam between the face picture and
+# the bottom bar. bars.py stopped at the seam and the grey line showed as a band. A flat run
+# of 6 rows or fewer beside a bar now counts as bar; 7 rows or more is picture. Also: the
+# sync transform must fail fast (non-zero) when its anchor text is missing.
+wi275_root="$(mktemp -d)"
+wi275_detail="$(python3 - "$REPO_DIR" "$wi275_root" <<'PY'
+import re, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+RECIPES = ("p-reels-spotlight", "p-reels-spotlight-heygen", "p-reels-pip", "p-reels-pip-heygen")
+def ff(*a):
+    subprocess.run(["ffmpeg", "-v", "error", "-y", *a], check=True)
+try:
+    helpers = {re.search(r"cat > work/bars\.py <<'PY'\n(.*?\n)PY\n",
+               (repo / "skills" / r / "steps" / "01-prepare-footage.md").read_text(encoding="utf-8"), re.S).group(1) for r in RECIPES}
+    for r in ("p-reels-spotlight", "p-reels-pip"):
+        helpers.add(re.search(r"cat > \"\$W/bars\.py\" <<'PY'\n(.*?\n)PY\n",
+                    (repo / "skills" / r / "SKILL.md").read_text(encoding="utf-8"), re.S).group(1))
+    if len(helpers) != 1:
+        bad.append("bars.py helpers differ across recipes: %d" % len(helpers))
+    helper = root / "bars.py"; helper.write_text(sorted(helpers)[0], encoding="utf-8")
+    def clip(name, pic_h, seam_h, seam_top=False):
+        # 1080x1920 lossless: top bar 656 rows, picture, grey seam, bottom bar
+        out = root / (name + ".mkv")
+        seam_y = 656 + pic_h
+        # the seam is mid-grey with +-12 of speckle, like the owner's compressed clip
+        # planar RGB so an odd overlay row is exact (yuv420 would round it to even)
+        fc = ("[0:v]format=gbrp[b];[1:v]format=gbrp[p];[2:v]format=gbrp[s];"
+              "[b][p]overlay=0:656[a];[a][s]overlay=0:%d,format=rgb24" % seam_y)
+        ff("-f", "lavfi", "-i", "color=c=0xF4F6FA:s=1080x1920:d=1:r=5",
+           "-f", "lavfi", "-i", "testsrc2=s=1080x%d:d=1:r=5,noise=alls=60:allf=t" % pic_h,
+           "-f", "lavfi", "-i", "color=c=0x727272:s=1080x%d:d=1:r=5,noise=alls=3:allf=t" % seam_h,
+           "-filter_complex", fc, "-frames:v", "5", "-c:v", "ffv1", str(out))
+        return out
+    def crop_of(c):
+        return subprocess.run([sys.executable, "-I", str(helper), str(c)], capture_output=True, text=True, check=True).stdout.strip()
+    # 4-row seam (the owner's clip): picture 656..1259, seam 1260..1263 is swallowed
+    got = crop_of(clip("seam4", 604, 4))
+    if got != "crop=1080:604:0:656,":
+        bad.append("4-row seam: crop %r, want crop=1080:604:0:656," % got)
+    # 6-row seam is the limit and is still swallowed
+    got = crop_of(clip("seam6", 604, 6))
+    if got != "crop=1080:604:0:656,":
+        bad.append("6-row seam: crop %r, want crop=1080:604:0:656," % got)
+    # 7-row band is picture, not seam: kept (crop stops at the bar)
+    got = crop_of(clip("band7", 602, 7))
+    if got != "crop=1080:608:0:656,":
+        bad.append("7-row band: crop %r, want crop=1080:608:0:656," % got)
+    # no flat row at the cropped picture's bottom edge for the 4-row seam
+    c4 = crop_of(root / "seam4.mkv")
+    ch = int(c4[5:-1].split(":")[1]); y0 = int(c4[5:-1].split(":")[3])
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(root / "seam4.mkv"), "-frames:v", "1", "-vf", c4 + "format=rgb24",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+    last = [raw[((ch - 1) * 1080 + x) * 3:((ch - 1) * 1080 + x) * 3 + 3] for x in range(0, 1080, 4)]
+    if all(max(abs(c[k] - last[0][k]) for k in range(3)) <= 12 for c in last):
+        bad.append("cropped 4-row-seam clip still ends on a flat row")
+    # sync transform fails fast when the anchor text is gone
+    src = root / "src"; (src / "p-reels-spotlight" / "steps").mkdir(parents=True)
+    (src / "p-reels-spotlight" / "steps" / "01-prepare-footage.md").write_text("### 2. Detect something else (BEFORE anything else)\nno matching anchor\n", encoding="utf-8")
+    code = ("import importlib.util,sys\nfrom pathlib import Path\n"
+            "s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)\n"
+            "m.apply_reel_fill_frame(Path(sys.argv[2]),'p-reels-spotlight')\n")
+    r = subprocess.run([sys.executable, "-I", "-c", code, str(repo / "scripts" / "sync-skills.py"), str(src / "p-reels-spotlight")],
+                       capture_output=True, text=True)
+    if r.returncode == 0 or "anchor text not found" not in r.stderr:
+        bad.append("sync transform did not fail fast on a missing anchor (rc=%d)" % r.returncode)
+except Exception as exc:
+    bad.append("error: %s" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi275_detail" == "ok" ]]; then
+  pass "WI2.75 thin seam beside a reel bar is trimmed, a 7-row band is kept, sync fails fast"
+else
+  fail "WI2.75 thin seam beside a reel bar" "$wi275_detail"
+fi
+rm -rf "$wi275_root"
+
+echo "=== Case 52: WI2.72 — a mis-heard caption word is corrected to the script word (timings kept) ==="
+# Owner report on WI2.9: captions come from the Whisper transcript and nothing checked those
+# words against the script the voice was made from. The transcribe step now writes
+# work/script_align.py (shipped by scripts/sync-skills.py), passes the script as the
+# mlx_whisper --initial-prompt and fixes mis-heard words to the script words, keeping timings.
+# No script (an uploaded clip) leaves the words unchanged.
+wi272_root="$(mktemp -d)"
+wi272_detail="$(python3 - "$REPO_DIR" "$wi272_root" <<'PY'
+import hashlib, importlib.util, json, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+RECIPES = ("p-reels-spotlight", "p-reels-spotlight-heygen", "p-reels-pip", "p-reels-pip-heygen")
+OPEN = "cat > work/script_align.py <<'PY'\n"
+try:
+    spec = importlib.util.spec_from_file_location("ss272", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    helpers = {}
+    for r in RECIPES:
+        body = (repo / "skills" / r / "steps" / "02-transcribe.md").read_text(encoding="utf-8")
+        if OPEN not in body:
+            bad.append("%s: transcribe step does not write work/script_align.py" % r); continue
+        helpers[r] = body.split(OPEN, 1)[1].split("\nPY\n", 1)[0] + "\n"
+        if "--initial-prompt \"$SCRIPT_PROMPT\"" not in body:
+            bad.append("%s: mlx_whisper is not given the script as --initial-prompt" % r)
+        if body.index(OPEN) > body.index("mlx_whisper prior/voice_track.mp4"):
+            bad.append("%s: helper is written after mlx_whisper runs" % r)
+        if "python3 work/script_align.py work/words.json" not in body:
+            bad.append("%s: transcribe step never runs the script check" % r)
+    if set(helpers.values()) != {ss._SCRIPT_ALIGN_PY}:
+        bad.append("helper differs across recipes or from sync-skills.py")
+    helper = root / "script_align.py"; helper.write_text(ss._SCRIPT_ALIGN_PY, encoding="utf-8")
+    heard = [("She", 15.53, 15.64), ("approved", 15.65, 16.21), ("them", 16.21, 16.43), ("with", 16.50, 16.77),
+             ("flower", 16.90, 17.30), ("steel", 17.30, 17.66), ("on", 17.66, 17.75), ("her", 17.90, 18.00),
+             ("hands,", 18.00, 18.42), ("about", 18.53, 18.90), ("30", 18.90, 19.40), ("minutes", 19.40, 20.03)]
+    words = [{"text": t, "start": s, "end": e} for t, s, e in heard]
+    def run_in(name, script=None, script_file="script.json"):
+        wd = root / name; (wd / "work").mkdir(parents=True)
+        if script is not None:
+            (wd / "inputs" / "script").mkdir(parents=True)
+            body = json.dumps({"text": script}) if script_file.endswith(".json") else script
+            (wd / "inputs" / "script" / script_file).write_text(body, encoding="utf-8")
+        (wd / "work" / "words.json").write_text(json.dumps(words), encoding="utf-8")
+        r = subprocess.run([sys.executable, "-I", str(helper), "work/words.json"], cwd=wd, capture_output=True, text=True)
+        if r.returncode != 0:
+            bad.append("%s: helper rc=%d %s" % (name, r.returncode, r.stderr.strip()[-300:]))
+        p = subprocess.run([sys.executable, "-I", str(helper), "--prompt"], cwd=wd, capture_output=True, text=True)
+        return json.loads((wd / "work" / "words.json").read_text()), r.stdout, p.stdout.strip()
+    script = "She approved them with flour still on her hands... about thirty minutes a week."
+    got, out, prompt = run_in("with_script", script)
+    texts = [w["text"] for w in got]
+    want = ["She", "approved", "them", "with", "flour", "still", "on", "her", "hands,", "about", "thirty", "minutes"]
+    if texts != want:
+        bad.append("script case: words %r, want %r" % (texts, want))
+    if [(w["start"], w["end"]) for w in got] != [(s, e) for _, s, e in heard]:
+        bad.append("script case: timings changed")
+    if "FLOWER" in " ".join(texts).upper() or "STEEL" in " ".join(texts).upper():
+        bad.append("script case: a mis-heard word survived")
+    if prompt != script:
+        bad.append("--prompt printed %r, want the script text" % prompt)
+    # a .md script (prior-style plain text) works the same way
+    got_md, _, _ = run_in("md_script", script, "script.md")
+    if [w["text"] for w in got_md] != want:
+        bad.append("plain-text script was not used")
+    # a recognised word that is not in the script is not burned in
+    words.insert(9, {"text": "um", "start": 18.42, "end": 18.50})
+    got_um, _, _ = run_in("extra_word", script)
+    if [w["text"] for w in got_um] != want:
+        bad.append("extra word case: %r" % [w["text"] for w in got_um])
+    del words[9]
+    # no script: unchanged, and the helper says so
+    got0, out0, prompt0 = run_in("no_script")
+    if got0 != words:
+        bad.append("no-script case changed the words")
+    if "no script" not in out0 or prompt0 != "":
+        bad.append("no-script case did not say so (%r, prompt %r)" % (out0.strip(), prompt0))
+    # a script that is not what was spoken: unchanged
+    got_x, out_x, _ = run_in("other_script", "Completely different words about a car dealership opening downtown next spring.")
+    if got_x != words:
+        bad.append("unrelated-script case changed the words")
+    # the sync transform is idempotent on the committed files and fails fast on a drifted anchor
+    for r in RECIPES:
+        cp = root / "copy" / r; shutil.copytree(repo / "skills" / r / "steps", cp / "steps")
+        if ss.apply_reel_script_align(cp, r) != 0:
+            bad.append("%s: committed transcribe step is not what sync-skills.py writes" % r)
+    drift = root / "drift" / "p-reels-pip"; (drift / "steps").mkdir(parents=True)
+    (drift / "steps" / "02-transcribe.md").write_text("### 1. Something else\n### 2. Quality check + normalise\n", encoding="utf-8")
+    code = ("import importlib.util,sys\nfrom pathlib import Path\n"
+            "s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)\n"
+            "m.apply_reel_script_align(Path(sys.argv[2]),'p-reels-pip')\n")
+    rr = subprocess.run([sys.executable, "-I", "-c", code, str(repo / "scripts" / "sync-skills.py"), str(drift)], capture_output=True, text=True)
+    if rr.returncode == 0 or "WI2.72 transform cannot apply" not in rr.stderr:
+        bad.append("sync transform did not fail fast on a missing anchor (rc=%d)" % rr.returncode)
+    # index.json hashes cover the edited files
+    idx = json.loads((repo / "skills" / "index.json").read_text(encoding="utf-8"))
+    for r in RECIPES:
+        f = repo / "skills" / r / "steps" / "02-transcribe.md"
+        actual = "sha256:" + hashlib.sha256(f.read_bytes()).hexdigest()
+        if idx["recipes"][r]["fileHashes"].get("steps/02-transcribe.md") != actual:
+            bad.append("%s: index.json hash for steps/02-transcribe.md is stale" % r)
+except Exception as exc:
+    bad.append("error: %s" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi272_detail" == "ok" ]]; then
+  pass "WI2.72 mis-heard caption words are corrected to the script, timings kept; no script = unchanged"
+else
+  fail "WI2.72 caption words checked against the script" "$wi272_detail"
+fi
+rm -rf "$wi272_root"
+
+echo "=== Case 53: WI2.76 — caption groups keep phrases whole (no lone mid-clause fragment) ==="
+# Smoke 21b showed a caption "FLOUR STILL": the planner split "She approved them with flour
+# still on her hands," into three groups. The caption-planning step now writes
+# work/caption_phrases.py (shipped by scripts/sync-skills.py), regroups the plan so no group
+# ends on a preposition/article/conjunction/auxiliary and no 1-2 word mid-clause fragment is
+# left (timings kept), and the plan guard fails on a split phrase. A whole plan is unchanged.
+wi276_root="$(mktemp -d)"
+wi276_detail="$(python3 - "$REPO_DIR" "$wi276_root" <<'PY'
+import copy, hashlib, importlib.util, json, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+FILES = {"p-reels-spotlight": "steps/03-plan-edit.md", "p-reels-spotlight-heygen": "steps/03-plan-edit.md",
+         "p-reels-pip": "steps/05-composite.md", "p-reels-pip-heygen": "steps/05-composite.md"}
+OPEN = "cat > work/caption_phrases.py <<'PY'\n"
+def say(g):
+    return " ".join(w["w"] for w in g["words"])
+def closes(w):
+    t = re.sub(r"[\"')\]]+$", "", w["w"].strip())
+    return bool(t) and t[-1] in ".,!?;:"
+def fragments(groups):
+    return [say(g) for i, g in enumerate(groups) if 0 < i < len(groups) - 1 and len(g["words"]) <= 2
+            and not closes(groups[i - 1]["words"][-1]) and not closes(g["words"][-1])]
+try:
+    spec = importlib.util.spec_from_file_location("ss276", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    helpers = {}
+    for r, rel in FILES.items():
+        body = (repo / "skills" / r / rel).read_text(encoding="utf-8")
+        if OPEN not in body:
+            bad.append("%s: %s does not write work/caption_phrases.py" % (r, rel)); continue
+        helpers[r] = body.split(OPEN, 1)[1].split("\nPY\n", 1)[0] + "\n"
+        if "spotlight" in r:
+            run_at = body.find("python3 work/caption_phrases.py saves/edit_plan.json")
+            guard_at = body.find("Then run the mechanical guard")
+            if run_at < 0 or not (body.index(OPEN) < run_at < guard_at):
+                bad.append("%s: the plan is not regrouped after it is written and before the guard" % r)
+            if '"work/caption_phrases.py", "--check"' not in body.split("Then run the mechanical guard", 1)[1]:
+                bad.append("%s: the plan guard does not check for split phrases" % r)
+            if "never\n   leave a lone 1–2 word fragment" not in body:
+                bad.append("%s: rule 1 does not forbid a lone mid-clause fragment" % r)
+        else:
+            if 'python3 work/caption_phrases.py "$PW/plan.json"' not in body or \
+               'python3 work/caption_phrases.py --check "$PW/plan.json" || exit 1' not in body:
+                bad.append("%s: composite step does not regroup and check the premium plan" % r)
+    if set(helpers.values()) != {ss._CAPTION_PHRASES_PY}:
+        bad.append("helper differs across recipes or from sync-skills.py")
+    helper = root / "caption_phrases.py"; helper.write_text(ss._CAPTION_PHRASES_PY, encoding="utf-8")
+    fixture = json.loads((repo / "test" / "fixtures" / "wi276-smoke21b-caption-groups.json").read_text())
+    orig = fixture["caption_groups"]
+    plan = {"duration": fixture["duration"], "energy": "medium", "grade": "warm-amber", "cover_at": 20.0,
+            "brand": {"bg": "#0F172A", "accent": "#F97316", "fg": "#F1F5F9"}, "takeovers": [],
+            "caption_groups": orig, "sfx": []}
+    wd = root / "smoke21b"; (wd / "work").mkdir(parents=True); (wd / "saves").mkdir()
+    shutil.copy(helper, wd / "work" / "caption_phrases.py")
+    pp = wd / "saves" / "edit_plan.json"; pp.write_text(json.dumps(plan), encoding="utf-8")
+    guard = (repo / "skills" / "p-reels-spotlight" / "steps" / "03-plan-edit.md").read_text(encoding="utf-8")
+    guard = guard.split("python3 - saves/edit_plan.json \"$DUR\" <<'PY'\n", 1)[1].split("\nPY\n", 1)[0] + "\n"
+    (wd / "guard.py").write_text(guard, encoding="utf-8")
+    # WI2.95: this guard shells out to work/takeover_brand.py --check. The
+    # regrouped plan has no takeovers; stage the helper, the transcript and an
+    # order brand so a missing file is not reported as a foreign brand.
+    tb_open = "cat > work/takeover_brand.py <<'PY'\n"
+    step_md = (repo / "skills" / "p-reels-spotlight" / "steps" / "03-plan-edit.md").read_text(encoding="utf-8")
+    if tb_open not in step_md:
+        bad.append("spotlight plan step does not write work/takeover_brand.py")
+    else:
+        (wd / "work" / "takeover_brand.py").write_text(
+            step_md.split(tb_open, 1)[1].split("\nPY\n", 1)[0] + "\n", encoding="utf-8")
+        words = [{"text": w["w"], "start": w["s"], "end": w["e"]} for g in orig for w in g["words"]]
+        (wd / "work" / "words.json").write_text(json.dumps(words), encoding="utf-8")
+        (wd / "brief.json").write_text(json.dumps({"brand": {"name": "Test Brand"}}), encoding="utf-8")
+    g0 = subprocess.run([sys.executable, "-I", "guard.py", "saves/edit_plan.json", str(fixture["duration"])],
+                        cwd=wd, capture_output=True, text=True)
+    if g0.returncode == 0:
+        bad.append("guard passed the smoke 21b plan with its FLOUR STILL fragment")
+    c0 = subprocess.run([sys.executable, "-I", str(helper), "--check", "saves/edit_plan.json"], cwd=wd, capture_output=True, text=True)
+    if c0.returncode == 0 or "'flour still'" not in c0.stderr:
+        bad.append("--check did not name the 'flour still' fragment (rc=%d)" % c0.returncode)
+    r = subprocess.run([sys.executable, "-I", str(helper), "saves/edit_plan.json"], cwd=wd, capture_output=True, text=True)
+    if r.returncode != 0:
+        bad.append("helper rc=%d %s" % (r.returncode, r.stderr.strip()[-300:]))
+    got = json.loads(pp.read_text())["caption_groups"]
+    print("REGROUPED " + " | ".join("[%s]" % say(g) for g in got), file=sys.stderr)
+    home = [g for g in got if "flour" in say(g)]
+    if len(home) != 1 or "flour still on her hands," not in say(home[0]):
+        bad.append("'flour still' is not in the same group as 'on her hands': %r" % [say(g) for g in home])
+    if any(say(g).lower() in ("flour still", "with flour still") for g in got):
+        bad.append("a lone flour-still group survived")
+    if fragments(got):
+        bad.append("mid-clause fragments left: %r" % fragments(got))
+    for i, g in enumerate(got[:-1]):
+        if g["words"][-1]["w"].lower() in ("with", "a", "the", "of", "to", "and", "is"):
+            bad.append("group ends on a phrase word: %r" % say(g))
+    flat = lambda gs: [(w["w"], w["s"], w["e"]) for g in gs for w in g["words"]]
+    if flat(got) != flat(orig):
+        bad.append("words or word timings changed")
+    if any(len(g["words"]) > 6 for g in got):
+        bad.append("a group has more than 6 words")
+    for a, b in zip(got, got[1:]):
+        if a["style"] == b["style"]:
+            bad.append("adjacent groups share style %s" % a["style"])
+        if a["end"] > b["start"] + 1e-9:
+            bad.append("groups overlap at %r" % say(b))
+    for g in got:
+        if sum(1 for w in g["words"] if w.get("em")) > 1:
+            bad.append("more than one em word in %r" % say(g))
+        if not (g["start"] <= g["words"][0]["s"] + 1e-9 and g["end"] >= g["words"][-1]["e"] - 1e-9):
+            bad.append("group span does not hold its words: %r" % say(g))
+    if got[0]["start"] != orig[0]["start"] or got[-1]["end"] != orig[-1]["end"]:
+        bad.append("coverage of the bed changed")
+    g1 = subprocess.run([sys.executable, "-I", "guard.py", "saves/edit_plan.json", str(fixture["duration"])],
+                        cwd=wd, capture_output=True, text=True)
+    if g1.returncode != 0 or "plan OK" not in g1.stdout:
+        bad.append("guard failed the regrouped plan: %s" % (g1.stderr.strip()[-300:]))
+    before = pp.read_bytes()
+    r2 = subprocess.run([sys.executable, "-I", str(helper), "saves/edit_plan.json"], cwd=wd, capture_output=True, text=True)
+    if r2.returncode != 0 or pp.read_bytes() != before:
+        bad.append("second run is not a no-op")
+    # a plan that already keeps phrases whole is left byte-for-byte unchanged
+    def mk(lines):
+        gs, t = [], 0.0
+        for k, line in enumerate(lines):
+            ws = []
+            for x in line.split():
+                ws.append({"w": x, "s": round(t, 3), "e": round(t + 0.3, 3), "em": False}); t += 0.32
+            gs.append({"start": ws[0]["s"], "end": ws[-1]["e"], "style": k % 3, "words": ws})
+        gs[1]["words"][0]["em"] = True
+        return gs
+    whole = dict(plan, caption_groups=mk(["She approved them", "with flour still on her hands,", "about 30 minutes",
+                                          "a week.", "Here's how it works.", "Once a week,", "she just types"]))
+    wp = wd / "saves" / "whole.json"; wp.write_text(json.dumps(whole, indent=2), encoding="utf-8")
+    wb = wp.read_bytes()
+    r3 = subprocess.run([sys.executable, "-I", str(helper), "saves/whole.json"], cwd=wd, capture_output=True, text=True)
+    if r3.returncode != 0 or wp.read_bytes() != wb or "unchanged" not in r3.stdout:
+        bad.append("a whole plan was changed (rc=%d %r)" % (r3.returncode, r3.stdout.strip()))
+    # the sync transform is idempotent on the committed files and fails fast on a drifted anchor
+    for rcp, rel in FILES.items():
+        cp = root / "copy" / rcp; shutil.copytree(repo / "skills" / rcp / "steps", cp / "steps")
+        if ss.apply_reel_caption_phrases(cp, rcp) != 0:
+            bad.append("%s: committed %s is not what sync-skills.py writes" % (rcp, rel))
+    drift = root / "drift" / "p-reels-spotlight"; (drift / "steps").mkdir(parents=True)
+    (drift / "steps" / "03-plan-edit.md").write_text("Then run the mechanical guard, differently\n", encoding="utf-8")
+    code = ("import importlib.util,sys\nfrom pathlib import Path\n"
+            "s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)\n"
+            "m.apply_reel_caption_phrases(Path(sys.argv[2]),'p-reels-spotlight')\n")
+    rr = subprocess.run([sys.executable, "-I", "-c", code, str(repo / "scripts" / "sync-skills.py"), str(drift)], capture_output=True, text=True)
+    if rr.returncode == 0 or "WI2.76 transform cannot apply" not in rr.stderr:
+        bad.append("sync transform did not fail fast on a missing anchor (rc=%d)" % rr.returncode)
+    # index.json hashes cover the edited files
+    idx = json.loads((repo / "skills" / "index.json").read_text(encoding="utf-8"))
+    for rcp, rel in FILES.items():
+        actual = "sha256:" + hashlib.sha256((repo / "skills" / rcp / rel).read_bytes()).hexdigest()
+        if idx["recipes"][rcp]["fileHashes"].get(rel) != actual:
+            bad.append("%s: index.json hash for %s is stale" % (rcp, rel))
+except Exception as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi276_detail" == "ok" ]]; then
+  pass "WI2.76 caption groups keep phrases whole: 'flour still' joins 'on her hands', a whole plan is unchanged"
+else
+  fail "WI2.76 caption groups keep phrases whole" "$wi276_detail"
+fi
+rm -rf "$wi276_root"
+
+echo "=== Case 54: WI2.78 — caption-phrase repair always restyles and clamps; pip runs it as code ==="
+# Review of WI2.76: the helper only restyled and clamped overlaps when it regrouped, so a plan
+# that was already whole but had two neighbouring groups with one style (or a tiny overlap)
+# now failed --check and stopped a reel that used to render. The pip repair before P2 was only
+# prose, and the --check ran even with CAPTIONS=off. "her"/"his" were not joiners, and a group
+# with no words crashed with an IndexError. Timings never move.
+wi278_root="$(mktemp -d)"
+wi278_detail="$(python3 - "$REPO_DIR" "$wi278_root" <<'PY'
+import hashlib, importlib.util, json, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+FILES = {"p-reels-spotlight": "steps/03-plan-edit.md", "p-reels-spotlight-heygen": "steps/03-plan-edit.md",
+         "p-reels-pip": "steps/05-composite.md", "p-reels-pip-heygen": "steps/05-composite.md"}
+def say(g):
+    return " ".join(w["w"] for w in g["words"])
+def mk(lines, styles=None):
+    gs, t = [], 0.0
+    for k, line in enumerate(lines):
+        ws = []
+        for x in line.split():
+            ws.append({"w": x, "s": round(t, 3), "e": round(t + 0.3, 3), "em": False}); t += 0.32
+        gs.append({"start": ws[0]["s"], "end": ws[-1]["e"], "style": (styles or [0, 1, 2])[k % len(styles or [0, 1, 2])],
+                   "words": ws})
+    return gs
+def flat(gs):
+    return [(w["w"], w["s"], w["e"]) for g in gs for w in g["words"]]
+def run(helper, wd, *args):
+    return subprocess.run([sys.executable, "-I", str(helper), *args], cwd=wd, capture_output=True, text=True)
+try:
+    spec = importlib.util.spec_from_file_location("ss278", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    helper = root / "caption_phrases.py"; helper.write_text(ss._CAPTION_PHRASES_PY, encoding="utf-8")
+    wd = root / "wd"; wd.mkdir()
+    # 1. a whole plan with two neighbouring groups of one style is repaired, not failed
+    lines = ["She approved them", "with flour still on her hands,", "about 30 minutes", "a week."]
+    same = mk(lines, styles=[0, 0, 1, 1])
+    p1 = wd / "same.json"; p1.write_text(json.dumps({"caption_groups": same}), encoding="utf-8")
+    if run(helper, wd, "--check", "same.json").returncode == 0:
+        bad.append("--check passed equal neighbouring styles (fixture is wrong)")
+    r1 = run(helper, wd, "same.json")
+    got = json.loads(p1.read_text())["caption_groups"]
+    if r1.returncode != 0:
+        bad.append("equal styles: repair rc=%d %s" % (r1.returncode, r1.stderr.strip()[-200:]))
+    if [say(g) for g in got] != lines or flat(got) != flat(same):
+        bad.append("equal styles: groups or word timings changed: %r" % [say(g) for g in got])
+    if any(a["style"] == b["style"] for a, b in zip(got, got[1:])):
+        bad.append("equal styles: neighbours still share a style %r" % [g["style"] for g in got])
+    if run(helper, wd, "--check", "same.json").returncode != 0:
+        bad.append("equal styles: --check fails the repaired plan")
+    # 2. a whole plan with a tiny overlap is clamped, not failed; word timings stay
+    lap = mk(lines); lap[1]["end"] = round(lap[2]["start"] + 0.02, 3)
+    p2 = wd / "lap.json"; p2.write_text(json.dumps({"caption_groups": lap}), encoding="utf-8")
+    if run(helper, wd, "--check", "lap.json").returncode == 0:
+        bad.append("--check passed an overlap (fixture is wrong)")
+    r2 = run(helper, wd, "lap.json")
+    got = json.loads(p2.read_text())["caption_groups"]
+    if r2.returncode != 0:
+        bad.append("overlap: repair rc=%d %s" % (r2.returncode, r2.stderr.strip()[-200:]))
+    if flat(got) != flat(lap) or [say(g) for g in got] != lines:
+        bad.append("overlap: words or word timings changed")
+    if any(a["end"] > b["start"] + 1e-9 for a, b in zip(got, got[1:])):
+        bad.append("overlap: groups still overlap")
+    if got[1]["end"] != got[2]["start"]:
+        bad.append("overlap: group end not clamped to the next start (%r)" % got[1]["end"])
+    # 3. "her"/"his" never end a group mid-phrase: on her | hands
+    for left, right in (("with flour still on her", "hands, about 30 minutes"), ("He set down his", "rolling pin, then smiled.")):
+        gs = mk(["She approved them", left, right])
+        pp = wd / "pos.json"; pp.write_text(json.dumps({"caption_groups": gs}), encoding="utf-8")
+        c = run(helper, wd, "--check", "pos.json")
+        if c.returncode == 0 or "ends inside a phrase" not in c.stderr:
+            bad.append("--check passed %r | %r" % (left, right))
+        r = run(helper, wd, "pos.json")
+        got = json.loads(pp.read_text())["caption_groups"]
+        if r.returncode != 0:
+            bad.append("possessive: repair rc=%d %s" % (r.returncode, r.stderr.strip()[-200:]))
+        if any(g["words"][-1]["w"].lower() in ("her", "his") for g in got[:-1]):
+            bad.append("a group still ends on a possessive: %r" % [say(g) for g in got])
+        if flat(got) != flat(gs):
+            bad.append("possessive: words or word timings changed")
+    # 4. a group with no words is a clear error, not an IndexError, in both modes
+    empty = mk(["She approved them", "with flour still on her hands,", "about 30 minutes"])
+    empty.insert(1, {"start": 0.95, "end": 0.96, "style": 2, "words": []})
+    pe = wd / "empty.json"; pe.write_text(json.dumps({"caption_groups": empty}), encoding="utf-8")
+    for args in (["empty.json"], ["--check", "empty.json"]):
+        r = run(helper, wd, *args)
+        if r.returncode != 1 or "group 1 has no words" not in r.stderr or "Traceback" in r.stderr:
+            bad.append("empty group %s: rc=%d %r" % (args[0], r.returncode, r.stderr.strip()[-200:]))
+    # 5. the WI2.76 fixture still regroups to [She approved them] [with flour still on her hands,]
+    fixture = json.loads((repo / "test" / "fixtures" / "wi276-smoke21b-caption-groups.json").read_text())
+    pf = wd / "fx.json"; pf.write_text(json.dumps({"caption_groups": fixture["caption_groups"]}), encoding="utf-8")
+    r5 = run(helper, wd, "fx.json")
+    got = [say(g) for g in json.loads(pf.read_text())["caption_groups"]]
+    k = got.index("She approved them") if "She approved them" in got else -1
+    if r5.returncode != 0 or k < 0 or got[k + 1] != "with flour still on her hands,":
+        bad.append("WI2.76 fixture regrouped differently: %r" % got[max(k, 0):k + 2])
+    if flat(json.loads(pf.read_text())["caption_groups"]) != flat(fixture["caption_groups"]):
+        bad.append("WI2.76 fixture: words or word timings changed")
+    # 6. pip step 05 runs the repair as code between P1 and P2; captions off skips repair and check
+    REPAIR = 'if [ "$CAPTIONS" != off ]; then python3 work/caption_phrases.py "$PW/plan.json" || exit 1; fi\n'
+    CHECK = 'if [ "$CAPTIONS" != off ]; then python3 work/caption_phrases.py --check "$PW/plan.json" || exit 1; fi\n'
+    for rcp in ("p-reels-pip", "p-reels-pip-heygen"):
+        body = (repo / "skills" / rcp / "steps" / "05-composite.md").read_text(encoding="utf-8")
+        p1_at, rep_at = body.find("# 1) run P1 (plan) here"), body.find(REPAIR)
+        p2_at = body.find("# 3) now run P2 → P4 only")
+        if not (0 <= p1_at < rep_at < p2_at) or body.count(REPAIR) != 1:
+            bad.append("%s: the repair is not a command between P1 and P2" % rcp)
+        if body.count(CHECK) != 1 or body.find(CHECK) < p2_at:
+            bad.append("%s: the --check after P4 is not skipped when captions are off" % rcp)
+        if "# WI2.76: after P1 and before P2:" in body:
+            bad.append("%s: the comment-only repair note is still there" % rcp)
+        prem = (repo / "skills" / rcp / ".hub" / "c-reel-premium" / "SKILL.md").read_text(encoding="utf-8")
+        if ss._CAPTION_PHRASES_P1_RULE_NEW not in prem or ss._CAPTION_PHRASES_P1_RULE_OLD in prem:
+            bad.append("%s: c-reel-premium P1 prompt does not state the grouping rule" % rcp)
+    plan = json.dumps({"caption_groups": mk(["She approved them with", "flour still", "on her hands,"])})
+    for caps, want_rc, want_plan_changed in (("off", 0, False), ("on", 0, True)):
+        sd = root / ("pip-" + caps); (sd / "work" / "premium").mkdir(parents=True)
+        shutil.copy(helper, sd / "work" / "caption_phrases.py")
+        (sd / "work" / "premium" / "plan.json").write_text(plan, encoding="utf-8")
+        sh = subprocess.run(["bash", "-c", "PW=work/premium; CAPTIONS=%s\n%s%s" % (caps, REPAIR, CHECK)],
+                            cwd=sd, capture_output=True, text=True)
+        changed = (sd / "work" / "premium" / "plan.json").read_text(encoding="utf-8") != plan
+        if sh.returncode != want_rc or changed != want_plan_changed:
+            bad.append("pip CAPTIONS=%s: rc=%d plan changed=%s %s" % (caps, sh.returncode, changed, sh.stderr.strip()[-200:]))
+    # 7. the sync transform is idempotent on the committed files; index.json hashes are current
+    idx = json.loads((repo / "skills" / "index.json").read_text(encoding="utf-8"))
+    for rcp, rel in FILES.items():
+        cp = root / "copy" / rcp; shutil.copytree(repo / "skills" / rcp / "steps", cp / "steps")
+        rels = [rel]
+        if "pip" in rcp:
+            (cp / ".hub" / "c-reel-premium").mkdir(parents=True)
+            shutil.copy(repo / "skills" / rcp / ".hub" / "c-reel-premium" / "SKILL.md", cp / ".hub" / "c-reel-premium")
+            rels.append(".hub/c-reel-premium/SKILL.md")
+        if ss.apply_reel_caption_phrases(cp, rcp) != 0:
+            bad.append("%s: committed files are not what sync-skills.py writes" % rcp)
+        for f in rels:
+            actual = "sha256:" + hashlib.sha256((repo / "skills" / rcp / f).read_bytes()).hexdigest()
+            if idx["recipes"][rcp]["fileHashes"].get(f) != actual:
+                bad.append("%s: index.json hash for %s is stale" % (rcp, f))
+except Exception as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi278_detail" == "ok" ]]; then
+  pass "WI2.78 caption-phrase repair fixes styles/overlaps on a whole plan, joins her/his, pip repairs as code"
+else
+  fail "WI2.78 caption-phrase repair always restyles and clamps" "$wi278_detail"
+fi
+rm -rf "$wi278_root"
+
+echo "=== Case 55: WI2.79 — caption repair refuses bad timings; pip step 05 no longer invites a second P1 ==="
+# Review of WI2.78: tidy() clamped every overlap, so a plan with groups out of order (or two
+# groups with one start) became a group with end <= start (start 1, end 0.5) and --check passed.
+# Pip step 05 kept the WI2.64 line "# run P1 -> P4 here" right after "then P2 -> P4", so an
+# engine could re-run P1 and overwrite the repaired plan. Missing plan.json or a group without
+# start/end was a traceback.
+wi279_root="$(mktemp -d)"
+wi279_detail="$(python3 - "$REPO_DIR" "$wi279_root" <<'PY'
+import importlib.util, json, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+def mk(lines):
+    gs, t = [], 0.0
+    for k, line in enumerate(lines):
+        ws = []
+        for x in line.split():
+            ws.append({"w": x, "s": round(t, 3), "e": round(t + 0.3, 3), "em": False}); t += 0.32
+        gs.append({"start": ws[0]["s"], "end": ws[-1]["e"], "style": k % 3, "words": ws})
+    return gs
+def run(helper, wd, *args):
+    return subprocess.run([sys.executable, "-I", str(helper), *args], cwd=wd, capture_output=True, text=True)
+def refused(helper, wd, name, body, want, label):
+    # both modes exit 1 with a clear message, no traceback, and repair leaves the file alone
+    pf = wd / name
+    raw = json.dumps({"caption_groups": body}) if body is not None else None
+    for args in ([name], ["--check", name]):
+        if raw is not None:
+            pf.write_text(raw, encoding="utf-8")
+        elif pf.exists():
+            pf.unlink()
+        r = run(helper, wd, *args)
+        if r.returncode != 1 or want not in r.stderr or "Traceback" in r.stderr:
+            bad.append("%s %s: rc=%d %r" % (label, args[0], r.returncode, r.stderr.strip()[-240:]))
+        if raw is not None and pf.read_text(encoding="utf-8") != raw:
+            bad.append("%s %s: the refused plan was rewritten" % (label, args[0]))
+try:
+    spec = importlib.util.spec_from_file_location("ss279", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    pip = (repo / "skills" / "p-reels-pip" / "steps" / "05-composite.md").read_text(encoding="utf-8")
+    marker = "cat > work/caption_phrases.py <<'PY'\n"
+    shipped = pip[pip.index(marker) + len(marker):pip.index("\nPY\n", pip.index(marker)) + 1]
+    if shipped != ss._CAPTION_PHRASES_PY:
+        bad.append("the helper in pip step 05 is not the sync-skills.py helper")
+    helper = root / "caption_phrases.py"; helper.write_text(shipped, encoding="utf-8")
+    wd = root / "wd"; wd.mkdir()
+    lines = ["She approved them", "with flour still on her hands,", "about 30 minutes", "a week."]
+    # 1. a group that ends at or before its start is refused
+    g = mk(lines); g[2]["end"] = g[2]["start"]
+    refused(helper, wd, "zero.json", g, "group 2 ends at", "end<=start")
+    # 2. starts that go backwards are refused (the review's start 1 / end 0.5 case)
+    g = mk(lines); g[1], g[2] = g[2], g[1]
+    refused(helper, wd, "back.json", g, "must be in time order", "backwards starts")
+    g = mk(lines); g[2]["start"] = g[1]["start"]
+    refused(helper, wd, "same.json", g, "group 2 starts at", "equal starts")
+    # 3. a group without start/end, and a missing plan, are clear errors
+    g = mk(lines); del g[1]["end"]
+    refused(helper, wd, "noend.json", g, "group 1 has no start/end time", "missing end")
+    g = mk(lines); g[0].pop("start")
+    refused(helper, wd, "nostart.json", g, "group 0 has no start/end time", "missing start")
+    refused(helper, wd, "plan.json", None, "plan not found", "missing plan.json")
+    # 4. a clean plan stays byte-identical in repair mode and passes --check
+    clean = mk(lines)
+    pc = wd / "clean.json"; raw = json.dumps({"caption_groups": clean, "x": 1}, indent=3) + "\n"
+    pc.write_bytes(raw.encode("utf-8"))
+    r = run(helper, wd, "clean.json")
+    if r.returncode != 0 or pc.read_bytes() != raw.encode("utf-8") or "plan unchanged" not in r.stdout:
+        bad.append("clean plan: rc=%d byte-identical=%s %r" % (r.returncode, pc.read_bytes() == raw.encode("utf-8"), (r.stdout + r.stderr)[-200:]))
+    if run(helper, wd, "--check", "clean.json").returncode != 0:
+        bad.append("clean plan: --check failed")
+    # 5. an in-order overlap is still clamped (WI2.78 kept), never to end <= start
+    lap = mk(lines); lap[1]["end"] = round(lap[2]["start"] + 0.05, 3)
+    pl = wd / "lap.json"; pl.write_text(json.dumps({"caption_groups": lap}), encoding="utf-8")
+    r = run(helper, wd, "lap.json")
+    got = json.loads(pl.read_text())["caption_groups"]
+    if r.returncode != 0 or any(x["end"] <= x["start"] or x["end"] > y["start"] for x, y in zip(got, got[1:])):
+        bad.append("in-order overlap: rc=%d %r" % (r.returncode, [(x["start"], x["end"]) for x in got]))
+    # 6. pip step 05: nothing after the repair asks for P1 again; P2 -> P4 follows it
+    REPAIR = 'if [ "$CAPTIONS" != off ]; then python3 work/caption_phrases.py "$PW/plan.json" || exit 1; fi\n'
+    CHECK = 'if [ "$CAPTIONS" != off ]; then python3 work/caption_phrases.py --check "$PW/plan.json" || exit 1; fi\n'
+    for rcp in ("p-reels-pip", "p-reels-pip-heygen"):
+        body = (repo / "skills" / rcp / "steps" / "05-composite.md").read_text(encoding="utf-8")
+        at = body.find(REPAIR)
+        if ss._CAPTION_PHRASES_PIP_P1_ANCHOR in body:
+            bad.append("%s: the WI2.64 'run P1 -> P4 here' line is still there" % rcp)
+        if at < 0 or "run P1" in body[at:] or body.count(ss._CAPTION_PHRASES_PIP_P1_NOTE) != 1:
+            bad.append("%s: a P1 instruction follows the repair" % rcp)
+        if not body.find(ss._CAPTION_PHRASES_PIP_P1_NOTE + ss._CAPTION_PHRASES_PIP_TAIL_ANCHOR + ss._CAPTION_PHRASES_PIP_CHECK) >= 0:
+            bad.append("%s: note, WI2.64 plan clamp and --check are not in order" % rcp)
+    # 7. the transform rebuilds the committed file from the WI2.78 state and from the bare
+    #    WI2.64 line, replaces an older helper body, and is idempotent
+    base = pip.replace(ss._CAPTION_PHRASES_PIP_P1_NOTE, ss._CAPTION_PHRASES_PIP_P1_ANCHOR, 1)
+    wi278 = pip.replace(ss._CAPTION_PHRASES_PIP_P1_NOTE, ss._CAPTION_PHRASES_PIP_P1_NOTE_WI278 + ss._CAPTION_PHRASES_PIP_P1_ANCHOR, 1)
+    older = pip.replace(shipped, shipped.replace("import json, os, re, sys", "import json, re, sys"), 1)
+    for label, start in (("bare WI2.64 line", base), ("WI2.78 note", wi278), ("older helper", older)):
+        cp = root / "tx" / label.replace(" ", "-"); (cp / "steps").mkdir(parents=True)
+        (cp / "steps" / "05-composite.md").write_text(start, encoding="utf-8")
+        ss.apply_reel_caption_phrases(cp, "p-reels-pip")
+        once = (cp / "steps" / "05-composite.md").read_text(encoding="utf-8")
+        n = ss.apply_reel_caption_phrases(cp, "p-reels-pip")
+        if once != pip or n != 0:
+            bad.append("transform from %s: equal=%s second-apply=%d" % (label, once == pip, n))
+    cp = root / "tx" / "drift"; (cp / "steps").mkdir(parents=True)
+    (cp / "steps" / "05-composite.md").write_text(base.replace(ss._CAPTION_PHRASES_PIP_P1_ANCHOR, "# drifted\n"), encoding="utf-8")
+    try:
+        ss.apply_reel_caption_phrases(cp, "p-reels-pip"); bad.append("a drifted P1 line did not fail the sync")
+    except SystemExit as exc:
+        if "WI2.79" not in str(exc) or "WI2.76" in str(exc):
+            bad.append("drifted P1 line error does not name WI2.79: %s" % exc)
+    # 8. the CAPTIONS guard lines run under zsh as well as bash
+    shells = [s for s in ("bash", "zsh") if shutil.which(s)]
+    if "zsh" not in shells and sys.platform == "darwin":
+        bad.append("zsh not found on macOS")
+    plan = json.dumps({"caption_groups": mk(["She approved them with", "flour still", "on her hands,"])})
+    for sh in shells:
+        for caps, has_plan, want_rc, want_changed in (("off", True, 0, False), ("on", True, 0, True),
+                                                      ("on", False, 1, False), ("off", False, 0, False)):
+            sd = root / ("%s-%s-%s" % (sh, caps, has_plan)); (sd / "work" / "premium").mkdir(parents=True)
+            shutil.copy(helper, sd / "work" / "caption_phrases.py")
+            pp = sd / "work" / "premium" / "plan.json"
+            if has_plan:
+                pp.write_text(plan, encoding="utf-8")
+            r = subprocess.run([sh, "-c", "PW=work/premium; CAPTIONS=%s\n%s%s" % (caps, REPAIR, CHECK)],
+                               cwd=sd, capture_output=True, text=True)
+            changed = has_plan and pp.read_text(encoding="utf-8") != plan
+            if r.returncode != want_rc or changed != want_changed or "Traceback" in r.stderr:
+                bad.append("%s CAPTIONS=%s plan=%s: rc=%d changed=%s %r" % (sh, caps, has_plan, r.returncode, changed, r.stderr.strip()[-160:]))
+            if not has_plan and caps == "on" and "plan not found" not in r.stderr:
+                bad.append("%s: missing plan is not a clear message" % sh)
+except Exception as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi279_detail" == "ok" ]]; then
+  pass "WI2.79 caption repair refuses end<=start and backwards starts, clear errors, pip has no second P1, zsh guard"
+else
+  fail "WI2.79 caption repair refuses bad timings; pip step 05 no longer invites a second P1" "$wi279_detail"
+fi
+rm -rf "$wi279_root"
+
+echo "=== Case 56: WI2.77 — the script prompt reaches mlx_whisper as two arguments; a fewer-words fix keeps caption time ==="
+# Review of WI2.72: ${SCRIPT_PROMPT:+--initial-prompt "$SCRIPT_PROMPT"} stays ONE argument under
+# zsh (the engine's shell), so mlx_whisper took it for a second audio file and the prompt was
+# dropped with exit 0. And a replace with fewer script words than heard (heard "New York",
+# script "NYC") dropped the first entry, leaving its time with no caption.
+wi277_root="$(mktemp -d)"
+wi277_detail="$(python3 - "$REPO_DIR" "$wi277_root" <<'PY'
+import importlib.util, json, os, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+RECIPES = ("p-reels-spotlight", "p-reels-spotlight-heygen", "p-reels-pip", "p-reels-pip-heygen")
+try:
+    spec = importlib.util.spec_from_file_location("ss277", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    helper = root / "script_align.py"; helper.write_text(ss._SCRIPT_ALIGN_PY, encoding="utf-8")
+    # 1. the mlx_whisper block, run as written, under bash, sh and zsh with a stub that prints argv
+    stub = root / "bin"; stub.mkdir()
+    (stub / "mlx_whisper").write_text('#!/bin/sh\nfor a in "$@"; do printf \'<%s>\\n\' "$a"; done\n', encoding="utf-8")
+    os.chmod(stub / "mlx_whisper", 0o755)
+    base = ["prior/voice_track.mp4", "--model", "mlx-community/whisper-small-mlx", "--output-dir", "work",
+            "--output-format", "json"]
+    script = "She approved them with flour still on her hands, about thirty minutes a week."
+    shells = [sh for sh in ("bash", "sh", "zsh") if shutil.which(sh)]
+    if "bash" not in shells or "sh" not in shells:
+        bad.append("bash and sh must both be present (found %r)" % shells)
+    def argv_of(shell, block, with_script):
+        wd = root / ("run-%s-%d" % (shell, with_script)); shutil.rmtree(wd, ignore_errors=True)
+        (wd / "work").mkdir(parents=True); shutil.copy(helper, wd / "work" / "script_align.py")
+        if with_script:
+            (wd / "inputs" / "script").mkdir(parents=True)
+            (wd / "inputs" / "script" / "script.txt").write_text(script, encoding="utf-8")
+        env = dict(os.environ, PATH=str(stub) + os.pathsep + os.environ.get("PATH", ""))
+        r = subprocess.run([shell, "-c", block], cwd=wd, env=env, capture_output=True, text=True)
+        if r.returncode != 0:
+            bad.append("%s: block rc=%d %s" % (shell, r.returncode, r.stderr.strip()[-200:]))
+        return [ln[1:-1] for ln in r.stdout.splitlines() if ln.startswith("<")]
+    for rcp in RECIPES:
+        body = (repo / "skills" / rcp / "steps" / "02-transcribe.md").read_text(encoding="utf-8")
+        if "${SCRIPT_PROMPT:+" in body:
+            bad.append("%s: the one-word ${SCRIPT_PROMPT:+...} form is still in the step" % rcp)
+        if ss._SCRIPT_ALIGN_MLX_NEW not in body:
+            bad.append("%s: the explicit-branch mlx_whisper block is not in the step" % rcp); continue
+        block = ss._SCRIPT_ALIGN_MLX_NEW
+        for shell in shells:
+            got = argv_of(shell, block, True)
+            if got != base + ["--initial-prompt", script]:
+                bad.append("%s/%s: with a script mlx_whisper got %r" % (rcp, shell, got))
+            got0 = argv_of(shell, block, False)
+            if got0 != base:
+                bad.append("%s/%s: with no script mlx_whisper got %r" % (rcp, shell, got0))
+    if "zsh" in shells:  # the stub really tells the old form apart: zsh gave it one argument
+        old = argv_of("zsh", ss._SCRIPT_ALIGN_MLX_WI272, True)
+        if old != base + ["--initial-prompt " + script]:
+            bad.append("stub check: the old form under zsh gave %r, expected one joined argument" % old)
+    # 2. script_align: fewer, more and equal script words
+    def run(name, heard, script_text):
+        wd = root / name; (wd / "work").mkdir(parents=True); (wd / "inputs" / "script").mkdir(parents=True)
+        (wd / "inputs" / "script" / "script.txt").write_text(script_text, encoding="utf-8")
+        words = [{"text": t, "start": s, "end": e} for t, s, e in heard]
+        (wd / "work" / "words.json").write_text(json.dumps(words), encoding="utf-8")
+        r = subprocess.run([sys.executable, "-I", str(helper), "work/words.json"], cwd=wd, capture_output=True, text=True)
+        if r.returncode != 0:
+            bad.append("%s: rc=%d %s" % (name, r.returncode, r.stderr.strip()[-200:]))
+        return [(w["text"], w["start"], w["end"]) for w in json.loads((wd / "work" / "words.json").read_text())]
+    pre = [("I", 0.0, 0.2), ("moved", 0.2, 0.5), ("to", 0.5, 0.6)]
+    post = [("last", 1.4, 1.7), ("summer", 1.7, 2.1), ("with", 2.1, 2.3), ("my", 2.3, 2.4), ("family.", 2.4, 2.9)]
+    tail = "last summer with my family."
+    got = run("fewer", pre + [("New", 0.6, 0.9), ("York", 0.9, 1.3)] + post, "I moved to NYC " + tail)
+    if got != pre + [("NYC", 0.6, 1.3)] + post:
+        bad.append("fewer words (word entries): %r" % got)
+    got = run("fewer_punct", pre + [("New", 0.6, 0.9), ("York,", 0.9, 1.3)] + post, "I moved to NYC, " + tail)
+    if got != pre + [("NYC,", 0.6, 1.3)] + post:
+        bad.append("fewer words keeps trailing punctuation: %r" % got)
+    got = run("fewer_three", pre + [("the", 0.6, 0.7), ("big", 0.7, 0.9), ("apple", 0.9, 1.3)] + post,
+              "I moved to NYC " + tail)
+    if got != pre + [("NYC", 0.6, 1.3)] + post:
+        bad.append("three heard words for one script word: %r" % got)
+    segs = [(" I moved to New", 0.0, 0.9), (" York last summer", 0.9, 2.1), (" with my family.", 2.1, 2.9)]
+    got = run("fewer_segments", segs, "I moved to NYC " + tail)
+    if got != [("I moved to NYC last summer", 0.0, 2.1), ("with my family.", 2.1, 2.9)]:
+        bad.append("fewer words across segments: %r" % got)
+    got = run("more", pre + [("NYC", 0.6, 1.3)] + post, "I moved to New York " + tail)
+    if got != pre + [("New York", 0.6, 1.3)] + post:
+        bad.append("more words: %r" % got)
+    got = run("equal", pre + [("flower", 0.6, 0.9), ("steel", 0.9, 1.3)] + post, "I moved to flour still " + tail)
+    if got != pre + [("flour", 0.6, 0.9), ("still", 0.9, 1.3)] + post:
+        bad.append("equal words: %r" % got)
+    # 3. the transform upgrades the WI2.72 text and the pre-WI2.72 text to the committed step, idempotently
+    for rcp in RECIPES:
+        cur = (repo / "skills" / rcp / "steps" / "02-transcribe.md").read_text(encoding="utf-8")
+        cc = root / "committed" / rcp; shutil.copytree(repo / "skills" / rcp / "steps", cc / "steps")
+        if ss.apply_reel_script_align(cc, rcp) != 0:
+            bad.append("%s: committed step is not what sync-skills.py writes" % rcp); continue
+        h, rest = cur.split(ss._SCRIPT_ALIGN_OPEN, 1)
+        wi272 = (h + ss._SCRIPT_ALIGN_OPEN + "# WI2.72 helper\nprint('old')\nPY\n" + rest.split("\nPY\n", 1)[1])
+        wi272 = wi272.replace(ss._SCRIPT_ALIGN_MLX_NEW, ss._SCRIPT_ALIGN_MLX_WI272).replace(
+            ss._SCRIPT_ALIGN_CHECK, ss._SCRIPT_ALIGN_CHECK_WI272)
+        before = (cur.replace(ss._SCRIPT_ALIGN_SECTION, "").replace(ss._SCRIPT_ALIGN_CHECK, "")
+                  .replace(ss._SCRIPT_ALIGN_MLX_NEW, ss._SCRIPT_ALIGN_MLX_OLD))
+        for label, text in (("WI2.72", wi272), ("pre-WI2.72", before)):
+            if text == cur:
+                bad.append("%s: %s fixture equals the current text" % (rcp, label)); continue
+            d = root / "up" / label / rcp; (d / "steps").mkdir(parents=True)
+            (d / "steps" / "02-transcribe.md").write_text(text, encoding="utf-8")
+            n1 = ss.apply_reel_script_align(d, rcp); n2 = ss.apply_reel_script_align(d, rcp)
+            if (d / "steps" / "02-transcribe.md").read_text(encoding="utf-8") != cur or (n1, n2) != (1, 0):
+                bad.append("%s: %s text did not upgrade to the committed step once (%d, %d)" % (rcp, label, n1, n2))
+except Exception as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi277_detail" == "ok" ]]; then
+  pass "WI2.77 script prompt is two arguments in bash/sh/zsh; a fewer-words fix keeps one caption over the heard time"
+else
+  fail "WI2.77 script prompt and caption timing" "$wi277_detail"
+fi
+rm -rf "$wi277_root"
+
+echo "=== Case 57: WI2.73 — the chat mock-up finishes typing and holds the full line before the cut ==="
+# Smoke 22 (R-78X6, p-reels-pip): a frame showed "Here's what's happening t" in the chat mock-up.
+# The c-typing-ui typing window ended at DURATION*0.88/TYPING_SPEED, clamped only to DURATION-0.4,
+# so a short scene or a slow TYPING_SPEED held the finished line for 0.4 s or less. Every vendored
+# typing-scene.html now computes the window in typingWindow(): typing ends 0.6 s before the clip
+# ends (>= 0.5 s of frames show the whole line); a clip too short to type in shows it at once.
+wi273_root="$(mktemp -d)"
+wi273_detail="$(python3 - "$REPO_DIR" "$wi273_root" <<'PY'
+import importlib.util, json, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+HOLD, FPS = 0.5, 30
+try:
+    spec = importlib.util.spec_from_file_location("ss273", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    copies = sorted((repo / "skills").glob("*/.hub/c-typing-ui/templates/typing-scene.html"))
+    names = {c.parts[-5] for c in copies}
+    for need in ("p-reels-pip", "p-reels-pip-heygen", "p-reels-spotlight", "p-reels-spotlight-heygen"):
+        if need not in names:
+            bad.append("%s: no vendored c-typing-ui typing-scene.html" % need)
+    for c in copies:
+        body = c.read_text(encoding="utf-8")
+        if ss.TYPING_WINDOW_JS not in body:
+            bad.append("%s: typing window is not the WI2.73 typingWindow()" % c.relative_to(repo))
+        if "DURATION - 0.4" in body:
+            bad.append("%s: the old DURATION - 0.4 clamp is still there" % c.relative_to(repo))
+        doc = (c.parent.parent / "SKILL.md").read_text(encoding="utf-8")
+        if ss._TYPING_SKILL_NOTE not in doc:
+            bad.append("%s: SKILL.md does not state the hold" % c.parent.parent.relative_to(repo))
+    # Run the shipped window (and the old one) in node over a grid of durations and speeds, then
+    # sample every rendered frame (t = k/FPS, k < DUR*FPS) the way the template does: the typed
+    # count is round(len * (t - start) / (end - start)), clamped to [0, len].
+    grid = [round(0.1 * i, 2) for i in range(1, 121)]
+    speeds = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 0.0, -1.0]
+    js = """
+const DURATION = 0, TYPING_SPEED = 1;
+%s
+const out = [];
+for (const d of %s) for (const s of %s) {
+  let w; try { w = WINDOW(d, s); } catch (e) { w = {err: String(e)}; }
+  out.push([d, s, w.start, w.end, w.err || null]);
+}
+console.log(JSON.stringify(out));
+"""
+    def run(src, name):
+        f = root / (name + ".js"); f.write_text(js % (src, json.dumps(grid), json.dumps(speeds)), encoding="utf-8")
+        r = subprocess.run(["node", str(f)], capture_output=True, text=True)
+        if r.returncode != 0:
+            bad.append("%s: node rc=%d %s" % (name, r.returncode, r.stderr.strip()[-300:])); return []
+        return json.loads(r.stdout)
+    def shortfalls(rows, name):
+        out = []
+        for d, s, start, end, err in rows:
+            if err or start is None or end is None:
+                out.append("%s d=%s s=%s error %s" % (name, d, s, err)); continue
+            if not (0 <= start <= end <= d):
+                out.append("%s d=%s s=%s window %.3f..%.3f" % (name, d, s, start, end)); continue
+            L = 59
+            frames = [k / FPS for k in range(int(round(d * FPS)))]
+            def typed(t):
+                if t >= end: return L
+                if t < start: return 0
+                return min(L, max(0, round(L * (t - start) / (end - start))))
+            full = [t for t in frames if typed(t) == L]
+            need = min(HOLD, d)  # a clip shorter than the hold shows the whole line throughout
+            if len(full) / FPS + 1e-9 < need - 1.0 / FPS:
+                out.append("%s d=%s s=%s full line on %d frame(s)" % (name, d, s, len(full)))
+        return out
+    new_src = "function WINDOW(duration, speed) {\n" + ss.TYPING_WINDOW_JS.replace(
+        "    var typeWin   = typingWindow(DURATION, TYPING_SPEED);\n", "").replace(
+        "    var typeStart = typeWin.start;\n", "").replace("    var typeEnd   = typeWin.end;\n", "") + \
+        "return typingWindow(duration, speed);\n}\n"
+    got = shortfalls(run(new_src, "new"), "new")
+    if got:
+        bad.append("WI2.73 window: " + "; ".join(got[:5]))
+    old_src = ("function WINDOW(DURATION, TYPING_SPEED) {\n" + ss._TYPING_WINDOW_OLD +
+               "return {start: typeStart, end: typeEnd};\n}\n")
+    old_rows = run(old_src, "old")
+    if not any(m.startswith("old d=3 s=1 ") for m in shortfalls(old_rows, "old")):  # node prints 3.0 as 3
+        bad.append("sanity: the old window was not caught short on a 3.0 s scene at speed 1.0")
+    # The transform upgrades the old template + SKILL.md once and is then a no-op; a drifted copy fails fast.
+    for c in copies[:1]:
+        comp = c.parent.parent
+        d = root / "up" / "r" / ".hub" / "c-typing-ui"; shutil.copytree(comp, d)
+        tpl, doc = d / ss.TYPING_SCENE_FILE, d / ss.TYPING_SKILL_FILE
+        tpl.write_text(c.read_text(encoding="utf-8").replace(ss.TYPING_WINDOW_JS, ss._TYPING_WINDOW_OLD), encoding="utf-8")
+        doc.write_text(doc.read_text(encoding="utf-8").replace(ss._TYPING_SKILL_NOTE, ""), encoding="utf-8")
+        n1 = ss.apply_typing_hold(root / "up" / "r", "fixture"); n2 = ss.apply_typing_hold(root / "up" / "r", "fixture")
+        if (n1, n2) != (2, 0) or tpl.read_text(encoding="utf-8") != c.read_text(encoding="utf-8") \
+                or doc.read_text(encoding="utf-8") != (comp / "SKILL.md").read_text(encoding="utf-8"):
+            bad.append("transform did not upgrade the old copy to the committed one once (%d, %d)" % (n1, n2))
+        tpl.write_text("<template>drifted</template>\n", encoding="utf-8")
+        try:
+            ss.apply_typing_hold(root / "up" / "r", "fixture")
+            bad.append("transform did not fail on a copy without its anchor")
+        except SystemExit:
+            pass
+except Exception as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi273_detail" == "ok" ]]; then
+  pass "WI2.73 typing scenes finish typing and hold the full line >= 0.5 s before the cut, every recipe"
+else
+  fail "WI2.73 typing scene holds the full line before the cut" "$wi273_detail"
+fi
+rm -rf "$wi273_root"
+
+echo "=== Case 58: WI2.80 — every scripts/<file> a recipe step names ships in that recipe's bundle ==="
+# Observed 2026-10-21 (WI2.73): p-reels-pip step 04 (and its p-reels-pip-heygen copies, and the split
+# step 04 copies) told the agent to run "$TYPING_UI_DIR/scripts/render.sh --text ... --duration ...".
+# No c-typing-ui copy ships render.sh (only render-sample.sh, a fixed demo), so agents had to work the
+# render out by hand. Step 04 now names the real usage (fill the template + hyperframes render), and
+# every c-typing-ui SKILL.md describes the shipped typingWindow() timing, not "text.length × speed"
+# or a #char-count element the template never had.
+wi280_root="$(mktemp -d)"
+wi280_detail="$(python3 - "$REPO_DIR" "$wi280_root" <<'PY'
+import importlib.util, re, shutil, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+# Gaps that predate WI2.80 (the c-heygen render script is not vendored into these recipes; the
+# c-audio transcribe.sh, c-ai-media generate.py and c-ffmpeg build-segments.py now ship, B12). Listed exactly so a NEW missing script still fails, and an entry that gets
+# fixed must be removed from this list (a stale entry fails too).
+KNOWN_GAPS = {
+    ("p-clone-reel", "steps/03-generate-narration.md", "render.py"),
+    ("p-longform", "steps/02-avatar-render.md", "render.py"),
+}
+REF = re.compile(r"(?<![\w.-])scripts/([A-Za-z0-9_.-]+\.(?:sh|py|mjs|cjs|js|ts))")
+def missing_refs(skills):
+    out = set()
+    for recipe in sorted(p for p in skills.iterdir() if p.is_dir()):
+        shipped = {f.name for f in recipe.rglob("*") if f.is_file() and f.parent.name == "scripts"}
+        for step in sorted(recipe.rglob("*.md")):
+            rel = step.relative_to(recipe)
+            if "steps" not in rel.parts:
+                continue
+            for m in REF.finditer(step.read_text(encoding="utf-8")):
+                if m.group(1) not in shipped:
+                    out.add((recipe.name, rel.as_posix(), m.group(1)))
+    return out
+try:
+    spec = importlib.util.spec_from_file_location("ss280", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    skills = repo / "skills"
+    got = missing_refs(skills)
+    new = sorted(got - KNOWN_GAPS)
+    if new:
+        bad.append("step names a script its recipe does not ship: " +
+                   ", ".join("%s/%s -> scripts/%s" % g for g in new[:8]))
+    stale = sorted(KNOWN_GAPS - got)
+    if stale:
+        bad.append("KNOWN_GAPS entry now resolves; remove it: " + ", ".join("%s/%s" % g[:2] for g in stale))
+    for need in ("p-reels-pip", "p-reels-pip-heygen", "p-reels-split", "p-reels-split-heygen"):
+        if not list((skills / need).rglob("steps/04-build-*.md")):
+            bad.append("%s: no step 04 found" % need)
+    steps04 = [p for p in sorted(skills.glob("*/steps/04-build-*.md")) + sorted(skills.glob("*/.hub/*/steps/04-build-*.md"))
+               if p.name in ss._STEP_TYPING_RENDER_EDITS]
+    if len(steps04) != 6:
+        bad.append("expected 6 pip/split step 04 copies, found %d" % len(steps04))
+    for step in steps04:
+        body = step.read_text(encoding="utf-8")
+        if "typing-scene.html" not in body or "npx hyperframes@0.7.5 render" not in body:
+            bad.append("%s: step 04 does not name the typing template + hyperframes render" % step.relative_to(repo))
+    docs = sorted(skills.glob("*/.hub/c-typing-ui/SKILL.md"))
+    if len(docs) < 8:
+        bad.append("expected 8 vendored c-typing-ui SKILL.md copies, found %d" % len(docs))
+    for doc in docs:
+        body = doc.read_text(encoding="utf-8")
+        tpl = (doc.parent / "templates" / "typing-scene.html").read_text(encoding="utf-8")
+        if "typingWindow(duration, speed)" not in body or "function typingWindow(duration, speed)" not in tpl:
+            bad.append("%s: does not describe typingWindow(duration, speed)" % doc.relative_to(repo))
+        if "text.length × speed" in body:
+            bad.append("%s: still says text.length × speed" % doc.relative_to(repo))
+        for el in set(re.findall(r"`#([A-Za-z][\w-]*)`", body)):
+            if re.fullmatch(r"[0-9A-Fa-f]{3,8}", el):
+                continue  # a colour, not an element
+            if 'id="%s"' % el not in tpl:
+                bad.append("%s: names #%s, which typing-scene.html does not have" % (doc.relative_to(repo), el))
+        if '.replace("\\n", "&#10;")' not in body or "gsap.min.js" not in body or "BOTTOM_TAG_DISPLAY" not in body:
+            bad.append("%s: standalone usage misses &#10; newlines, BOTTOM_TAG_DISPLAY or gsap.min.js" % doc.relative_to(repo))
+    # The check really catches the old step: restore the pre-WI2.80 text in a copy and scan it.
+    up = root / "skills"
+    for rec in ("p-reels-pip", "p-reels-split-heygen"):
+        shutil.copytree(skills / rec, up / rec)
+    for name, (old, newtxt) in ss._STEP_TYPING_RENDER_EDITS.items():
+        for step in up.rglob(name):
+            step.write_text(step.read_text(encoding="utf-8").replace(newtxt, old), encoding="utf-8")
+    old_miss = missing_refs(up)
+    for want in (("p-reels-pip", "steps/04-build-background.md", "render.sh"),
+                 ("p-reels-split-heygen", "steps/04-build-top.md", "render.sh"),
+                 ("p-reels-split-heygen", ".hub/p-reels-split/steps/04-build-top.md", "render.sh")):
+        if want not in old_miss:
+            bad.append("sanity: the old step text was not caught (%s/%s)" % want[:2])
+    # Restore the old c-typing-ui SKILL.md text too; the transform upgrades both once, then is a no-op.
+    for doc in up.rglob(".hub/c-typing-ui/SKILL.md"):
+        text = doc.read_text(encoding="utf-8")
+        for old, newtxt in ss._TYPING_SKILL_RENDER_EDITS:
+            text = text.replace(newtxt, old)
+        doc.write_text(text, encoding="utf-8")
+    for rec in ("p-reels-pip", "p-reels-split-heygen"):
+        n1 = ss.apply_typing_render_usage(up / rec, rec); n2 = ss.apply_typing_render_usage(up / rec, rec)
+        want = 2 if rec == "p-reels-pip" else 3
+        if (n1, n2) != (want, 0):
+            bad.append("transform on %s changed (%d, %d) file(s), expected (%d, 0)" % (rec, n1, n2, want))
+        for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+            if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+    step = up / "p-reels-pip" / "steps" / "04-build-background.md"
+    step.write_text(step.read_text(encoding="utf-8").replace(ss._STEP_TYPING_RENDER_EDITS["04-build-background.md"][1],
+                                                           "- drifted typing bullet\n"), encoding="utf-8")
+    try:
+        ss.apply_typing_render_usage(up / "p-reels-pip", "fixture")
+        bad.append("transform did not fail on a step 04 without its anchor")
+    except SystemExit:
+        pass
+except Exception as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi280_detail" == "ok" ]]; then
+  pass "WI2.80 recipe steps name only scripts their bundle ships; step 04 names the real typing render"
+else
+  fail "WI2.80 recipe steps name only shipped scripts" "$wi280_detail"
+fi
+rm -rf "$wi280_root"
+
+echo "=== Case 59: WI2.83 — the spotlight big-stat takeover fits its stat inside the safe width ==="
+# Observed 2026-10-21 (smoke 23b, p-reels-spotlight on Render 12bd5e0): the tk-stat takeover set
+# "100,000" at a fixed 340 px; it was wider than the 1080 px frame and clipped on both edges. Every
+# p-reels-spotlight tk-stat.html copy now keeps the stat on one line and scales it down to <= 900 px
+# (keeping 340 px when it already fits). The template's own script runs here in node with a fake
+# DOM whose text width grows with font size, so the old fixed-size template fails this case.
+wi283_root="$(mktemp -d)"
+wi283_detail="$(python3 - "$REPO_DIR" "$wi283_root" <<'PY'
+import importlib.util, json, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+SIM = r"""
+const vm = require('vm'), fs = require('fs');
+const [tplPath, stat, emPerChar] = process.argv.slice(2);
+const src = fs.readFileSync(tplPath, 'utf8');
+const scripts = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+if (scripts.length !== 1) { console.log(JSON.stringify({ error: 'inline scripts: ' + scripts.length })); process.exit(0); }
+const code = scripts[0].replace(/\{\{ID\}\}/g, 'tk0').replace(/\{\{DURATION\}\}/g, '3');
+const DESIGN = 340;  // the template's CSS size: what a page shows when no script sets one
+function el(text) {
+  return { textContent: text, innerHTML: text, style: {},
+    get scrollWidth() { const fs = parseFloat(this.style.fontSize) || DESIGN;
+      return Math.round(fs * parseFloat(emPerChar) * this.textContent.length); } };
+}
+const els = { '.js-stat': el(stat), '.js-label': el('VIEWS IN 90 DAYS') };
+const tl = new Proxy({}, { get: () => () => tl });
+let ready = null;
+const ctx = { window: {}, gsap: { timeline: () => tl }, parseFloat, Math,
+  document: { querySelector: s => els[Object.keys(els).find(k => s.endsWith(k))] || el(''),
+              fonts: { ready: { then: f => { ready = f; } } } } };
+vm.runInNewContext(code, ctx);
+if (ready) ready();  // fonts finished loading: the page may refit
+const s = els['.js-stat'];
+console.log(JSON.stringify({ size: parseFloat(s.style.fontSize) || DESIGN, width: s.scrollWidth }));
+"""
+(root / "sim.js").write_text(SIM, encoding="utf-8")
+def sim(tpl, stat, em):
+    out = subprocess.run(["node", str(root / "sim.js"), str(tpl), stat, str(em)],
+                         capture_output=True, text=True, timeout=60)
+    if out.returncode != 0:
+        return {"error": out.stderr.strip()[-200:]}
+    return json.loads(out.stdout)
+try:
+    skills = repo / "skills"
+    tpls = sorted(p for p in skills.rglob("tk-stat.html")
+                  if p.parent.name == "templates" and p.parent.parent.name == "p-reels-spotlight")
+    if len(tpls) != 2:
+        bad.append("expected 2 p-reels-spotlight tk-stat.html copies, found %d" % len(tpls))
+    if len({t.read_bytes() for t in tpls}) > 1:
+        bad.append("the tk-stat.html copies differ")
+    # 0.55 em/char ~ Oswald 700 digits ("100,000" at 340px ~ 1300px, as observed); 0.75 = wide caps.
+    for tpl in tpls:
+        rel = tpl.relative_to(repo)
+        for stat, em in (("100,000", 0.55), ("$1,234,567.8", 0.55), ("WWWWWWWWWWWW", 0.75), ("1", 0.55)):
+            r = sim(tpl, stat, em)
+            if "error" in r:
+                bad.append("%s: %s did not run: %s" % (rel, stat, r["error"])); continue
+            if r["width"] > 900:
+                bad.append("%s: %r is %dpx wide at %spx, past the 900px safe width" % (rel, stat, r["width"], r["size"]))
+        r = sim(tpl, "3X", 0.55)
+        if r.get("size") != 340:
+            bad.append("%s: a stat that fits (3X) did not keep the 340px design size: %r" % (rel, r))
+        body = tpl.read_text(encoding="utf-8")
+        if not re.search(r"\.stat \{[^}]*white-space: nowrap", body):
+            bad.append("%s: .stat is not kept on one line (white-space: nowrap)" % rel)
+    spec = importlib.util.spec_from_file_location("ss283", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    fit = getattr(ss, "apply_spotlight_stat_fit", None)
+    if fit is None:
+        bad.append("sync-skills.py has no apply_spotlight_stat_fit transform")
+    else:
+        # Restore the old fixed-size template in a copy; the transform upgrades it once, then is a no-op,
+        # and its output is byte-identical to the committed bundle.
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        for t in up.rglob("tk-stat.html"):
+            text = t.read_text(encoding="utf-8")
+            for old, new in reversed(ss._SPOTLIGHT_STAT_EDITS):
+                text = text.replace(new, old)
+            t.write_text(text, encoding="utf-8")
+            r = sim(t, "100,000", 0.55)
+            if r.get("width", 0) <= 900:
+                bad.append("sanity: the restored old template was not caught (%r)" % r)
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            n1 = fit(up / rec, rec); n2 = fit(up / rec, rec)
+            if (n1, n2) != (1, 0):
+                bad.append("transform on %s changed (%d, %d) file(s), expected (1, 0)" % (rec, n1, n2))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        t = up / "p-reels-spotlight" / "templates" / "tk-stat.html"
+        text = t.read_text(encoding="utf-8")
+        for old, new in reversed(ss._SPOTLIGHT_STAT_EDITS):
+            text = text.replace(new, old)
+        t.write_text(text.replace("font-size: 340px", "font-size: 300px"), encoding="utf-8")
+        try:
+            fit(up / "p-reels-spotlight", "fixture"); bad.append("transform did not fail on a drifted tk-stat.html")
+        except SystemExit:
+            pass
+        t.unlink()
+        try:
+            fit(up / "p-reels-spotlight", "p-reels-spotlight"); bad.append("transform did not fail on a missing tk-stat.html")
+        except SystemExit:
+            pass
+except Exception as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi283_detail" == "ok" ]]; then
+  pass "WI2.83 spotlight tk-stat fits stats up to 12 characters inside the 900px safe width (every copy)"
+else
+  fail "WI2.83 spotlight tk-stat fits the stat inside the safe width" "$wi283_detail"
+fi
+rm -rf "$wi283_root"
+
+echo "=== Case 60: WI2.85 — the spotlight big-stat slam-in starts inside the frame for a wide stat ==="
+# Observed 2026-10-21 (final_checks refused a spotlight smoke on Render 137765e): WI2.83 fits the
+# settled stat to <= 900 px, but the GSAP slam still started at scale 2.4, so a fitted "100,000"
+# (~900 px) began ~2100 px wide and clipped both frame edges around 0.33 s. Every p-reels-spotlight
+# tk-stat.html copy now starts the slam at min(2.4, 936 / fitted width) (936 = 1080 - 2x72), and
+# re-reads it after the fonts refit. The template script runs in node with a fake DOM (text width
+# grows with font size; a fallback font is wider until fonts load) and a fake GSAP that records the
+# slam's start scale the way GSAP does: at build, and again only if the timeline is invalidated.
+wi285_root="$(mktemp -d)"
+wi285_detail="$(python3 - "$REPO_DIR" "$wi285_root" <<'PY'
+import importlib.util, json, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+SIM = r"""
+const vm = require('vm'), fs = require('fs');
+const [tplPath, stat, emFallback, emLoaded] = process.argv.slice(2);
+const src = fs.readFileSync(tplPath, 'utf8');
+const scripts = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+if (scripts.length !== 1) { console.log(JSON.stringify({ error: 'inline scripts: ' + scripts.length })); process.exit(0); }
+const code = scripts[0].replace(/\{\{ID\}\}/g, 'tk0').replace(/\{\{DURATION\}\}/g, '3');
+let em = parseFloat(emFallback);  // the fallback font until fonts load
+function el(text) {
+  return { textContent: text, innerHTML: text, style: {},
+    get scrollWidth() { const fs = parseFloat(this.style.fontSize) || 340;
+      return Math.round(fs * em * this.textContent.length); } };
+}
+const els = { '.js-stat': el(stat), '.js-label': el('VIEWS IN 90 DAYS') };
+const slams = [];  // fromTo tweens on the stat: GSAP records a function value when the tween inits
+const tl = { invalidate() { slams.forEach(s => { s.start = undefined; }); return tl; } };
+const val = v => (typeof v === 'function' ? v(0, els['.js-stat'], [els['.js-stat']]) : v);
+tl.fromTo = (sel, from, to) => { if (String(sel).endsWith('.js-stat')) slams.push({ from, start: val(from.scale) }); return tl; };
+tl.to = () => tl;
+const readies = [];
+const ctx = { window: {}, gsap: { timeline: () => tl }, parseFloat, Math,
+  document: { querySelector: s => els[Object.keys(els).find(k => s.endsWith(k))] || el(''),
+              fonts: { ready: { then: f => { readies.push(f); } } } } };
+vm.runInNewContext(code, ctx);
+em = parseFloat(emLoaded);           // fonts finished loading
+readies.forEach(f => f());           // callbacks run in registration order, like a promise
+const s = slams[0];
+if (!s) { console.log(JSON.stringify({ error: 'no stat fromTo slam' })); process.exit(0); }
+const start = s.start === undefined ? val(s.from.scale) : s.start;  // next seek re-inits if invalidated
+const width = els['.js-stat'].scrollWidth;
+console.log(JSON.stringify({ start, width, startWidth: Math.round(start * width) }));
+"""
+(root / "sim.js").write_text(SIM, encoding="utf-8")
+def sim(tpl, stat, em_fallback, em_loaded):
+    out = subprocess.run(["node", str(root / "sim.js"), str(tpl), stat, str(em_fallback), str(em_loaded)],
+                         capture_output=True, text=True, timeout=60)
+    if out.returncode != 0:
+        return {"error": out.stderr.strip()[-200:]}
+    return json.loads(out.stdout)
+try:
+    skills = repo / "skills"
+    tpls = sorted(p for p in skills.rglob("tk-stat.html")
+                  if p.parent.name == "templates" and p.parent.parent.name == "p-reels-spotlight")
+    if len(tpls) != 2:
+        bad.append("expected 2 p-reels-spotlight tk-stat.html copies, found %d" % len(tpls))
+    if len({t.read_bytes() for t in tpls}) > 1:
+        bad.append("the tk-stat.html copies differ")
+    for tpl in tpls:
+        rel = tpl.relative_to(repo)
+        # (fallback em, loaded em): fonts that do not change width, a wider fallback, a narrower fallback.
+        for stat in ("100,000", "$1,234,567.8", "WWWWWWWWWWWW"):
+            for ems in ((0.55, 0.55), (0.70, 0.55), (0.45, 0.55)):
+                r = sim(tpl, stat, *ems)
+                if "error" in r:
+                    bad.append("%s: %s did not run: %s" % (rel, stat, r["error"])); continue
+                if r["startWidth"] > 936:
+                    bad.append("%s: %r slams in %dpx wide (scale %.2f x %dpx), past the 936px padded width (fonts %s)"
+                               % (rel, stat, r["startWidth"], r["start"], r["width"], ems))
+        for ems in ((0.55, 0.55), (0.70, 0.55)):
+            r = sim(tpl, "3X", *ems)
+            if r.get("start") != 2.4:
+                bad.append("%s: a short stat (3X) lost the full 2.4 slam: %r" % (rel, r))
+    spec = importlib.util.spec_from_file_location("ss285", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    slam_edits = getattr(ss, "_SPOTLIGHT_SLAM_EDITS", None)
+    if slam_edits is None or not all(e in ss._SPOTLIGHT_STAT_EDITS for e in slam_edits):
+        bad.append("sync-skills.py apply_spotlight_stat_fit does not carry the WI2.85 slam edits")
+    else:
+        # From the WI2.83 (137765e) template the transform adds only the slam cap, once, and its
+        # output is byte-identical to the committed bundle.
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        for t in up.rglob("tk-stat.html"):
+            text = t.read_text(encoding="utf-8")
+            for old, new in reversed(slam_edits):
+                text = text.replace(new, old)
+            t.write_text(text, encoding="utf-8")
+            r = sim(t, "100,000", 0.55, 0.55)
+            if r.get("startWidth", 0) <= 936:
+                bad.append("sanity: the restored WI2.83 template was not caught (%r)" % r)
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            n1 = ss.apply_spotlight_stat_fit(up / rec, rec); n2 = ss.apply_spotlight_stat_fit(up / rec, rec)
+            if (n1, n2) != (1, 0):
+                bad.append("transform on %s changed (%d, %d) file(s), expected (1, 0)" % (rec, n1, n2))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        t = up / "p-reels-spotlight" / "templates" / "tk-stat.html"
+        text = t.read_text(encoding="utf-8")
+        for old, new in reversed(slam_edits):
+            text = text.replace(new, old)
+        t.write_text(text.replace("{ scale: 2.4, opacity: 0 }", "{ scale: 2.2, opacity: 0 }"), encoding="utf-8")
+        try:
+            ss.apply_spotlight_stat_fit(up / "p-reels-spotlight", "fixture")
+            bad.append("transform did not fail on a drifted slam tween")
+        except SystemExit:
+            pass
+except Exception as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi285_detail" == "ok" ]]; then
+  pass "WI2.85 spotlight tk-stat slam starts at min(2.4, 936 / fitted width): wide stats stay inside, 3X keeps 2.4 (every copy)"
+else
+  fail "WI2.85 spotlight tk-stat slam starts inside the padded frame width" "$wi285_detail"
+fi
+rm -rf "$wi285_root"
+
+echo "=== Case 61: WI2.86 — the spotlight end card starts only after the last spoken word ends ==="
+# Observed 2026-10-21 (re-smoke 24, p-reels-spotlight, Render 503d906): step 06 started the end card
+# at bed - cta_duration (~39.0 s) while the closing line ran to 41.6 s, so it played over the card
+# with no face and no captions. Every p-reels-spotlight steps/06-assemble.md copy now starts the card
+# at max(bed - cta_duration, last word end) and renders it at the shorter length; under 1.0 s left
+# it now fails the step with the reason (WI2.90; it used to skip the card). The section-4 bash block of each copy runs under bash with a
+# stub ffmpeg/npx (the overlay window is read from the ffmpeg call) and the real cta-card.py.
+wi286_root="$(mktemp -d)"
+wi286_detail="$(python3 - "$REPO_DIR" "$wi286_root" <<'PY'
+import importlib.util, json, os, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+STUB = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$WI286_LOG\"\nfor a; do last=$a; done\ncase \"$last\" in *.mp4|*.json) : > \"$last\";; esac\nexit 0\n"
+bin_dir = root / "bin"; bin_dir.mkdir()
+for tool in ("ffmpeg", "npx"):
+    (bin_dir / tool).write_text(STUB); (bin_dir / tool).chmod(0o755)
+def block(step):
+    text = step.read_text(encoding="utf-8")
+    sec = text.split("### 4. CTA end card", 1)[1].split("### 5.", 1)[0]
+    m = re.search(r"```bash\n(.*?)```", sec, re.S)
+    return m.group(1) if m else None
+def run(step, case, bed, cta, words_end, caption_end, card="on", sh="bash"):
+    work = root / case; shutil.rmtree(work, ignore_errors=True); (work / "work").mkdir(parents=True)
+    words = [{"text": "built", "start": words_end - 0.4, "end": words_end - 0.2},
+             {"text": "you.", "start": words_end - 0.2, "end": words_end}]
+    (work / "work" / "words.json").write_text(json.dumps(words))
+    plan = {"brand": {"bg": "#0F172A", "accent": "#F97316", "fg": "#F1F5F9"},
+            "caption_groups": [{"start": 38.5, "end": caption_end, "words": [
+                {"w": "built", "s": 38.5, "e": 39.0}, {"w": "you.", "s": 39.0, "e": caption_end}]}]}
+    (work / "work" / "plan.json").write_text(json.dumps(plan))
+    (work / "work" / "polished.mp4").write_bytes(b"x" * 10)
+    (work / "brief.json").write_text(json.dumps({"brand": {"name": "Test", "handle": "@test", "cta": "Try it"}}))
+    code = block(step)
+    if code is None:
+        return {"error": "no bash block in section 4"}
+    (work / "s4.sh").write_text("set -u\nCTA_CARD=%s; CTA_DURATION=%s; BED_DUR=%s\nSKILL_DIR=%s\n%s"
+                                % (card, cta, bed, repo / "skills" / "p-reels-spotlight", code))
+    log = work / "ffmpeg.log"
+    env = dict(os.environ, PATH="%s:%s" % (bin_dir, os.environ["PATH"]), WI286_LOG=str(log))
+    p = subprocess.run([sh, "s4.sh"], cwd=work, env=env, capture_output=True, text=True, timeout=60)
+    calls = log.read_text().splitlines() if log.exists() else []
+    over = [c for c in calls if "overlay=enable" in c]
+    m = re.search(r"between\(t,([0-9.]+),([0-9.]+)\)", over[0]) if over else None
+    card_json = work / "work" / "cta-card.json"
+    dur = json.loads(card_json.read_text())["duration"] if card_json.exists() and card_json.stat().st_size else None
+    return {"rc": p.returncode, "out": (p.stdout + p.stderr)[-300:], "start": float(m.group(1)) if m else None,
+            "end": float(m.group(2)) if m else None, "card_dur": dur,
+            "assembled": (work / "work" / "assembled.mp4").exists()}
+try:
+    skills = repo / "skills"
+    steps = sorted(p for p in skills.rglob("06-assemble.md")
+                   if p.parent.name == "steps" and p.parent.parent.name.startswith("p-reels-spotlight"))
+    if len(steps) != 3:
+        bad.append("expected 3 p-reels-spotlight steps/06-assemble.md copies, found %d" % len(steps))
+    if len({s.read_bytes() for s in steps}) > 1:
+        bad.append("the 06-assemble.md copies differ")
+    shells = ["bash"] + (["/bin/bash"] if Path("/bin/bash").exists() else [])
+    for step in steps:
+        rel = step.relative_to(repo)
+        for sh in shells:
+            # Speech to 41.6 s on a 44.0 s bed: the old rule started the card at 41.0 s, over the last words.
+            r = run(step, "late", 44.0, 3.0, 41.6, 41.6, sh=sh)
+            if r.get("rc") != 0 or r.get("start") is None or r["start"] < 41.6 - 1e-6 or abs(r["end"] - 44.0) > 1e-6:
+                bad.append("%s (%s): card over speech, bed 44.0 / last word 41.6: %r" % (rel, sh, r))
+            elif r.get("card_dur") is None or abs(float(r["card_dur"]) - 2.4) > 0.01:
+                bad.append("%s (%s): card not rendered at the 2.4 s left after the last word: %r" % (rel, sh, r))
+            # Plenty of tail: the card keeps its full cta_duration at the bed end.
+            r = run(step, "room", 45.0, 3.0, 41.6, 41.6, sh=sh)
+            if r.get("rc") != 0 or r.get("start") is None or abs(r["start"] - 42.0) > 1e-6 or abs(float(r["card_dur"] or 0) - 3.0) > 0.01:
+                bad.append("%s (%s): full-length card lost when there is room: %r" % (rel, sh, r))
+            # A caption word ending later than the transcript also holds the card back.
+            r = run(step, "caption", 44.0, 3.0, 41.2, 41.8, sh=sh)
+            if r.get("rc") != 0 or r.get("start") is None or r["start"] < 41.8 - 1e-6:
+                bad.append("%s (%s): card starts before the last caption word ends: %r" % (rel, sh, r))
+            # The smoke: speech runs to within 0.07 s of the bed end -> no card over the speech. Since
+            # WI2.89 the bed always has a tail, so WI2.90 makes this a loud step failure, not a silent skip.
+            r = run(step, "smoke", 41.67, 3.0, 41.6, 41.6, sh=sh)
+            if r.get("rc") == 0 or r.get("start") is not None or r.get("assembled") or "end card: only" not in r.get("out", ""):
+                bad.append("%s (%s): under 1.0 s after the last word, step 06 does not stop with the reason (WI2.90): %r" % (rel, sh, r))
+            r = run(step, "off", 44.0, 3.0, 41.6, 41.6, card="off", sh=sh)
+            if r.get("rc") != 0 or r.get("start") is not None or not r.get("assembled"):
+                bad.append("%s (%s): cta_card off still overlays a card: %r" % (rel, sh, r))
+    spec = importlib.util.spec_from_file_location("ss286", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    edits = getattr(ss, "_SPOTLIGHT_CTA_EDITS", None)
+    if edits is None or not hasattr(ss, "apply_spotlight_end_card"):
+        bad.append("sync-skills.py does not carry the WI2.86 apply_spotlight_end_card transform")
+    else:
+        # From the 503d906 step the transform adds the rule once and matches the committed bundle.
+        # WI2.90 (apply_spotlight_end_card_room) runs after it on step 06, so it is reverted first and re-applied.
+        room = [e for rel, _f, eds in getattr(ss, "_SPOTLIGHT_CTA_ROOM_FILES", ()) if rel == ss.SPOTLIGHT_ASSEMBLE_FILE for e in eds]
+        def unroom(text):
+            for old, new in reversed(room):
+                text = text.replace(new, old)
+            return text
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        for t in up.rglob("06-assemble.md"):
+            if t.parent.name != "steps" or not t.parent.parent.name.startswith("p-reels-spotlight"):
+                continue
+            text = unroom(t.read_text(encoding="utf-8"))
+            for old, new in reversed(edits):
+                text = text.replace(new, old)
+            t.write_text(text, encoding="utf-8")
+            r = run(t, "restored", 44.0, 3.0, 41.6, 41.6)
+            if r.get("start") is None or r["start"] >= 41.6 - 1e-6:
+                bad.append("sanity: the restored 503d906 step was not caught (%r)" % r)
+        for rec, n in (("p-reels-spotlight", 1), ("p-reels-spotlight-heygen", 2)):
+            n1 = ss.apply_spotlight_end_card(up / rec, rec); n2 = ss.apply_spotlight_end_card(up / rec, rec)
+            if (n1, n2) != (n, 0):
+                bad.append("transform on %s changed (%d, %d) file(s), expected (%d, 0)" % (rec, n1, n2, n))
+            if room:
+                ss.apply_spotlight_end_card_room(up / rec, rec)
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        t = up / "p-reels-spotlight" / "steps" / "06-assemble.md"
+        text = unroom(t.read_text(encoding="utf-8"))
+        for old, new in reversed(edits):
+            text = text.replace(new, old)
+        t.write_text(text.replace("print(${BED_DUR} - ${CTA_DURATION})", "print(${BED_DUR} - ${CTA_DURATION} - 0.5)"), encoding="utf-8")
+        try:
+            ss.apply_spotlight_end_card(up / "p-reels-spotlight", "fixture")
+            bad.append("transform did not fail on a drifted CTA_START line")
+        except SystemExit:
+            pass
+except Exception as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi286_detail" == "ok" ]]; then
+  pass "WI2.86 spotlight end card starts at max(bed - cta_duration, last word end); under 1.0 s fails the step (WI2.90, every copy)"
+else
+  fail "WI2.86 spotlight end card starts only after the last spoken word ends" "$wi286_detail"
+fi
+rm -rf "$wi286_root"
+
+echo "=== Case 62: WI2.89 — the spotlight bed gets a silent tail so the end card always shows ==="
+# Observed 2026-10-21 (re-smoke clip heygen-avatar.mp4, Render 5158704): the bed was 41.67 s and the
+# speech ran to 41.6 s, so the WI2.86 step 06 rule (card after the last word, skipped under 1.0 s)
+# skipped the end card and the reel shipped with no CTA. Step 01 of every p-reels-spotlight copy now
+# holds the last frame with silence until cta_duration + 0.5 s follows the speech end (tail at most
+# 3.5 s). Its section-4b bash block runs on real ffmpeg clips; the bed it makes then goes through the
+# real step 06 section-4 block (stub ffmpeg/npx, as in Case 61) and the real transcript/plan checks.
+wi289_root="$(mktemp -d)"
+wi289_detail="$(python3 - "$REPO_DIR" "$wi289_root" <<'PY'
+import importlib.util, json, os, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+def run(*a, **kw):
+    return subprocess.run([str(x) for x in a], capture_output=True, text=True, **kw)
+def dur(p, stream=None):
+    args = ["ffprobe", "-v", "error"] + (["-select_streams", stream, "-show_entries", "stream=duration"] if stream
+                                          else ["-show_entries", "format=duration"]) + ["-of", "csv=p=0", p]
+    return float(run(*args).stdout.strip().splitlines()[0])
+def trailing_silence(p):
+    d, log = dur(p), run("ffmpeg", "-hide_banner", "-i", p, "-af", "silencedetect=noise=-40dB:d=0.3", "-f", "null", "-").stderr
+    st = [float(x) for x in re.findall(r"silence_start: (-?[0-9.]+)", log)]
+    en = [float(x) for x in re.findall(r"silence_end: (-?[0-9.]+)", log)]
+    return d - st[-1] if st and (len(en) < len(st) or en[-1] >= d - 0.05) else 0.0
+def clip(name, d, speech):
+    # a tone stands in for the voice: it runs to `speech` s, then silence to `d` s
+    path = root / "clips" / name; path.parent.mkdir(exist_ok=True)
+    r = run("ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=270x480:r=30:d=%.3f" % d, "-f", "lavfi",
+            "-i", "sine=f=220:d=%.3f,volume=0.5,apad=whole_dur=%.3f" % (speech, d), "-c:v", "libx264", "-preset",
+            "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", "-t", "%.3f" % d, path)
+    if r.returncode:
+        raise RuntimeError("clip %s: %s" % (name, r.stderr[-200:]))
+    return path
+def section(step, start, stop):
+    text = step.read_text(encoding="utf-8")
+    if start not in text:
+        return None
+    m = re.search(r"```bash\n(.*?)```", text.split(start, 1)[1].split(stop, 1)[0], re.S)
+    return m.group(1) if m else None
+def prepare(step, case, src, card="on", cta=3.0):
+    work = root / case; shutil.rmtree(work, ignore_errors=True); (work / "work").mkdir(parents=True)
+    shutil.copy(src, work / "work" / "base.mp4")
+    (work / "brief.json").write_text(json.dumps({"options": {"cta_card": card, "cta_duration": cta}}))
+    code = section(step, "### 4b.", "### 5.")
+    if code is None:
+        return None
+    (work / "s4b.sh").write_text("set -u\n" + code)
+    p = subprocess.run(["bash", "s4b.sh"], cwd=work, capture_output=True, text=True, timeout=300)
+    return {"rc": p.returncode, "out": (p.stdout + p.stderr)[-300:], "bed": work / "work" / "base.mp4"}
+STUB = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$WI289_LOG\"\nfor a; do last=$a; done\ncase \"$last\" in *.mp4|*.json) : > \"$last\";; esac\nexit 0\n"
+stub_bin = root / "bin"; stub_bin.mkdir()
+for tool in ("ffmpeg", "npx"):
+    (stub_bin / tool).write_text(STUB); (stub_bin / tool).chmod(0o755)
+def assemble(step, case, bed, last_word):
+    # step 06 section 4 (the WI2.86 end-card rule) on the bed step 01 made
+    work = root / case; shutil.rmtree(work, ignore_errors=True); (work / "work").mkdir(parents=True)
+    (work / "work" / "words.json").write_text(json.dumps([{"text": "you.", "start": last_word - 0.3, "end": last_word}]))
+    (work / "work" / "plan.json").write_text(json.dumps({"brand": {"bg": "#0F172A", "accent": "#F97316", "fg": "#F1F5F9"},
+        "caption_groups": [{"start": last_word - 0.3, "end": last_word, "words": [{"w": "you.", "s": last_word - 0.3, "e": last_word}]}]}))
+    (work / "work" / "polished.mp4").write_bytes(b"x" * 10)
+    (work / "brief.json").write_text(json.dumps({"brand": {"name": "Test", "handle": "@test", "cta": "Try it"}}))
+    code = section(step.parent / "06-assemble.md", "### 4. CTA end card", "### 5.")
+    (work / "s4.sh").write_text("set -u\nCTA_CARD=on; CTA_DURATION=3.0; BED_DUR=%s\nSKILL_DIR=%s\n%s"
+                                % (bed, repo / "skills" / "p-reels-spotlight", code))
+    log = work / "ffmpeg.log"
+    env = dict(os.environ, PATH="%s:%s" % (stub_bin, os.environ["PATH"]), WI289_LOG=str(log))
+    p = subprocess.run(["bash", "s4.sh"], cwd=work, env=env, capture_output=True, text=True, timeout=60)
+    over = [c for c in (log.read_text().splitlines() if log.exists() else []) if "overlay=enable" in c]
+    m = re.search(r"between\(t,([0-9.]+),([0-9.]+)\)", over[0]) if over else None
+    card = work / "work" / "cta-card.json"
+    return {"rc": p.returncode, "out": (p.stdout + p.stderr)[-200:], "start": float(m.group(1)) if m else None,
+            "card_dur": json.loads(card.read_text())["duration"] if card.exists() and card.stat().st_size else None}
+try:
+    skills = repo / "skills"
+    steps = sorted(p for p in skills.rglob("01-prepare-footage.md")
+                   if p.parent.name == "steps" and p.parent.parent.name.startswith("p-reels-spotlight"))
+    if len(steps) != 3:
+        bad.append("expected 3 p-reels-spotlight steps/01-prepare-footage.md copies, found %d" % len(steps))
+    if len({section(s, "### 4b.", "### 5.") for s in steps}) != 1:
+        bad.append("the step 01 end-card tail blocks differ between copies")
+    full = clip("full.mp4", 41.67, 41.67)     # the smoke: speech to the end of a 41.67 s clip
+    gap = clip("gap.mp4", 8.0, 6.5)           # 1.5 s of silence already: 2.0 s more is enough
+    room = clip("room.mp4", 8.0, 4.0)         # 4.0 s of silence already: left as it is
+    for step in steps:
+        rel = step.relative_to(repo).parent.parent
+        r = prepare(step, "smoke", full)
+        if r is None:
+            bad.append("%s: step 01 has no section 4b end-card tail" % rel)
+            r = {"rc": 0, "bed": root / "clips" / "full.mp4"}   # the old bare bed, for the end-to-end proof
+        elif r["rc"] != 0:
+            bad.append("%s: tail block failed: %r" % (rel, r)); continue
+        bed = dur(r["bed"])
+        if not (41.67 + 3.4 <= bed <= 41.67 + 3.6) or trailing_silence(r["bed"]) < 3.3:
+            bad.append("%s: speech to the end of 41.67 s: bed %.2f s, %.2f s silent tail (want ~45.17, >= 3.3)"
+                       % (rel, bed, trailing_silence(r["bed"])))
+        elif dur(r["bed"], "v:0") < bed - 0.1:
+            bad.append("%s: the picture stops before the bed ends (last frame not held)" % rel)
+        a = assemble(step, "assemble", bed, 41.6)
+        if a["rc"] != 0 or a["start"] is None or a["start"] < 41.6 - 1e-6 or abs(float(a["card_dur"] or 0) - 3.0) > 0.02:
+            bad.append("%s: speech to 41.6 s on the 41.67 s clip: no full 3.0 s end card after the last word: %r" % (rel, a))
+        r = prepare(step, "gap", gap)
+        if r and (r["rc"] != 0 or abs(dur(r["bed"]) - 10.0) > 0.1):
+            bad.append("%s: 1.5 s of trailing silence should get a 2.0 s tail (bed 10.0 s): %r" % (rel, r))
+        for case, src, card in (("room", room, "on"), ("off", full, "off")):
+            r = prepare(step, case, src, card=card)
+            if r and (r["rc"] != 0 or r["bed"].read_bytes() != src.read_bytes()):
+                bad.append("%s: %s: the bed must be left as it is: %r" % (rel, case, r))
+    # The checks follow the longer bed: the right transcript/plan pass, a short one still fails.
+    spec = importlib.util.spec_from_file_location("ck289", repo / "bin" / "cfw-render-checks.py")
+    ck = importlib.util.module_from_spec(spec); spec.loader.exec_module(ck)
+    recipe = skills / "p-reels-spotlight"
+    acc = json.loads((recipe / "acceptance.json").read_text())
+    hub_acc = skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "acceptance.json"
+    if hub_acc.read_bytes() != (recipe / "acceptance.json").read_bytes():
+        bad.append("the two acceptance.json copies differ")
+    bed_path = root / "smoke" / "work" / "base.mp4"
+    work = (root / "checks").resolve(); (work / "prior").mkdir(parents=True); (work / "saves").mkdir()   # no linked /var
+    shutil.copy(bed_path, work / "prior" / "voice_track.mp4")
+    bed = dur(work / "prior" / "voice_track.mp4")
+    def verdict(fn):
+        try:
+            fn(); return "pass"
+        except BaseException as exc:
+            return "fail: %s" % exc
+    tk = [{"start": 5.0, "end": 9.0, "template": "tk-stat", "fill": {"stat": "3X"}},
+          {"start": 15.0, "end": 19.0, "template": "tk-quote", "fill": {"quote": "q"}}]
+    for last, want in ((41.6, "pass"), (37.0, "fail")):
+        (work / "saves" / "transcripts.json").write_text(json.dumps({"words": [
+            {"text": "hello", "start": 0.5, "end": 1.0}, {"text": "you.", "start": last - 0.3, "end": last}]}))
+        s = ck.Spotlight(recipe, work, "transcribe")
+        got = verdict(lambda: s.words(acc["steps"]["transcribe"]["checks"][0]))
+        if not got.startswith(want):
+            bad.append("transcript ending %.1f s on a %.2f s bed: %s (want %s)" % (last, bed, got, want))
+        (work / "saves" / "edit_plan.json").write_text(json.dumps({"duration": bed, "cover_at": 12.0, "takeovers": tk,
+            "brand": {"bg": "#0F172A", "accent": "#F97316", "fg": "#F1F5F9"},
+            "caption_groups": [{"start": 0.5, "end": last, "words": [{"w": "hello", "s": 0.5, "e": 1.0}, {"w": "you.", "s": last - 0.3, "e": last}]}]}))
+        s = ck.Spotlight(recipe, work, "plan_edit")
+        got = verdict(lambda: s.plan_guard(acc["steps"]["plan_edit"]["checks"][0]))
+        if not got.startswith(want):
+            bad.append("captions ending %.1f s on a %.2f s bed: %s (want %s)" % (last, bed, got, want))
+    m = re.search(r"require\(20 <= duration\(self\.artifact\(\)\) <= ([0-9.]+)", (repo / "bin" / "cfw-render-checks.py").read_text())
+    if not m or float(m.group(1)) < 60 + 3.5:
+        bad.append("the prepare_footage bed limit does not allow 60 s of speech + the 3.5 s tail")
+    win = next(c for c in acc["checks"] if c["id"] == "duration_window")
+    if win["max_s"] < 60 + 3.5 + 0.4:
+        bad.append("duration_window max_s %s does not allow 60 s + 3.5 s tail + 0.4 s cover" % win["max_s"])
+    for p in sorted(skills.rglob("03-plan-edit.md")):
+        if p.parent.parent.name.startswith("p-reels-spotlight") and "- dur) < 4.5, \"captions do not cover the bed\"" not in p.read_text():
+            bad.append("%s: the step 03 caption guard does not allow the tail" % p.relative_to(repo))
+    for p in (recipe / "SKILL.md", skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "SKILL.md"):
+        t = p.read_text(encoding="utf-8")
+        if "overlaying the final 2.5–3s" in t or 'CTA_START=$(python3 -c "print(${BED_DUR} - ${CTA_DURATION})")' in t \
+                or "End-card tail (WI2.89" not in t:
+            bad.append("%s still describes the card over the final seconds of the bare bed" % p.relative_to(repo))
+    finals = sorted(p for p in skills.rglob("07-final-checks.md") if p.parent.parent.name.startswith("p-reels-spotlight"))
+    if len({p.read_bytes() for p in finals}) != 1 or any("silent tail" not in p.read_text() for p in finals):
+        bad.append("07-final-checks.md copies differ or do not describe the end card after the last word")
+    # sync-skills.py keeps every copy in line.
+    spec = importlib.util.spec_from_file_location("ss289", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    files = getattr(ss, "_SPOTLIGHT_TAIL_FILES", None)
+    if files is None or not hasattr(ss, "apply_spotlight_bed_tail"):
+        bad.append("sync-skills.py does not carry the WI2.89 apply_spotlight_bed_tail transform")
+    else:
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        def revert(base):
+            for rel, full_only, edits in files:
+                if full_only and base.name != "p-reels-spotlight":
+                    continue
+                t = (base / rel).read_text(encoding="utf-8")
+                for old, new in reversed(edits):
+                    t = t.replace(new, old)
+                (base / rel).write_text(t, encoding="utf-8")
+        for base in (up / "p-reels-spotlight", up / "p-reels-spotlight-heygen",
+                     up / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight"):
+            revert(base)
+        for rec, n in (("p-reels-spotlight", 7), ("p-reels-spotlight-heygen", 12)):
+            n1 = ss.apply_spotlight_bed_tail(up / rec, rec); n2 = ss.apply_spotlight_bed_tail(up / rec, rec)
+            if (n1, n2) != (n, 0):
+                bad.append("transform on %s changed (%d, %d) file(s), expected (%d, 0)" % (rec, n1, n2, n))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        revert(up / "p-reels-spotlight")
+        t = up / "p-reels-spotlight" / "steps" / "01-prepare-footage.md"
+        t.write_text(t.read_text(encoding="utf-8").replace("### 5. Seal and save\n", "### 5. Seal it\n"), encoding="utf-8")
+        try:
+            ss.apply_spotlight_bed_tail(up / "p-reels-spotlight", "fixture")
+            bad.append("transform did not fail on a drifted step 01 anchor")
+        except SystemExit:
+            pass
+except Exception as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+if [[ "$wi289_detail" == "ok" ]]; then
+  pass "WI2.89 spotlight bed gets a silent tail (cta_duration + 0.5 s, <= 3.5 s): full end card after the last word (every copy)"
+else
+  fail "WI2.89 spotlight bed gets a silent tail so the end card always shows" "$wi289_detail"
+fi
+rm -rf "$wi289_root"
+
+echo "=== Case 63: WI2.87 — the spotlight typing takeover is a real sub-composition, so takeovers animate ==="
+# Observed 2026-10-21 (re-smoke 24, order R-VW59, Render 503d906): all four spotlight takeovers hard-cut
+# to their final layout (no stat slam-in, no typing). Step 05 stripped the <template> wrapper from
+# c-typing-ui's typing-scene.html and left its composition id "typing-scene" while the root slot loads
+# it as data-composition-src with id "tk<i>". HyperFrames 0.7.5 never got ready ("Composition has zero
+# duration. Runtime ready: false"), the render failed, and the still-card fallback composited every
+# takeover as a static PNG. This case runs the real step 05 Part B assembler of every copy on a plan
+# with a stat and two typing takeovers, checks each typing file is a <template> slotted under its own
+# id, then runs both typing scripts in one shared page (fake DOM + GSAP) to prove each types its own
+# prompt; the SKILL.md Step 5 copies and the sync transform (idempotent, fail-fast) are checked too.
+wi287_root="$(mktemp -d)"
+wi287_detail="$(python3 - "$REPO_DIR" "$wi287_root" <<'PY'
+import importlib.util, json, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+SIM = r"""
+const vm = require('vm'), fs = require('fs');
+const files = process.argv.slice(2);
+const els = {};
+function el(id) { return els[id] || (els[id] = { id, textContent: '', style: {}, classList: { add() {} } }); }
+const decode = s => s.replace(/&#10;/g, '\n').replace(/&quot;/g, '"').replace(/&#x27;/g, "'")
+                     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+const tweens = [];
+function timeline() { const tl = { to(t, v) { tweens.push({ tl, t, v }); return tl; }, fromTo() { return tl; } }; return tl; }
+const document = { getElementById: el, querySelector: () => null,
+  createElement: () => { const o = { value: '' }; Object.defineProperty(o, 'innerHTML', { set(s) { o.value = decode(s); } }); return o; } };
+const ctx = vm.createContext({ window: {}, document, gsap: { timeline }, parseFloat, Math });
+for (const f of files) {
+  const src = fs.readFileSync(f, 'utf8');
+  const inline = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+  if (inline.length !== 1) { console.log(JSON.stringify({ error: f + ': inline scripts ' + inline.length })); process.exit(0); }
+  vm.runInContext(inline[0], ctx);
+}
+// Seek every typing tween to its end, the way the render's last frame does.
+for (const tw of tweens) if (tw.v && typeof tw.v.onUpdate === 'function') { tw.t.n = tw.v.n; tw.v.onUpdate(); }
+const typed = {};
+for (const id of Object.keys(els)) if (/-ts-typed$/.test(id)) typed[id] = els[id].textContent;
+console.log(JSON.stringify({ timelines: Object.keys(ctx.window.__timelines || {}), typed }));
+"""
+(root / "sim.js").write_text(SIM, encoding="utf-8")
+def part_b(step):
+    m = re.search(r'^python3 - work "\$SKILL_DIR" "\$TYPING_DIR" <<\'PY\'\n(.*?)^PY$', step.read_text(encoding="utf-8"), re.S | re.M)
+    return m.group(1) if m else None
+PROMPTS = ['What\'s "happening" this week?', "Plan my posts\nfor Friday"]
+plan = {"duration": 12.0, "brand": {"bg": "#111111", "accent": "#3B82F6", "fg": "#F4F4F4"}, "takeovers": [
+    {"start": 1.0, "end": 3.5, "template": "tk-stat", "fill": {"EYEBROW": "A month", "STAT": "45", "LABEL": "posts"}},
+    {"start": 4.0, "end": 7.5, "template": "tk-typing-ui",
+     "fill": {"LABEL": "CFW", "PROMPT": PROMPTS[0], "TYPING_SPEED": 0.8, "BOTTOM_TAG": "Once a week"}},
+    {"start": 8.0, "end": 11.0, "template": "tk-typing-ui", "fill": {"LABEL": "CFW", "PROMPT": PROMPTS[1]}}]}
+try:
+    skills = repo / "skills"
+    roots = [skills / "p-reels-spotlight", skills / "p-reels-spotlight-heygen",
+             skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight"]
+    for r in roots:
+        step = r / "steps" / "05-render-scenes.md"
+        rel = step.relative_to(repo)
+        code = part_b(step)
+        if code is None:
+            bad.append("%s: no step 05 Part B assembler block" % rel); continue
+        # Every copy's step names SKILL_DIR="$CFW_RENDER_SKILLS_DIR/p-reels-spotlight", TYPING_DIR under its .hub.
+        skill = skills / "p-reels-spotlight"
+        typing = skill / ".hub" / "c-typing-ui"
+        w = root / ("w-" + r.name + ("-hub" if r.parent.name == ".hub" else ""))
+        w.mkdir()
+        (w / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+        (w / "base.mp4").write_bytes(b"")
+        (root / "partb.py").write_text(code, encoding="utf-8")
+        out = subprocess.run([sys.executable, str(root / "partb.py"), str(w), str(skill), str(typing)],
+                             capture_output=True, text=True, timeout=60)
+        if out.returncode != 0:
+            bad.append("%s: assembler failed: %s" % (rel, out.stderr.strip()[-200:])); continue
+        index = (w / "comp" / "index.html").read_text(encoding="utf-8")
+        typing_files = []
+        for i, tk in enumerate(plan["takeovers"]):
+            f = w / "comp" / "compositions" / ("tk%d.html" % i)
+            text = f.read_text(encoding="utf-8")
+            if ('data-composition-id="tk%d" data-composition-src="compositions/tk%d.html"' % (i, i)) not in index:
+                bad.append("%s: root slot for tk%d missing" % (rel, i))
+            if not text.lstrip().startswith('<template id="tk%d-template">' % i) or not text.rstrip().endswith("</template>"):
+                bad.append("%s: tk%d (%s) is not a <template id=\"tk%d-template\"> file (stripped wrapper)"
+                           % (rel, i, tk["template"], i))
+            if not re.search(r'<div\s+(id="tk%d"\s+)?data-composition-id="tk%d"' % (i, i), text):
+                bad.append("%s: tk%d's root element does not carry the slot id tk%d" % (rel, i, i))
+            if '__timelines["tk%d"]' % i not in text:
+                bad.append("%s: tk%d does not register window.__timelines[\"tk%d\"]" % (rel, i, i))
+            if "typing-scene" in text:
+                bad.append("%s: tk%d still names the composition \"typing-scene\"" % (rel, i))
+            if "##" in text or re.search(r"\{\{[A-Z_]+\}\}", text):
+                bad.append("%s: tk%d has a doubled '#' or an unfilled {{KEY}}" % (rel, i))
+            if tk["template"] == "tk-typing-ui":
+                typing_files.append((i, f))
+        if len(typing_files) == 2 and not bad:
+            sim = subprocess.run(["node", str(root / "sim.js")] + [str(f) for _, f in typing_files],
+                                 capture_output=True, text=True, timeout=60)
+            r_ = json.loads(sim.stdout) if sim.returncode == 0 and sim.stdout.strip() else {"error": sim.stderr[-200:]}
+            if "error" in r_:
+                bad.append("%s: typing scripts did not run: %s" % (rel, r_["error"]))
+            else:
+                for (i, _), prompt in zip(typing_files, PROMPTS):
+                    got = r_["typed"].get("tk%d-ts-typed" % i)
+                    if got != prompt:
+                        bad.append("%s: tk%d typed %r, expected its own prompt %r" % (rel, i, got, prompt))
+                    if "tk%d" % i not in r_["timelines"]:
+                        bad.append("%s: timeline tk%d not registered (%r)" % (rel, i, r_["timelines"]))
+    for doc in (skills / "p-reels-spotlight" / "SKILL.md",
+                skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "SKILL.md"):
+        text = doc.read_text(encoding="utf-8")
+        if "re_mod.sub(r'<template" in text or 'tpl_src.index(\'<template id="typing-scene-template">\')' not in text:
+            bad.append("%s: Step 5 still strips the typing <template> wrapper" % doc.relative_to(repo))
+    spec = importlib.util.spec_from_file_location("ss287", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    fn = getattr(ss, "apply_spotlight_typing_takeover", None)
+    if fn is None:
+        bad.append("sync-skills.py has no apply_spotlight_typing_takeover (WI2.87)")
+    else:
+        # From the pre-fix (32549b7) text the transform makes the committed bundle, once.
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        # WI2.91 rewrites lines WI2.87 wrote (prompt fill, label): revert it first, re-apply it after.
+        wi291 = [e for _rel, _full, edits in getattr(ss, "_SPOTLIGHT_PROMPT_FILES", ()) for e in edits]
+        for f in list(up.rglob("05-render-scenes.md")) + list(up.rglob("SKILL.md")):
+            text = f.read_text(encoding="utf-8")
+            for old, new in reversed(wi291):
+                text = text.replace(new, old)
+            for old, new in ss._SPOTLIGHT_TYPING_EDITS_STEP + ss._SPOTLIGHT_TYPING_EDITS_SKILL:
+                text = text.replace(new, old)
+            f.write_text(text, encoding="utf-8")
+        for rec, want in (("p-reels-spotlight", (2, 0)), ("p-reels-spotlight-heygen", (3, 0))):
+            got = (fn(up / rec, rec), fn(up / rec, rec))
+            if got != want:
+                bad.append("transform on %s changed %r file(s), expected %r" % (rec, got, want))
+            if wi291:
+                ss.apply_spotlight_typing_prompt(up / rec, rec)
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        step = up / "p-reels-spotlight" / "steps" / "05-render-scenes.md"
+        text = step.read_text(encoding="utf-8")
+        for old, new in ss._SPOTLIGHT_TYPING_EDITS_STEP:
+            text = text.replace(new, old)
+        step.write_text(text.replace("src = re.sub(r'<template[^>]*>\\s*', '', src)", "src = src.strip()"), encoding="utf-8")
+        try:
+            fn(up / "p-reels-spotlight", "fixture")
+            bad.append("transform did not fail on a drifted step 05 anchor")
+        except SystemExit:
+            pass
+except (Exception, SystemExit) as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad[:12]))
+PY
+)"
+if [[ "$wi287_detail" == "ok" ]]; then
+  pass "WI2.87 spotlight typing takeover keeps its <template> and the slot id tk<i>, scoped per slot, so HyperFrames renders every takeover's motion (every copy)"
+else
+  fail "WI2.87 spotlight typing takeover is a real sub-composition" "$wi287_detail"
+fi
+rm -rf "$wi287_root"
+
+echo "=== Case 64: WI2.93 — the spotlight end card renders through hyperframes from a project dir, or the step fails ==="
+# Observed 2026-10-21 (smoke 25, p-reels-spotlight, Render 69bc5ce): the end card (42.6-45.6 s) was
+# completely still. Step 06 ran `npx hyperframes@0.7.5 render work/cta-card.json`; hyperframes 0.7.5
+# `render` takes a project DIRECTORY holding index.html, so it stopped with "Not a directory" and the
+# step's ffmpeg drawtext fallback made a still card ("CTA fallback rendered", assemble.log). Every
+# p-reels-spotlight step 06 copy now has cta-card.py write work/cta-card/ (index.html + gsap.min.js,
+# an animated composition), renders that directory and has no still fallback: a failed render exits
+# non-zero. The section-4 bash block of each copy runs under bash with a stub ffmpeg and a stub npx
+# that refuses a non-directory exactly as hyperframes 0.7.5 does; the SKILL.md Step 8 copies,
+# cta-card.py copies and the sync transform (idempotent, fail-fast) are checked too.
+wi293_root="$(mktemp -d)"
+wi293_detail="$(python3 - "$REPO_DIR" "$wi293_root" <<'PY'
+import importlib.util, json, os, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+FF = "#!/bin/sh\nprintf 'ffmpeg %s\\n' \"$*\" >> \"$WI293_LOG\"\nfor a; do last=$a; done\ncase \"$last\" in *.mp4) : > \"$last\";; esac\nexit 0\n"
+# npx hyperframes@0.7.5 render <dir> ...: like resolveProjectOrThrow() in hyperframes 0.7.5.
+NPX = ("#!/bin/sh\nprintf 'npx %s\\n' \"$*\" >> \"$WI293_LOG\"\n[ \"$2\" = render ] || exit 0\n"
+       "if [ ! -d \"$3\" ]; then echo \"Not a directory: $3\" >&2; exit 1; fi\n"
+       "if [ ! -f \"$3/index.html\" ]; then echo \"No composition found in $3\" >&2; exit 1; fi\n"
+       "if [ -n \"${WI293_FAIL:-}\" ]; then echo 'Composition has zero duration (stub)' >&2; exit 1; fi\n"
+       "for a; do last=$a; done\n: > \"$last\"\nexit 0\n")
+bin_dir = root / "bin"; bin_dir.mkdir()
+for tool, body in (("ffmpeg", FF), ("npx", NPX)):
+    (bin_dir / tool).write_text(body); (bin_dir / tool).chmod(0o755)
+def block(step):
+    sec = step.read_text(encoding="utf-8").split("### 4. CTA end card", 1)[1].split("### 5.", 1)[0]
+    m = re.search(r"```bash\n(.*?)```", sec, re.S)
+    return m.group(1) if m else None
+def run(step, case, fail_render=False):
+    work = root / case; shutil.rmtree(work, ignore_errors=True); (work / "work").mkdir(parents=True)
+    (work / "work" / "words.json").write_text(json.dumps([{"text": "you.", "start": 41.3, "end": 41.6}]))
+    (work / "work" / "plan.json").write_text(json.dumps({"brand": {"bg": "#0F172A", "accent": "#F97316", "fg": "#F1F5F9"},
+        "caption_groups": [{"start": 41.3, "end": 41.6, "words": [{"w": "you.", "s": 41.3, "e": 41.6}]}]}))
+    (work / "work" / "polished.mp4").write_bytes(b"x" * 10)
+    (work / "brief.json").write_text(json.dumps({"brand": {"name": "Test Brand", "handle": "@test", "cta": "Follow Test Brand"}}))
+    code = block(step)
+    if code is None:
+        return {"error": "no bash block in section 4"}
+    (work / "s4.sh").write_text("set -u\nCTA_CARD=on; CTA_DURATION=3.0; BED_DUR=45.0\nSKILL_DIR=%s\n%s"
+                                % (repo / "skills" / "p-reels-spotlight", code))
+    log = work / "calls.log"
+    env = dict(os.environ, PATH="%s:%s" % (bin_dir, os.environ["PATH"]), WI293_LOG=str(log))
+    env.pop("WI293_FAIL", None)
+    if fail_render:
+        env["WI293_FAIL"] = "1"
+    p = subprocess.run(["bash", "s4.sh"], cwd=work, env=env, capture_output=True, text=True, timeout=60)
+    calls = log.read_text().splitlines() if log.exists() else []
+    renders = [c.split()[3] for c in calls if c.startswith("npx ") and len(c.split()) > 3 and c.split()[2] == "render"]
+    return {"rc": p.returncode, "out": (p.stdout + p.stderr)[-300:], "work": work, "renders": renders,
+            "still": [c for c in calls if c.startswith("ffmpeg ") and ("color=c=" in c or "drawtext" in c)],
+            "overlay": [c for c in calls if "overlay=enable" in c]}
+try:
+    skills = repo / "skills"
+    steps = sorted(p for p in skills.rglob("06-assemble.md")
+                   if p.parent.name == "steps" and p.parent.parent.name.startswith("p-reels-spotlight"))
+    if len(steps) != 3:
+        bad.append("expected 3 p-reels-spotlight steps/06-assemble.md copies, found %d" % len(steps))
+    if len({s.read_bytes() for s in steps}) > 1:
+        bad.append("the 06-assemble.md copies differ")
+    for step in steps:
+        rel = step.relative_to(repo)
+        code = block(step) or ""
+        if "cta-card.json --output" in code or "drawtext=" in code:
+            bad.append("%s: section 4 still renders the .json spec or keeps a drawtext still card" % rel)
+        r = run(step, "ok")
+        if "error" in r:
+            bad.append("%s: %s" % (rel, r["error"])); continue
+        if r["rc"] != 0 or not r["renders"] or r["still"] or not r["overlay"]:
+            bad.append("%s: hyperframes end-card render did not go through (rc %s, renders %r, still card %r, overlay %d): %s"
+                       % (rel, r["rc"], r["renders"], r["still"][:1], len(r["overlay"]), r["out"]))
+        else:
+            proj = r["work"] / r["renders"][0]
+            index = (proj / "index.html").read_text(encoding="utf-8") if (proj / "index.html").is_file() else ""
+            m = re.search(r'data-composition-id="cta-card"[^>]*data-duration="([0-9.]+)"', index, re.S)
+            if not m or abs(float(m.group(1)) - 3.0) > 0.01:
+                bad.append("%s: work/cta-card/index.html has no 3.0 s cta-card composition" % rel)
+            if '__timelines["cta-card"]' not in index or "tl.fromTo(\"#cta-card .card\"" not in index \
+                    or 'class="word"' not in index or "Test Brand".upper() not in index:
+                bad.append("%s: the end-card composition has no timeline, entry pop, words or kicker" % rel)
+            if not (proj / "gsap.min.js").is_file() or "cdn" in index.lower():
+                bad.append("%s: gsap.min.js not vendored into the end-card project" % rel)
+        r = run(step, "fail", fail_render=True)
+        if r.get("rc") == 0 or r.get("still") or r.get("overlay") or "end card" not in r.get("out", ""):
+            bad.append("%s: a failed hyperframes end-card render did not stop the step loudly (rc %s, still card %r): %s"
+                       % (rel, r.get("rc"), (r.get("still") or [])[:1], r.get("out")))
+    ctas = [skills / "p-reels-spotlight" / "scripts" / "cta-card.py",
+            skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "scripts" / "cta-card.py"]
+    if len({p.read_bytes() for p in ctas}) != 1:
+        bad.append("the cta-card.py copies differ")
+    for doc in (skills / "p-reels-spotlight" / "SKILL.md",
+                skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "SKILL.md"):
+        t = doc.read_text(encoding="utf-8")
+        s8 = t.split("### Step 8", 1)[1].split("\n### ", 1)[0] if "### Step 8" in t else ""
+        if 'render "$W/cta-card.json"' in s8 or "drawtext=" in s8 or 'render "$W/cta-card" ' not in s8:
+            bad.append("%s: Step 8 still renders the .json spec or keeps the drawtext still card" % doc.relative_to(repo))
+    spec = importlib.util.spec_from_file_location("ss293", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    fn, files = getattr(ss, "apply_spotlight_end_card_render", None), getattr(ss, "_SPOTLIGHT_CTA_HF_FILES", None)
+    if fn is None or files is None:
+        bad.append("sync-skills.py has no apply_spotlight_end_card_render (WI2.93)")
+    else:
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        def revert(base):
+            for rel, full_only, edits in files:
+                if full_only and base.name != "p-reels-spotlight":
+                    continue
+                t = (base / rel).read_text(encoding="utf-8")
+                for old, new in reversed(edits):
+                    t = t.replace(new, old)
+                (base / rel).write_text(t, encoding="utf-8")
+        for base in (up / "p-reels-spotlight", up / "p-reels-spotlight-heygen",
+                     up / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight"):
+            revert(base)
+        r = run(up / "p-reels-spotlight" / "steps" / "06-assemble.md", "restored")
+        if r.get("rc") == 0 and not r.get("still"):
+            bad.append("sanity: the restored 69bc5ce step was not caught (%r)" % {k: r.get(k) for k in ("rc", "renders")})
+        for rec, want in (("p-reels-spotlight", (3, 0)), ("p-reels-spotlight-heygen", (4, 0))):
+            got = (fn(up / rec, rec), fn(up / rec, rec))
+            if got != want:
+                bad.append("transform on %s changed %r file(s), expected %r" % (rec, got, want))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        revert(up / "p-reels-spotlight")
+        t = up / "p-reels-spotlight" / "steps" / "06-assemble.md"
+        t.write_text(t.read_text(encoding="utf-8").replace("work/cta-card.json --output work/cta-card.mp4",
+                                                           "work/cta-card.json -o work/cta-card.mp4"), encoding="utf-8")
+        try:
+            fn(up / "p-reels-spotlight", "fixture")
+            bad.append("transform did not fail on a drifted step 06 anchor")
+        except SystemExit:
+            pass
+except (Exception, SystemExit) as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad[:12]))
+PY
+)"
+if [[ "$wi293_detail" == "ok" ]]; then
+  pass "WI2.93 spotlight end card renders through hyperframes from work/cta-card/ (index.html + gsap), and a failed render fails the step (every copy)"
+else
+  fail "WI2.93 spotlight end card renders through hyperframes or fails loudly" "$wi293_detail"
+fi
+rm -rf "$wi293_root"
+
+echo "=== Case 65: WI2.92 — a failed spotlight takeover render fails step 05 loudly, with no still-card fallback ==="
+# Observed 2026-10-21 (WI2.87, p-reels-spotlight): the HyperFrames takeover render failed outright
+# ("Composition has zero duration. Runtime ready: false"), step 05's fallback swapped the takeovers for
+# static PNG / ffmpeg-overlay cards, the step passed and the reel still reached Reviews. Every
+# p-reels-spotlight step 05 copy now runs the render in its Part C block and a failed render exits
+# non-zero with the hyperframes error; the still-card fallback text, the SKILL.md Fallback assembly
+# section and the delivery gate's fallback pass are gone. Part C runs under bash with a stub npx that
+# fails like hyperframes 0.7.5 did and a stub ffprobe; the sync transform (idempotent, fail-fast) is checked too.
+wi292_root="$(mktemp -d)"
+wi292_detail="$(python3 - "$REPO_DIR" "$wi292_root" <<'PY'
+import importlib.util, json, os, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+HF_ERR = "Composition has zero duration. Runtime ready: false"
+NPX = ("#!/bin/sh\nprintf 'npx %s\\n' \"$*\" >> \"$WI292_LOG\"\n[ \"$2\" = render ] || exit 0\n"
+       "if [ -n \"${WI292_FAIL:-}\" ]; then echo 'Error: " + HF_ERR + "' >&2; exit 1; fi\n"
+       "out=; prev=; for a; do [ \"$prev\" = --output ] && out=$a; prev=$a; done\n"
+       "[ -n \"$out\" ] && printf 'video' > \"$out\"\nexit 0\n")
+FFPROBE = ("#!/bin/sh\ncase \"$*\" in *json*) echo '{\"streams\":[{\"width\":1080,\"height\":1920}],\"format\":{\"duration\":\"30.0\"}}';;\n"
+           "*) echo '1080,1920,30.0';; esac\nexit 0\n")
+bin_dir = root / "bin"; bin_dir.mkdir()
+for tool, body in (("npx", NPX), ("ffprobe", FFPROBE)):
+    (bin_dir / tool).write_text(body); (bin_dir / tool).chmod(0o755)
+def block(step):
+    t = step.read_text(encoding="utf-8")
+    if "### Part C" not in t:
+        return None
+    sec = t.split("### Part C", 1)[1].split("### Part D", 1)[0]
+    m = re.search(r"```bash\n(.*?)```", sec, re.S)
+    return m.group(1) if m else None
+def run(step, case, fail_render=False):
+    work = root / case; shutil.rmtree(work, ignore_errors=True); (work / "work" / "comp").mkdir(parents=True)
+    (work / "work" / "plan.json").write_text(json.dumps({"duration": 30.0, "takeovers": [
+        {"start": 3.0, "end": 7.0, "template": "tk-stat", "fill": {}}]}))
+    code = block(step)
+    if code is None:
+        return {"error": "no bash block in Part C"}
+    (work / "c.sh").write_text("set -u\n" + code)
+    log = work / "calls.log"
+    env = dict(os.environ, PATH="%s:%s" % (bin_dir, os.environ["PATH"]), WI292_LOG=str(log))
+    env.pop("WI292_FAIL", None)
+    if fail_render:
+        env["WI292_FAIL"] = "1"
+    p = subprocess.run(["bash", "c.sh"], cwd=work, env=env, capture_output=True, text=True, timeout=60)
+    calls = log.read_text().splitlines() if log.exists() else []
+    return {"rc": p.returncode, "out": (p.stdout + p.stderr)[-400:],
+            "renders": [c for c in calls if c.startswith("npx ") and " render " in c]}
+try:
+    skills = repo / "skills"
+    steps = sorted(p for p in skills.rglob("05-render-scenes.md")
+                   if p.parent.name == "steps" and p.parent.parent.name.startswith("p-reels-spotlight"))
+    if len(steps) != 3:
+        bad.append("expected 3 p-reels-spotlight steps/05-render-scenes.md copies, found %d" % len(steps))
+    if len({s.read_bytes() for s in steps}) > 1:
+        bad.append("the 05-render-scenes.md copies differ")
+    for step in steps:
+        rel = step.relative_to(repo)
+        t = step.read_text(encoding="utf-8")
+        if "PNG renders of the filled templates," in t or "even after the fallback" in t:
+            bad.append("%s: step 05 still offers the still-card (PNG / ffmpeg overlay) fallback" % rel)
+        r = run(step, "fail", fail_render=True)
+        if "error" in r:
+            bad.append("%s: %s" % (rel, r["error"])); continue
+        if r["rc"] == 0 or "takeovers: hyperframes render" not in r["out"] or HF_ERR not in r["out"]:
+            bad.append("%s: a failed hyperframes takeover render did not stop step 05 loudly with its error "
+                       "(rc %s, renders %d): %s" % (rel, r["rc"], len(r["renders"]), r["out"]))
+        r = run(step, "ok")
+        if r.get("rc") != 0 or not r.get("renders") or "[gate-stamp] hyperframes" not in r.get("out", ""):
+            bad.append("%s: a good takeover render did not pass Part C (rc %s, renders %d): %s"
+                       % (rel, r.get("rc"), len(r.get("renders") or []), r.get("out")))
+    for doc in (skills / "p-reels-spotlight" / "SKILL.md",
+                skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "SKILL.md"):
+        t = doc.read_text(encoding="utf-8")
+        if "## Fallback assembly" in t or 'len(hf.get("reason", "")) <= 25' in t \
+                or "takeovers: hyperframes render of $W/comp failed" not in t:
+            bad.append("%s: SKILL.md still keeps the takeover fallback (section, gate pass) or has no loud failure"
+                       % doc.relative_to(repo))
+    spec = importlib.util.spec_from_file_location("ss292", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    fn, files = getattr(ss, "apply_spotlight_takeover_render_fail_loud", None), getattr(ss, "_SPOTLIGHT_TK_FILES", None)
+    if fn is None or files is None:
+        bad.append("sync-skills.py has no apply_spotlight_takeover_render_fail_loud (WI2.92)")
+    else:
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        def revert(base):
+            for rel, full_only, edits in files:
+                if full_only and base.name != "p-reels-spotlight":
+                    continue
+                t = (base / rel).read_text(encoding="utf-8")
+                for old, new in reversed(edits):
+                    t = t.replace(new, old)
+                (base / rel).write_text(t, encoding="utf-8")
+        for base in (up / "p-reels-spotlight", up / "p-reels-spotlight-heygen",
+                     up / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight"):
+            revert(base)
+        r = run(up / "p-reels-spotlight" / "steps" / "05-render-scenes.md", "restored", fail_render=True)
+        if r.get("rc") != 0:
+            bad.append("sanity: the restored 20dca83 step 05 did not pass silently (%r)" % {k: r.get(k) for k in ("rc", "out")})
+        for rec, want in (("p-reels-spotlight", (2, 0)), ("p-reels-spotlight-heygen", (3, 0))):
+            got = (fn(up / rec, rec), fn(up / rec, rec))
+            if got != want:
+                bad.append("transform on %s changed %r file(s), expected %r" % (rec, got, want))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        revert(up / "p-reels-spotlight")
+        t = up / "p-reels-spotlight" / "steps" / "05-render-scenes.md"
+        t.write_text(t.read_text(encoding="utf-8").replace("compose the takeover cards with ffmpeg `overlay`",
+                                                           "compose the cards with ffmpeg `overlay`"), encoding="utf-8")
+        try:
+            fn(up / "p-reels-spotlight", "fixture")
+            bad.append("transform did not fail on a drifted step 05 anchor")
+        except SystemExit:
+            pass
+except (Exception, SystemExit) as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad[:12]))
+PY
+)"
+if [[ "$wi292_detail" == "ok" ]]; then
+  pass "WI2.92 a failed spotlight takeover render fails step 05 with the hyperframes error, no still-card fallback (every copy)"
+else
+  fail "WI2.92 spotlight step 05 fails loudly instead of silent still-card takeovers" "$wi292_detail"
+fi
+rm -rf "$wi292_root"
+
+echo "=== Case 66: WI2.94 — every spotlight takeover text line fits on one line inside the safe width ==="
+# Observed 2026-10-21 (smoke 25, p-reels-spotlight on Render 69bc5ce): the tk-stat label
+# "POSTS · SPECIALS · MOMENTS" showed on two lines (~4.6-9.6 s), and the tk-list title "CFW WRITES THE
+# MONTH" and item 3 "FORMATTED FOR EVERY PLATFORM" wrapped (~30.4-36.3 s). WI2.83/WI2.85 fit only the big
+# stat. Every p-reels-spotlight takeover template copy now keeps each single-line text on one line
+# (white-space: nowrap) and shrinks its font from the design size until it fits its safe width (900 px;
+# 786 px for list items; 880 px for the keyword word/support), so it stays >= 80 px from both frame edges;
+# the text itself is never cut. Each template's own script runs in node with a fake DOM whose text width
+# grows with font size (a fallback font until fonts load), so the old wrapping templates fail this case.
+wi294_root="$(mktemp -d)"
+wi294_detail="$(python3 - "$REPO_DIR" "$wi294_root" <<'PY'
+import importlib.util, json, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+SIM = r"""
+const vm = require('vm'), fs = require('fs');
+const [tplPath, fillJson, emFallback, emLoaded] = process.argv.slice(2);
+const fill = JSON.parse(fillJson);
+let src = fs.readFileSync(tplPath, 'utf8');
+for (const [k, v] of Object.entries(fill)) src = src.split('{{' + k + '}}').join(v);
+const scripts = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+if (scripts.length !== 1) { console.log(JSON.stringify({ error: 'inline scripts: ' + scripts.length })); process.exit(0); }
+const code = scripts[0].replace(/\{\{ID\}\}/g, 'tk0').replace(/\{\{DURATION\}\}/g, '4');
+// Each line's design size and em/char (Oswald caps ~0.5, Inter 700 caps ~0.68, JetBrains Mono + tracking ~0.8).
+const LINES = {
+  '.js-eyebrow': [30, 0.8], '.js-label': [84, 0.5], '.js-title': [96, 0.5], '.item-text': [52, 0.68],
+  '.js-word': [340, 0.5], '.js-support': [52, 0.68], '.js-attr': [34, 0.8], '.js-stat': [340, 0.5],
+};
+let scale = parseFloat(emFallback) / parseFloat(emLoaded);  // the fallback font until fonts load
+function el(text, kind) {
+  const [design, em] = LINES[kind] || [40, 0.5];
+  return { kind, textContent: text, innerHTML: text, style: {}, childNodes: [], classList: { add() {} },
+    appendChild() {},
+    get scrollWidth() { const fs = parseFloat(this.style.fontSize) || design;
+      return Math.round(fs * em * scale * this.textContent.length); } };
+}
+const text = k => (src.match(new RegExp('class="[^"]*' + k.replace(/^\./, '') + '[^"]*"[^>]*>([^<]*)')) || [, ''])[1];
+const els = {};
+for (const k of Object.keys(LINES)) els[k] = k === '.item-text'
+  ? [...src.matchAll(/class="item-text">([^<]*)</g)].map(m => el(m[1], k)) : el(text(k), k);
+const tl = new Proxy({}, { get: () => () => tl });
+const readies = [];
+const pick = s => Object.keys(els).find(k => s.endsWith(k));
+const ctx = { window: {}, gsap: { timeline: () => tl }, parseFloat, Math, Array,
+  document: {
+    querySelector: s => { const k = pick(s); return k ? (Array.isArray(els[k]) ? els[k][0] : els[k]) : el('', ''); },
+    querySelectorAll: s => { const k = pick(s); return k ? [].concat(els[k]) : []; },
+    getElementById: id => (id.endsWith('-word') ? els['.js-word'] : el('', '')),
+    createElement: () => el('', ''), createTextNode: t => ({ textContent: t }),
+    fonts: { ready: { then: f => { readies.push(f); } } } } };
+vm.runInNewContext(code, ctx);
+scale = 1;                      // fonts finished loading
+readies.forEach(f => f());
+const out = {};
+for (const k of ['.js-eyebrow', '.js-label', '.js-title', '.item-text', '.js-word', '.js-support', '.js-attr'])
+  if (src.includes(k.slice(1) + '"') || src.includes(k.slice(1) + ' '))
+    [].concat(els[k]).forEach((e, i) => { if (e.textContent) out[k + (Array.isArray(els[k]) ? i + 1 : '')] =
+      { text: e.textContent, size: parseFloat(e.style.fontSize) || null, width: e.scrollWidth }; });
+console.log(JSON.stringify(out));
+"""
+(root / "sim.js").write_text(SIM, encoding="utf-8")
+BRAND = {"BG": "#111111", "ACCENT": "#3B82F6", "FG": "#F4F4F4"}
+# The smoke-25 strings, plus longer lines and short lines that already fit.
+CASES = {
+    "tk-stat.html": [({"EYEBROW": "A FULL MONTH", "STAT": "45", "LABEL": "POSTS · SPECIALS · MOMENTS"},
+                      {".js-label": 900, ".js-eyebrow": 900}),
+                     ({"EYEBROW": "WHAT ONE BUSY OWNER GETS EVERY SINGLE MONTH", "STAT": "3X",
+                       "LABEL": "MORE REPLIES FROM PEOPLE WHO ACTUALLY BUY"}, {".js-label": 900, ".js-eyebrow": 900})],
+    "tk-list.html": [({"TITLE": "CFW WRITES THE MONTH", "ITEM1": "LEARNED HER VOICE", "ITEM2": "WRITES THE WHOLE MONTH",
+                       "ITEM3": "FORMATTED FOR EVERY PLATFORM"},
+                      {".js-title": 900, ".item-text1": 786, ".item-text2": 786, ".item-text3": 786})],
+    "tk-keyword.html": [({"WORD": "TRANSFORMATIONAL", "SUPPORT": "ABOUT 30 MINUTES A WEEK, START TO FINISH"},
+                         {".js-word": 880, ".js-support": 880})],
+    "tk-quote.html": [({"QUOTE": "IT SOUNDS LIKE ME", "ATTR": "MARIA SANTOS, OWNER OF THE CORNER BAKERY CAFE"},
+                       {".js-attr": 900})],
+}
+def sim(tpl, fill, ems):
+    out = subprocess.run(["node", str(root / "sim.js"), str(tpl), json.dumps(dict(BRAND, **fill)), str(ems[0]), str(ems[1])],
+                         capture_output=True, text=True, timeout=60)
+    if out.returncode != 0:
+        return {"error": out.stderr.strip()[-300:]}
+    return json.loads(out.stdout)
+def check(tpl, label):
+    found = []
+    for fill, limits in CASES[tpl.name]:
+        for ems in ((0.5, 0.5), (0.6, 0.5), (0.4, 0.5)):  # same, wider and narrower fallback font
+            r = sim(tpl, fill, ems)
+            if "error" in r:
+                found.append("%s: did not run: %s" % (label, r["error"])); break
+            for key, lim in limits.items():
+                line = r.get(key)
+                if line is None:
+                    found.append("%s: no %s line measured" % (label, key)); continue
+                if line["width"] > lim:
+                    found.append("%s: %r is %dpx wide, past its %dpx one-line safe width (fonts %s)"
+                                 % (label, line["text"], line["width"], lim, ems))
+            want = [v for k, v in fill.items() if k not in ("STAT", "QUOTE", "WORD")]
+            got = [v["text"] for v in r.values() if isinstance(v, dict)]
+            for v in want:
+                if v not in got:
+                    found.append("%s: line %r was cut or changed (%r)" % (label, v, got))
+    # a line that already fits keeps its design size
+    r = sim(tpl, {"EYEBROW": "A", "STAT": "1", "LABEL": "VIEWS", "TITLE": "THREE", "ITEM1": "ONE", "ITEM2": "TWO",
+                  "ITEM3": "SIX", "WORD": "YES", "SUPPORT": "OK", "QUOTE": "HI", "ATTR": "ME"}, (0.5, 0.5))
+    for key, size in ((".js-label", 84), (".js-eyebrow", 30), (".js-title", 96), (".item-text1", 52),
+                      (".js-support", 52), (".js-attr", 34)):
+        if key in r and r[key]["size"] not in (None, size):
+            found.append("%s: a short %s line lost its %dpx design size (%r)" % (label, key, size, r[key]))
+    body = tpl.read_text(encoding="utf-8")
+    for cls in {"tk-stat.html": (".eyebrow", ".label"), "tk-list.html": (".title", ".item-text"),
+                "tk-keyword.html": (".word", ".support"), "tk-quote.html": (".attr",)}[tpl.name]:
+        if not re.search(r"\{\{ID\}\} " + re.escape(cls) + r" \{[^}]*white-space: nowrap", body):
+            found.append("%s: %s is not kept on one line (white-space: nowrap)" % (label, cls))
+    return found
+try:
+    skills = repo / "skills"
+    tpls = sorted(p for p in skills.rglob("tk-*.html")
+                  if p.parent.name == "templates" and p.parent.parent.name == "p-reels-spotlight" and p.name in CASES)
+    tpls.sort(key=lambda p: list(CASES).index(p.name))  # report the smoke-25 templates (tk-stat, tk-list) first
+    if len(tpls) != 8:
+        bad.append("expected 8 p-reels-spotlight takeover template copies (4 x 2), found %d" % len(tpls))
+    for name in CASES:
+        if len({t.read_bytes() for t in tpls if t.name == name}) > 1:
+            bad.append("the %s copies differ" % name)
+    for tpl in tpls:
+        bad += check(tpl, str(tpl.relative_to(repo)))
+    spec = importlib.util.spec_from_file_location("ss294", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    fn, edits = getattr(ss, "apply_spotlight_takeover_line_fit", None), getattr(ss, "_SPOTLIGHT_LINE_EDITS", None)
+    if fn is None or edits is None:
+        bad.append("sync-skills.py has no apply_spotlight_takeover_line_fit transform (WI2.94)")
+    else:
+        # Restore the d9ec65d templates in a copy; the transform upgrades all four once, then is a no-op,
+        # and its output is byte-identical to the committed bundle.
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        def revert(t):
+            text = t.read_text(encoding="utf-8")
+            for old, new in reversed(edits[t.name]):
+                text = text.replace(new, old)
+            t.write_text(text, encoding="utf-8")
+        for t in up.rglob("tk-*.html"):
+            if t.name in edits:
+                revert(t)
+        if not check(up / "p-reels-spotlight" / "templates" / "tk-list.html", "restored"):
+            bad.append("sanity: the restored d9ec65d tk-list.html was not caught")
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            n1 = fn(up / rec, rec); n2 = fn(up / rec, rec)
+            if (n1, n2) != (4, 0):
+                bad.append("transform on %s changed (%d, %d) file(s), expected (4, 0)" % (rec, n1, n2))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        t = up / "p-reels-spotlight" / "templates" / "tk-list.html"
+        revert(t)
+        t.write_text(t.read_text(encoding="utf-8").replace("#{{ID}} .item-text {", "#{{ID}} .item-label {"), encoding="utf-8")
+        try:
+            fn(up / "p-reels-spotlight", "fixture"); bad.append("transform did not fail on a drifted tk-list.html")
+        except SystemExit:
+            pass
+        t.unlink()
+        try:
+            fn(up / "p-reels-spotlight", "p-reels-spotlight"); bad.append("transform did not fail on a missing tk-list.html")
+        except SystemExit:
+            pass
+except (Exception, SystemExit) as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad[:12]))
+PY
+)"
+if [[ "$wi294_detail" == "ok" ]]; then
+  pass "WI2.94 spotlight takeover lines (tk-stat label, tk-list title/items, keyword, attribution) fit on one line (every copy)"
+else
+  fail "WI2.94 spotlight takeover text lines fit on one line inside the safe width" "$wi294_detail"
+fi
+rm -rf "$wi294_root"
+
+echo "=== Case 67: WI2.90 — spotlight end card fails loudly when no room; SKILL.md honours cta_card off ==="
+# Observed 2026-10-21 (independent review on WI2.89, Render 32549b7): (1) with under 1.0 s of bed left
+# after the last word, step 06 only logged "end card skipped" and dropped the card, so the reel shipped
+# with no CTA and no check failed (since WI2.89 the bed always has a tail, so this only happens through a
+# bug); SKILL.md Step 8 already stops with exit 1 there. (2) SKILL.md never set CTA_CARD, so Step 2's
+# "${CTA_CARD:-on}" was always on and an order with cta_card: off still got a ~3.5 s frozen silent tail
+# (and Step 8 still rendered a card). Every step 06 copy now fails with the reason; both full SKILL.md
+# copies read the order's cta_card into CTA_CARD (default on), Step 2 adds no tail and Step 8 renders no
+# card when it is off. The bash blocks run under bash with stub ffmpeg/ffprobe/npx and the real cta-card.py.
+wi290_root="$(mktemp -d)"
+wi290_detail="$(python3 - "$REPO_DIR" "$wi290_root" <<'PY'
+import importlib.util, json, os, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+FF = "#!/bin/sh\nprintf 'ffmpeg %s\\n' \"$*\" >> \"$WI290_LOG\"\nfor a; do last=$a; done\ncase \"$last\" in *.mp4) : > \"$last\";; esac\nexit 0\n"
+FFPROBE = "#!/bin/sh\nprintf 'ffprobe %s\\n' \"$*\" >> \"$WI290_LOG\"\necho \"${WI290_BED:-45.0}\"\nexit 0\n"
+NPX = ("#!/bin/sh\nprintf 'npx %s\\n' \"$*\" >> \"$WI290_LOG\"\n[ \"$2\" = render ] || exit 0\n"
+       "if [ ! -f \"$3/index.html\" ]; then echo \"No composition found in $3\" >&2; exit 1; fi\n"
+       "for a; do last=$a; done\n: > \"$last\"\nexit 0\n")
+bin_dir = root / "bin"; bin_dir.mkdir()
+for tool, body in (("ffmpeg", FF), ("ffprobe", FFPROBE), ("npx", NPX)):
+    (bin_dir / tool).write_text(body); (bin_dir / tool).chmod(0o755)
+SKILL_DIR = repo / "skills" / "p-reels-spotlight"
+def first_bash(sec):
+    m = re.search(r"```bash\n(.*?)```", sec, re.S)
+    return m.group(1) if m else None
+def fixture(work, words_end=41.6):
+    shutil.rmtree(work, ignore_errors=True); (work / "work").mkdir(parents=True)
+    (work / "work" / "words.json").write_text(json.dumps([{"text": "you.", "start": words_end - 0.3, "end": words_end}]))
+    (work / "work" / "plan.json").write_text(json.dumps({"brand": {"bg": "#0F172A", "accent": "#F97316", "fg": "#F1F5F9"},
+        "caption_groups": [{"start": words_end - 0.3, "end": words_end, "words": [{"w": "you.", "s": words_end - 0.3, "e": words_end}]}]}))
+    (work / "work" / "polished.mp4").write_bytes(b"polished-bed")
+    (work / "brief.json").write_text(json.dumps({"brand": {"name": "Test Brand", "handle": "@test", "cta": "Follow Test Brand"}}))
+def sh(work, script, bed, extra_env=None):
+    (work / "run.sh").write_text(script)
+    log = work / "calls.log"
+    env = dict(os.environ, PATH="%s:%s" % (bin_dir, os.environ["PATH"]), WI290_LOG=str(log), WI290_BED=str(bed),
+               CFW_RENDER_SKILLS_DIR=str(SKILL_DIR.parent))
+    for k in ("CTA_CARD", "MUSIC"):
+        env.pop(k, None)
+    env.update(extra_env or {})
+    p = subprocess.run(["bash", "run.sh"], cwd=work, env=env, capture_output=True, text=True, timeout=60)
+    calls = log.read_text().splitlines() if log.exists() else []
+    return {"rc": p.returncode, "out": (p.stdout + p.stderr)[-400:],
+            "renders": [c for c in calls if c.startswith("npx ") and " render " in c],
+            "overlay": [c for c in calls if "overlay=enable" in c]}
+def run_step(step, case, bed, card="on"):
+    work = root / case; fixture(work)
+    sec = step.read_text(encoding="utf-8").split("### 4. CTA end card", 1)[1].split("### 5.", 1)[0]
+    code = first_bash(sec)
+    if code is None:
+        return {"error": "no bash block in section 4"}
+    r = sh(work, "set -u\nCTA_CARD=%s; CTA_DURATION=3.0; BED_DUR=%s\nSKILL_DIR=%s\n%s" % (card, bed, SKILL_DIR, code), bed)
+    r["assembled"] = (work / "work" / "assembled.mp4").exists()
+    return r
+def skill_blocks(doc):
+    t = doc.read_text(encoding="utf-8")
+    setup = first_bash(t.split("Set up variables:", 1)[1]) if "Set up variables:" in t else None
+    tail = first_bash(t.split("**End-card tail (WI2.89, mandatory):**", 1)[1]) if "**End-card tail (WI2.89" in t else None
+    s8 = first_bash(t.split("### Step 8", 1)[1].split("\n### ", 1)[0]) if "### Step 8" in t else None
+    return setup, tail, s8
+try:
+    skills = repo / "skills"
+    steps = sorted(p for p in skills.rglob("06-assemble.md")
+                   if p.parent.name == "steps" and p.parent.parent.name.startswith("p-reels-spotlight"))
+    if len(steps) != 3:
+        bad.append("expected 3 p-reels-spotlight steps/06-assemble.md copies, found %d" % len(steps))
+    if len({s.read_bytes() for s in steps}) > 1:
+        bad.append("the 06-assemble.md copies differ")
+    for step in steps:
+        rel = step.relative_to(repo)
+        t = step.read_text(encoding="utf-8")
+        if "end card skipped" in t or "the card is skipped with one log line" in t:
+            bad.append("%s: step 06 still skips the end card silently when there is no room" % rel)
+        # Speech to 41.60 s on a 41.67 s bed: the step 01 tail is missing -> fail loudly, no reel.
+        r = run_step(step, "noroom", 41.67)
+        if "error" in r:
+            bad.append("%s: %s" % (rel, r["error"])); continue
+        if r["rc"] == 0 or r["assembled"] or r["overlay"] or r["renders"] or "end card: only" not in r["out"] \
+                or "tail (WI2.89) is missing" not in r["out"]:
+            bad.append("%s: under 1.0 s after the last word, step 06 did not stop with the reason (rc %s, assembled %s): %s"
+                       % (rel, r["rc"], r["assembled"], r["out"]))
+        r = run_step(step, "room", 45.0)
+        if r.get("rc") != 0 or not r.get("assembled") or not r.get("overlay"):
+            bad.append("%s: a card with room no longer renders (rc %s): %s" % (rel, r.get("rc"), r.get("out")))
+        r = run_step(step, "off", 41.67, card="off")
+        if r.get("rc") != 0 or not r.get("assembled") or r.get("overlay") or r.get("renders"):
+            bad.append("%s: cta_card off no longer passes with no card (rc %s): %s" % (rel, r.get("rc"), r.get("out")))
+    docs = (skills / "p-reels-spotlight" / "SKILL.md", skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "SKILL.md")
+    for doc in docs:
+        rel = doc.relative_to(repo)
+        setup, tail, s8 = skill_blocks(doc)
+        if not setup or not tail or not s8:
+            bad.append("%s: setup / Step 2 tail / Step 8 bash block not found" % rel); continue
+        if 'CTA_CARD="${CTA_CARD:-on}"' not in setup or "`cta_card` comes from the order" not in doc.read_text(encoding="utf-8"):
+            bad.append("%s: SKILL.md does not read the order's cta_card into CTA_CARD next to CTA_TEXT/CTA_HANDLE" % rel)
+        work = root / ("setup-" + doc.parent.parent.name); fixture(work)
+        r = sh(work, "set -u\n" + setup + '\necho "CTA_CARD=$CTA_CARD"\n', 45.0)
+        if r["rc"] != 0 or "CTA_CARD=on" not in r["out"]:
+            bad.append("%s: the setup block does not default CTA_CARD to on (rc %s): %s" % (rel, r["rc"], r["out"]))
+        r = sh(work, "set -u\n" + setup + '\necho "CTA_CARD=$CTA_CARD"\n', 45.0, {"CTA_CARD": "off"})
+        if r["rc"] != 0 or "CTA_CARD=off" not in r["out"]:
+            bad.append("%s: the setup block drops the order's cta_card off (rc %s): %s" % (rel, r["rc"], r["out"]))
+        # The order says off: Step 2 adds no tail and Step 8 renders no card, with or without bed room.
+        r = sh(work, "set -u\n" + setup + "\n" + tail, 41.67, {"CTA_CARD": "off"})
+        if r["rc"] != 0 or "cta_card off, no tail" not in r["out"]:
+            bad.append("%s: Step 2 still adds the end-card tail for cta_card off (rc %s): %s" % (rel, r["rc"], r["out"]))
+        for bed in (41.67, 45.0):
+            work = root / ("s8off-%s-%s" % (doc.parent.parent.name, bed)); fixture(work)
+            pre = 'set -u\nW="%s/work"; OUT_RAW="%s/out.mp4"; SKILL_DIR=%s\nCTA_TEXT="Try it"; CTA_HANDLE=""; BRAND_NAME=""\n' % (work, work, SKILL_DIR)
+            r = sh(work, pre + 'CTA_CARD="${CTA_CARD:-on}"\n' + s8, bed, {"CTA_CARD": "off"})
+            out = work / "out.mp4"
+            if r["rc"] != 0 or r["renders"] or r["overlay"] or not out.is_file() or out.read_bytes() != b"polished-bed":
+                bad.append("%s: Step 8 with cta_card off (bed %s) still renders or overlays an end card (rc %s, renders %d): %s"
+                           % (rel, bed, r["rc"], len(r["renders"]), r["out"]))
+        work = root / ("s8on-" + doc.parent.parent.name); fixture(work)
+        pre = 'set -u\nW="%s/work"; OUT_RAW="%s/out.mp4"; SKILL_DIR=%s\nCTA_TEXT="Try it"; CTA_HANDLE=""; BRAND_NAME=""\n' % (work, work, SKILL_DIR)
+        r = sh(work, pre + 'CTA_CARD="${CTA_CARD:-on}"\n' + s8, 45.0)
+        if r["rc"] != 0 or not r["renders"] or not r["overlay"]:
+            bad.append("%s: Step 8 with cta_card on (default) no longer renders the card (rc %s): %s" % (rel, r["rc"], r["out"]))
+    spec = importlib.util.spec_from_file_location("ss290", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    fn, files = getattr(ss, "apply_spotlight_end_card_room", None), getattr(ss, "_SPOTLIGHT_CTA_ROOM_FILES", None)
+    if fn is None or files is None:
+        bad.append("sync-skills.py has no apply_spotlight_end_card_room (WI2.90)")
+    else:
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        def revert(base):
+            for rel, full_only, edits in files:
+                if full_only and base.name != "p-reels-spotlight":
+                    continue
+                t = (base / rel).read_text(encoding="utf-8")
+                for old, new in reversed(edits):
+                    t = t.replace(new, old)
+                (base / rel).write_text(t, encoding="utf-8")
+        for base in (up / "p-reels-spotlight", up / "p-reels-spotlight-heygen",
+                     up / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight"):
+            revert(base)
+        r = run_step(up / "p-reels-spotlight" / "steps" / "06-assemble.md", "restored", 41.67)
+        if r.get("rc") != 0 or "end card skipped" not in r.get("out", ""):
+            bad.append("sanity: the restored 48ef94d step 06 did not skip silently (%r)" % {k: r.get(k) for k in ("rc", "out")})
+        for rec, want in (("p-reels-spotlight", (2, 0)), ("p-reels-spotlight-heygen", (3, 0))):
+            got = (fn(up / rec, rec), fn(up / rec, rec))
+            if got != want:
+                bad.append("transform on %s changed %r file(s), expected %r" % (rec, got, want))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        revert(up / "p-reels-spotlight")
+        t = up / "p-reels-spotlight" / "steps" / "06-assemble.md"
+        t.write_text(t.read_text(encoding="utf-8").replace("    CTA_CARD=off\n", "    CTA_CARD=no\n"), encoding="utf-8")
+        try:
+            fn(up / "p-reels-spotlight", "fixture")
+            bad.append("transform did not fail on a drifted step 06 anchor")
+        except SystemExit:
+            pass
+        (up / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "SKILL.md").unlink()
+        try:
+            fn(up / "p-reels-spotlight-heygen", "p-reels-spotlight-heygen")
+            bad.append("transform did not fail on a missing .hub SKILL.md")
+        except SystemExit:
+            pass
+except (Exception, SystemExit) as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad[:12]))
+PY
+)"
+if [[ "$wi290_detail" == "ok" ]]; then
+  pass "WI2.90 spotlight step 06 fails loudly with under 1.0 s of end-card room; SKILL.md honours cta_card off (no tail, no card)"
+else
+  fail "WI2.90 spotlight end card fails loudly when no room; SKILL.md honours cta_card off" "$wi290_detail"
+fi
+rm -rf "$wi290_root"
+
+echo "=== Case 68: WI2.91 — the spotlight typing takeover types a prompt with \\, CR/LF, <, & and quotes exactly ==="
+# Observed 2026-10-21 (independent review 01a15e05-5322 of Render 69bc5ce): step 05 (and SKILL.md Step 5)
+# put html.escape(PROMPT) into the scene's `var PROMPT_TEXT = "{{PROMPT}}"` JS literal. html.escape does not
+# escape a backslash (it changed the typed text) or a carriage return (CRLF text broke the script, so the
+# HyperFrames render failed: "invalid_inline_script_syntax"). Also c-typing-ui's card label "The prompt ·
+# paste this" was hard-coded on every spotlight reel. This case runs the real step 05 Part B assembler of
+# every copy on hostile prompts, checks the slotted file has no raw CR / U+2028 / </script> / unfilled key,
+# runs its script (fake DOM + GSAP, as in Case 63) and checks the typed text is the prompt exactly (CR/CRLF
+# as one line break), and that the label is CARD_LABEL (default "The prompt"). The SKILL.md copies and the
+# sync transform (idempotent, fail-fast) are checked too.
+wi291_root="$(mktemp -d)"
+wi291_detail="$(python3 - "$REPO_DIR" "$wi291_root" <<'PY'
+import importlib.util, json, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+SIM = r"""
+const vm = require('vm'), fs = require('fs');
+const els = {};
+function el(id) { return els[id] || (els[id] = { id, textContent: '', style: {}, classList: { add() {} } }); }
+const decode = s => s.replace(/&#10;/g, '\n').replace(/&quot;/g, '"').replace(/&#x27;/g, "'")
+                     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+const tweens = [];
+function timeline() { const tl = { to(t, v) { tweens.push({ tl, t, v }); return tl; }, fromTo() { return tl; } }; return tl; }
+const document = { getElementById: el, querySelector: () => null,
+  createElement: () => { const o = { value: '' }; Object.defineProperty(o, 'innerHTML', { set(s) { o.value = decode(s); } }); return o; } };
+const ctx = vm.createContext({ window: {}, document, gsap: { timeline }, parseFloat, Math });
+const out = {};
+for (const f of process.argv.slice(2)) {
+  const src = fs.readFileSync(f, 'utf8');
+  const inline = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+  if (inline.length !== 1) { out[f] = { error: 'inline scripts ' + inline.length }; continue; }
+  try { new vm.Script(inline[0]); } catch (e) { out[f] = { error: 'syntax: ' + e.message }; continue; }
+  vm.runInContext(inline[0], ctx);
+}
+for (const tw of tweens) if (tw.v && typeof tw.v.onUpdate === 'function') { tw.t.n = tw.v.n; tw.v.onUpdate(); }
+for (const id of Object.keys(els)) if (/-ts-typed$/.test(id)) out[id] = els[id].textContent;
+console.log(JSON.stringify(out));
+"""
+(root / "sim.js").write_text(SIM, encoding="utf-8")
+def part_b(step):
+    m = re.search(r'^python3 - work "\$SKILL_DIR" "\$TYPING_DIR" <<\'PY\'\n(.*?)^PY$', step.read_text(encoding="utf-8"), re.S | re.M)
+    return m.group(1) if m else None
+PROMPTS = ['Rewrite "C:\\new\\table" & <b>bold</b>\r\nkeep it\'s {{ACCENT}} </script> \\o/',
+           "line one\rline two\u2028three\\\\ end\\",
+           "Plan my posts\nfor Friday"]
+WANT = [p.replace("\r\n", "\n").replace("\r", "\n") for p in PROMPTS]
+plan = {"duration": 14.0, "brand": {"bg": "#111111", "accent": "#3B82F6", "fg": "#F4F4F4"}, "takeovers": [
+    {"start": 1.0, "end": 4.5, "template": "tk-typing-ui", "fill": {"LABEL": "CFW", "PROMPT": PROMPTS[0],
+     "BOTTOM_TAG": "a\\b\r\nc"}},
+    {"start": 5.0, "end": 9.0, "template": "tk-typing-ui", "fill": {"LABEL": "CFW", "PROMPT": PROMPTS[1],
+     "CARD_LABEL": "Try <this> & that"}},
+    {"start": 10.0, "end": 13.0, "template": "tk-typing-ui", "fill": {"LABEL": "CFW", "PROMPT": PROMPTS[2]}}]}
+LABELS = ["The prompt", "Try &lt;this&gt; &amp; that", "The prompt"]
+try:
+    skills = repo / "skills"
+    roots = [skills / "p-reels-spotlight", skills / "p-reels-spotlight-heygen",
+             skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight"]
+    for r in roots:
+        step = r / "steps" / "05-render-scenes.md"
+        rel = step.relative_to(repo)
+        code = part_b(step)
+        if code is None:
+            bad.append("%s: no step 05 Part B assembler block" % rel); continue
+        skill = skills / "p-reels-spotlight"
+        w = root / ("w-" + r.name + ("-hub" if r.parent.name == ".hub" else ""))
+        w.mkdir()
+        (w / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+        (w / "base.mp4").write_bytes(b"")
+        (root / "partb.py").write_text(code, encoding="utf-8")
+        out = subprocess.run([sys.executable, str(root / "partb.py"), str(w), str(skill), str(skill / ".hub" / "c-typing-ui")],
+                             capture_output=True, text=True, timeout=60)
+        if out.returncode != 0:
+            bad.append("%s: assembler failed: %s" % (rel, out.stderr.strip()[-200:])); continue
+        files = []
+        for i in range(len(PROMPTS)):
+            f = w / "comp" / "compositions" / ("tk%d.html" % i)
+            text = f.read_text(encoding="utf-8")
+            files.append(str(f))
+            script = text.split("<script>", 1)[-1]
+            if "\r" in text or "\u2028" in text or "\u2029" in text:
+                bad.append("%s: tk%d carries a raw CR / U+2028 / U+2029" % (rel, i))
+            if script.count("</script>") != 1:
+                bad.append("%s: tk%d's prompt closes the inline script early" % (rel, i))
+            if re.search(r"\{\{[A-Z_]+\}\}", text):
+                bad.append("%s: tk%d has an unfilled {{KEY}} or a prompt key was filled" % (rel, i))
+            if "paste this" in text.lower():
+                bad.append("%s: tk%d still shows c-typing-ui's 'The prompt · paste this' label" % (rel, i))
+            if ('id="tk%d-ts-label">%s</div>' % (i, LABELS[i])) not in text:
+                bad.append("%s: tk%d card label is not %r" % (rel, i, LABELS[i]))
+        sim = subprocess.run(["node", str(root / "sim.js")] + files, capture_output=True, text=True, timeout=60)
+        got = json.loads(sim.stdout) if sim.returncode == 0 and sim.stdout.strip() else {"error": sim.stderr[-300:]}
+        errs = {k: v for k, v in got.items() if isinstance(v, dict) or k == "error"}
+        if errs:
+            bad.append("%s: typing scripts did not run: %s" % (rel, json.dumps(errs)[:300])); continue
+        for i, want in enumerate(WANT):
+            if got.get("tk%d-ts-typed" % i) != want:
+                bad.append("%s: tk%d typed %r, expected exactly %r" % (rel, i, got.get("tk%d-ts-typed" % i), want))
+    docs = (skills / "p-reels-spotlight" / "SKILL.md", skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "SKILL.md")
+    spec = importlib.util.spec_from_file_location("ss291", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    fn, pfiles = getattr(ss, "apply_spotlight_typing_prompt", None), getattr(ss, "_SPOTLIGHT_PROMPT_FILES", None)
+    if fn is None or pfiles is None:
+        bad.append("sync-skills.py has no apply_spotlight_typing_prompt (WI2.91)")
+    else:
+        for doc in docs:
+            text = doc.read_text(encoding="utf-8")
+            if ss.SPOTLIGHT_PROMPT_SKILL not in text or ss.SPOTLIGHT_LABEL_SKILL not in text \
+                    or 'm["PROMPT"] = html.escape(' in text:
+                bad.append("%s: Step 5 does not JSON-encode the prompt / fill CARD_LABEL" % doc.relative_to(repo))
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        def revert(base):
+            for rel, full_only, edits in pfiles:
+                if full_only and base.name != "p-reels-spotlight":
+                    continue
+                t = (base / rel).read_text(encoding="utf-8")
+                for old, new in reversed(edits):
+                    t = t.replace(new, old)
+                (base / rel).write_text(t, encoding="utf-8")
+        for base in (up / "p-reels-spotlight", up / "p-reels-spotlight-heygen",
+                     up / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight"):
+            revert(base)
+        # Sanity: the restored (a0714c9) step 05 really breaks on the CR prompt.
+        w = root / "restored"; w.mkdir()
+        (w / "plan.json").write_text(json.dumps(plan), encoding="utf-8"); (w / "base.mp4").write_bytes(b"")
+        (root / "partb.py").write_text(part_b(up / "p-reels-spotlight" / "steps" / "05-render-scenes.md"), encoding="utf-8")
+        subprocess.run([sys.executable, str(root / "partb.py"), str(w), str(up / "p-reels-spotlight"),
+                        str(up / "p-reels-spotlight" / ".hub" / "c-typing-ui")], capture_output=True, text=True, timeout=60)
+        sim = subprocess.run(["node", str(root / "sim.js"), str(w / "comp" / "compositions" / "tk0.html")],
+                             capture_output=True, text=True, timeout=60)
+        if "syntax" not in sim.stdout:
+            bad.append("sanity: the restored a0714c9 step 05 did not break the script on a CRLF prompt (%s)" % sim.stdout[:200])
+        for rec, want in (("p-reels-spotlight", (3, 0)), ("p-reels-spotlight-heygen", (5, 0))):
+            got = (fn(up / rec, rec), fn(up / rec, rec))
+            if got != want:
+                bad.append("transform on %s changed %r file(s), expected %r" % (rec, got, want))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        revert(up / "p-reels-spotlight")
+        t = up / "p-reels-spotlight" / "steps" / "05-render-scenes.md"
+        t.write_text(t.read_text(encoding="utf-8").replace("  # decoded in-page\n", "\n"), encoding="utf-8")
+        try:
+            fn(up / "p-reels-spotlight", "fixture")
+            bad.append("transform did not fail on a drifted step 05 anchor")
+        except SystemExit:
+            pass
+        (up / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "SKILL.md").unlink()
+        try:
+            fn(up / "p-reels-spotlight-heygen", "p-reels-spotlight-heygen")
+            bad.append("transform did not fail on a missing .hub SKILL.md")
+        except SystemExit:
+            pass
+except (Exception, SystemExit) as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad[:12]))
+PY
+)"
+if [[ "$wi291_detail" == "ok" ]]; then
+  pass "WI2.91 spotlight typing takeover types a prompt with \\, CR/LF, <, & and quotes exactly; card label is CARD_LABEL (every copy)"
+else
+  fail "WI2.91 spotlight typing takeover prompt escaping and card label" "$wi291_detail"
+fi
+rm -rf "$wi291_root"
+
+echo "=== Case 69: WI2.88 — the spotlight caption emphasis word is a plain word until spoken, and its pop keeps the space before it ==="
+# Observed 2026-10-21 (Director re-smokes of p-reels-spotlight on Render adb82fd): before it was spoken
+# the emphasis word showed much smaller and dim blue after a wide gap ("VOICE," ~29.8-31.2 s, "MONTH"
+# ~33 s, "MOMENTS" ~5 s; /tmp/cfw-smoke-20261021-115431/check/cap_strip.png), then popped; and on its pop
+# "EVERY PLATFORM." read "EVERYPLATFORM." (~35.8 s; /tmp/cfw-smoke-20261021-081902/frames/tail_captions.png).
+# Cause: c-reel-premium's caption-overlay.html fromTo'd the word from scale 0.72 (rendered immediately, so
+# it sat at 0.72 in the accent colour until spoken) to a transform scale of 1.16 + back.out overshoot,
+# which a transform cannot make room for: it ate the 0.06em margin and the column gap. This case runs
+# each spotlight caption-overlay.html copy's own script in node with a recording GSAP, evaluates the
+# emphasis word's tweens over time, and lays the line out (word width ~ font size x letters, transform
+# scale about the centre, the template's column gap, margin and --pop font size) to check: before its
+# timestamp the word is the same size, colour and dim as the other unspoken words with a normal gap;
+# through and after its pop the gap before it never closes; it still pops (bigger, accent, full opacity).
+# The sync transform (idempotent, fail-fast) is checked too.
+wi288c_root="$(mktemp -d)"
+wi288c_detail="$(python3 - "$REPO_DIR" "$wi288c_root" <<'PY'
+import importlib.util, json, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+SIM = r"""
+const vm = require('vm'), fs = require('fs');
+const [file, timesJson] = process.argv.slice(2);
+const src = fs.readFileSync(file, 'utf8');
+const inline = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+if (inline.length !== 1) { console.log(JSON.stringify({ error: 'inline scripts ' + inline.length })); process.exit(0); }
+const els = {};
+function el(id) {
+  if (els[id]) return els[id];
+  const e = { id, className: '', textContent: '', parent: null,
+    style: { getPropertyValue(k) { return this[k] || ''; } },
+    appendChild(c) { c.parent = e; },
+    // Oswald caps ~0.5em a letter at the group's font size and the word's own --pop
+    get offsetWidth() { const f = parseFloat((e.parent && e.parent.style.fontSize) || 72);
+      return f * (parseFloat(e.style['--pop']) || 1) * 0.5 * e.textContent.length; } };
+  return (els[id] = e);
+}
+const tweens = [];
+let order = 0;
+const tl = {
+  fromTo(sel, from, to, pos) { tweens.push({ sel, from, to, pos, dur: to.duration || 0, ease: to.ease, n: order++ }); return tl; },
+  to(sel, to, pos) { tweens.push({ sel, from: null, to, pos, dur: to.duration || 0, ease: to.ease, n: order++ }); return tl; },
+  set(sel, to, pos) { tweens.push({ sel, from: null, to, pos, dur: 0, n: order++ }); return tl; },
+  seek() { return tl; },
+};
+const document = { getElementById: id => el(id),
+  createElement: () => { const e = el('tmp' + order++); Object.defineProperty(e, 'id', { set(v) { els[v] = e; }, get() { return ''; } }); return e; } };
+// hyperframes' fitTextFontSize: the largest size whose text, with plain spaces (~0.25em), is one line
+const fitTextFontSize = (text, o) => {
+  for (let f = o.baseFontSize; f >= o.minFontSize; f -= 1) {
+    const w = [...text].reduce((n, ch) => n + (ch === ' ' ? 0.25 : 0.5), 0) * f;
+    if (w <= o.maxWidth) return { fontSize: f, fits: true };
+  }
+  return { fontSize: o.minFontSize, fits: false };
+};
+const ctx = vm.createContext({ window: { __hyperframes: { fitTextFontSize } }, document, gsap: { timeline: () => tl },
+  getComputedStyle: () => ({ opacity: '0', visibility: 'hidden' }), console, Math, JSON });
+try { vm.runInContext(inline[0], ctx); } catch (e) { console.log(JSON.stringify({ error: 'run: ' + e.message })); process.exit(0); }
+function ease(name, p) {
+  name = name || 'power1.out';
+  let m = /^back\.out\(([\d.]+)\)$/.exec(name);
+  if (m) { const s = +m[1], q = p - 1; return 1 + (s + 1) * q * q * q + s * q * q; }
+  m = /^power(\d)\.(in|out|inOut)$/.exec(name);
+  if (m) { const k = +m[1] + 1;
+    if (m[2] === 'in') return Math.pow(p, k);
+    if (m[2] === 'out') return 1 - Math.pow(1 - p, k);
+    return p < 0.5 ? Math.pow(2 * p, k) / 2 : 1 - Math.pow(2 * (1 - p), k) / 2; }
+  return p;
+}
+function value(sel, prop, t, base) {
+  const ts = tweens.filter(w => w.sel === sel && prop in w.to).sort((a, b) => a.pos - b.pos || a.n - b.n);
+  const ft = ts.find(w => w.from && prop in w.from);
+  let cur = ft ? ft.from[prop] : base;  // a fromTo renders its from-state immediately
+  for (const w of ts) {
+    if (w.pos > t) break;
+    const from = w.from && prop in w.from ? w.from[prop] : cur, to = w.to[prop];
+    const p = w.dur ? Math.min(1, (t - w.pos) / w.dur) : 1;
+    cur = typeof to === 'number' && typeof from === 'number' ? from + (to - from) * ease(w.ease, p) : (p > 0 ? to : from);
+  }
+  return cur;
+}
+const out = [];
+for (const t of JSON.parse(timesJson)) {
+  const s = {};
+  for (const id of ['cw-0-2', 'cw-0-3', 'cw-1-4']) {
+    const sel = '#' + id;
+    s[id] = { scale: value(sel, 'scale', t, 1), pop: value(sel, '--pop', t, 1),
+              opacity: value(sel, 'opacity', t, null), color: value(sel, 'color', t, null) };
+  }
+  out.push(s);
+}
+out.push({ sizes: [0, 1].map(i => parseFloat(el('cg-' + i).style.fontSize)) });
+console.log(JSON.stringify(out));
+"""
+(root / "sim.js").write_text(SIM, encoding="utf-8")
+FG, ACCENT = "#F1F5F9", "#3B82F6"
+GROUPS = [{"start": 0.3, "end": 3.6, "style": 0, "words": [
+    {"w": "FORMATTED", "s": 0.4, "e": 0.9, "em": False}, {"w": "FOR", "s": 0.9, "e": 1.1, "em": False},
+    {"w": "EVERY", "s": 1.1, "e": 1.5, "em": False}, {"w": "PLATFORM.", "s": 2.0, "e": 2.6, "em": True}]},
+    {"start": 3.8, "end": 7.6, "style": 1, "words": [  # near the limit: fits only at the minimum size
+    {"w": "FORMATTED", "s": 3.9, "e": 4.3, "em": False}, {"w": "FOR", "s": 4.3, "e": 4.5, "em": False},
+    {"w": "EVERY", "s": 4.5, "e": 4.8, "em": False}, {"w": "SINGLE", "s": 4.8, "e": 5.2, "em": False},
+    {"w": "PLATFORM,", "s": 5.6, "e": 6.2, "em": True}, {"w": "WEEKLY.", "s": 6.2, "e": 6.8, "em": False}]}]
+AT = 2.0
+POP1 = [round(5.6 + i * 0.01, 2) for i in range(60)]  # the long line's pop, overshoot and settle
+PRE = [0.8, 1.2, 1.6, 1.95]
+POP = [round(AT + i * 0.02, 2) for i in range(70)]  # 2.00 .. 3.38: pop, overshoot, settle, hold
+def css_block(text, sel):
+    m = re.search(re.escape(sel) + r"\s*\{([^}]*)\}", text)
+    return m.group(1) if m else ""
+def em_num(block, prop):
+    m = re.search(r"(?<![-\w])" + prop + r"\s*:\s*([^;]+);", block)
+    if not m:
+        return 0.0
+    parts = [p for p in m.group(1).split() if p.endswith("em")]
+    if prop == "margin":
+        vals = m.group(1).split()
+        side = vals[1] if len(vals) > 1 else vals[0]
+        return float(side[:-2]) if side.endswith("em") else 0.0
+    return float(parts[0][:-2]) if parts else 0.0
+def check_copy(path):
+    rel = path.relative_to(repo) if str(path).startswith(str(repo)) else path
+    text = path.read_text(encoding="utf-8")
+    filled = (text.replace("{{FG}}", FG).replace("{{ACCENT}}", ACCENT).replace("{{CAP_TOP}}", "1180")
+              .replace("{{DURATION}}", "4").replace("{{GROUPS_JSON}}", json.dumps(GROUPS)))
+    f = root / ("filled-%d.html" % len(list(root.glob("filled-*"))))
+    f.write_text(filled, encoding="utf-8")
+    r = subprocess.run(["node", str(root / "sim.js"), str(f), json.dumps(PRE + POP + POP1)], capture_output=True, text=True, timeout=60)
+    got = json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else {"error": r.stderr[-300:]}
+    if isinstance(got, dict):
+        return ["%s: caption script did not run: %s" % (rel, got.get("error"))]
+    sizes = got[-1]["sizes"]
+    peak1 = max((s["cw-1-4"]["pop"] if "var(--pop" in filled else 1) * s["cw-1-4"]["scale"] for s in got[len(PRE + POP):-1])
+    got = {str(t): s for t, s in zip(PRE + POP, got)}
+    out = []
+    word, em = css_block(filled, "#caption-overlay .cap-word"), css_block(filled, "#caption-overlay .cap-word.em")
+    group = css_block(filled, "#caption-overlay .cap-group")
+    F = sizes[0]                          # the first group's fitted font size
+    G = em_num(group, "column-gap") * F    # the gap between words
+    base_op = float(re.search(r"opacity:\s*([\d.]+)", word).group(1))
+    em_color = re.search(r"(?<![-\w])color:\s*([^;]+);", em)
+    css_color = (em_color or re.search(r"(?<![-\w])color:\s*([^;]+);", word)).group(1).strip()
+    pop_font = "var(--pop" in em
+    def lay(st):
+        ff = st["pop"] if pop_font else 1.0          # the word's font-size factor (layout)
+        w = F * ff * 0.5 * len("PLATFORM.")          # its layout width
+        margin = em_num(em, "margin") * F * ff
+        gap = G + margin + w * (1 - st["scale"]) / 2  # visual space between EVERY and the word
+        return gap, ff * st["scale"]
+    for t in PRE:
+        st = got[str(t)]["cw-0-3"]
+        gap, size = lay(st)
+        color = (st["color"] or css_color).lower()
+        op = st["opacity"] if st["opacity"] is not None else base_op
+        if abs(size - 1) > 0.03:
+            out.append("%s: before it is spoken (t=%.2f) the emphasis word is %.2fx the size of its neighbours" % (rel, t, size))
+        if gap > 1.25 * G or gap < 0.9 * G:
+            out.append("%s: before it is spoken (t=%.2f) the gap before it is %.0f px, a plain gap is %.0f px" % (rel, t, gap, G))
+        if color != FG.lower() or abs(op - base_op) > 0.01:
+            out.append("%s: before it is spoken (t=%.2f) it is %s at opacity %.2f, not like the other unspoken words (%s at %.2f)"
+                       % (rel, t, color, op, FG, base_op))
+    worst = min((lay(got[str(t)]["cw-0-3"])[0], t) for t in POP)
+    if worst[0] < 0.9 * G:
+        out.append("%s: on its pop the space before it closes to %.0f px at t=%.2f (a plain gap is %.0f px)" % (rel, worst[0], worst[1], G))
+    # the long line at the peak of its pop (letters + real gaps + the grown word) stays inside 900 px
+    F1, words1 = sizes[1], GROUPS[1]["words"]
+    line = (sum(0.5 * len(w["w"]) for w in words1) + (len(words1) - 1) * em_num(group, "column-gap")
+            + (peak1 - 1) * 0.5 * len("PLATFORM,")) * F1
+    if line > 900:
+        out.append("%s: a long line near the limit is %.0f px at the peak of its pop (%.2fx), past the 900 px "
+                   "safe width (960 px wraps)" % (rel, line, peak1))
+    end = got[str(POP[-1])]["cw-0-3"]
+    if lay(end)[1] < 1.03 or (end["color"] or "").lower() != ACCENT.lower() or (end["opacity"] or 0) < 0.99:
+        out.append("%s: after its pop the word is not bigger, accent and fully on (%r)" % (rel, end))
+    return out
+try:
+    skills = repo / "skills"
+    copies = [skills / "p-reels-spotlight" / ".hub" / "c-reel-premium" / "templates" / "caption-overlay.html",
+              skills / "p-reels-spotlight" / "templates" / "caption-overlay.html",
+              skills / "p-reels-spotlight-heygen" / ".hub" / "c-reel-premium" / "templates" / "caption-overlay.html",
+              skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "templates" / "caption-overlay.html"]
+    for c in copies:
+        bad += check_copy(c)
+    spec = importlib.util.spec_from_file_location("ss288c", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    fn, edits = getattr(ss, "apply_spotlight_caption_pop", None), getattr(ss, "_SPOTLIGHT_CAP_EDITS", None)
+    if fn is None or edits is None:
+        bad.append("sync-skills.py has no apply_spotlight_caption_pop (WI2.88)")
+    else:
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        def revert(rec):
+            for p in ss.spotlight_caption_files(up / rec, rec):
+                t = p.read_text(encoding="utf-8")
+                for old, new in edits:
+                    t = t.replace(new, old)
+                p.write_text(t, encoding="utf-8")
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            revert(rec)
+            restored = ss.spotlight_caption_files(up / rec, rec)[0]
+            if not check_copy(restored):
+                bad.append("sanity: the restored adb82fd caption template of %s passes this check" % rec)
+            got = (fn(up / rec, rec), fn(up / rec, rec))
+            if got != (2, 0):
+                bad.append("transform on %s changed %r file(s), expected (2, 0)" % (rec, got))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        if fn(up / "p-reels-pip", "p-reels-pip") != 0:
+            bad.append("transform touched a non-spotlight recipe")
+        revert("p-reels-spotlight")
+        t = ss.spotlight_caption_files(up / "p-reels-spotlight", "p-reels-spotlight")[0]
+        t.write_text(t.read_text(encoding="utf-8").replace("scale: 0.72, opacity: 0.42", "scale: 0.7, opacity: 0.4"), encoding="utf-8")
+        try:
+            fn(up / "p-reels-spotlight", "p-reels-spotlight")
+            bad.append("transform did not fail on a drifted caption anchor")
+        except SystemExit:
+            pass
+        ss.spotlight_caption_files(up / "p-reels-spotlight-heygen", "p-reels-spotlight-heygen")[1].unlink()
+        try:
+            fn(up / "p-reels-spotlight-heygen", "p-reels-spotlight-heygen")
+            bad.append("transform did not fail on a missing .hub caption template")
+        except SystemExit:
+            pass
+except (Exception, SystemExit) as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad[:12]))
+PY
+)"
+if [[ "$wi288c_detail" == "ok" ]]; then
+  pass "WI2.88 spotlight caption emphasis word: plain until spoken, its pop keeps the space before it (every copy)"
+else
+  fail "WI2.88 spotlight caption emphasis word size, colour and spacing" "$wi288c_detail"
+fi
+rm -rf "$wi288c_root"
+
+echo "=== Case 70: WI2.88 — with no script file, a brief that is the spoken script corrects a mis-heard caption word ==="
+# Observed 2026-10-21 (Director re-smoke, p-reels-spotlight on Render adb82fd, an uploaded talking-head
+# clip): the caption at 17.04-18.72 s read "with flowers still"; the clip's script says "with flour
+# still". The WI2.72 check only reads a script FILE (inputs/script/*, prior/approved_script.md,
+# prior/script.md), which an uploaded-clip order never has, so nothing was checked. The helper now also
+# takes the order brief's intent (brief.json) as the script; the 60 % match guard keeps a brief that is
+# only a topic from changing anything. Runs the helper each spotlight transcribe step writes.
+wi288s_root="$(mktemp -d)"
+wi288s_detail="$(python3 - "$REPO_DIR" "$wi288s_root" <<'PY'
+import importlib.util, json, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+OPEN = "cat > work/script_align.py <<'PY'\n"
+SCRIPT = ("This is a real bakery's entire month of social media. Forty-five posts - daily specials, "
+          "behind-the-scenes, little community moments. All written, all scheduled. And the owner? She "
+          "didn't write a single one. She approved them with flour still on her hands... about thirty "
+          "minutes a week.")
+heard = [("She", 15.53, 15.64), ("approved", 15.65, 16.21), ("them", 16.21, 16.43), ("with", 17.04, 17.30),
+         ("flowers", 17.30, 17.90), ("still", 17.90, 18.72), ("on", 18.72, 18.80), ("her", 18.80, 18.95),
+         ("hands,", 18.95, 19.40), ("about", 19.50, 19.80), ("thirty", 19.80, 20.10), ("minutes", 20.10, 20.50),
+         ("a", 20.50, 20.60), ("week.", 20.60, 21.00)]
+words = [{"text": t, "start": s, "end": e} for t, s, e in heard]
+PROBES = [  # (name, what was spoken, the brief)
+    ("insert", "this is the best tip for your brand", "A short reel about the best tip for growing your brand."),
+    ("drop", "I want you to write your caption first, then read it out loud. Read it back. It takes thirty seconds "
+             "and nobody does it, so do it again. Your followers can tell when a post was rushed, and they scroll "
+             "right past it every single time, so slow down and give every post the same care you give your best "
+             "customers.",
+     "Write your caption first, then read it. It takes 30 seconds and no one does it, so do it over. Your "
+     "followers can tell when a post was rushed, and they scroll right past it every single time, so slow down "
+     "and give every post the same care you give your best customers."),
+    ("adlib", "okay so honestly I post five times a week and it works because people trust a face they see every day",
+     "I post six times a week and it works because people trust a face they see every day"),
+]
+try:
+    for rcp in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+        body = (repo / "skills" / rcp / "steps" / "02-transcribe.md").read_text(encoding="utf-8")
+        if OPEN not in body:
+            bad.append("%s: transcribe step does not write work/script_align.py" % rcp); continue
+        helper = root / (rcp + "-script_align.py")
+        helper.write_text(body.split(OPEN, 1)[1].split("\nPY\n", 1)[0] + "\n", encoding="utf-8")
+        def run(name, intent=None, script_file=None):
+            wd = root / rcp / name; (wd / "work").mkdir(parents=True)
+            if intent is not None:
+                (wd / "brief.json").write_text(json.dumps({"intent": intent, "targets": ["instagram"]}), encoding="utf-8")
+            if script_file is not None:
+                (wd / "inputs" / "script").mkdir(parents=True)
+                (wd / "inputs" / "script" / "script.md").write_text(script_file, encoding="utf-8")
+            (wd / "work" / "words.json").write_text(json.dumps(words), encoding="utf-8")
+            r = subprocess.run([sys.executable, "-I", str(helper), "work/words.json"], cwd=wd, capture_output=True, text=True)
+            if r.returncode != 0:
+                bad.append("%s/%s: helper rc=%d %s" % (rcp, name, r.returncode, r.stderr.strip()[-200:]))
+            rep = wd / "work" / "script_align.json"
+            return (json.loads((wd / "work" / "words.json").read_text()), r.stdout,
+                    json.loads(rep.read_text()) if rep.is_file() else {})
+        want = [t for t, _, _ in heard]; want[4] = "flour"
+        got, out, rep = run("brief_is_script", intent=SCRIPT)
+        if [w["text"] for w in got] != want:
+            bad.append("%s: a brief that is the script left %r (want 'with flour still')" % (rcp, " ".join(w["text"] for w in got[3:6])))
+        if [(w["start"], w["end"]) for w in got] != [(s, e) for _, s, e in heard]:
+            bad.append("%s: brief case changed timings" % rcp)
+        if rep.get("source") != "brief" or ["flowers", "flour"] not in rep.get("fixed", []):
+            bad.append("%s: script_align.json does not record the brief fix (%r)" % (rcp, rep))
+        got, out, rep = run("brief_is_topic", intent="A 30-second spotlight reel on the one question every buyer forgets to ask.")
+        if got != words:
+            bad.append("%s: a topic brief changed the words" % rcp)
+        if "brief is not the spoken script" not in out:
+            bad.append("%s: a topic brief was not reported as not the script (%r)" % (rcp, out.strip()))
+        got, out, rep = run("file_wins", intent="Completely different words about a car dealership.", script_file=SCRIPT)
+        if [w["text"] for w in got] != want or rep.get("source") != "script":
+            bad.append("%s: a script file did not take priority over the brief (%r)" % (rcp, rep.get("source")))
+        # Independent review of b8c3ff6: a brief is not a script. It applied every script fix, so a brief
+        # that matched 60 % inserted, dropped and re-worded spoken words. These probes must stay as heard.
+        for probe, spoken, brief in PROBES:
+            keep = words
+            words = [{"text": t, "start": round(i * 0.3, 2), "end": round(i * 0.3 + 0.3, 2)} for i, t in enumerate(spoken.split())]
+            got, out, rep = run("probe_" + probe, intent=brief)
+            if [w["text"] for w in got] != spoken.split():
+                bad.append("%s: brief probe '%s' changed the spoken words to %r" % (rcp, probe, " ".join(w["text"] for w in got)[:160]))
+            words = keep
+        got, out, _ = run("nothing")
+        if got != words or "no script" not in out:
+            bad.append("%s: with no script and no brief the words changed or it did not say so" % rcp)
+    # the WI2.77-era step (old prose + old helper) upgrades to the committed one, once
+    spec = importlib.util.spec_from_file_location("ss288s", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    if not hasattr(ss, "_SCRIPT_ALIGN_NOSCRIPT_WI277"):
+        bad.append("sync-skills.py does not upgrade the WI2.77 script-check prose (WI2.88)")
+    else:
+        for rcp in ss.REEL_SCRIPT_ALIGN_RECIPES:
+            cur = (repo / "skills" / rcp / "steps" / "02-transcribe.md").read_text(encoding="utf-8")
+            h, rest = cur.split(ss._SCRIPT_ALIGN_OPEN, 1)
+            old = (h + ss._SCRIPT_ALIGN_OPEN + "# WI2.77 helper\nprint('old')\nPY\n" + rest.split("\nPY\n", 1)[1])
+            old = old.replace(ss._SCRIPT_ALIGN_NOSCRIPT, ss._SCRIPT_ALIGN_NOSCRIPT_WI277)
+            d = root / "up" / rcp; (d / "steps").mkdir(parents=True)
+            (d / "steps" / "02-transcribe.md").write_text(old, encoding="utf-8")
+            n = (ss.apply_reel_script_align(d, rcp), ss.apply_reel_script_align(d, rcp))
+            if (d / "steps" / "02-transcribe.md").read_text(encoding="utf-8") != cur or n != (1, 0):
+                bad.append("%s: the WI2.77 step did not upgrade to the committed one once (%r)" % (rcp, n))
+except (Exception, SystemExit) as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad[:12]))
+PY
+)"
+if [[ "$wi288s_detail" == "ok" ]]; then
+  pass "WI2.88 a brief that is the spoken script corrects 'with flowers still' to 'with flour still'; a topic brief changes nothing"
+else
+  fail "WI2.88 brief as the script for the caption word check" "$wi288s_detail"
+fi
+rm -rf "$wi288s_root"
+
+echo "=== Case 71: WI2.96 — the spotlight end card keeps the brand name on one line; the headline is balanced and fits ==="
+# Observed 2026-10-21 (re-smoke 26, p-reels-spotlight on Render 48ef94d, frames f_43.3/f_44.5): the WI2.93
+# end-card headline "Follow Test Brand for more" showed as "FOLLOW TEST / BRAND FOR / MORE": the hero was a
+# flex-wrap row of single words, so the brand name broke across two lines and the lines were unbalanced.
+# Every scripts/cta-card.py copy now makes the brand name one nowrap unit (non-breaking spaces) and the
+# page puts the units on the fewest lines (max 3) whose most balanced split fits 920 px, shrinking the
+# font when none does; a brand still too wide at 60 px shrinks on its own; the kicker stays on one line
+# inside 960 px; it refits once fonts load. The real cta-card.py writes the page; its script runs in node
+# with a fake DOM whose text width grows with font size (a fallback font until fonts load).
+wi296_root="$(mktemp -d)"
+wi296_detail="$(python3 - "$REPO_DIR" "$wi296_root" <<'PY'
+import html, importlib.util, json, os, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+SIM = r"""
+const vm = require('vm'), fs = require('fs');
+const [page, emHero, emKicker, fallback] = process.argv.slice(2);
+const src = fs.readFileSync(page, 'utf8');
+const scripts = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+const unesc = s => s.replace(/&#160;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+  .replace(/&#x27;/g, "'").replace(/&amp;/g, '&');
+let scale = parseFloat(fallback);            // the fallback font until fonts load
+function node(cls, text) {
+  return { className: cls, text, style: {}, children: [], parent: null, attrs: {},
+    getAttribute(k) { return this.attrs[k] === undefined ? null : this.attrs[k]; },
+    appendChild(c) { if (c.parent) c.parent.children.splice(c.parent.children.indexOf(c), 1);
+      c.parent = this; this.children.push(c); return c; },
+    removeChild(c) { this.children.splice(this.children.indexOf(c), 1); c.parent = null; return c; } };
+}
+const heroM = src.match(/<div class="layer hero [^"]*"([^>]*)>([\s\S]*?)<\/div>/);
+const hero = node('hero', '');
+const heroBase = heroM && /data-size="(\d+)"/.test(heroM[1]) ? parseFloat(heroM[1].match(/data-size="(\d+)"/)[1]) : 110;
+if (heroM) { hero.attrs['data-size'] = String(heroBase);
+  for (const m of heroM[2].matchAll(/<span class="([^"]*)">([^<]*)<\/span>/g)) hero.appendChild(node(m[1], unesc(m[2]))); }
+const fsOf = el => parseFloat(el.style.fontSize) || parseFloat((el.parent && el.parent.style.fontSize) || '')
+  || parseFloat((el.parent && el.parent.parent && el.parent.parent.style.fontSize) || '') || heroBase;
+const unitW = el => Math.round(fsOf(el) * parseFloat(emHero) * scale * el.text.length);
+const units = hero.children.slice();
+units.forEach(u => Object.defineProperty(u, 'scrollWidth', { get() { return unitW(u); } }));
+const kM = src.match(/<div class="layer kicker [^"]*"([^>]*)>([^<]*)<\/div>/);
+let kicker = null;
+if (kM) { kicker = node('kicker', unesc(kM[2]));
+  const ks = kM[1].match(/data-size="(\d+)"/); if (ks) kicker.attrs['data-size'] = ks[1];
+  Object.defineProperty(kicker, 'scrollWidth', { get() {
+    return Math.round((parseFloat(kicker.style.fontSize) || 52) * parseFloat(emKicker) * scale * kicker.text.length); } }); }
+const all = (el, out) => { el.children.forEach(c => { out.push(c); all(c, out); }); return out; };
+hero.querySelectorAll = s => all(hero, []).filter(c => (' ' + c.className + ' ').includes(' ' + s.replace(/^\./, '') + ' '));
+const tl = new Proxy({}, { get: () => () => tl });
+const readies = [];
+const ctx = { window: {}, gsap: { timeline: () => tl }, parseFloat, Math, Array, Infinity,
+  document: { querySelector: s => (s.endsWith('.hero') ? hero : s.endsWith('.kicker') ? kicker : null),
+    createElement: () => node('', ''), fonts: { ready: { then: f => { readies.push(f); } } } } };
+for (const code of scripts) vm.runInNewContext(code, ctx);
+scale = 1;                                   // fonts finished loading
+readies.forEach(f => f());
+const hs = parseFloat(hero.style.fontSize) || heroBase;
+const lines = hero.children.map(r => {
+  const us = r.className === 'line' ? r.children : [r];
+  return { text: us.map(u => u.text).join(' '), units: us.map(u => ({ text: u.text, cls: u.className })),
+    width: us.reduce((s, u) => s + unitW(u), 0) + Math.round(hs * 0.28) * (us.length - 1), row: r.className === 'line' }; });
+console.log(JSON.stringify({ heroSize: hs, lines, readies: readies.length,
+  kicker: kicker ? { text: kicker.text, width: kicker.scrollWidth } : null }));
+"""
+(root / "sim.js").write_text(SIM, encoding="utf-8")
+(root / "plan.json").write_text(json.dumps({"brand": {"bg": "#111111", "accent": "#3B82F6", "fg": "#F4F4F4"}}))
+GSAP = repo / "skills" / "p-reels-spotlight" / ".hub" / "f-gsap" / "vendor" / "gsap.min.js"
+LONG = "The Very Long Artisan Sourdough Bakery Company"
+EVIL = "Ben & Jerry's <img src=x onerror=alert(1)>"
+def card(script, name, brand, text):
+    out = root / name
+    shutil.rmtree(out, ignore_errors=True)
+    env = dict(os.environ, BRAND_NAME=brand, CTA_TEXT=text, CTA_HANDLE="@handle", CTA_DURATION="3.0")
+    p = subprocess.run([sys.executable, str(script), str(root / "plan.json"), str(root / (name + ".json")), str(out), str(GSAP)],
+                       env=env, capture_output=True, text=True, timeout=60)
+    if p.returncode != 0:
+        return None, "cta-card.py failed: " + (p.stdout + p.stderr)[-200:]
+    return (out / "index.html"), None
+def sim(page, em, fallback):
+    p = subprocess.run(["node", str(root / "sim.js"), str(page), str(em), str(em + 0.18), str(fallback)],
+                       capture_output=True, text=True, timeout=60)
+    if p.returncode != 0:
+        return {"error": p.stderr.strip()[-300:]}
+    return json.loads(p.stdout)
+def check(script, label):
+    found = []
+    for name, brand, text in (("smoke", "Test Brand", "Follow Test Brand for more"), ("long", LONG, "Follow %s for more" % LONG),
+                              ("evil", EVIL, "Follow %s for more" % EVIL), ("nobrand", "", "Follow for more")):
+        page, err = card(script, name, brand, text)
+        if err:
+            found.append("%s %s: %s" % (label, name, err)); continue
+        body = page.read_text(encoding="utf-8")
+        if "<img" in body or "onerror=alert(1)>" in body:
+            found.append("%s %s: the brand name reached the page unescaped" % (label, name))
+        # same font, a wider and a narrower fallback font before fonts load; the smoke frame's em and Oswald's
+        for em in (0.67, 0.5):
+            results = [sim(page, em, fb) for fb in (1.0, 1.3, 0.7)]
+            if any("error" in r for r in results):
+                found.append("%s %s: page script did not run: %s" % (label, name, [r.get("error") for r in results][:1])); break
+            r = results[0]
+            if any(x["lines"] != r["lines"] or x["heroSize"] != r["heroSize"] for x in results[1:]):
+                found.append("%s %s: the headline is not refitted once fonts load (em %s)" % (label, name, em))
+            lines = r["lines"]
+            if not lines or not all(l["row"] for l in lines):
+                found.append("%s %s: the headline is not laid out in fitted lines (%r)"
+                             % (label, name, [l["text"] for l in lines][:4])); continue
+            if " ".join(l["text"] for l in lines).upper() != " ".join(text.split()).upper():
+                found.append("%s %s: headline words were cut or reordered: %r" % (label, name, [l["text"] for l in lines]))
+            if len(lines) > 3:
+                found.append("%s %s: headline is %d lines (max 3)" % (label, name, len(lines)))
+            for l in lines:
+                if l["width"] > 920:
+                    found.append("%s %s: line %r is %d px, past the 920 px safe width (em %s)" % (label, name, l["text"], l["width"], em))
+            if brand:
+                held = [u for l in lines for u in l["units"] if u["text"].upper() == brand.upper()]
+                if len(held) != 1 or "brand" not in held[0]["cls"].split():
+                    found.append("%s %s: the brand name %r is not one unbroken unit on one line (%r)"
+                                 % (label, name, brand, [l["text"] for l in lines]))
+                if r["kicker"] is None or r["kicker"]["width"] > 960:
+                    found.append("%s %s: the kicker is past 960 px (%r)" % (label, name, r["kicker"]))
+                if "white-space: nowrap" not in body.split("#cta-card .word.brand", 1)[-1][:80]:
+                    found.append("%s %s: the brand unit is not nowrap" % (label, name))
+            if name == "smoke" and em == 0.67 and ([l["text"].upper() for l in lines] != ["FOLLOW", "TEST BRAND", "FOR MORE"]
+                                                  or r["heroSize"] != 110):
+                found.append("%s smoke: headline is %r at %spx, wanted FOLLOW / TEST BRAND / FOR MORE at 110px"
+                             % (label, [l["text"].upper() for l in lines], r["heroSize"]))
+    return found
+try:
+    skills = repo / "skills"
+    ctas = sorted(p for p in skills.rglob("cta-card.py") if p.parent.name == "scripts")
+    if len(ctas) != 2:
+        bad.append("expected 2 cta-card.py copies, found %d" % len(ctas))
+    if len({p.read_bytes() for p in ctas}) > 1:
+        bad.append("the cta-card.py copies differ")
+    for c in ctas:
+        bad += check(c, str(c.relative_to(repo)))
+    spec = importlib.util.spec_from_file_location("ss296", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    fn, edits = getattr(ss, "apply_spotlight_end_card_fit", None), getattr(ss, "_SPOTLIGHT_CTA_FIT_EDITS", None)
+    if fn is None or edits is None:
+        bad.append("sync-skills.py has no apply_spotlight_end_card_fit transform (WI2.96)")
+    else:
+        # Restore the WI2.93 cta-card.py in a copy; the transform upgrades it once, then is a no-op, and its
+        # output is byte-identical to the committed bundle. The WI2.93 transform leaves the upgrade alone.
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        def revert(t):
+            text = t.read_text(encoding="utf-8")
+            for old, new in reversed(edits):
+                text = text.replace(new, old)
+            t.write_text(text, encoding="utf-8")
+        for t in up.rglob("cta-card.py"):
+            revert(t)
+        if not check(up / "p-reels-spotlight" / "scripts" / "cta-card.py", "restored"):
+            bad.append("sanity: the restored WI2.93 cta-card.py was not caught")
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            got = (fn(up / rec, rec), fn(up / rec, rec), ss.apply_spotlight_end_card_render(up / rec, rec))
+            if got != (1, 0, 0):
+                bad.append("transforms on %s changed %r file(s), expected (1, 0, 0)" % (rec, got))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        t = up / "p-reels-spotlight" / "scripts" / "cta-card.py"
+        revert(t)
+        t.write_text(t.read_text(encoding="utf-8").replace("#cta-card .word {{ display: inline-block; }}",
+                                                           "#cta-card .word {{ display: inline; }}"), encoding="utf-8")
+        try:
+            fn(up / "p-reels-spotlight", "fixture"); bad.append("transform did not fail on a drifted cta-card.py")
+        except SystemExit:
+            pass
+        t.unlink()
+        try:
+            fn(up / "p-reels-spotlight", "p-reels-spotlight"); bad.append("transform did not fail on a missing cta-card.py")
+        except SystemExit:
+            pass
+except (Exception, SystemExit) as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad[:12]))
+PY
+)"
+if [[ "$wi296_detail" == "ok" ]]; then
+  pass "WI2.96 spotlight end card keeps the brand name on one line; headline balanced, fitted to 920 px, refitted on font load (every copy)"
+else
+  fail "WI2.96 spotlight end card keeps the brand name on one line and fits the headline" "$wi296_detail"
+fi
+rm -rf "$wi296_root"
+
+echo "=== Case 72: WI2.95 — spotlight takeover text names the order's brand or quotes the speech ==="
+# Observed 2026-10-21: smoke 25 (p-reels-spotlight, order brand "Test Brand", a CFW promo talking-head)
+# showed the tk-list title "CFW WRITES THE MONTH"; re-smoke 26 (Render 48ef94d) showed "CFW knows her
+# voice" at 30.5-36.5 s while the clip says "CFW already learned her voice". plan_edit reworded the speech
+# and kept the clip's brand. Every plan step copy (steps/03-plan-edit.md x3, SKILL.md Step 4 x2) now writes
+# work/takeover_brand.py and runs it: a word-for-word quote stays; any other line's spoken acronym /
+# CamelCase name the order does not own becomes the order's brand (or is dropped when it has none). The
+# step's own plan guard runs its --check. The real helper and guard run on the smoke-26 plan.
+wi295_root="$(mktemp -d)"
+wi295_detail="$(python3 - "$REPO_DIR" "$wi295_root" <<'PY'
+import importlib.util, json, os, re, shutil, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+SAID = ("Most bakers post once a month. They run out of ideas. CFW already learned her voice, so it writes "
+        "the month for her. It posts on Instagram every week. Sarah approved them with flour still on her "
+        "hands. Follow for more.").split()
+WORDS = [{"text": w, "start": round(i * 1.2, 2), "end": round(i * 1.2 + 1.0, 2)} for i, w in enumerate(SAID)]
+DUR = round(len(SAID) * 1.2 + 3.0, 2)
+CFW_AT = SAID.index("CFW") * 1.2
+SMOKE = {   # re-smoke 26: the tk-list card at 30.5-36.5 s reworded the speech and kept the clip's brand
+    "takeovers": [
+        {"start": round(CFW_AT, 2), "end": round(CFW_AT + 5, 2), "template": "tk-list",
+         "fill": {"TITLE": "CFW <span class=\"accent\">WRITES</span> THE MONTH", "ITEM1": "CFW knows her voice",
+                  "ITEM2": "Posts on Instagram", "ITEM3": "Every week"}},
+        {"start": round(CFW_AT + 10, 2), "end": round(CFW_AT + 14, 2), "template": "tk-quote",
+         "fill": {"QUOTE": "CFW already learned her <span class=\"accent\">voice</span>", "ATTR": "Sarah, baker"}},
+        {"start": round(CFW_AT + 19, 2), "end": round(CFW_AT + 23, 2), "template": "tk-typing-ui",
+         "fill": {"LABEL": "claude.ai", "PROMPT": "Write a month of posts", "TYPING_SPEED": 1, "BOTTOM_TAG": "Done in minutes"}}]}
+def groups():
+    out, i, style = [], 0, 0
+    while i < len(WORDS):
+        j = i + 1
+        while j < len(WORDS) and j - i < 4 and not WORDS[j - 1]["text"].endswith((".", ",")):
+            j += 1
+        ws = WORDS[i:j]
+        out.append({"start": ws[0]["start"], "end": ws[-1]["end"], "style": style,
+                    "words": [{"w": w["text"], "s": w["start"], "e": w["end"], "em": False} for w in ws]})
+        style, i = (style + 1) % 3, j
+    out[-1]["end"] = DUR - 1.0
+    return out
+def full_plan():
+    return dict(SMOKE, duration=DUR, energy="high", grade="clean-bright", cover_at=round(CFW_AT - 4, 2),
+                brand={"bg": "#111111", "accent": "#3B82F6", "fg": "#F4F4F4"}, caption_groups=groups(), sfx=[])
+HELPER_RE = re.compile(r"cat > (?:work/|\"\$W/)takeover_brand\.py\"? <<'PY'\n(.*?\n)PY\n", re.S)
+def helper_of(text):
+    found = HELPER_RE.findall(text)
+    return found[0] if len(found) == 1 else None
+def run(helper, args, cwd):
+    return subprocess.run([sys.executable, str(helper)] + args, cwd=cwd, capture_output=True, text=True, timeout=60)
+def fills(path):
+    return [t["fill"] for t in json.load(open(path))["takeovers"]]
+def behave(helper, label):
+    found = []
+    wd = root / ("wd-" + label.replace("/", "_"))
+    shutil.rmtree(wd, ignore_errors=True); (wd / "work").mkdir(parents=True); (wd / "saves").mkdir()
+    (wd / "work" / "words.json").write_text(json.dumps(WORDS))
+    plan = wd / "saves" / "edit_plan.json"
+    def fresh():
+        plan.write_text(json.dumps(SMOKE))
+    fresh()
+    r = run(helper, ["--check", "saves/edit_plan.json", "work/words.json", "Test Brand"], wd)
+    if r.returncode != 1 or "CFW" not in r.stderr:
+        found.append("%s: --check passed the smoke plan's foreign brand (rc %s)" % (label, r.returncode))
+    r = run(helper, ["saves/edit_plan.json", "work/words.json", "Test Brand"], wd)
+    f = fills(plan) if r.returncode == 0 else None
+    if f is None:
+        found.append("%s: repair failed: %s" % (label, (r.stdout + r.stderr)[-200:]))
+        return found
+    want = [("TITLE", 0, "TEST BRAND <span class=\"accent\">WRITES</span> THE MONTH"), ("ITEM1", 0, "Test Brand knows her voice"),
+            ("ITEM2", 0, "Posts on Instagram"), ("QUOTE", 1, "CFW already learned her <span class=\"accent\">voice</span>"),
+            ("ATTR", 1, "Sarah, baker"), ("LABEL", 2, "claude.ai")]
+    for key, i, val in want:
+        if f[i].get(key) != val:
+            found.append("%s: takeover %d %s is %r, wanted %r" % (label, i + 1, key, f[i].get(key), val))
+    once = plan.read_bytes()
+    r2 = run(helper, ["saves/edit_plan.json", "work/words.json", "Test Brand"], wd)
+    if r2.returncode != 0 or plan.read_bytes() != once:
+        found.append("%s: a second repair run changed the plan (not idempotent)" % label)
+    if run(helper, ["--check", "saves/edit_plan.json", "work/words.json", "Test Brand"], wd).returncode != 0:
+        found.append("%s: --check fails on the repaired plan" % label)
+    # no order brand: the foreign name is dropped, no brand is invented
+    fresh()
+    r = run(helper, ["saves/edit_plan.json", "work/words.json", ""], wd)
+    f = fills(plan) if r.returncode == 0 else [{}, {}, {}]
+    if r.returncode != 0 or f[0].get("ITEM1") != "knows her voice" or "CFW" in json.dumps(f[0]) \
+            or "Test Brand" in plan.read_text() or f[1].get("QUOTE") != SMOKE["takeovers"][1]["fill"]["QUOTE"]:
+        found.append("%s: with no order brand the name was not dropped cleanly: %r" % (label, f[:2]))
+    # the order's own brand is kept
+    fresh()
+    r = run(helper, ["saves/edit_plan.json", "work/words.json", "CFW"], wd)
+    if r.returncode != 0 or json.loads(plan.read_text()) != SMOKE:
+        found.append("%s: the order's own brand CFW was changed" % label)
+    # no BRAND argument: the step workdir's order brand (cta.json brandName, else brief.json brand.name)
+    (wd / "brief.json").write_text(json.dumps({"brand": {"slug": "x", "name": "Other Co"}}))
+    (wd / "inputs" / "cta").mkdir(parents=True)
+    (wd / "inputs" / "cta" / "cta.json").write_text(json.dumps({"brandName": "Test Brand"}))
+    fresh(); run(helper, ["saves/edit_plan.json", "work/words.json"], wd)
+    if fills(plan)[0].get("ITEM1") != "Test Brand knows her voice":
+        found.append("%s: without BRAND the cta.json brandName was not used: %r" % (label, fills(plan)[0].get("ITEM1")))
+    (wd / "inputs" / "cta" / "cta.json").unlink()
+    fresh(); run(helper, ["saves/edit_plan.json", "work/words.json"], wd)
+    if fills(plan)[0].get("ITEM1") != "Other Co knows her voice":
+        found.append("%s: without BRAND or cta.json the brief brand.name was not used: %r" % (label, fills(plan)[0].get("ITEM1")))
+    return found
+def guard_runs(text, helper, label):
+    """the step's own blocks: the repair line exists, and the guard fails the smoke plan and passes once repaired"""
+    found = []
+    if "python3 work/takeover_brand.py saves/edit_plan.json work/words.json || exit 1" not in text:
+        return ["%s: the step does not run the takeover brand repair on the plan" % label]
+    g = re.findall(r"python3 - saves/edit_plan.json \"\$DUR\" <<'PY'\n(.*?\n)PY\n", text, re.S)
+    if len(g) != 1:
+        return ["%s: plan guard not found once" % label]
+    wd = root / ("guard-" + label.replace("/", "_"))
+    shutil.rmtree(wd, ignore_errors=True); (wd / "work").mkdir(parents=True); (wd / "saves").mkdir()
+    (wd / "work" / "takeover_brand.py").write_text(helper)
+    cp = re.findall(r"cat > work/caption_phrases\.py <<'PY'\n(.*?\n)PY\n", text, re.S)
+    if cp:
+        (wd / "work" / "caption_phrases.py").write_text(cp[0])
+    (wd / "work" / "words.json").write_text(json.dumps(WORDS))
+    (wd / "work" / "guard.py").write_text(g[0])
+    (wd / "brief.json").write_text(json.dumps({"brand": {"name": "Test Brand"}}))
+    (wd / "saves" / "edit_plan.json").write_text(json.dumps(full_plan()))
+    if cp:  # the fixture's caption groups go through the step's own WI2.76 repair first
+        subprocess.run([sys.executable, "work/caption_phrases.py", "saves/edit_plan.json"], cwd=wd, capture_output=True, timeout=60)
+    r = subprocess.run([sys.executable, "work/guard.py", "saves/edit_plan.json", str(DUR)], cwd=wd, capture_output=True, text=True, timeout=60)
+    if r.returncode == 0 or "WI2.95" not in (r.stdout + r.stderr):
+        found.append("%s: the plan guard passed the smoke plan's foreign brand (rc %s: %s)" % (label, r.returncode, (r.stdout + r.stderr)[-160:]))
+    subprocess.run([sys.executable, "work/takeover_brand.py", "saves/edit_plan.json", "work/words.json"], cwd=wd, capture_output=True, timeout=60)
+    r = subprocess.run([sys.executable, "work/guard.py", "saves/edit_plan.json", str(DUR)], cwd=wd, capture_output=True, text=True, timeout=60)
+    if r.returncode != 0 or "plan OK" not in r.stdout:
+        found.append("%s: the plan guard fails the repaired plan: %s" % (label, (r.stdout + r.stderr)[-200:]))
+    return found
+try:
+    skills = repo / "skills"
+    steps = sorted(skills.rglob("03-plan-edit.md"))
+    steps = [p for p in steps if "p-reels-spotlight" in p.parent.parent.name]
+    skill_mds = [skills / "p-reels-spotlight" / "SKILL.md", skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "SKILL.md"]
+    if len(steps) != 3:
+        bad.append("expected 3 spotlight 03-plan-edit.md copies, found %d" % len(steps))
+    helpers = {}
+    for p in steps + skill_mds:
+        h = helper_of(p.read_text(encoding="utf-8"))
+        if h is None:
+            bad.append("%s writes no takeover_brand.py helper (WI2.95)" % p.relative_to(repo))
+        else:
+            helpers[p] = h
+    if len(set(helpers.values())) > 1:
+        bad.append("the takeover_brand.py helper copies differ")
+    if helpers:
+        hp = root / "takeover_brand.py"
+        hp.write_text(next(iter(helpers.values())))
+        bad += behave(hp, "helper")
+    for p in steps:
+        if p in helpers:
+            bad += guard_runs(p.read_text(encoding="utf-8"), helpers[p], str(p.relative_to(repo)))
+    for p in skill_mds:
+        t = p.read_text(encoding="utf-8")
+        if p in helpers and ('python3 "$W/takeover_brand.py" "$W/plan.json" "$W/words.json" "$BRAND_NAME" || exit 1' not in t
+                             or '"takeover_brand.py"), "--check"' not in t):
+            bad.append("%s: Step 4 does not run the takeover brand repair and its --check" % p.relative_to(repo))
+    for p in steps + skill_mds:
+        if "Takeover text names only the order's brand" not in p.read_text(encoding="utf-8"):
+            bad.append("%s: rule 5 does not tell the planner to keep the order's brand" % p.relative_to(repo))
+    spec = importlib.util.spec_from_file_location("ss295", repo / "scripts" / "sync-skills.py")
+    ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
+    fn, files = getattr(ss, "apply_spotlight_takeover_brand", None), getattr(ss, "_SPOTLIGHT_TK_BRAND_FILES", None)
+    if fn is None or files is None:
+        bad.append("sync-skills.py has no apply_spotlight_takeover_brand transform (WI2.95)")
+    else:
+        up = root / "skills"
+        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
+            shutil.copytree(skills / rec, up / rec)
+        def revert(t, edits):
+            text = t.read_text(encoding="utf-8")
+            for old, new, before, *_ in reversed(edits):
+                text = text.replace(new + old, old) if before else text.replace(new, old)
+            t.write_text(text, encoding="utf-8")
+        for rel, full_only, edits in files:
+            for t in up.rglob(str(rel)):
+                if "p-reels-spotlight" in t.parents[len(rel.parts) - 1].name:
+                    revert(t, edits)
+        if helper_of((up / "p-reels-spotlight" / "steps" / "03-plan-edit.md").read_text(encoding="utf-8")):
+            bad.append("sanity: the restored step still writes the helper")
+        for rec, want in (("p-reels-spotlight", 2), ("p-reels-spotlight-heygen", 3)):
+            got = (fn(up / rec, rec), fn(up / rec, rec))
+            if got != (want, 0):
+                bad.append("transform on %s changed %r file(s), expected (%d, 0)" % (rec, got, want))
+            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
+                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
+                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
+        t = up / "p-reels-spotlight" / "steps" / "03-plan-edit.md"
+        revert(t, files[0][2])
+        t.write_text(t.read_text(encoding="utf-8").replace("Then run the mechanical guard", "Then run the guard"), encoding="utf-8")
+        try:
+            fn(up / "p-reels-spotlight", "p-reels-spotlight"); bad.append("transform did not fail on a drifted plan step")
+        except SystemExit:
+            pass
+        (up / "p-reels-spotlight" / "SKILL.md").unlink()
+        try:
+            fn(up / "p-reels-spotlight-heygen", "x"); fn(up / "p-reels-spotlight", "p-reels-spotlight")
+            bad.append("transform did not fail on a missing SKILL.md")
+        except SystemExit:
+            pass
+except (Exception, SystemExit) as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad[:12]))
+PY
+)"
+if [[ "$wi295_detail" == "ok" ]]; then
+  pass "WI2.95 spotlight takeover text names only the order's brand unless it quotes the speech (every plan copy, guard enforced)"
+else
+  fail "WI2.95 spotlight takeover text names the order's brand or quotes the speech" "$wi295_detail"
+fi
+rm -rf "$wi295_root"
+
+echo "=== Case 73: WI2.95 review — quotes need 3+ words; generic acronyms, iPhone-style words and Mc names are never swapped ==="
+# Independent review of 68e13f0: a 1-2 word line ("CFW", "CFW already") counted as a quote and kept the
+# foreign brand; ordinary words were swapped ("Cut your CAC in half" -> "Cut your Test Brand in half",
+# "NYC TEAM 3X", "McKenzie changed everything", "Shot on iPhone"); a spelled-out "C F W" was missed; and
+# CFW&nbsp;writes failed the step. The real helper (all 5 copies identical) runs on each review example.
+wi295b_root="$(mktemp -d)"
+wi295b_detail="$(python3 - "$REPO_DIR" "$wi295b_root" <<'PY'
+import json, re, subprocess, sys
+from pathlib import Path
+repo, root = Path(sys.argv[1]), Path(sys.argv[2])
+bad = []
+SAID = ("Most agents cut their CAC in half. Our NYC TEAM grew 3X. McKenzie changed everything. Shot on iPhone. "
+        "My PhD, iOS, WiFi, ROAS, AOV, LTV, DTC and SMB notes. MLS HOA FHA ROI HVAC ADU APR LLC USA US UK LA SF TV "
+        "PDF FAQ DIY. CFW already learned her voice, so it writes the month.")
+SPELLED = "Then C F W writes the month for her."
+BRAND = "Test Brand"
+ROWS = [  # (transcript, template, key, value, order brand, expected after the repair)
+    (SAID, "tk-keyword", "WORD", "CFW", BRAND, "TEST BRAND"),
+    (SAID, "tk-stat", "EYEBROW", "CFW", BRAND, "TEST BRAND"),
+    (SAID, "tk-list", "ITEM1", "CFW already", BRAND, "Test Brand already"),
+    (SAID, "tk-list", "ITEM1", "CFW knows her voice", BRAND, "Test Brand knows her voice"),
+    (SAID, "tk-quote", "QUOTE", "CFW already learned her voice", BRAND, "CFW already learned her voice"),
+    (SAID, "tk-list", "TITLE", "CFW&nbsp;writes <span class=\"accent\">the</span> month", BRAND,
+     "Test Brand&nbsp;writes <span class=\"accent\">the</span> month"),
+    (SPELLED, "tk-list", "TITLE", "CFW <span class=\"accent\">WRITES</span> THE MONTH", BRAND,
+     "TEST BRAND <span class=\"accent\">WRITES</span> THE MONTH"),
+    (SAID, "tk-list", "ITEM2", "Cut your CAC in half", BRAND, "Cut your CAC in half"),
+    (SAID, "tk-stat", "LABEL", "NYC TEAM 3X", BRAND, "NYC TEAM 3X"),
+    (SAID, "tk-list", "ITEM3", "McKenzie changed everything", BRAND, "McKenzie changed everything"),
+    (SAID, "tk-keyword", "SUPPORT", "Shot on iPhone", BRAND, "Shot on iPhone"),
+    (SAID, "tk-list", "TITLE", "PhD, iOS, WiFi, ROAS, AOV, LTV, DTC, SMB", BRAND, "PhD, iOS, WiFi, ROAS, AOV, LTV, DTC, SMB"),
+    (SAID, "tk-list", "ITEM1", "MLS HOA FHA ROI HVAC ADU APR LLC USA US UK NYC LA SF TV PDF FAQ DIY", BRAND,
+     "MLS HOA FHA ROI HVAC ADU APR LLC USA US UK NYC LA SF TV PDF FAQ DIY"),
+    (SAID, "tk-list", "ITEM1", "CFW already", "", "already"),
+    ("Just say NO to cold calls.", "tk-list", "ITEM1", "No more cold calls", BRAND, "No more cold calls"),
+    ("Just say NO to cold calls.", "tk-keyword", "WORD", "NO", BRAND, "NO"),
+    ("We left HubSpot last year.", "tk-list", "ITEM1", "Ditch HubSpot today", BRAND, "Ditch Test Brand today"),
+]
+HELPER_RE = re.compile(r"cat > (?:work/|\"\$W/)takeover_brand\.py\"? <<'PY'\n(.*?\n)PY\n", re.S)
+try:
+    skills = repo / "skills"
+    copies = [p for p in sorted(skills.rglob("03-plan-edit.md")) if "p-reels-spotlight" in p.parent.parent.name]
+    copies += [skills / "p-reels-spotlight" / "SKILL.md", skills / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight" / "SKILL.md"]
+    helpers = {p: HELPER_RE.findall(p.read_text(encoding="utf-8")) for p in copies}
+    if any(len(h) != 1 for h in helpers.values()):
+        bad.append("not every spotlight plan copy writes one takeover_brand.py helper (WI2.95)")
+    elif len({h[0] for h in helpers.values()}) != 1:
+        bad.append("the takeover_brand.py helper copies differ")
+    else:
+        hp = root / "takeover_brand.py"
+        hp.write_text(next(iter(helpers.values()))[0])
+        for n, (said, tpl, key, value, brand, want) in enumerate(ROWS):
+            wd = root / ("row%d" % n); wd.mkdir()
+            (wd / "w.json").write_text(json.dumps([{"text": w, "start": i, "end": i + 0.5} for i, w in enumerate(said.split())]))
+            (wd / "p.json").write_text(json.dumps({"takeovers": [{"start": 3, "end": 7, "template": tpl, "fill": {key: value}}]}))
+            r = subprocess.run([sys.executable, str(hp), "p.json", "w.json", brand], cwd=wd, capture_output=True, text=True, timeout=60)
+            got = json.loads((wd / "p.json").read_text())["takeovers"][0]["fill"][key]
+            if r.returncode != 0 or got != want:
+                bad.append("%s %r (brand %r): got %r rc %d, wanted %r" % (key, value, brand, got, r.returncode, want))
+            c = subprocess.run([sys.executable, str(hp), "--check", "p.json", "w.json", brand], cwd=wd, capture_output=True, timeout=60)
+            if c.returncode != 0:
+                bad.append("%s %r: --check fails after the repair" % (key, value))
+    for p in copies:
+        t = p.read_text(encoding="utf-8")
+        if "never write a competitor or comparison line that names another brand" not in t:
+            bad.append("%s: rule 5 does not forbid competitor / comparison lines" % p.relative_to(repo))
+        g = re.findall(r"python3 - saves/edit_plan.json \"\$DUR\" <<'PY'\n(.*?\n)PY\n", t, re.S)
+        if g and g[0].count("import subprocess") > 1:
+            bad.append("%s: the plan guard imports subprocess twice" % p.relative_to(repo))
+except (Exception, SystemExit) as exc:
+    bad.append("error: %r" % exc)
+print("ok" if not bad else "; ".join(bad[:12]))
+PY
+)"
+if [[ "$wi295b_detail" == "ok" ]]; then
+  pass "WI2.95 review: quotes need 3+ words; CAC/NYC/MLS/PhD/iPhone/McKenzie stay; C F W and CFW&nbsp; are caught; rule 5 forbids comparisons"
+else
+  fail "WI2.95 review: takeover brand guard is narrow and safe" "$wi295b_detail"
+fi
+rm -rf "$wi295b_root"
+
+echo "=== Case 74: WI2.102 — render key stays out of curl argv ==="
+# A curl wrapper first on PATH appends each curl argv to a log, then execs the
+# real curl. --dry (the tools/list curl in cfw-render.sh), one worker claim
+# (--once, which also presign-uploads the finished files) and one multipart
+# upload all hit the mock. The log must name those requests and must not
+# contain the key text. On 04e5c91 those curls were started with
+# -H "cfw-render-key: $CFW_RENDER_WORKER_KEY", so this case fails there.
+wi102_root="$(mktemp -d)"
+wi102_key="cfw_render_wi2102argvsecret"
+wi102_brand_key="cfw_brand_wi2104mediasecret"
+wi102_port=$((MOCK_PORT_BASE + 1202))
+wi102_media_port=$((MOCK_PORT_BASE + 1203))
+mkdir -p "$wi102_root/mockstate" "$wi102_root/cr-state" "$wi102_root/cr-scratch" "$wi102_root/bin"
+order_fixture order-wi2102 brand-1 video > "$wi102_root/queue.json"
+wi102_real_curl="$(command -v curl)"
+cat > "$wi102_root/bin/curl" <<EOF
+#!/usr/bin/env bash
+line="\$0"
+for arg in "\$@"; do
+  line="\$line <\$arg>"
+done
+printf '%s\n' "\$line" >> "$wi102_root/argv.log"
+exec "$wi102_real_curl" "\$@"
+EOF
+chmod +x "$wi102_root/bin/curl"
+: > "$wi102_root/argv.log"
+wi102_pid="$(start_mock "$wi102_root/queue.json" "$wi102_root/mockstate" "$wi102_port")"
+(
+  export PATH="$wi102_root/bin:$REPO_DIR/bin:$FAKE_BIN:$PATH"
+  export CFW_API_BASE="http://127.0.0.1:$wi102_port"
+  export CFW_RENDER_TEST_MEDIA_BASE_URL="$CFW_API_BASE"
+  export CFW_RENDER_WORKER_KEY="$wi102_key"
+  export CFW_RENDER_ENV="/nonexistent-cfw-render-env-for-tests"
+  export CFW_RENDER_STATE_DIR="$wi102_root/cr-state"
+  export CFW_RENDER_LOG_DIR="$wi102_root/cr-state"
+  export CFW_RENDER_KEEP_OUTPUTS=0
+  export CFW_RENDER_SCRATCH="$wi102_root/cr-scratch"
+  export CFW_RENDER_SKILLS_DIR="$wi102_root/skills"
+  export CFW_RENDER_OLLAMA_KEYS_FILE="$OLLAMA_KEYS_FIXTURE"
+  export CFW_RENDER_DIRECTOR_CMD="$TEST_DIR/fake-director.sh"
+  export FAKE_DIRECTOR_MODE="happy"
+  export CFW_RENDER_TIMEOUT_VIDEO=30
+  export CFW_RENDER_TIMEOUT_IMAGE=30
+  export CFW_RENDER_CONCURRENCY=1
+  "$REPO_DIR/bin/cfw-render.sh" --dry > "$wi102_root/dry.out" 2> "$wi102_root/dry.err"
+  printf '%s\n' "$?" > "$wi102_root/dry.rc"
+  "$REPO_DIR/bin/cfw-render.sh" --once > "$wi102_root/once.out" 2> "$wi102_root/once.err"
+  printf '%s\n' "$?" > "$wi102_root/once.rc"
+  printf 'x' > "$wi102_root/clip.png"
+  CFW_RENDER_UPLOAD_MODE=multipart \
+    CFW_ORDER_ID=order-wi2102 \
+    CFW_WORKER_ID=worker-wi2102 \
+    "$REPO_DIR/bin/cfw-render-upload.sh" "$wi102_root/clip.png" \
+    > "$wi102_root/upload.out" 2> "$wi102_root/upload.err"
+  printf '%s\n' "$?" > "$wi102_root/upload.rc"
+  # URL upload is one POST. The brand key must not appear in that curl's argv.
+  # On 03cf836 the call was -H "x-api-key: $CFW_BRAND_API_KEY", so this fails there.
+  python3 -c '
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", "0") or "0")
+        if n:
+            self.rfile.read(n)
+        path = self.path.split("?", 1)[0]
+        if path != "/api/v1/media/upload-media":
+            body = b"{\"error\":\"not found\"}"
+            code = 404
+        else:
+            body = b"{\"cdnUrl\":\"https://cdn.example/a.png\",\"mediaId\":\"m-wi2104\"}"
+            code = 200
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *a):
+        return
+ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+' "$wi102_media_port" > "$wi102_root/media-server.log" 2>&1 &
+  wi102_media_pid=$!
+  wi102_media_up=0
+  for _ in $(seq 1 50); do
+    if python3 -c 'import socket,sys
+s=socket.socket(); s.settimeout(0.2)
+try:
+    s.connect(("127.0.0.1", int(sys.argv[1])))
+except Exception:
+    raise SystemExit(1)
+finally:
+    s.close()' "$wi102_media_port"; then
+      wi102_media_up=1
+      break
+    fi
+    sleep 0.1
+  done
+  if [[ "$wi102_media_up" == "1" ]]; then
+    CFW_API_BASE="http://127.0.0.1:$wi102_media_port" \
+      CFW_BRAND_API_KEY="$wi102_brand_key" \
+      "$REPO_DIR/bin/cfw-render-media.sh" --kind image --filename a.png "https://cdn.example/in.png" \
+      > "$wi102_root/media.out" 2> "$wi102_root/media.err"
+    printf '%s\n' "$?" > "$wi102_root/media.rc"
+  else
+    printf '%s\n' "noup" > "$wi102_root/media.rc"
+  fi
+  kill "$wi102_media_pid" 2>/dev/null || true
+  wait "$wi102_media_pid" 2>/dev/null || true
+)
+kill "$wi102_pid" 2>/dev/null
+wait "$wi102_pid" 2>/dev/null || true
+wi102_dry_rc="$(cat "$wi102_root/dry.rc" 2>/dev/null || echo missing)"
+wi102_once_rc="$(cat "$wi102_root/once.rc" 2>/dev/null || echo missing)"
+wi102_up_rc="$(cat "$wi102_root/upload.rc" 2>/dev/null || echo missing)"
+wi102_media_rc="$(cat "$wi102_root/media.rc" 2>/dev/null || echo missing)"
+wi102_claims=0
+wi102_presign=0
+wi102_multi=0
+if [[ -f "$wi102_root/mockstate/calls.jsonl" ]]; then
+  wi102_claims="$(grep -c '"tool": "claim_render_order"' "$wi102_root/mockstate/calls.jsonl" || true)"
+fi
+if [[ -f "$wi102_root/mockstate/uploads.jsonl" ]]; then
+  wi102_presign="$(grep -c '"via": "presign"' "$wi102_root/mockstate/uploads.jsonl" || true)"
+  wi102_multi="$(grep -c '"via": "multipart"' "$wi102_root/mockstate/uploads.jsonl" || true)"
+fi
+wi102_hint() {
+  python3 -c 'import pathlib,sys
+p=pathlib.Path(sys.argv[1])
+t=p.read_text(errors="replace")[-400:] if p.is_file() else "(no log)"
+for secret in sys.argv[2:]:
+    t=t.replace(secret, "<key>")
+print(t.replace("\n", " | "))' "$1" "$wi102_key" "$wi102_brand_key"
+}
+if [[ "$wi102_dry_rc" == "0" && "$wi102_once_rc" == "0" && "$wi102_claims" -ge 1 && "$wi102_presign" -ge 1 ]]; then
+  pass "WI2.102: worker claim and presign upload reached the mock"
+else
+  fail "WI2.102 claim and presign upload" "dry=$wi102_dry_rc once=$wi102_once_rc claims=$wi102_claims presign=$wi102_presign dry_log=$(wi102_hint "$wi102_root/dry.err") once_log=$(wi102_hint "$wi102_root/once.err")"
+fi
+if [[ "$wi102_up_rc" == "0" && "$wi102_multi" -ge 1 ]]; then
+  pass "WI2.102: multipart upload reached the mock"
+else
+  fail "WI2.102 multipart upload" "rc=$wi102_up_rc multipart=$wi102_multi upload_log=$(wi102_hint "$wi102_root/upload.err")"
+fi
+wi102_saw_claim=0
+wi102_saw_presign=0
+wi102_saw_multi=0
+wi102_saw_list=0
+wi102_saw_media=0
+wi102_leaked=0
+if [[ -f "$wi102_root/argv.log" ]]; then
+  grep -F -q 'claim_render_order' "$wi102_root/argv.log" && wi102_saw_claim=1
+  grep -F -q '/api/v1/render/upload-url' "$wi102_root/argv.log" && wi102_saw_presign=1
+  grep -F -q -- '-F' "$wi102_root/argv.log" && wi102_saw_multi=1
+  grep -F -q 'tools/list' "$wi102_root/argv.log" && wi102_saw_list=1
+  grep -F -q '/api/v1/media/upload-media' "$wi102_root/argv.log" && wi102_saw_media=1
+  grep -F -q -- "$wi102_key" "$wi102_root/argv.log" && wi102_leaked=1
+  grep -F -q -- "$wi102_brand_key" "$wi102_root/argv.log" && wi102_leaked=1
+fi
+if [[ "$wi102_saw_claim" == "1" && "$wi102_saw_presign" == "1" && "$wi102_saw_multi" == "1" && "$wi102_saw_list" == "1" && "$wi102_saw_media" == "1" && "$wi102_media_rc" == "0" && "$wi102_leaked" == "0" ]]; then
+  pass "WI2.102: curl argv for the claim, both uploads, tools/list and the media upload does not contain the render key or the brand key"
+else
+  fail "WI2.102 curl argv" "claim=$wi102_saw_claim presign=$wi102_saw_presign multipart=$wi102_saw_multi list=$wi102_saw_list media=$wi102_saw_media media_rc=$wi102_media_rc leaked=$wi102_leaked media_log=$(wi102_hint "$wi102_root/media.err")"
+fi
+rm -rf "$wi102_root"
+
+echo "=== Case 75: WI2.104 — a killed cr_curl_with_key leaves no key header file ==="
+# On 03cf836 the header file was removed only after curl returned. TERM to
+# that shell mid-call skipped the rm, so cfw-render-hdr.* stayed in TMPDIR.
+# Here one call blocks on a server that never answers. TERM goes to the shell
+# that still owns the file (curl's parent, not curl): the old shell dies
+# before rm; the trapped subshell deletes the file and then the curl.
+wi104_dir="$(mktemp -d)"
+wi104_key="cfw_render_wi2104hdrsecret"
+wi104_port=""
+wi104_pid=""
+wi104_server=""
+wi104_result="not-run"
+python3 -c '
+import socket, sys, time
+path = sys.argv[1]
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", 0))
+s.listen(1)
+with open(path, "w") as fh:
+    fh.write(str(s.getsockname()[1]))
+s.settimeout(20)
+try:
+    conn, _ = s.accept()
+except OSError:
+    raise SystemExit(0)
+conn.settimeout(30)
+try:
+    while conn.recv(4096):
+        pass
+except OSError:
+    pass
+time.sleep(30)
+' "$wi104_dir/port" >"$wi104_dir/server.log" 2>&1 &
+wi104_server=$!
+for _ in $(seq 1 50); do
+  if [[ -s "$wi104_dir/port" ]]; then
+    wi104_port="$(cat "$wi104_dir/port")"
+    break
+  fi
+  sleep 0.1
+done
+if [[ "$wi104_port" =~ ^[0-9]+$ ]]; then
+  cat > "$wi104_dir/call.sh" <<EOF
+#!/usr/bin/env bash
+source "$REPO_DIR/bin/cfw-render-lib.sh"
+export CFW_RENDER_WORKER_KEY="$wi104_key"
+export TMPDIR="$wi104_dir"
+cr_curl_with_key -sS --max-time 25 "http://127.0.0.1:${wi104_port}/hang"
+EOF
+  chmod 600 "$wi104_dir/call.sh"
+  bash "$wi104_dir/call.sh" >"$wi104_dir/call.out" 2>"$wi104_dir/call.err" &
+  wi104_pid=$!
+  wi104_result="$(python3 - "$TEST_DIR/stop-owned-tree.py" "$wi104_pid" "$wi104_dir" 2>>"$wi104_dir/kill.err" <<'PY'
+import importlib.util, os, signal, sys, time, pathlib
+cleanup_path, root_s, tmp_s = sys.argv[1:]
+root = int(root_s)
+tmp = pathlib.Path(tmp_s)
+spec = importlib.util.spec_from_file_location("cleanup", cleanup_path)
+cleanup = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cleanup)
+
+def header_files():
+    return [p for p in tmp.glob("cfw-render-hdr.*") if p.is_file()]
+
+def descendants(table, pid):
+    found = set()
+    def walk(parent):
+        for child, (ppid, _ident) in table.items():
+            if ppid == parent and child not in found:
+                found.add(child)
+                walk(child)
+    walk(pid)
+    return found
+
+deadline = time.time() + 10
+parent = None
+reason = "no-header"
+while time.time() < deadline:
+    table = cleanup.processes()
+    if root not in table:
+        reason = "caller-exited"
+        break
+    if not header_files():
+        reason = "no-header"
+        time.sleep(0.05)
+        continue
+    desc = descendants(table, root)
+    argmax = cleanup._argmax()
+    needle = str(tmp)
+    found = False
+    for pid in desc:
+        args = cleanup._arguments(pid, argmax) or ""
+        if "cfw-render-hdr" in args and needle in args:
+            found = True
+            ppid = table[pid][0]
+            if ppid <= 1 or (ppid != root and ppid not in desc):
+                reason = "parent-outside-tree"
+                parent = None
+            else:
+                parent = ppid
+                reason = ""
+            break
+    if parent:
+        break
+    if not found:
+        reason = "no-curl"
+    time.sleep(0.05)
+
+if not parent:
+    print(reason)
+    raise SystemExit(0)
+
+os.kill(parent, signal.SIGTERM)
+deadline = time.time() + 5
+left = header_files()
+while left and time.time() < deadline:
+    time.sleep(0.05)
+    left = header_files()
+print("left=%d" % len(left) if left else "ok")
+PY
+)"
+else
+  wi104_result="no-port"
+fi
+if [[ -n "$wi104_pid" ]]; then stop_test_tree "$wi104_pid" || true; fi
+if [[ -n "$wi104_server" ]]; then stop_test_tree "$wi104_server" || true; fi
+if [[ "$wi104_result" == "ok" ]]; then
+  pass "WI2.104: killing cr_curl_with_key mid-call leaves no key header file in TMPDIR"
+else
+  fail "WI2.104 key header cleanup" "result=${wi104_result:-empty}"
+fi
+rm -rf "$wi104_dir"
+
+echo "=== Case 76: WI2.82 — a final_checks refusal is the step reason, not a missing save ==="
+# Smoke 23b: the QA agent blocked delivery and wrote no saves. The step reason
+# was "missing or empty save captions.json" on every check. The reason is now
+# the agent's own finding, first 500 characters. The prompt's "DELIVERY BLOCKED"
+# line is not that finding. A missing save with no refusal still names the file.
+wi282_root="$(mktemp -d)"
+wi282_recipe="$wi282_root/recipe"
+python3 - "$wi282_root" "$wi282_recipe" <<'PY'
+import json, pathlib, sys
+root, recipe = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+steps = recipe / "steps"
+steps.mkdir(parents=True)
+(steps / "07-final-checks.md").write_text(
+    "DELIVERY BLOCKED — fix the render (rerun the failing step); do not deliver.\n"
+    "PROMPT-ONLY-WI282-SHOULD-NOT-APPEAR\n",
+    encoding="utf-8",
+)
+finding = (
+    "block: green background at 2/8/24/32 s; takeover text clipped at 16 s. "
+    "sk-wi282secretvalue0001. " + ("seen " * 200) + "WI282-TAIL-MARKER"
+)
+(root / "finding.txt").write_text(finding, encoding="utf-8")
+engine = """#!/bin/bash
+set -eu
+cat >/dev/null
+cat "${CFW_RENDER_ENGINE_PROMPT_FILE:?}"
+printf '%s\\n' 'tokens used' '1'
+printf '%s\\n' 'Delivery blocked WI282-EARLY this must not be the reason.'
+printf '%s\\n' 'tokens used' '21,140'
+printf '%s\\n' 'FINDING'
+""".replace("FINDING", finding.replace("'", "'\\''"))
+(root / "refuse-engine.sh").write_text(engine, encoding="utf-8")
+(root / "refuse-engine.sh").chmod(0o755)
+(root / "miss-engine.sh").write_text(
+    """#!/bin/bash
+set -eu
+cat >/dev/null
+cat "${CFW_RENDER_ENGINE_PROMPT_FILE:?}"
+printf '%s\\n' 'finished the step with no verdict'
+""",
+    encoding="utf-8",
+)
+(root / "miss-engine.sh").chmod(0o755)
+order = {
+    "id": "order-wi282",
+    "attempt": {"id": "att-wi282"},
+    "recipe": "wi282-check",
+    "kind": "video",
+    "taskOrder": {},
+    "inputs": {},
+    "manifest": {
+        "recipe": "wi282-check",
+        "recipeVersion": "1.0.0",
+        "steps": [{
+            "id": "final_checks",
+            "runsOn": "computer",
+            "when": "always",
+            "maxCheckRetries": 0,
+            "instructions": "steps/07-final-checks.md",
+            "saves": [
+                {"id": "final_video", "kind": "video"},
+                {"id": "cover", "kind": "image"},
+                {"id": "captions", "kind": "json"},
+            ],
+            "checks": [{"id": "qa_gate"}, {"id": "duration_window"}],
+        }],
+    },
+}
+for name in ("refuse", "miss"):
+    dest = root / name
+    dest.mkdir()
+    (dest / "order.json").write_text(json.dumps(order), encoding="utf-8")
+PY
+
+wi282_run() {
+  local root="$1" engine="$2"
+  (
+    export CFW_RENDER_LOG_DIR="$root/logs"
+    export CFW_RENDER_STATE_DIR="$root/state"
+    export CFW_RENDER_ENGINE=codex
+    export CFW_RENDER_ENGINE_CMD="$engine"
+    export CFW_WORKER_ID="w-wi282"
+    export CFW_ORDER_ID="order-wi282"
+    export CFW_API_BASE="http://127.0.0.1:9"
+    export CFW_RENDER_WORKER_KEY="cfw_render_wi282testkey0000"
+    export CFW_RENDER_HEARTBEAT_SEC=30
+    export CFW_RENDER_STEP_TIMEOUT_SEC=60
+    export WI282_REPORTS="$root/reports.ndjson"
+    unset CFW_RENDER_SKILLS_DIR
+    unset CFW_RENDER_LOCAL_CHECKPOINTS
+    mkdir -p "$root/logs" "$root/state"
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-lib.sh"
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-engine.sh"
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-harness.sh"
+    cr_harness_heartbeat_start() { :; }
+    cr_harness_heartbeat_stop() { :; }
+    cr_h_run_with_timeout() { shift; "$@"; }
+    cr_engine_limit_detect() { return 1; }
+    cr_h_upload_with_retry() { printf 'https://media.cfw.social/%s' "$(basename "$1")"; }
+    cr_report_step() {
+      python3 -c 'import json,sys
+open(sys.argv[1], "a").write(json.dumps({"event": sys.argv[2], "extra": json.loads(sys.argv[3])}) + "\n")' \
+        "$WI282_REPORTS" "$5" "$6" || return 1
+      printf '%s' '{"ok":true,"directive":"continue"}'
+    }
+    cr_harness_run "$root/order.json" "$root" "$wi282_recipe" >"$root/harness.out" 2>"$root/harness.err"
+    printf '%s\n' "$?" > "$root/rc"
+  )
+}
+wi282_run "$wi282_root/refuse" "$wi282_root/refuse-engine.sh"
+wi282_run "$wi282_root/miss" "$wi282_root/miss-engine.sh"
+wi282_detail="$(python3 - "$wi282_root" "$REPO_DIR/bin/cfw-render-redact.py" <<'PY'
+import json, pathlib, subprocess, sys
+root = pathlib.Path(sys.argv[1])
+redact_py = sys.argv[2]
+
+def load_events(name):
+    path = root / name / "reports.ndjson"
+    if not path.is_file():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+def one(name):
+    events = [e for e in load_events(name) if e.get("event") == "step_failed"]
+    if len(events) != 1:
+        return None
+    return events[0].get("extra") or {}
+
+def tail(path):
+    p = pathlib.Path(path)
+    if not p.is_file():
+        return ""
+    return p.read_text(encoding="utf-8", errors="replace")[-400:].replace("\n", " | ")
+
+finding = (root / "finding.txt").read_text(encoding="utf-8")
+proc = subprocess.run([sys.executable, redact_py], input=finding, text=True, capture_output=True, timeout=15)
+red = " ".join(proc.stdout.split())
+expect = red[:500]
+secret = "sk-wi282secretvalue0001"
+refuse_bad, miss_bad = [], []
+rc_r = (root / "refuse" / "rc").read_text(encoding="utf-8").strip() if (root / "refuse" / "rc").is_file() else ""
+rc_m = (root / "miss" / "rc").read_text(encoding="utf-8").strip() if (root / "miss" / "rc").is_file() else ""
+if proc.returncode != 0 or len(red) <= 500 or "WI282-TAIL-MARKER" not in red:
+    refuse_bad.append("fixture redacted length %d" % len(red))
+if rc_r != "30":
+    refuse_bad.append("rc=%s err=%s" % (rc_r, tail(root / "refuse" / "harness.err")))
+if rc_m != "30":
+    miss_bad.append("rc=%s err=%s" % (rc_m, tail(root / "miss" / "harness.err")))
+extra = one("refuse") or {}
+detail = extra.get("detail") or ""
+if detail != expect:
+    refuse_bad.append("detail=%r" % detail[:180])
+if secret in detail or "WI282-TAIL-MARKER" in detail or "WI282-EARLY" in detail:
+    refuse_bad.append("detail leaked tail, early verdict, or secret")
+if "PROMPT-ONLY-WI282-SHOULD-NOT-APPEAR" in detail or "missing or empty save" in detail:
+    refuse_bad.append("detail still has the prompt or the missing-save text")
+if "sk-[redacted]" not in detail or not detail.startswith("block: green background at 2/8/24/32 s; takeover text clipped at 16 s."):
+    refuse_bad.append("detail does not start with the agent finding")
+message = extra.get("message") or ""
+if message != (detail[:237] + "..." if len(detail) > 240 else detail):
+    refuse_bad.append("message=%r" % message[:80])
+checks = extra.get("checks") or []
+if [c.get("id") for c in checks] != ["qa_gate", "duration_window"] or any(c.get("detail") != detail or c.get("passed") for c in checks):
+    refuse_bad.append("checks=%r" % [(c.get("id"), (c.get("detail") or "")[:40]) for c in checks])
+names = [e.get("event") for e in load_events("refuse")]
+if names != ["step_started", "step_failed", "attempt_failed"]:
+    refuse_bad.append("events=%s" % names)
+attempt = [e for e in load_events("refuse") if e.get("event") == "attempt_failed"]
+if not attempt or (attempt[0].get("extra") or {}).get("detail") != detail:
+    refuse_bad.append("attempt detail differs")
+blob = ""
+for rel in ("refuse/reports.ndjson", "refuse/harness.err", "refuse/logs/cfw-render.log"):
+    p = root / rel
+    if p.is_file():
+        blob += p.read_text(encoding="utf-8", errors="replace")
+if secret in blob:
+    refuse_bad.append("secret reached a report or the worker log")
+miss = one("miss") or {}
+miss_detail = miss.get("detail") or ""
+want = "qa_gate: missing or empty save captions.json; duration_window: missing or empty save captions.json"
+if miss_detail != want:
+    miss_bad.append("detail=%r" % miss_detail[:300])
+miss_checks = miss.get("checks") or []
+if [c.get("detail") for c in miss_checks] != ["missing or empty save captions.json", "missing or empty save captions.json"]:
+    miss_bad.append("checks=%r" % miss_checks)
+if "PROMPT-ONLY-WI282-SHOULD-NOT-APPEAR" in miss_detail or "block:" in miss_detail:
+    miss_bad.append("missing-save path picked up the prompt or a refusal")
+print("REFUSE=" + ("ok" if not refuse_bad else "; ".join(refuse_bad)))
+print("MISS=" + ("ok" if not miss_bad else "; ".join(miss_bad)))
+PY
+)"
+wi282_refuse="$(printf '%s\n' "$wi282_detail" | sed -n 's/^REFUSE=//p' | tail -1)"
+wi282_miss="$(printf '%s\n' "$wi282_detail" | sed -n 's/^MISS=//p' | tail -1)"
+if [[ "$wi282_refuse" == "ok" ]]; then
+  pass "WI2.82 final_checks refusal is the step reason: the agent finding, first 500 characters"
+else
+  fail "WI2.82 refusal step reason" "$wi282_refuse"
+fi
+if [[ "$wi282_miss" == "ok" ]]; then
+  pass "WI2.82 missing save with no refusal still reports the missing file"
+else
+  fail "WI2.82 missing save without a refusal" "$wi282_miss"
+fi
+rm -rf "$wi282_root"
+
+echo "=== Case 77: WI2.106 — a real check failure stays visible, and redaction failure still reports ==="
+# AC1: a failing check script keeps its own detail when the log has a real refusal.
+# AC2: "Nothing blocking delivery", "no blockers", "not blocked" and "isn't blocked"
+# are not a refusal, so a missing save still names the file.
+# AC3: when the redactor exits non-zero, the step still sends step_failed and
+# attempt_failed, the detail stays the missing-save text, and stderr has one line.
+wi106_root="$(mktemp -d)"
+wi106_plain="$wi106_root/plain-recipe"
+wi106_script_recipe="$wi106_root/script-recipe"
+python3 - "$wi106_root" "$wi106_plain" "$wi106_script_recipe" "$REPO_DIR/bin" <<'PY'
+import json, os, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+plain = pathlib.Path(sys.argv[2])
+script_recipe = pathlib.Path(sys.argv[3])
+real_bin = pathlib.Path(sys.argv[4])
+prompt = (
+    "DELIVERY BLOCKED — fix the render (rerun the failing step); do not deliver.\n"
+    "PROMPT-ONLY-WI106-SHOULD-NOT-APPEAR\n"
+)
+for recipe in (plain, script_recipe):
+    steps = recipe / "steps"
+    steps.mkdir(parents=True)
+    (steps / "07-final-checks.md").write_text(prompt, encoding="utf-8")
+checks = script_recipe / "checks"
+checks.mkdir()
+(checks / "qa_gate.sh").write_text(
+    "#!/bin/bash\n"
+    "printf '%s\\n' 'WI106-SCRIPT-DETAIL caption times do not match the cut'\n"
+    "exit 1\n",
+    encoding="utf-8",
+)
+(checks / "qa_gate.sh").chmod(0o755)
+
+def write_engine(name, answer):
+    body = """#!/bin/bash
+set -eu
+cat >/dev/null
+cat "${CFW_RENDER_ENGINE_PROMPT_FILE:?}"
+printf '%s\\n' 'tokens used' '4'
+printf '%s\\n' 'ANSWER'
+""".replace("ANSWER", answer.replace("'", "'\\''"))
+    path = root / name
+    path.write_text(body, encoding="utf-8")
+    path.chmod(0o755)
+
+write_engine(
+    "script-engine.sh",
+    "block: WI106-REAL-REFUSAL green background. Do not deliver this reel.",
+)
+write_engine(
+    "negate-engine.sh",
+    "Nothing blocking delivery. No blockers. The frame is not blocked. It isn't blocked and isnt blocked.",
+)
+write_engine(
+    "redact-engine.sh",
+    "block: WI106-REDACT-FAIL captions are missing. I refuse to deliver.",
+)
+
+def order(checks_ids):
+    return {
+        "id": "order-wi106",
+        "attempt": {"id": "att-wi106"},
+        "recipe": "wi106-check",
+        "kind": "video",
+        "taskOrder": {},
+        "inputs": {},
+        "manifest": {
+            "recipe": "wi106-check",
+            "recipeVersion": "1.0.0",
+            "steps": [{
+                "id": "final_checks",
+                "runsOn": "computer",
+                "when": "always",
+                "maxCheckRetries": 0,
+                "instructions": "steps/07-final-checks.md",
+                "saves": [
+                    {"id": "final_video", "kind": "video"},
+                    {"id": "cover", "kind": "image"},
+                    {"id": "captions", "kind": "json"},
+                ],
+                "checks": [{"id": cid} for cid in checks_ids],
+            }],
+        },
+    }
+
+for name, checks_ids in (
+    ("script", ["qa_gate"]),
+    ("negate", ["qa_gate", "duration_window"]),
+    ("redact", ["qa_gate", "duration_window"]),
+):
+    dest = root / name
+    dest.mkdir()
+    (dest / "order.json").write_text(json.dumps(order(checks_ids)), encoding="utf-8")
+
+bindir = root / "bin"
+bindir.mkdir()
+os.symlink(real_bin / "cfw-render-stage.py", bindir / "cfw-render-stage.py")
+(bindir / "cfw-render-redact.py").write_text(
+    "#!/usr/bin/env python3\n"
+    "import sys\n"
+    "data = sys.stdin.buffer.read().decode('utf-8', 'replace')\n"
+    "if 'WI106-REDACT-FAIL' in data:\n"
+    "    sys.exit(1)\n"
+    "sys.stdout.write(data)\n",
+    encoding="utf-8",
+)
+(bindir / "cfw-render-redact.py").chmod(0o755)
+PY
+
+wi106_run() {
+  local root="$1" engine="$2" recipe="$3" selfdir="${4:-}"
+  (
+    export CFW_RENDER_LOG_DIR="$root/logs"
+    export CFW_RENDER_STATE_DIR="$root/state"
+    export CFW_RENDER_ENGINE=codex
+    export CFW_RENDER_ENGINE_CMD="$engine"
+    export CFW_WORKER_ID="w-wi106"
+    export CFW_ORDER_ID="order-wi106"
+    export CFW_API_BASE="http://127.0.0.1:9"
+    export CFW_RENDER_WORKER_KEY="cfw_render_wi106testkey0000"
+    export CFW_RENDER_HEARTBEAT_SEC=30
+    export CFW_RENDER_STEP_TIMEOUT_SEC=60
+    export WI106_REPORTS="$root/reports.ndjson"
+    unset CFW_RENDER_SKILLS_DIR
+    unset CFW_RENDER_LOCAL_CHECKPOINTS
+    mkdir -p "$root/logs" "$root/state"
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-lib.sh"
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-engine.sh"
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-harness.sh"
+    if [[ -n "$selfdir" ]]; then
+      # cr_h_agent_refusal reads this. The sourced harness is not followed here.
+      # shellcheck disable=SC2034
+      CR_H_SELF_DIR="$selfdir"
+    fi
+    cr_harness_heartbeat_start() { :; }
+    cr_harness_heartbeat_stop() { :; }
+    cr_h_run_with_timeout() { shift; "$@"; }
+    cr_engine_limit_detect() { return 1; }
+    cr_h_upload_with_retry() { printf 'https://media.cfw.social/%s' "$(basename "$1")"; }
+    cr_report_step() {
+      python3 -c 'import json,sys
+open(sys.argv[1], "a").write(json.dumps({"event": sys.argv[2], "extra": json.loads(sys.argv[3])}) + "\n")' \
+        "$WI106_REPORTS" "$5" "$6" || return 1
+      printf '%s' '{"ok":true,"directive":"continue"}'
+    }
+    cr_harness_run "$root/order.json" "$root" "$recipe" >"$root/harness.out" 2>"$root/harness.err"
+    printf '%s\n' "$?" > "$root/rc"
+  )
+}
+wi106_run "$wi106_root/script" "$wi106_root/script-engine.sh" "$wi106_script_recipe"
+wi106_run "$wi106_root/negate" "$wi106_root/negate-engine.sh" "$wi106_plain"
+wi106_run "$wi106_root/redact" "$wi106_root/redact-engine.sh" "$wi106_plain" "$wi106_root/bin"
+wi106_detail="$(python3 - "$wi106_root" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+
+def load_events(name):
+    path = root / name / "reports.ndjson"
+    if not path.is_file():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+def failed(name):
+    events = [e for e in load_events(name) if e.get("event") == "step_failed"]
+    if len(events) != 1:
+        return None
+    return events[0].get("extra") or {}
+
+def rc_of(name):
+    path = root / name / "rc"
+    return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+
+def tail(path):
+    p = pathlib.Path(path)
+    if not p.is_file():
+        return ""
+    return p.read_text(encoding="utf-8", errors="replace")[-500:].replace("\n", " | ")
+
+def events_of(name):
+    return [e.get("event") for e in load_events(name)]
+
+script_bad, negate_bad, redact_bad = [], [], []
+want_miss = "qa_gate: missing or empty save captions.json; duration_window: missing or empty save captions.json"
+want_checks = ["missing or empty save captions.json", "missing or empty save captions.json"]
+
+if rc_of("script") != "30":
+    script_bad.append("rc=%s err=%s" % (rc_of("script"), tail(root / "script" / "harness.err")))
+script = failed("script") or {}
+script_detail = script.get("detail") or ""
+script_checks = script.get("checks") or []
+script_raw = ""
+if script_checks and isinstance(script_checks[0], dict):
+    script_raw = script_checks[0].get("detail") or ""
+script_text = " ".join(script_raw.split())
+if script_text != "WI106-SCRIPT-DETAIL caption times do not match the cut":
+    script_bad.append("check=%r" % script_text[:180])
+if "WI106-REAL-REFUSAL" in script_text or "do not deliver" in script_text.lower():
+    script_bad.append("check detail was replaced by the agent refusal")
+if not script_detail.startswith("qa_gate: WI106-SCRIPT-DETAIL caption times do not match the cut"):
+    script_bad.append("detail=%r" % script_detail[:220])
+if "WI106-REAL-REFUSAL" in script_detail or "green background" in script_detail:
+    script_bad.append("step reason is the agent refusal")
+if "PROMPT-ONLY-WI106-SHOULD-NOT-APPEAR" in script_detail:
+    script_bad.append("step reason picked up the prompt")
+if events_of("script") != ["step_started", "step_failed", "attempt_failed"]:
+    script_bad.append("events=%s" % events_of("script"))
+attempt = [e for e in load_events("script") if e.get("event") == "attempt_failed"]
+if not attempt or (attempt[0].get("extra") or {}).get("detail") != script_detail:
+    script_bad.append("attempt detail differs")
+
+if rc_of("negate") != "30":
+    negate_bad.append("rc=%s err=%s" % (rc_of("negate"), tail(root / "negate" / "harness.err")))
+negate = failed("negate") or {}
+negate_detail = negate.get("detail") or ""
+if negate_detail != want_miss:
+    negate_bad.append("detail=%r" % negate_detail[:300])
+negate_checks = negate.get("checks") or []
+if [c.get("detail") for c in negate_checks] != want_checks:
+    negate_bad.append("checks=%r" % negate_checks)
+for phrase in ("Nothing blocking", "No blockers", "not blocked", "isn't blocked", "block:"):
+    if phrase.lower() in negate_detail.lower():
+        negate_bad.append("negated text counted as a refusal (%s)" % phrase)
+if "PROMPT-ONLY-WI106-SHOULD-NOT-APPEAR" in negate_detail:
+    negate_bad.append("missing-save path picked up the prompt")
+
+if rc_of("redact") != "30":
+    redact_bad.append("rc=%s err=%s" % (rc_of("redact"), tail(root / "redact" / "harness.err")))
+redact = failed("redact") or {}
+redact_detail = redact.get("detail") or ""
+if redact_detail != want_miss:
+    redact_bad.append("detail=%r" % redact_detail[:300])
+redact_checks = redact.get("checks") or []
+if [c.get("detail") for c in redact_checks] != want_checks:
+    redact_bad.append("checks=%r" % redact_checks)
+if "WI106-REDACT-FAIL" in redact_detail or "refuse to deliver" in redact_detail:
+    redact_bad.append("redactor failure still published the agent text")
+if events_of("redact") != ["step_started", "step_failed", "attempt_failed"]:
+    redact_bad.append("events=%s" % events_of("redact"))
+err_path = root / "redact" / "harness.err"
+err_lines = err_path.read_text(encoding="utf-8", errors="replace").splitlines() if err_path.is_file() else []
+fail_lines = [line for line in err_lines if "agent refusal redaction failed" in line]
+if fail_lines != ["harness: agent refusal redaction failed"]:
+    redact_bad.append("stderr=%r" % err_lines[-5:])
+
+print("SCRIPT=" + ("ok" if not script_bad else "; ".join(script_bad)))
+print("NEGATE=" + ("ok" if not negate_bad else "; ".join(negate_bad)))
+print("REDACT=" + ("ok" if not redact_bad else "; ".join(redact_bad)))
+PY
+)"
+wi106_script="$(printf '%s\n' "$wi106_detail" | sed -n 's/^SCRIPT=//p' | tail -1)"
+wi106_negate="$(printf '%s\n' "$wi106_detail" | sed -n 's/^NEGATE=//p' | tail -1)"
+wi106_redact="$(printf '%s\n' "$wi106_detail" | sed -n 's/^REDACT=//p' | tail -1)"
+if [[ "$wi106_script" == "ok" ]]; then
+  pass "WI2.106 failing check script keeps its own detail when the agent refused"
+else
+  fail "WI2.106 check script detail" "$wi106_script"
+fi
+if [[ "$wi106_negate" == "ok" ]]; then
+  pass "WI2.106 nothing blocking, no blockers, and not blocked are not a refusal"
+else
+  fail "WI2.106 negated refusal" "$wi106_negate"
+fi
+if [[ "$wi106_redact" == "ok" ]]; then
+  pass "WI2.106 redactor failure keeps the missing-save text and still reports"
+else
+  fail "WI2.106 redactor failure" "$wi106_redact"
+fi
+rm -rf "$wi106_root"
+
+echo "=== Case 78: WI2.105 — a killed cfw-render-ctl key call leaves no header file ==="
+# send-logs keeps the render key in cfw-render-hdr.* until curl returns. A
+# fake curl sleeps, so the file is still there when TERM or INT hits the ctl
+# process. No network and no real key: the stub never connects, and the key
+# is a fixture string.
+wi105_dir="$(mktemp -d)"
+wi105_key="cfw_render_wi2105hdrfixture"
+mkdir -p "$wi105_dir/bin" "$wi105_dir/home/.cfw-render" "$wi105_dir/home/CFW Render/logs"
+printf 'CFW_RENDER_MODE=byoa\nCFW_RENDER_WORKER_KEY=%s\nCFW_API_BASE=http://127.0.0.1:9\n' "$wi105_key" > "$wi105_dir/home/.cfw-render/cfw-render.env"
+chmod 600 "$wi105_dir/home/.cfw-render/cfw-render.env"
+cat > "$wi105_dir/bin/curl" <<'EOF'
+#!/bin/sh
+exec sleep 60
+EOF
+chmod 755 "$wi105_dir/bin/curl"
+wi105_once() {
+  local sig="$1" run pid result hint
+  run="$(mktemp -d "${wi105_dir}/run.XXXXXX")"
+  (
+    export HOME="$wi105_dir/home"
+    export TMPDIR="$run"
+    export PATH="$wi105_dir/bin:${PATH}"
+    export CFW_RENDER_API_BASE="http://127.0.0.1:9"
+    export CFW_API_BASE="http://127.0.0.1:9"
+    export CFW_RENDER_WORKER_KEY="$wi105_key"
+    export CFW_RENDER_HOME="$wi105_dir/home/CFW Render"
+    export CFW_RENDER_LOG_DIR="$wi105_dir/home/CFW Render/logs"
+    export CFW_RENDER_STATE_DIR="$wi105_dir/home/.cfw-render"
+    export CFW_RENDER_OUTPUTS="$wi105_dir/home/CFW Render/outputs"
+    export CFW_RENDER_SCRATCH="$wi105_dir/home/.cfw-render/scratch"
+    export CFW_RENDER_ENV="$wi105_dir/home/.cfw-render/cfw-render.env"
+    export CFW_WORKER_ID="wi105-ctl"
+    exec "$REPO_DIR/bin/cfw-render-ctl.sh" send-logs --yes >"$run/out.log" 2>"$run/err.log"
+  ) &
+  pid=$!
+  result="$(python3 - "$TEST_DIR/stop-owned-tree.py" "$pid" "$run" "$sig" 2>>"$run/kill.err" <<'PY'
+import importlib.util, os, signal, sys, time, pathlib
+cleanup_path, root_s, tmp_s, sig_name = sys.argv[1:]
+root = int(root_s)
+tmp = pathlib.Path(tmp_s)
+sig = {"TERM": signal.SIGTERM, "INT": signal.SIGINT}[sig_name]
+spec = importlib.util.spec_from_file_location("cleanup", cleanup_path)
+cleanup = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cleanup)
+
+def headers():
+    return [p for p in tmp.glob("cfw-render-hdr.*") if p.is_file()]
+
+def descendants(table, pid):
+    found = set()
+    def walk(parent):
+        for child, (ppid, _ident) in table.items():
+            if ppid == parent and child not in found:
+                found.add(child)
+                walk(child)
+    walk(pid)
+    return found
+
+deadline = time.time() + 45
+ready = False
+reason = "no-header"
+while time.time() < deadline:
+    table = cleanup.processes()
+    if root not in table:
+        reason = "caller-exited-with-header" if headers() else "caller-exited"
+        break
+    args = cleanup._arguments(root, cleanup._argmax()) or ""
+    if "cfw-render-ctl.sh" not in args or "send-logs" not in args:
+        reason = "not-ctl"
+        time.sleep(0.05)
+        continue
+    nonempty = [p for p in headers() if p.stat().st_size > 0]
+    if not nonempty:
+        reason = "no-header"
+        time.sleep(0.05)
+        continue
+    if not descendants(table, root):
+        reason = "no-curl"
+        time.sleep(0.05)
+        continue
+    ready = True
+    reason = ""
+    break
+
+if not ready:
+    print(reason)
+    raise SystemExit(0)
+
+os.kill(root, sig)
+deadline = time.time() + 5
+left = headers()
+while left and time.time() < deadline:
+    time.sleep(0.05)
+    left = headers()
+print("left=%d" % len(left) if left else "ok")
+PY
+)" || result="${result:-python-failed}"
+  stop_test_tree "$pid" || true
+  if [[ "$result" != "ok" && -f "$run/err.log" ]]; then
+    hint="$(tr '\n' ' ' < "$run/err.log")"
+    hint="${hint//$wi105_key/[key]}"
+    hint="${hint:0:180}"
+    if [[ -n "$hint" ]]; then
+      result="$result err=$hint"
+    fi
+  fi
+  printf '%s' "$result"
+}
+wi105_bad=""
+for wi105_sig in TERM INT; do
+  wi105_result="$(wi105_once "$wi105_sig")"
+  if [[ "$wi105_result" != "ok" ]]; then
+    wi105_bad="${wi105_bad}${wi105_sig}=${wi105_result} "
+  fi
+done
+wi105_left="$(find "$wi105_dir" -name 'cfw-render-hdr.*' -type f -print)"
+if [[ -z "$wi105_bad" && -z "$wi105_left" ]]; then
+  pass "WI2.105: killing cfw-render-ctl send-logs (TERM and INT) leaves no key header file in TMPDIR"
+else
+  fail "WI2.105 key header cleanup" "bad=${wi105_bad:-none} left=${wi105_left:-none}"
+fi
+rm -rf "$wi105_dir"
+
+echo "=== Case 79: WI2.109 — the coder uses an isolated config and cannot write outside the work folder ==="
+# A planted HOME holds Claude settings, an output style and a Codex config.
+# The coder is a local stub (no network, no real CLI). It must see
+# CLAUDE_CONFIG_DIR and CODEX_HOME inside the work folder, not that HOME.
+# A write outside the work folder must fail. A write inside must succeed.
+wi109_root="$(mktemp -d)"
+wi109_home="$wi109_root/home"
+wi109_work="$wi109_root/work"
+wi109_out="$wi109_root/outside"
+mkdir -p "$wi109_home/.claude/output-styles" "$wi109_home/.codex" "$wi109_work" "$wi109_out" "$wi109_root/logs" "$wi109_root/state"
+printf '%s\n' '{"outputStyle":"WI2109-PLANTED-STYLE"}' > "$wi109_home/.claude/settings.json"
+printf '%s\n' 'WI2109-PLANTED-STYLE' > "$wi109_home/.claude/output-styles/personal.md"
+printf '%s\n' 'WI2109-PLANTED-CODEX' > "$wi109_home/.codex/config.toml"
+printf '%s\n' 'render the fixture' > "$wi109_work/prompt.md"
+wi109_field() { sed -n "s/^$1=//p" "$2" | tail -n 1; }
+wi109_once() {
+  local engine="$1" run escape
+  run="$wi109_root/run-$engine"
+  escape="/tmp/cfw-wi2109-$$-$engine"
+  mkdir -p "$run"
+  rm -f "$escape" "$wi109_out/escape-$engine.txt"
+  (
+    export HOME="$wi109_home"
+    export CFW_RENDER_LOG_DIR="$wi109_root/logs"
+    export CFW_RENDER_STATE_DIR="$wi109_root/state"
+    export CFW_RENDER_ENGINE="$engine"
+    export CFW_RENDER_ENGINE_CMD="bash $TEST_DIR/fake-coder-isolation.sh"
+    export CFW_WI2109_REPORT="$wi109_work/report-$engine.txt"
+    export CFW_WI2109_INSIDE="$wi109_work/inside-$engine.txt"
+    export CFW_WI2109_OUTSIDE="$wi109_out/escape-$engine.txt"
+    export CFW_WI2109_ESCAPE="$escape"
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-lib.sh"
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-engine.sh"
+    cr_engine_run "$engine" "$wi109_work/prompt.md" "$wi109_work" "$run/step.log" > "$run/rc-out" 2> "$run/rc-err"
+    printf '%s\n' "$?" > "$run/rc"
+  )
+}
+wi109_check() {
+  local engine="$1" run report sandbox claude_dir codex_dir tmpdir planted inside outside escape rc
+  local profile default_n deny_n allow_n escape_path why=""
+  run="$wi109_root/run-$engine"
+  report="$wi109_work/report-$engine.txt"
+  escape_path="/tmp/cfw-wi2109-$$-$engine"
+  profile="$wi109_work/.cfw-coder/profile.sb"
+  rc="$(cat "$run/rc" 2>/dev/null || true)"
+  if [[ ! -f "$report" ]]; then
+    printf 'no-report rc=%s log=%s' "${rc:-none}" "$(tail -c 240 "$run/step.log" 2>/dev/null | tr '\n' ' ')"
+    return 0
+  fi
+  sandbox="$(wi109_field SANDBOX "$report")"
+  claude_dir="$(wi109_field CLAUDE_CONFIG_DIR "$report")"
+  codex_dir="$(wi109_field CODEX_HOME "$report")"
+  tmpdir="$(wi109_field TMPDIR "$report")"
+  planted="$(wi109_field PLANTED "$report")"
+  inside="$(wi109_field INSIDE "$report")"
+  outside="$(wi109_field OUTSIDE "$report")"
+  escape="$(wi109_field ESCAPE "$report")"
+  [[ "$rc" == "0" ]] || why="${why}rc=$rc "
+  [[ "$planted" == "no" ]] || why="${why}planted=$planted "
+  [[ "$claude_dir" == "$wi109_work/.cfw-coder/claude" ]] || why="${why}claude=$claude_dir "
+  [[ "$codex_dir" == "$wi109_work/.cfw-coder/codex" ]] || why="${why}codex=$codex_dir "
+  [[ "$tmpdir" == "$wi109_work/.cfw-coder/tmp" ]] || why="${why}tmp=$tmpdir "
+  [[ "$inside" == "ok" && -f "$wi109_work/inside-$engine.txt" ]] || why="${why}inside=$inside "
+  [[ ! -f "$claude_dir/settings.json" && ! -e "$claude_dir/output-styles/personal.md" && ! -f "$codex_dir/config.toml" ]] || why="${why}copied "
+  [[ "$(cat "$wi109_home/.claude/settings.json")" == '{"outputStyle":"WI2109-PLANTED-STYLE"}' ]] || why="${why}home-settings "
+  [[ -f "$profile" ]] || why="${why}no-profile "
+  if [[ -f "$profile" ]]; then
+    default_n="$(grep -n -F '(allow default)' "$profile" | head -n 1 | cut -d: -f1)"
+    deny_n="$(grep -n -F '(deny file-write*)' "$profile" | head -n 1 | cut -d: -f1)"
+    allow_n="$(grep -n -F "$wi109_work" "$profile" | head -n 1 | cut -d: -f1)"
+    [[ -n "$default_n" && -n "$deny_n" && -n "$allow_n" && "$default_n" -lt "$deny_n" && "$deny_n" -lt "$allow_n" ]] || why="${why}profile-order "
+    grep -F -q "$claude_dir" "$profile" || why="${why}profile-claude "
+    grep -F -q "$codex_dir" "$profile" || why="${why}profile-codex "
+    grep -F -q "$tmpdir" "$profile" || why="${why}profile-tmp "
+    grep -F -q "$wi109_home" "$profile" && why="${why}profile-names-home "
+    grep -F -q "$wi109_out" "$profile" && why="${why}profile-names-outside "
+  fi
+  [[ "$escape" == "fail" && ! -e "$escape_path" ]] || why="${why}escape=$escape "
+  if [[ "$sandbox" == "apply" ]]; then
+    [[ "$outside" == "fail" && ! -e "$wi109_out/escape-$engine.txt" ]] || why="${why}outside=$outside "
+  elif [[ "$sandbox" == "enclosing" ]]; then
+    grep -F -q 'sandbox-exec cannot nest inside the current sandbox' "$run/step.log" || why="${why}no-nest-log "
+  else
+    why="${why}sandbox=$sandbox "
+  fi
+  printf '%s' "${why:-ok}"
+}
+for wi109_engine in claude-code codex; do
+  wi109_once "$wi109_engine"
+  wi109_detail="$(wi109_check "$wi109_engine")"
+  if [[ "$wi109_detail" == "ok" ]]; then
+    pass "WI2.109 $wi109_engine: isolated config inside the work area; outside write refused"
+  else
+    fail "WI2.109 $wi109_engine isolation" "$wi109_detail"
+  fi
+  rm -f "/tmp/cfw-wi2109-$$-$wi109_engine"
+done
+rm -rf "$wi109_root"
 
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"

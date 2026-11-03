@@ -56,6 +56,7 @@
       }
       #{{ID}} .quote .accent { color: {{ACCENT}}; }
       #{{ID}} .attr {
+        white-space: nowrap; max-width: 900px;  /* WI2.94: one line; the script fits it to the safe width */
         font-family: 'JetBrains Mono', monospace;
         font-weight: 700; font-size: 34px;
         letter-spacing: 0.16em; text-transform: uppercase;
@@ -124,6 +125,24 @@
           Math.min(1.4, DUR - 0.8));
 
         window.__timelines["{{ID}}"] = tl;
+
+        // WI2.94: keep each takeover text line on ONE line. A line starts at its design size and,
+        // when wider than its safe width (>= 80px from both frame edges), its font is scaled down
+        // until it fits; the text is never cut. Refit once fonts load.
+        function fitLine(el, base, maxW) {
+          if (!el) return base;
+          el.style.fontSize = base + "px";
+          var w = el.scrollWidth;
+          if (w <= maxW) return base;
+          var size = Math.floor(base * maxW / w);
+          el.style.fontSize = size + "px";
+          while (size > 8 && el.scrollWidth > maxW) { size -= 1; el.style.fontSize = size + "px"; }
+          return size;
+        }
+        var LINE_FITS = [[document.querySelector(scope + ".js-attr"), 34, 900]];
+        function fitLines() { LINE_FITS.forEach(function (f) { fitLine(f[0], f[1], f[2]); }); }
+        fitLines();
+        if (document.fonts && document.fonts.ready) { document.fonts.ready.then(fitLines); }
       })();
     </script>
   </div>

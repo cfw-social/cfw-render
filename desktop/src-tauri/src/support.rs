@@ -26,8 +26,8 @@ fn rules() -> &'static [(Regex, &'static str)] {
     static R: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
     R.get_or_init(|| {
         [
-            (r"cfw_render_[A-Za-z0-9_]+", "cfw_render_[redacted]"),
-            (r"cfw_[A-Za-z0-9_]{8,}", "cfw_[redacted]"),
+            (r"cfw_render_[A-Za-z0-9_-]+", "cfw_render_[redacted]"),
+            (r"cfw_[A-Za-z0-9_-]{8,}", "cfw_[redacted]"),
             (r"sk-ant-[A-Za-z0-9_-]{16,}", "sk-ant-[redacted]"),
             (r"sk-[A-Za-z0-9_-]{16,}", "sk-[redacted]"),
             (r"AIza[0-9A-Za-z_-]{30,}", "AIza[redacted]"),
@@ -217,7 +217,8 @@ pub fn scan_new_crashes(reports: &Path, state: &Path, now: u64) -> Vec<CrashRepo
         .map(|e| e.path())
         .filter(|p| {
             let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            name.starts_with("CFW Render") && (name.ends_with(".ips") || name.ends_with(".crash"))
+            (name.starts_with("CFW Render") || name.starts_with("Content Flywheel Renderer") || name.starts_with("cfw_render_app"))
+                && (name.ends_with(".ips") || name.ends_with(".crash"))
         })
         .map(|p| (mtime_secs(&p), p))
         // First ever scan: only look back a day so old crashes aren't flooded in.
@@ -442,7 +443,9 @@ mod tests {
         put(reports.path(), "CFW Render-2026-10-12-new.ips", &ips, 3_000);
         put(reports.path(), "Safari-2026-10-12.ips", &ips, 3_000);
         fs::write(st.path().join("crash-scan.json"), r#"{"lastScan":2000}"#).unwrap();
-        assert_eq!(scan_new_crashes(reports.path(), st.path(), 4_000).len(), 1);
+        put(reports.path(), "Content Flywheel Renderer-new.ips", &ips, 3_000);
+        put(reports.path(), "cfw_render_app-new.crash", &ips, 3_000);
+        assert_eq!(scan_new_crashes(reports.path(), st.path(), 4_000).len(), 3);
         // the scan time moved forward: nothing is found again
         assert_eq!(scan_new_crashes(reports.path(), st.path(), 5_000).len(), 0);
     }

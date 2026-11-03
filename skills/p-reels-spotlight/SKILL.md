@@ -29,6 +29,19 @@ metadata:
 
 # p-reels-spotlight — Full-Frame Premium Reel (continuous-audio bed + kinetic captions + optional b-roll)
 
+## Execution and reporting
+
+Read [Recipe stage reporting](../../docs/RECIPE-STAGE-REPORTING.md) before a tracked
+run. Managed work uses the installed worker/harness and the exact claimed manifest;
+its stage IDs select `steps/_shared.md` plus the referenced step file. The harness
+alone reports stages; step assistants must not call `complete_render_order` or
+emit competing MCP events. Standalone use does not report to CFW Social.
+
+Catalog presence and declared checks do not prove validator coverage or readiness.
+Missing validators/evidence block gates. See
+[reporting coverage](../../docs/RECIPE-REPORTING-COVERAGE.md) before claiming tracked
+execution is ready; local checkpoint eligibility is independently restricted.
+
 A vertical 9:16 reel built on **one continuous voice bed**: the speaker's narration audio plays
 unbroken for the entire reel and is **never cut or silenced**. Visually it is a premium edit —
 the speaker plays full-frame, **word-synced kinetic captions** ride over the whole reel, full-frame
@@ -58,7 +71,7 @@ at any timestamp the VO is silent during a takeover, the reel is broken (continu
 
 | Parameter | Required | Default | Description |
 |---|---|---|---|
-| `talking_head_video` | Yes* | — | Uploaded talking-head MP4 (real face + real voice) OR a reused HeyGen render. **Its audio is the continuous voice bed.** Reused 16:9 studio renders often carry white side bands — Step 1.5 crops them (left/right only, never the top). *If absent, produce via `c-script` → `c-heygen`.* |
+| `talking_head_video` | Yes* | — | Uploaded talking-head MP4 (real face + real voice) OR a reused HeyGen render. **Its audio is the continuous voice bed.** Reused HeyGen / studio renders often carry a picture baked between two flat bars — Step 1.5 crops a matched top+bottom or left+right bar pair only (never a plain backdrop, so the head is never cut). *If absent, produce via `c-script` → `c-heygen`.* |
 | `broll[]` | No | `[]` | Array of b-roll clips to intercut at transcript-matched beats. Each element: `{clip: "path.mp4", duration: N, cues: [{start,end,text}]}`. When empty, the skill is identical to p-reels-fmt3. |
 | `broll_coverage_pct` | No | `30` | Target % of reel runtime covered by b-roll beats (passed to `c-broll-sync`). |
 | `broll_clip_seconds` | No | `4` | Default on-screen duration per b-roll window. |
@@ -71,7 +84,7 @@ at any timestamp the VO is silent during a takeover, the reel is broken (continu
 | `sfx` | No | **on** | Sound design from shipped pack (`assets/sfx/` — CC0). |
 | `grade` | No | planner picks | `warm-amber` or `clean-bright`. |
 | `cover_at` | No | planner picks | Timestamp (seconds) past the hook to use as the money-shot for the 0.4s cover freeze. The Step 4 edit plan should emit this; if absent, Step 10 picks mid-content automatically. |
-| `cta_card` | No | brand default | Auto-generated end-card takeover (2.5–3s) overlaying the final 2.5–3s of the bed — does NOT extend the reel. Pass `off` to skip. |
+| `cta_card` | No | brand default | Auto-generated end-card takeover (`CTA_DURATION`, 3 s) right after the last spoken word, never over speech. Step 2 holds the last frame with silence so the full card fits (WI2.89); nothing is appended after the bed. Pass `off` to skip (no tail). |
 | `cta_text` | No | `FOLLOW FOR MORE` | Hero line on the end card. Resolve from the active brand (`brand-overrides/<slug>/brand.json` `cta.line`, or the order's `copy.cta`). The fallback is generic and carries no brand. |
 | `cta_handle` | No | — (no handle line) | Handle/URL on the end card. Resolve from the active brand (`brand-overrides/<slug>/brand.json` `cta.handle`, or the brand's primary social account in the order's brand context). **If the brand has no handle, leave it empty: the card renders without a handle line.** Never invent one and never reuse another brand's. |
 | `brand_name` | No | — (no kicker) | Brand name for the kicker line above the hero. Resolve from the brand context; empty → kicker omitted. |
@@ -93,6 +106,10 @@ CTA end-card. Both artifacts uploaded to R2 — **the MP4 R2 public URL is the d
 > `cta.line` / `cta.handle` / `brand` when present, else the brand context the order carries) and export
 > them. If the brand has no handle, leave `CTA_HANDLE` empty: Step 8 then renders the end card **without a
 > handle line**. Never reuse another brand's copy or handle, and never invent a handle.
+>
+> **`cta_card` comes from the order too (WI2.90).** Set `CTA_CARD` to the order's `cta_card` (`on` unless
+> the order says `off`) and export it with the copy above. `off` means Step 2 adds no silent tail and
+> Step 8 renders no end card; anything other than `on` counts as `off`, as in the steps path.
 
 Set up variables:
 
@@ -108,6 +125,7 @@ BROLL_REUSE="${BROLL_REUSE:-false}"
 CTA_TEXT="${CTA_TEXT:-FOLLOW FOR MORE}"
 CTA_HANDLE="${CTA_HANDLE:-}"    # empty = no handle line on the end card (per-brand; never a placeholder)
 BRAND_NAME="${BRAND_NAME:-}"    # empty = no kicker line on the end card
+CTA_CARD="${CTA_CARD:-on}"      # the order's cta_card (WI2.90): off = no Step 2 tail and no Step 8 end card
 CTA_DURATION="${CTA_DURATION:-3}"
 W="{production}/interim/spotlight" ; mkdir -p "$W"
 OUT_BASE="{production}/final/spotlight-reel"
@@ -133,25 +151,108 @@ ffmpeg -hide_banner -i "$AVATAR" -af "silencedetect=noise=-35dB:d=0.5" -f null -
   | grep -E "silence_(start|end)" || echo "narration continuous"
 ```
 
-### Step 1.5 — Detect & crop white side bands (BEFORE anything else)
+### Step 1.5 — Detect & crop a baked-in bar pair (BEFORE anything else)
 
-Reused 16:9 HeyGen / studio renders frequently carry baked-in **white/cream bands** down the left
-and right. Measure thin edge columns vs the centre and, if bands exist, **crop LEFT/RIGHT only —
-NEVER the top** (the head must not be cut):
+Reused HeyGen / studio renders often carry a 16:9 picture baked between two flat bars (white,
+cream or mint) at the top and bottom, or a 9:16 picture between two side bars. WI2.71: the
+`bars.py` helper samples three frames and prints `crop=W:H:X:Y,` only for a **matched pair** —
+top+bottom (or left+right) bars of about the same size and the same flat colour that leave a
+picture within 5 % of 16:9 or 9:16. Anything else (a speaker on a plain backdrop, a one-sided
+margin) prints nothing and nothing is cropped, so the head is never cut. It measures frames the
+way ffmpeg shows them (rotation applied), so a rotated phone clip is read on the right axes.
+WI2.75: a flat seam of 6 rows or fewer (another flat colour) right beside a bar counts as part
+of that bar, so no grey line is left at the picture's edge; a band of 7 rows or more is kept.
 
 ```bash
-W_SRC=$(ffprobe -v error -select_streams v -show_entries stream=width -of csv=p=0 "$AVATAR")
-H_SRC=$(ffprobe -v error -select_streams v -show_entries stream=height -of csv=p=0 "$AVATAR")
-col_luma () {
-  v=$(ffmpeg -hide_banner -loglevel error -ss 13 -i "$AVATAR" -vframes 1 \
-        -vf "crop=2:$H_SRC:$1:0,scale=1:1,format=gray" -f rawvideo - 2>/dev/null | xxd -p)
-  echo $((16#$v))
-}
-LEFT=0;  for x in $(seq 0 5 $((W_SRC/2)));    do [ "$(col_luma $x)" -lt 245 ] && { LEFT=$x;  break; }; done
-RIGHT=$W_SRC; for x in $(seq $((W_SRC-2)) -5 $((W_SRC/2))); do [ "$(col_luma $x)" -lt 245 ] && { RIGHT=$((x+2)); break; }; done
-CW=$(( RIGHT - LEFT )); CW=$(( CW - CW % 2 ))
-if [ "$LEFT" -gt 4 ] || [ "$RIGHT" -lt $((W_SRC-4)) ]; then
-  ffmpeg -y -i "$AVATAR" -vf "crop=$CW:$H_SRC:$LEFT:0,setsar=1" \
+cat > "$W/bars.py" <<'PY'
+# WI2.71: find a matched pair of flat bars baked into the clip and print an ffmpeg crop.
+# Crops only top+bottom (or left+right) bars of about the same size and the same flat
+# colour, and only when what is left is within 5% of 16:9 or 9:16. Anything else: no crop.
+import subprocess, sys
+SRC, TOL, MIN_BAR, ASPECT_TOL, SEAM, SEAM_TOL = sys.argv[1], 12, 8, 0.05, 6, 32
+def grab(t):
+    # One frame as PPM. Its header gives the size ffmpeg shows after autorotation, so a
+    # rotated phone clip is measured on the same axes the later -vf crop sees.
+    out = subprocess.run(["ffmpeg", "-v", "error", "-ss", "%.2f" % t, "-i", SRC, "-frames:v", "1",
+        "-f", "image2pipe", "-c:v", "ppm", "-"], capture_output=True, check=True).stdout
+    if not out.startswith(b"P6"):
+        return None
+    head, pos = [], 2
+    while len(head) < 3:
+        while out[pos:pos + 1].isspace():
+            pos += 1
+        end = pos
+        while out[end:end + 1] and not out[end:end + 1].isspace():
+            end += 1
+        head.append(int(out[pos:end])); pos = end
+    w, h, data = head[0], head[1], out[pos + 1:]
+    return (w, h, data) if len(data) >= w * h * 3 else None
+def duration():
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", SRC],
+        capture_output=True, text=True, check=True).stdout.strip()
+    try:
+        return float(r)
+    except ValueError:
+        return 1.0
+def close(a, b, tol=TOL):
+    return max(abs(a[k] - b[k]) for k in range(3)) <= tol
+def run(fr, w, lines, pts, tol=TOL):
+    # how many lines from this edge inwards are one flat colour -> (count, colour)
+    ref, n = None, 0
+    for ln in lines:
+        row = [fr[(y * w + x) * 3:(y * w + x) * 3 + 3] for x, y in pts(ln)]
+        ref = ref or sorted(row)[len(row) // 2]    # median pixel: robust to a noisy first pixel
+        if not all(close(c, ref, tol) for c in row):
+            break
+        n += 1
+    return n, ref
+def bar(fr, w, lines, pts):
+    # WI2.75: a bar run also swallows ONE short flat seam (SEAM rows or fewer, another flat
+    # colour, within SEAM_TOL because video compression speckles it) right next to its inner edge, so no flat seam row stays at the picture's edge.
+    lines = list(lines)
+    n, ref = run(fr, w, lines, pts)
+    if n >= MIN_BAR:
+        m, _ = run(fr, w, lines[n:], pts, SEAM_TOL)   # a compressed seam is a bit noisy
+        if 1 <= m <= SEAM and n + m < len(lines):
+            n += m
+    return n, ref
+D = duration()
+frames = [f for f in (grab(D * p) for p in (0.2, 0.5, 0.8)) if f]
+if not frames or len({(f[0], f[1]) for f in frames}) != 1:
+    print(""); sys.exit(0)
+W, H = frames[0][0], frames[0][1]
+sides = [(bar(fr, W, range(H // 2), lambda y: [(x, y) for x in range(0, W, 4)]),
+          bar(fr, W, range(H - 1, H // 2, -1), lambda y: [(x, y) for x in range(0, W, 4)]),
+          bar(fr, W, range(W // 2), lambda x: [(x, y) for y in range(0, H, 4)]),
+          bar(fr, W, range(W - 1, W // 2, -1), lambda x: [(x, y) for y in range(0, H, 4)]))
+         for _, _, fr in frames]
+def edge(i):
+    # bar size = the smallest run over the sampled frames; its colour must hold in every frame
+    n, cols = min(s[i][0] for s in sides), [s[i][1] for s in sides]
+    if n < MIN_BAR or not all(close(c, cols[0]) for c in cols):
+        return 0, None
+    return n, cols[0]
+(top, ct), (bot, cb), (left, cl), (right, cr) = (edge(i) for i in range(4))
+def pair(a, ca, b, cb_, side):
+    # a matched pair: both bars present, the same flat colour, sizes within 2% of the side
+    return bool(a and b and close(ca, cb_) and abs(a - b) <= max(4, side * 0.02))
+def aspect_ok(w, h):
+    return any(abs((w / h) / r - 1) <= ASPECT_TOL for r in (16 / 9, 9 / 16))
+tb, lr = pair(top, ct, bot, cb, H), pair(left, cl, right, cr, W)
+cands = ([(top, bot, left, right)] if tb and lr else []) + ([(top, bot, 0, 0)] if tb else []) \
+    + ([(0, 0, left, right)] if lr else [])
+for t, b, l, r in cands:
+    t, l = t + t % 2, l + l % 2          # even x/y (yuv420p); never keeps a bar row
+    cw, ch = W - l - r, H - t - b
+    cw, ch = cw - cw % 2, ch - ch % 2    # even w/h
+    if cw >= W // 4 and ch >= H // 4 and aspect_ok(cw, ch):
+        print("crop=%d:%d:%d:%d," % (cw, ch, l, t)); sys.exit(0)
+print("")
+PY
+CROP=$(python3 "$W/bars.py" "$AVATAR") || exit 1
+echo "[p-reels-spotlight] bar crop: '${CROP:-none}'"
+if [ -n "$CROP" ]; then
+  ffmpeg -y -i "$AVATAR" -vf "${CROP}setsar=1" \
     -c:v libx264 -pix_fmt yuv420p -c:a copy "$W/avatar-clean.mp4"
   AVATAR_CLEAN="$W/avatar-clean.mp4"
 else
@@ -159,7 +260,7 @@ else
 fi
 ```
 
-`crop=W:H:X:0` — y-offset `0` guarantees the top edge (and head) is preserved.
+The bed in Step 2 then fills 1080×1920 (`increase,crop`) — no bars reach the frame.
 
 ### Step 2 — Build the speaker bed (full length, scale-to-cover, loudnormed ONCE)
 
@@ -211,6 +312,50 @@ if python3 -c "exit(0 if float('$TRIM_START') > 0.3 else 1)"; then
 fi
 ```
 
+**End-card tail (WI2.89, mandatory):** The end card never covers speech (WI2.86), so the bed needs room after the last spoken word.
+When the speech runs to the end of the clip (or nearly), hold the last frame with silence until
+`cta_duration` + 0.5 s follows the speech end (a tail of at most 3.5 s). The speech end is
+where the final silence starts (`silencedetect` −40 dB, 0.3 s); with no trailing silence it is
+the clip end. `cta_card: off` adds no tail, and a clip that already ends in enough silence is
+left as it is. The tail is part of the sealed bed: captions, takeovers, checks and the reel all
+time against it, and the end card then shows in full right after the last word.
+
+```bash
+python3 - "$W/base.mp4" "${CTA_CARD:-on}" "${CTA_DURATION:-3}" <<'PY' || exit 1
+# WI2.89: hold the last frame with silence so the end card fits after the last spoken word.
+import math, os, re, subprocess, sys
+src, card, want = sys.argv[1], sys.argv[2], float(sys.argv[3])
+MARGIN, MAX_TAIL = 0.5, 3.5   # speech end + cta_duration + MARGIN, tail at most MAX_TAIL
+def dur(p):
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", p],
+                         capture_output=True, text=True, check=True).stdout.strip()
+    return float(out)
+if card != "on":
+    print("[spotlight] end-card tail: cta_card off, no tail"); sys.exit(0)
+d = dur(src)
+log = subprocess.run(["ffmpeg", "-hide_banner", "-i", src, "-af", "silencedetect=noise=-40dB:d=0.3", "-f", "null", "-"],
+                     capture_output=True, text=True).stderr
+starts = [float(x) for x in re.findall(r"silence_start: (-?[0-9.]+)", log)]
+ends = [float(x) for x in re.findall(r"silence_end: (-?[0-9.]+)", log)]
+speech_end = d                       # no silence runs to the end: the speech fills the clip
+if starts and (len(ends) < len(starts) or ends[-1] >= d - 0.05):
+    speech_end = max(0.0, starts[-1])
+tail = math.ceil(max(0.0, min(want + MARGIN, MAX_TAIL) - (d - speech_end)) * 30) / 30
+if tail <= 0:
+    print("[spotlight] end-card tail: %.2fs of silence already follows the speech, no tail" % (d - speech_end)); sys.exit(0)
+tmp = src[:-4] + "-tail.mp4"
+subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", src, "-vf", "tpad=stop_mode=clone:stop_duration=%.3f" % tail,
+                "-af", "apad=pad_dur=%.3f" % tail, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30",
+                "-c:a", "aac", "-ar", "48000", "-ac", "2", tmp], check=True)
+got = dur(tmp)
+if abs(got - (d + tail)) > 0.1:
+    sys.exit("end-card tail: bed is %.3fs, expected %.3fs" % (got, d + tail))
+os.replace(tmp, src)
+print("[spotlight] end-card tail: speech ends %.2fs, held the last frame + silence for %.2fs (bed %.2fs)" % (speech_end, tail, got))
+PY
+DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$W/base.mp4")
+```
+
 ### Step 3 — Transcribe with WORD timestamps
 
 > **Run the block below VERBATIM. Do NOT invent your own `cfw-transcribe` invocation.**
@@ -246,7 +391,7 @@ json.dump(words, open(sys.argv[2], 'w'))
 PY
 elif command -v mlx_whisper >/dev/null 2>&1; then
   echo "[spotlight] local transcription: mlx_whisper"
-  mlx_whisper "$W/base.mp4" --model mlx-community/whisper-small --output-dir "$W" --output-format json
+  mlx_whisper "$W/base.mp4" --model mlx-community/whisper-small-mlx --output-dir "$W" --output-format json
   python3 -c "import json; d=json.load(open('$W/base.json')); words=[{'text':s['text'],'start':s['start'],'end':s['end']} for s in d.get('segments',[])] ; json.dump(words,open('$W/words.json','w'))"
 elif command -v whisper >/dev/null 2>&1; then
   echo "[spotlight] local transcription: whisper CLI"
@@ -363,7 +508,8 @@ Schema:
 Template fill keys — tk-stat: EYEBROW, STAT (short e.g. '3X' or '70%'), LABEL.
 tk-keyword: WORD (one word), SUPPORT (short line). tk-list: TITLE, ITEM1, ITEM2, ITEM3.
 tk-quote: QUOTE, ATTR. TITLE and QUOTE may wrap ONE key word in <span class="accent">WORD</span>.
-tk-typing-ui: LABEL (e.g. 'claude.ai'), PROMPT (the typed text), TYPING_SPEED (0.5-1.5), BOTTOM_TAG.
+tk-typing-ui: LABEL (e.g. 'claude.ai'), PROMPT (the typed text), TYPING_SPEED (0.5-1.5), BOTTOM_TAG,
+and optionally CARD_LABEL (the line above the card; default 'The prompt').
 RULES:
 1. caption_groups cover the FULL duration, 2-4 words each, non-overlapping, break on sentence
    boundaries or pauses >=150ms. Words VERBATIM from the transcript.
@@ -374,6 +520,9 @@ RULES:
 5. takeovers: 2-4 windows, 3-6s each, first no earlier than t=2, none in the final 2s, >=4s of
    speaker between windows, never the same template twice in a row. Content must restate what is
    SAID in that window. Use tk-typing-ui only when the content involves AI/prompts/terminal workflows.
+   Takeover text names only the order's brand ($BRAND_NAME, WI2.95): quote the speech word for word,
+   or write the order's brand in place of any other brand or product the clip names; never invent one,
+   and never write a competitor or comparison line that names another brand (X vs Y, better than X).
 6. sfx: whoosh-deep at every takeover start, impact-sub 0.4s later, optional riser 1.5s before the
    biggest takeover, click/pop on at most 3 emphasis words. Max 12 cues, gain <=0.6.
 7. cover_at: pick a frame from mid-content (ideally mid-sentence at peak energy) — NEVER t=0 or the
@@ -385,15 +534,282 @@ Write the object to `$W/plan.json` with your file-writing tool (no prose around 
 mechanical guard — fix the plan and re-run until it prints `plan OK`:
 
 ```bash
-python3 - "$W/plan.json" "$DUR" <<'PY'
+# WI2.95: takeover text names only the order's brand unless it quotes the speech word for word.
+cat > "$W/takeover_brand.py" <<'PY'
+# WI2.95: takeover text names only the order's brand, unless it quotes the speech word for word.
+# usage: python3 work/takeover_brand.py PLAN.json WORDS.json [BRAND]          (repair takeovers in place)
+#        python3 work/takeover_brand.py --check PLAN.json WORDS.json [BRAND]  (exit 1 on a foreign name)
+# BRAND is the order's brand name ("" = the order has none). Without it the brand comes from the
+# step workdir: inputs/cta/cta.json brandName, else brief.json brand.name (as the end card does).
+# A foreign name is a brand-like word the speech says that the order does not own: an acronym (CFW,
+# also spelled out "C F W") or a CamelCase word (HubSpot). It is never a generic acronym (AI, CAC,
+# MLS, HOA, NYC, PhD, ...), a channel or tool (Instagram, iPhone, ...), a word that starts lower case
+# (iOS, eBay) or a Mc/Mac/O'/De/Le name (McKenzie). A line of 3+ words that is an exact run of
+# transcript words (case and punctuation aside) is a quote and keeps its words, unless the foreign
+# name is most of it. Otherwise the name becomes the order's brand; with no order brand it is dropped.
+# A brand is never invented. When in doubt a word is left alone: rule 5 asks the planner for the rest.
+import html, json, os, re, sys
+
+TOKEN = re.compile(r"[A-Za-z0-9]+(?:['’.&-][A-Za-z0-9]+)*")
+TAG = re.compile(r"(<[^>]*>)")
+POSS = re.compile(r"['’]s$", re.I)
+NAME_PREFIX = re.compile(r"^(?:Mc|Mac|O['’]|D['’]|De|Di|Da|Du|Le|La|Van|Von|St)[A-Z]")
+SKIP = {"tk-typing-ui": {"LABEL", "TYPING_SPEED"}}
+HTML_KEYS = {"TITLE", "QUOTE"}
+MIN_QUOTE = 3
+# Never a competing brand: generic business, marketing, finance, real-estate, place and tech
+# acronyms, and the channels / tools a reel talks about.
+GENERIC = set("""
+i ok ai api apis ceo ceos cto cfo coo cmo cro vp svp evp md phd mba cpa cfa jd rn pa hr pr it qa
+diy faq faqs pdf url sms dm dms fyi asap eta tbh imo lol omg vip am pm est pst cst mst utc
+q1 q2 q3 q4 ytd mtd yoy qoq mom b2b b2c d2c dtc smb smbs saas crm cms erp kpi kpis okr okrs roi
+roas aov ltv cac cpc cpm cpa cpl ctr cvr ppc sem seo ugc cta ctas mrr arr gmv nps sop sops mvp
+llc inc ltd co corp plc nda llp gst vat irs ira etf ipo sba fico heloc dti pmi apr apy arm emi gdp
+usd eur gbp cad aud inr jpy cny
+mls hoa fha va usda adu adus hvac reo nar cma hud fsbo noi reit reits sqft sf bd ba ac gc hoas
+usa us uk eu uae nyc la sf dc nj ny ca tx fl wa nc ga az co il ma pa oh mi uk gta bc on nsw
+tv hd uhd 4k 8k pc ios os wifi usb gps app apps vr ar xr iot gpu cpu ram ssd llm llms gpt ml nft nfts
+btc eth qr id ip sdk ui ux js css html sql aws gcp
+instagram ig tiktok youtube yt linkedin facebook fb threads pinterest reddit x twitter whatsapp
+snapchat google gmail chatgpt claude gemini openai anthropic iphone ipad android macbook mac zoom
+slack excel outlook zillow
+""".split())
+# Common words a transcript may put in capitals for emphasis ("NO", "STOP"): never a brand name.
+COMMON = set("""
+no so go do we me my he be by us or an at on in to up of if is it as yes now new top big best free win
+wow stop look this that what when why how who you your our all one two ten get got see the and but not
+just more most less real true easy fast huge done love hate need want must never ever only
+""".split())
+
+
+def norm(t):
+    return re.sub(r"[^a-z0-9']", "", t.lower().replace("’", "'"))
+
+
+def base(t):
+    return norm(POSS.sub("", t))
+
+
+def shaped(t):
+    """an acronym (2-6 capitals, no lower case) or CamelCase word (HubSpot), by its own spelling;
+    never a lower-case-first word (iPhone, iOS) or a Mc/Mac/O'/De/Le name (McKenzie)"""
+    b = POSS.sub("", t)
+    if not b[:1].isupper() or NAME_PREFIX.match(b):
+        return False
+    letters = re.sub(r"[^A-Za-z]", "", b)
+    if 2 <= len(letters) <= 6 and letters.isupper():
+        return True
+    return bool(re.fullmatch(r"[A-Z][a-z]+(?:[A-Z][a-z0-9]*)+", b))
+
+
+def plain(v):
+    return html.unescape(TAG.sub(" ", v))
+
+
+def stop(msg):
+    print("takeover brand check: " + msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def order_brand():
+    cta = {}
+    if os.path.isfile("inputs/cta/cta.json"):
+        cta = json.load(open("inputs/cta/cta.json"))
+    if not os.path.isfile("brief.json") and not cta:
+        stop("no order brand: pass BRAND, or run in the step workdir with brief.json (WI2.95)")
+    brief = json.load(open("brief.json")) if os.path.isfile("brief.json") else {}
+    b = (brief.get("brand") or {}) if isinstance(brief, dict) else {}
+    return str((cta.get("brandName") if isinstance(cta, dict) else "") or b.get("name") or "").strip()
+
+
+def transcript(words):
+    """the transcript's plain tokens, the brand-like names it speaks, and its spelled-out letter runs"""
+    toks, raw, stops, names, letters = [], [], [], set(), []
+    for w in words:
+        t = str(w.get("text", w.get("w", w.get("word", "")))) if isinstance(w, dict) else str(w)
+        for m in TOKEN.finditer(t):
+            toks.append(norm(m.group(0)))
+            raw.append(m.group(0))
+            stops.append(bool(re.match(r"\s*[.!?,;:…]", t[m.end():])))   # punctuation ends a run
+    caps = [bool(re.search(r"[A-Z]", r)) and not re.search(r"[a-z]", r) and len(r) > 1 for r in raw]
+    plainly = {b for r, b in zip(raw, toks) if not r.isupper()}
+    for k, r in enumerate(raw):
+        if not shaped(r):
+            continue
+        # an all-caps run of 2+ words ("NYC TEAM", "SO GOOD") is emphasis, and a word also said in
+        # lower case is an ordinary word: neither is a name
+        if caps[k] and ((k and caps[k - 1] and not stops[k - 1]) or (k + 1 < len(raw) and caps[k + 1] and not stops[k])
+                        or base(r) in plainly):
+            continue
+        if base(r) not in COMMON:
+            names.add(base(r))
+    run = []
+    for t in toks + [""]:   # "C F W" spoken letter by letter: every 3+ letter run is a name
+        if len(t) == 1 and t.isalpha() and t not in ("a", "i"):
+            run.append(t)
+            continue
+        for i in range(len(run)):
+            for j in range(i + 3, len(run) + 1):
+                letters.append("".join(run[i:j]))
+        run = []
+    return toks, names, set(letters)
+
+
+def all_caps(value):
+    letters = re.sub(r"[^A-Za-z]", "", plain(value))
+    return bool(letters) and letters.isupper()
+
+
+def foreign(value, names, spelled, own):
+    """the foreign names in this line: a spoken name written as an acronym / CamelCase word (or in an
+    all-caps word), or a spelled-out letter run ("C F W") written as an acronym"""
+    out = []
+    for m in TOKEN.finditer(plain(value)):
+        tok, b = m.group(0), base(m.group(0))
+        if not b or b in own or b in GENERIC or b in COMMON or not re.search(r"[a-z]", b):
+            continue
+        bare = POSS.sub("", tok)
+        if not bare[:1].isupper() or NAME_PREFIX.match(bare):
+            continue
+        upper = re.sub(r"[^A-Za-z]", "", bare).isupper()
+        if (b in names and (upper or shaped(bare))) or (b in spelled and upper and len(b) >= 3):
+            out.append(tok)
+    return out
+
+
+def quoted(value, said, hits):
+    toks = [t for t in (norm(t) for t in TOKEN.findall(plain(value))) if t]
+    if len(toks) < MIN_QUOTE or 2 * len(hits) > len(toks):
+        return False
+    return (" " + " ".join(toks) + " ") in (" " + " ".join(said) + " ")
+
+
+def fix_text(seg, names_hit, brand, caps):
+    hit = {base(t) for t in names_hit}
+    toks = list(TOKEN.finditer(seg))
+    out, pos, i = [], 0, 0
+    while i < len(toks):
+        m = toks[i]
+        if base(m.group(0)) not in hit:
+            i += 1
+            continue
+        j = i  # a run of adjacent names ("Acme Labs") is one name
+        while j + 1 < len(toks) and base(toks[j + 1].group(0)) in hit and seg[toks[j].end():toks[j + 1].start()].strip() == "":
+            j += 1
+        poss = POSS.search(toks[j].group(0))
+        out.append(seg[pos:m.start()])
+        pos = toks[j].end()
+        if brand:
+            out.append((brand.upper() if caps else brand) + (poss.group(0) if poss else ""))
+        else:
+            # drop the name and the space after it (or before it at the end)
+            if seg[pos:pos + 1].isspace():
+                pos += 1
+            elif out and out[-1][-1:].isspace():
+                out[-1] = out[-1][:-1]
+        i = j + 1
+    out.append(seg[pos:])
+    return "".join(out)
+
+
+def fix_value(value, names_hit, brand, is_html):
+    caps = all_caps(value)
+    if not is_html:
+        return re.sub(r"\s{2,}", " ", fix_text(value, names_hit, brand, caps)).strip()
+    hit = {base(t) for t in names_hit}
+    parts = []
+    for p in TAG.split(value):
+        if TAG.fullmatch(p):
+            parts.append(p)
+            continue
+        text = html.unescape(p)   # tokenise the text as shown (CFW&nbsp;writes is CFW + writes)
+        if not any(base(t) in hit for t in TOKEN.findall(text)):
+            parts.append(p)
+            continue
+        parts.append(html.escape(fix_text(text, names_hit, brand, caps), quote=False).replace("\xa0", "&nbsp;"))
+    new = re.sub(r"<span[^>]*>\s*</span>", "", "".join(parts))
+    return re.sub(r"[ \t]{2,}", " ", new).strip()
+
+
+def problems(plan, said, names, spelled, own):
+    bad = []
+    for i, tk in enumerate(plan.get("takeovers") or []):
+        fill = tk.get("fill") if isinstance(tk, dict) else None
+        if not isinstance(fill, dict):
+            continue
+        skip = SKIP.get(tk.get("template"), set())
+        for key, v in fill.items():
+            if key in skip or not isinstance(v, str):
+                continue
+            hits = foreign(v, names, spelled, own)
+            if hits and not quoted(v, said, hits):
+                bad.append((i, key, v, hits))
+    return bad
+
+
+def main(argv):
+    check = argv[:1] == ["--check"]
+    args = argv[1:] if check else argv
+    if len(args) not in (2, 3):
+        stop("usage: takeover_brand.py [--check] PLAN.json WORDS.json [BRAND] (WI2.95)")
+    path, wpath = args[0], args[1]
+    brand = args[2].strip() if len(args) == 3 else order_brand()
+    for p in (path, wpath):
+        if not os.path.isfile(p):
+            stop("file not found: %s (WI2.95)" % p)
+    try:
+        plan, words = json.load(open(path)), json.load(open(wpath))
+    except ValueError as exc:
+        stop("not valid JSON: %s (WI2.95)" % exc)
+    if isinstance(words, dict):
+        words = words.get("words") or []
+    if not isinstance(plan, dict) or not isinstance(words, list):
+        stop("plan must be a JSON object and words a JSON list (WI2.95)")
+    said, names, spelled = transcript(words)
+    own = {base(t) for t in TOKEN.findall(brand)}
+    bad = problems(plan, said, names, spelled, own)
+    if check:
+        for i, key, v, hits in bad:
+            print("takeover brand check: takeover %d %s %r names %s, not the order brand %r, and is not a word-for-word "
+                  "quote of the speech - quote the speech or use the order brand (WI2.95)"
+                  % (i + 1, key, v, "/".join(hits), brand or "(none)"), file=sys.stderr)
+        sys.exit(1 if bad else 0)
+    for i, key, v, hits in bad:
+        tk = plan["takeovers"][i]
+        new = fix_value(v, hits, brand, key in HTML_KEYS)
+        if not re.search(r"[A-Za-z0-9]", plain(new)):
+            stop("takeover %d %s %r is only a foreign name; rewrite it from the speech (WI2.95)" % (i + 1, key, v))
+        tk["fill"][key] = new
+        print("[plan] takeover %d %s: %r -> %r (names %s; order brand %r)" % (i + 1, key, v, new, "/".join(hits), brand or "(none)"))
+    if bad:
+        json.dump(plan, open(path, "w"), indent=2)
+    else:
+        print("[plan] takeover brand: no foreign brand names, plan unchanged")
+    left = problems(plan, said, names, spelled, own)
+    for i, key, v, hits in left:
+        print("takeover brand check: takeover %d %s %r still names %s (WI2.95)" % (i + 1, key, v, "/".join(hits)), file=sys.stderr)
+    sys.exit(1 if left else 0)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
+PY
+python3 "$W/takeover_brand.py" "$W/plan.json" "$W/words.json" "$BRAND_NAME" || exit 1
+BRAND_NAME="$BRAND_NAME" python3 - "$W/plan.json" "$DUR" <<'PY'
 import json,re,sys
 p=json.load(open(sys.argv[1])); dur=float(sys.argv[2])
 assert p["caption_groups"], "no caption groups"
-assert abs(p["caption_groups"][-1]["end"]-dur) < 3.0, "captions do not cover the bed"
+# WI2.89: the bed ends in a silent end-card tail (at most 3.5 s), so allow 4.5 s.
+assert abs(p["caption_groups"][-1]["end"]-dur) < 4.5, "captions do not cover the bed"
 assert not re.search(r'[ऀ-ॿ]', json.dumps(p)), "Devanagari in plan — Latin script only"
 for tk in p.get("takeovers",[]): assert 2.5 <= tk["end"]-tk["start"] <= 7, f"bad takeover window {tk}"
 cover_t = float(p.get("cover_at", dur * 0.4))
 assert cover_t >= 2.0, f"cover_at={cover_t} is inside the hook — must be >= 2s"
+import os, subprocess
+_d = os.path.dirname(sys.argv[1])
+assert subprocess.run([sys.executable, os.path.join(_d, "takeover_brand.py"), "--check", sys.argv[1],
+                       os.path.join(_d, "words.json"), os.environ.get("BRAND_NAME", "")]).returncode == 0, \
+    "takeover text names a brand the order does not own (WI2.95) — run python3 $W/takeover_brand.py"
 print(f"plan OK: {len(p['caption_groups'])} groups, {len(p.get('takeovers',[]))} takeovers, "
       f"{len(p.get('sfx',[]))} sfx, cover_at={cover_t}s")
 PY
@@ -534,12 +950,37 @@ for i, tk in enumerate(plan.get("takeovers", [])):
         m[k] = str(v) if k in RAW_KEYS else html.escape(str(v))
     tpl_name = tk["template"]
     if tpl_name == "tk-typing-ui":
-        # c-typing-ui template (sub-composition form, strip <template> wrapper)
+        # WI2.87: c-typing-ui as a sub-composition KEEPS its <template> wrapper and takes this slot's
+        # composition id (stripped and left as "typing-scene", HyperFrames never gets ready, the render
+        # fails and every takeover falls back to a still card). Its ts-* ids/classes and script are
+        # scoped to the slot, and every key it reads is filled.
         import re as re_mod
+        m["ACCENT"] = str(brand["accent"]).lstrip("#")   # the scene writes #{{ACCENT}}
+        # WI2.91: the scene reads PROMPT inside a JS "..." literal and decodes its entities in-page. html.escape
+        # alone let a backslash change the typed text and a carriage return break the script (the render
+        # failed). CR/CRLF become one line break; the HTML-escaped text is JSON-encoded (ASCII) as the
+        # literal's body, so backslash, quote, control characters and U+2028/2029 are escaped, and < > { }
+        # become \u escapes: no </script> break-out, no {{KEY}} in a prompt is ever filled. The other keys
+        # the scene reads in JS literals drop line breaks and carry a backslash as &#92;.
+        prompt = str(tk["fill"].get("PROMPT", "")).replace("\r\n", "\n").replace("\r", "\n")
+        m["PROMPT"] = json.dumps(html.escape(prompt).replace("\n", "&#10;"), ensure_ascii=True)[1:-1].translate(
+            {ord("<"): "\\u003c", ord(">"): "\\u003e", ord("{"): "\\u007b", ord("}"): "\\u007d"})
+        for k in ("TYPING_SPEED", "VARIANT", "BOTTOM_TAG"):
+            if k in m:
+                m[k] = re_mod.sub(r"[\r\n\u2028\u2029]+", " ", str(m[k])).replace("\\", "&#92;")
+        m.setdefault("CARD_LABEL", "The prompt")   # the label above the card (neutral; no "paste this")
+        for k, v in (("TYPING_SPEED", "1.0"), ("BOTTOM_TAG", ""), ("VARIANT", "full"), ("BOTTOM_TAG_DISPLAY", "")):
+            m.setdefault(k, v)
         tpl_src = open(f"{TYPING}/templates/typing-scene.html").read()
-        tpl_src = re_mod.sub(r'<template[^>]*>\s*', '', tpl_src)
-        tpl_src = re_mod.sub(r'\s*</template>', '', tpl_src)
-        # Wrap in full sub-composition structure
+        tpl_src = tpl_src[tpl_src.index('<template id="typing-scene-template">'):]   # drop the usage comment
+        assert tpl_src.count('id="ts-label">The prompt · paste this</div>') == 1, \
+            "FATAL: c-typing-ui typing-scene.html card label changed shape; cannot fill CARD_LABEL (WI2.91)"
+        tpl_src = tpl_src.replace('id="ts-label">The prompt · paste this</div>', 'id="ts-label">{{CARD_LABEL}}</div>')
+        tpl_src = re_mod.sub(r'(?<=[.#"])ts-', f"tk{i}-ts-", tpl_src.replace("typing-scene", f"tk{i}"))
+        tpl_src = tpl_src.replace("<script>\n", "<script>\n(function () {\n", 1)
+        tpl_src = tpl_src.replace("\n  </script>\n</div>\n</template>", "\n})();\n  </script>\n</div>\n</template>")
+        assert f'<template id="tk{i}-template">' in tpl_src and f'__timelines["tk{i}"]' in tpl_src and "})();" in tpl_src, \
+            "FATAL: c-typing-ui typing-scene.html changed shape; cannot slot it as a takeover"
         tpl_content = fill(tpl_src, m)
     else:
         tpl_content = fill(open(f"{SKILL}/templates/{tpl_name}.html").read(), m)
@@ -588,6 +1029,9 @@ foreground call gets killed at the runtime ceiling and the cook fails with no re
 
 - `terminal(command="cd $W/comp && npx hyperframes@0.7.5 render --output $W/visuals.mp4 --fps 30 --quality high", background=true, notify_on_complete=true)` → returns a `session_id`
 - `process(action="wait", session_id=<id>)` to block until done (or `poll` to check progress)
+- WI2.92: if the render exits non-zero or leaves no `$W/visuals.mp4`, STOP and exit non-zero with
+  `takeovers: hyperframes render of $W/comp failed; no still fallback (WI2.92): <the hyperframes error>`.
+  There is no still-card, PNG or ffmpeg-overlay takeover fallback.
 
 Only after the render completes, verify the output **and stamp proof for the delivery gate**:
 
@@ -812,46 +1256,59 @@ fi
 
 ### Step 8 — CTA end-card (FINAL TAIL TAKEOVER — not an append)
 
-**Hard rule:** the CTA end-card is the **last graphics takeover** of the bed, covering the picture
-during the speaker's spoken CTA line. Total reel duration = bed duration. Nothing is appended.
+**Hard rule:** the CTA end-card is the **last graphics takeover** of the bed. It never covers
+speech (WI2.86): it starts at `max(bed − CTA_DURATION, last word end)` and covers the rest of the
+bed. Step 2's silent tail (WI2.89) leaves `CTA_DURATION` + 0.5 s after the last word, so the full
+card shows right after the speech. Total reel duration = bed duration. Nothing is appended.
 
 ```bash
+# WI2.90: cta_card off (CTA_CARD, from the order) renders no end card; Step 2 added no tail either.
+if [ "${CTA_CARD:-on}" != "on" ]; then
+BED_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$W/polished.mp4")
+echo "[spotlight] end card: cta_card off, no end card"
+cp "$W/polished.mp4" "$OUT_RAW"
+else
 BG_HEX=$(python3 -c "import json; print(json.load(open('$W/plan.json'))['brand']['bg'].lstrip('#'))")
 ACCENT_HEX=$(python3 -c "import json; print(json.load(open('$W/plan.json'))['brand']['accent'].lstrip('#'))")
 FG_HEX=$(python3 -c "import json; print(json.load(open('$W/plan.json'))['brand']['fg'].lstrip('#'))")
 
 CTA_DURATION="${CTA_DURATION:-3.0}"
+BED_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$W/polished.mp4")
+# WI2.86/WI2.89: the card starts only after the last spoken word ends and covers the rest of the bed.
+CTA_START=$(python3 - "$BED_DUR" "$CTA_DURATION" "$W" <<'PY'
+import json, os, sys
+bed, want, w = float(sys.argv[1]), float(sys.argv[2]), sys.argv[3]
+ends = [float(x["end"]) for x in json.load(open(os.path.join(w, "words.json"))) if isinstance(x, dict) and "end" in x]
+for g in json.load(open(os.path.join(w, "plan.json"))).get("caption_groups") or []:
+    ends += [float(x["e"]) for x in g.get("words") or [] if isinstance(x, dict) and "e" in x]
+if not ends:
+    sys.exit("end card: no word timings in words.json or the plan caption groups")
+print("%.3f" % max(bed - want, max(ends)))
+PY
+) || exit 1
+CTA_DURATION=$(python3 -c "print('%.3f' % max(0.0, ${BED_DUR} - ${CTA_START}))")
+python3 -c "import sys; sys.exit(0 if ${CTA_DURATION} >= 1.0 else 'end card: only ${CTA_DURATION}s of bed after the last spoken word; the Step 2 end-card tail (WI2.89) is missing')" || exit 1
 # Per-brand end card (CFW-354 / M1-00): kicker = BRAND_NAME, hero = CTA_TEXT, handle = CTA_HANDLE.
 # scripts/cta-card.py OMITS the kicker/handle layer when its variable is empty — a brand with no
 # known handle gets a card with no handle line, never a placeholder or another brand's handle.
 CTA_DURATION="$CTA_DURATION" CTA_TEXT="$CTA_TEXT" CTA_HANDLE="${CTA_HANDLE:-}" BRAND_NAME="${BRAND_NAME:-}" \
-  python3 "$SKILL_DIR/scripts/cta-card.py" "$W/plan.json" "$W/cta-card.json"
+  python3 "$SKILL_DIR/scripts/cta-card.py" "$W/plan.json" "$W/cta-card.json" \
+    "$W/cta-card" "$SKILL_DIR/.hub/f-gsap/vendor/gsap.min.js" || exit 1
 
-hyperframes render "$W/cta-card.json" "$W/cta-card.mp4" 2>/dev/null || {
-  # Fallback: ffmpeg drawtext CTA card.
-  # BUG FIX (bake-off #2 2026-06-12): drawtext fontsize=80 clips text at the left edge
-  # on a 1080px canvas. Fix: fontsize=64 with x=(w-text_w)/2 centering.
-  # NOTE: a proper HTML CTA composition is the long-term fix; this drawtext path is
-  # the emergency fallback only (used when hyperframes render fails after doctor check).
-  CTA_VF="drawtext=text='${CTA_TEXT}':fontcolor=#${FG_HEX}:fontsize=64:x=(w-text_w)/2:y=760:font=Oswald:fontweight=800"
-  if [[ -n "${CTA_HANDLE:-}" ]]; then
-    CTA_VF="${CTA_VF},drawtext=text='${CTA_HANDLE}':fontcolor=#${ACCENT_HEX}:fontsize=48:x=(w-text_w)/2:y=900:font=Inter"
-  fi
-  ffmpeg -y -f lavfi \
-    -i "color=c=#${BG_HEX}:s=1080x1920:r=30:d=${CTA_DURATION}" \
-    -vf "$CTA_VF" \
-    -c:v libx264 -pix_fmt yuv420p -r 30 \
-    "$W/cta-card.mp4"
-}
+# WI2.93: hyperframes 0.7.5 renders a project DIRECTORY ($W/cta-card/index.html, written by
+# cta-card.py), never the .json spec ("Not a directory"). The card must animate, so there is no
+# still ffmpeg drawtext card: a failed render stops the step with the reason.
+npx hyperframes@0.7.5 render "$W/cta-card" --fps 30 --quality high --output "$W/cta-card.mp4" && [ -f "$W/cta-card.mp4" ] \
+  || { echo "end card: hyperframes render of $W/cta-card failed; no still fallback card (WI2.93)" >&2; exit 1; }
 
-BED_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$W/polished.mp4")
-CTA_START=$(python3 -c "print(${BED_DUR} - ${CTA_DURATION})")
+# BED_DUR, CTA_START and CTA_DURATION were set above (WI2.86/WI2.89): the card follows the last word.
 
 ffmpeg -y -i "$W/polished.mp4" -itsoffset "${CTA_START}" -i "$W/cta-card.mp4" \
   -filter_complex "[0:v][1:v]overlay=enable='between(t,${CTA_START},${BED_DUR})':eof_action=pass[v]" \
   -map "[v]" -map 0:a \
   -c:v libx264 -pix_fmt yuv420p -c:a copy \
   -movflags +faststart "$OUT_RAW"
+fi   # WI2.90: end of the cta_card on branch
 
 if [ -n "${MUSIC:-}" ]; then
   FADE_START=$(python3 -c "print(${BED_DUR} - 0.5)")
@@ -986,9 +1443,9 @@ See `.hub/c-eval-runner/SKILL.md` for the spec format + built-in checks, and
 **This gate is NON-NEGOTIABLE and runs immediately before Step 11. If it exits non-zero, STOP —
 do NOT run `cfw-upload`, do NOT call `propose_composition`.** It proves — mechanically, not
 perceptually — that the premium reel pipeline actually ran, so a weak/rushed executor cannot ship a
-degraded reel (missing HyperFrames graphics, hand-burned captions) as if it were premium. The three
-proof-stamps come from Step 5 (`hyperframes.json`), Step 7 (`premium.json`), and — if the render
-truly failed — the Fallback section's stamp.
+degraded reel (missing HyperFrames graphics, hand-burned captions) as if it were premium. The
+proof-stamps come from Step 5 (`hyperframes.json`) and Step 7 (`premium.json`). A fallback stamp
+always fails the gate: there is no takeover fallback (WI2.92).
 
 ```bash
 python3 - "$W" "$OUT" <<'PY' || { echo "🚫 DELIVERY BLOCKED — see failures above. Fix the render and re-run Steps 5–7; do NOT upload or propose_composition."; exit 1; }
@@ -999,15 +1456,14 @@ fail = []
 plan = json.load(open(f"{W}/plan.json"))
 planned_tk = len(plan.get("takeovers", []))
 
-# 1) HyperFrames graphics takeovers actually rendered (or a LEGITIMATE logged fallback).
+# 1) HyperFrames graphics takeovers actually rendered (no fallback, WI2.92).
 hf_path = f"{W}/.gate/hyperframes.json"
 if not os.path.exists(hf_path):
     fail.append("Step 5 HyperFrames stamp missing — the graphics render never ran (or was skipped).")
 else:
     hf = json.load(open(hf_path))
     if hf.get("fallback"):
-        if len(hf.get("reason", "")) <= 25:
-            fail.append("HyperFrames fallback used without a real reason — looks like a skip, not a fault.")
+        fail.append("HyperFrames fallback stamp found — there is no takeover fallback (WI2.92); fix the render.")
     elif planned_tk > 0 and hf.get("rendered", 0) < planned_tk:
         fail.append(f"Only {hf.get('rendered',0)}/{planned_tk} planned graphics takeovers rendered.")
 
@@ -1061,33 +1517,12 @@ cfw-upload "$COVER_PNG" 2>/dev/null || bash _scripts/upload-to-recordings.sh "$C
 Clean up `$W` after both URLs are confirmed.
 **Print the R2 public URL of `$OUT` as the final line of output.** Never print an input URL.
 
-## Fallback assembly (v0.4 ffmpeg overlay — ONLY if HyperFrames render genuinely fails)
+## No fallback assembly (WI2.92)
 
-**This is NOT the easy path. It is permitted ONLY after `npx hyperframes@0.7.5 render` has actually
-failed and `hyperframes doctor` confirms an environment fault (chromium/memory).** Never skip the
-HyperFrames render to "save time" — a title-only or caption-only reel is a defect. If (and only if)
-the render truly fails, fall back to the proven v0.4 ffmpeg technique: render each takeover as a
-standalone HyperFrames composition, overlay on the bed with `overlay=enable='between(t,a,b)'` +
-`setpts=PTS-STARTPTS+start/TB`, `-map 0:a` for the unbroken audio. B-roll beats are handled the same
-way as Step 6b. The cover rule (Step 10) still runs.
-
-**Two hard rules for the fallback path:**
-1. **Step 7 (c-reel-premium) still runs** — the fallback replaces only the graphics render, never
-   the kinetic-caption/SFX/grade pass. Do NOT "burn plain SRT captions" as a substitute for premium.
-2. **Stamp the fallback with a reason** so the Step 10.6 gate can tell a real fault from a skip:
-   ```bash
-   mkdir -p "$W/.gate"
-   REASON="${1:-hyperframes render failed — doctor confirmed environment fault}"
-   # Paste the actual doctor/render error into REASON. An empty or generic reason FAILS the gate.
-   python3 - "$W" "$REASON" <<'PY'
-   import json, sys
-   W, reason = sys.argv[1], sys.argv[2]
-   assert len(reason) > 25, "fallback reason too short — paste the real render/doctor error"
-   json.dump({"rendered": 0, "engine": "ffmpeg-v0.4-fallback", "fallback": True,
-              "reason": reason}, open(f"{W}/.gate/hyperframes.json", "w"))
-   print("[gate-stamp] hyperframes: FALLBACK path — reason logged")
-   PY
-   ```
+There is no still-card, PNG or ffmpeg-overlay stand-in for the graphics takeovers. On 2026-10-21
+that fallback hid a total render failure ("Composition has zero duration. Runtime ready: false")
+and the reel still reached Reviews. If `npx hyperframes@0.7.5 render` fails, Step 5 fails with the
+hyperframes error; `hyperframes doctor` output may go in that reason, but it never unlocks a fallback.
 
 ## Notes & gotchas
 
@@ -1135,5 +1570,6 @@ way as Step 6b. The cover rule (Step 10) still runs.
 - **(ffprobe csv N/A here.)** Spotlight reads width/height with single-field `-of csv=p=0` calls (one
   value each), which parse identically on Ubuntu — no `awk` rework needed. The multi-field `width,height`
   ffprobe in Steps 5/6 is a diagnostic echo, not parsed into shell vars.
-- **(CTA fallback N/A here.)** The Step 8 CTA fallback is an ffmpeg `drawtext` card, not a HyperFrames
-  composition — so the "proper HyperFrames standalone" CTA patch does not apply to this core.
+- **(CTA end card is a HyperFrames project, WI2.93.)** Step 8 renders `$W/cta-card/` (index.html +
+  gsap.min.js written by `scripts/cta-card.py`) with `hyperframes render <dir>`; there is no ffmpeg
+  `drawtext` fallback card, so a failed render fails the step.

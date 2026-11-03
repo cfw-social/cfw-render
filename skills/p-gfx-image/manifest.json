@@ -1,0 +1,133 @@
+{
+  "manifestFormat": 1,
+  "recipe": "p-gfx-image",
+  "recipeVersion": "2026.10.2",
+  "label": "GFX Image Post",
+  "deliverable": {
+    "kind": "image",
+    "aspect": "1:1",
+    "width": 1080,
+    "height": 1080
+  },
+  "needs": {
+    "os": ["macos"],
+    "engines": ["codex", "claude-code"],
+    "tools": ["node>=22", "npx", "chromium", "ffmpeg", "imagemagick", "python3"],
+    "providers": []
+  },
+  "inputs": [
+    {
+      "id": "topic",
+      "label": "Image topic",
+      "kinds": ["text"],
+      "required": true,
+      "count": { "min": 1, "max": 1 },
+      "neededAt": "start",
+      "prompt": "What should the graphic explain? One or two sentences: the point, the numbers or steps if any, and who it is for."
+    },
+    {
+      "id": "count",
+      "label": "How many images",
+      "kinds": ["choice"],
+      "required": false,
+      "count": { "min": 0, "max": 1 },
+      "neededAt": { "step": "plan_cards" },
+      "prompt": "How many images? (variants of one point, or a multi-image set)",
+      "choices": ["1", "2", "3", "4"]
+    },
+    {
+      "id": "format",
+      "label": "Image format",
+      "kinds": ["choice"],
+      "required": false,
+      "count": { "min": 0, "max": 1 },
+      "neededAt": { "step": "author_html" },
+      "prompt": "Which format?",
+      "choices": [
+        { "id": "square", "label": "Square post 1:1 (1080×1080)" },
+        { "id": "portrait", "label": "Portrait 9:16 (1080×1920)" },
+        { "id": "banner", "label": "Channel banner 16:9 (1920×1080)" }
+      ]
+    },
+    {
+      "id": "logo",
+      "label": "Brand logo",
+      "kinds": ["image"],
+      "required": false,
+      "count": { "min": 0, "max": 1 },
+      "neededAt": { "step": "author_html" }
+    }
+  ],
+  "steps": [
+    {
+      "id": "plan_cards",
+      "label": "Plan the cards",
+      "weight": 15,
+      "runsOn": "computer",
+      "uses": { "tools": ["python3"] },
+      "when": "always",
+      "instructions": "steps/01-plan-cards.md",
+      "saves": [
+        { "id": "plan", "kind": "json", "preview": false }
+      ],
+      "checks": [
+        { "id": "plan_shape", "label": "One card plan per requested image with headline and layout" }
+      ],
+      "maxCheckRetries": 2,
+      "canAsk": ["topic"]
+    },
+    {
+      "id": "author_html",
+      "label": "Author the HTML compositions",
+      "weight": 25,
+      "runsOn": "computer",
+      "uses": { "tools": ["python3"] },
+      "when": "always",
+      "instructions": "steps/02-author-html.md",
+      "saves": [
+        { "id": "cards_html", "kind": "json", "preview": false }
+      ],
+      "checks": [
+        { "id": "html_per_card", "label": "One complete HTML document per card, branded and charset-safe" }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "render",
+      "label": "Render to PNG",
+      "weight": 30,
+      "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "node>=22", "npx", "chromium"] },
+      "when": "always",
+      "instructions": "steps/03-render.md",
+      "saves": [
+        { "id": "image_1", "kind": "image", "preview": true },
+        { "id": "contact_sheet", "kind": "image", "preview": true },
+        { "id": "images", "kind": "json", "preview": false }
+      ],
+      "checks": [
+        { "id": "image_dims", "label": "Every image is exactly the chosen canvas" },
+        { "id": "not_black", "label": "No image is blank or black" }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "qa_gate",
+      "label": "Vision QA and final checks",
+      "weight": 30,
+      "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "imagemagick", "python3"] },
+      "when": "always",
+      "instructions": "steps/04-qa-gate.md",
+      "saves": [
+        { "id": "final", "kind": "image", "preview": true },
+        { "id": "qa_report", "kind": "json", "preview": false }
+      ],
+      "checks": [
+        { "id": "vision_qa_pass", "label": "Every image passed the vision QA gate" },
+        { "id": "final_dims", "label": "Final image is exactly the chosen canvas" }
+      ],
+      "maxCheckRetries": 1
+    }
+  ]
+}

@@ -157,6 +157,273 @@ cr_recipe_needs_heygen() {
   return 1
 }
 
+# CFW-316: bounded provider-aware budgets. Metadata only affects scheduling,
+# never provider credentials. Dedicated HeyGen recipes predate providers[].
+cr_recipe_budget() {
+  local base="$1" recipe="$2" kind="$3" uplift=0
+  if [[ "$kind" != image ]] && { cr_recipe_needs_heygen "$recipe" || python3 -c '
+import json, sys
+try:
+    p = json.load(open(sys.argv[1]))["recipes"][sys.argv[2]].get("providers", [])
+    sys.exit(0 if isinstance(p, list) and "heygen" in p else 1)
+except (OSError, ValueError, KeyError, TypeError):
+    sys.exit(1)
+' "${CFW_RENDER_SKILLS_DIR:-}/index.json" "$recipe"; }; then
+    uplift="${CFW_RENDER_PROVIDER_BUDGET_HEYGEN:-900}"
+  fi
+  printf '%s' "$(( base + uplift ))"
+}
+
+# File is unique to this engine invocation; clamp to its lifetime and merge
+# intervals. Duplicate/malformed edges cannot multiply elapsed wait time.
+cr_provider_wait_excluded() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import os, sys
+path, start, now = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+opened = None
+windows = []
+try:
+    if os.path.islink(path) or os.path.getsize(path) > 1048576:
+        raise ValueError("invalid wait log")
+    with open(path) as f:
+        for line in f:
+            parts = line.strip().split("\t")
+            if len(parts) != 3 or parts[1] != "heygen":
+                continue
+            edge, _, stamp = parts
+            if not stamp.isdecimal():
+                continue
+            stamp = max(start, min(now, int(stamp)))
+            if edge == "start" and opened is None:
+                opened = stamp
+            elif edge == "end" and opened is not None:
+                if stamp > opened:
+                    windows.append((opened, stamp))
+                opened = None
+    if opened is not None and now > opened:
+        windows.append((opened, now))
+except (OSError, ValueError):
+    windows = []
+end = start
+total = 0
+for a, b in sorted(windows):
+    total += max(0, b - max(a, end))
+    end = max(end, b)
+print(total)
+PY
+}
+
+cr_provider_wait_note() {
+  cat <<'NOTE'
+
+## Bounded provider waits
+For a HeyGen poll loop only, call `cfw-render-report.sh provider-wait-start heygen`
+right before waiting and `cfw-render-report.sh provider-wait-end heygen` when it
+resolves. The watchdog excludes these windows, up to a fixed outer ceiling.
+This does not extend a lease or override cancellation, checks or tool restrictions.
+Missing brackets use the ordinary work budget. Never call complete from a step:
+the harness owns ordered delivery. A legacy Director calls complete once with
+all deliverables in explicit order, never a final/* glob. If delivery fails or
+its reply is lost, retain artifacts; do not retry complete automatically.
+NOTE
+}
+
+# ---------------------------------------------------------------------------
+# cr_select_deliverables <order-dir> <harness-result-json>
+#
+# Prints path<TAB>role lines for cfw-render.sh complete. Role is "media" or
+# "captions".
+#
+# Carousel (WI2.43/WI2.45): when steps/render_slides/saves/slides.json names
+# count N and saves/slide_1.png … slide_N.png exist (or work/slides/slide-N.png
+# whose sha256 matches slides.json), those ordered slide images are the only
+# media deliverables. cover.png and slide_sheet.png stay previews and are never
+# selected. Captions still come from the harness result or
+# steps/captions/saves/captions.json.
+#
+# Otherwise (WI2.51) keep harness media, plus captions, but drop a save the
+# order manifest marks "preview": true when that save is a contact sheet
+# (id ends with _sheet) or the QA image id "final". Match the harness item
+# by save id, or by file basename stem when the item has no id.
+# Numbered graphics (image_1), cover, and video/audio stay even if the
+# manifest also flags them preview: the real file is the deliverable.
+# If every media path was one of those previews, print no media.
+# ---------------------------------------------------------------------------
+cr_select_deliverables() {
+  local order_dir="$1" h_out="${2:-[]}"
+  python3 -c '
+import hashlib, json, os, sys
+
+MEDIA = {"mp4", "mov", "webm", "m4v", "png", "jpg", "jpeg", "gif", "webp", "pdf", "mp3", "wav", "m4a"}
+order_dir = os.path.abspath(sys.argv[1])
+try:
+    items = json.loads(sys.argv[2] or "[]")
+except json.JSONDecodeError:
+    items = []
+if not isinstance(items, list):
+    items = []
+
+def is_captions(item, path):
+    ext = os.path.splitext(path)[1].lstrip(".").lower()
+    if ext != "json":
+        return False
+    return item.get("role") == "captions" or item.get("id") == "captions" or os.path.basename(path) == "captions.json"
+
+def captions_path():
+    for item in items:
+        path = item.get("path") or ""
+        if path and is_captions(item, path):
+            return path
+    fallback = os.path.join(order_dir, "steps", "captions", "saves", "captions.json")
+    if os.path.isfile(fallback) and os.path.getsize(fallback) > 0:
+        return fallback
+    return ""
+
+def order_manifest():
+    path = os.path.join(order_dir, "order.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        order = json.load(open(path))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(order, dict):
+        return None
+    manifest = order.get("manifest")
+    if isinstance(manifest, str) and manifest:
+        mpath = manifest if os.path.isabs(manifest) else os.path.join(order_dir, manifest)
+        try:
+            manifest = json.load(open(mpath))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+    return manifest if isinstance(manifest, dict) else None
+
+def preview_drop_ids(manifest):
+    # Sheets and the QA image "final" are not deliverables. Other preview
+    # flags (image_N, cover, final_video) name the file the customer gets.
+    drop = set()
+    if not isinstance(manifest, dict):
+        return drop
+    for step in manifest.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        for save in step.get("saves") or []:
+            if not isinstance(save, dict) or save.get("preview") is not True:
+                continue
+            sid = save.get("id")
+            kind = save.get("kind") if isinstance(save.get("kind"), str) else ""
+            if not isinstance(sid, str) or not sid:
+                continue
+            if kind in ("video", "audio", "text", "json"):
+                continue
+            if sid == "final" or sid.endswith("_sheet"):
+                drop.add(sid)
+    return drop
+
+PREVIEW_DROP = preview_drop_ids(order_manifest())
+
+def item_save_id(item, path):
+    sid = item.get("id")
+    if isinstance(sid, str) and sid:
+        return sid
+    sid = item.get("saveId")
+    if isinstance(sid, str) and sid:
+        return sid
+    return os.path.splitext(os.path.basename(path))[0]
+
+def emit_default():
+    for item in items:
+        path = item.get("path") or ""
+        if not path:
+            continue
+        ext = os.path.splitext(path)[1].lstrip(".").lower()
+        if is_captions(item, path):
+            print(path + "\tcaptions")
+        elif ext in MEDIA:
+            if item_save_id(item, path) in PREVIEW_DROP:
+                continue
+            print(path + "\tmedia")
+
+# Carousel: slides.json is the ordered set contract. Prefer saves/slide_N.png,
+# then work/slides/slide-N.png (work fallback must match slides.json sha256).
+# Never select cover.png or slide_sheet.png.
+slides_json = os.path.join(order_dir, "steps", "render_slides", "saves", "slides.json")
+if os.path.isfile(slides_json):
+    try:
+        meta = json.load(open(slides_json))
+    except (OSError, ValueError, json.JSONDecodeError):
+        meta = None
+    count = meta.get("count") if isinstance(meta, dict) else None
+    by_n = {}
+    if isinstance(meta, dict):
+        for entry in meta.get("slides") or []:
+            if isinstance(entry, dict) and isinstance(entry.get("n"), int) and isinstance(entry.get("sha256"), str):
+                by_n[entry["n"]] = entry["sha256"].lower()
+    if isinstance(count, int) and 1 <= count <= 30:
+        base = os.path.join(order_dir, "steps", "render_slides")
+        slides = []
+        for n in range(1, count + 1):
+            chosen = ""
+            save_path = os.path.join(base, "saves", "slide_%d.png" % n)
+            if os.path.isfile(save_path) and os.path.getsize(save_path) > 0 and not os.path.islink(save_path):
+                chosen = save_path
+            else:
+                work_path = os.path.join(base, "work", "slides", "slide-%d.png" % n)
+                if os.path.isfile(work_path) and os.path.getsize(work_path) > 0 and not os.path.islink(work_path):
+                    want = by_n.get(n)
+                    if want:
+                        got = hashlib.sha256(open(work_path, "rb").read()).hexdigest()
+                        if got == want:
+                            chosen = work_path
+            if not chosen:
+                slides = []
+                break
+            slides.append(chosen)
+        if len(slides) == count:
+            for path in slides:
+                print(path + "\tmedia")
+            cap = captions_path()
+            if cap:
+                print(cap + "\tcaptions")
+            sys.exit(0)
+        # slides.json present but the ordered PNGs are missing: refuse to fall
+        # back to cover.png / slide_sheet.png (smoke 10 defect).
+        sys.exit(0)
+
+emit_default()
+' "$order_dir" "$h_out"
+}
+
+# Shared watchdog for Director and step engines. Finish grace is only for an
+# explicit delivery invocation, not a guessed file set. No rescue upload here.
+cr_budget_watchdog() {
+  local pid="$1" budget="$2" wait_file="$3" root="$4" directive="${5:-}" immediate_revoke="${6:-0}"
+  local started now excluded wall grace=0
+  started="$(date +%s)"
+  while :; do
+    sleep 1
+    if [[ -n "$directive" && -f "$directive" ]]; then
+      case "$(cat "$directive")" in
+        cancel|superseded) break ;;
+        stop_after_step|report_blocked) if [[ "$immediate_revoke" == 1 ]]; then break; fi ;;
+      esac
+    fi
+    now="$(date +%s)"; wall=$((now - started))
+    excluded="$(cr_provider_wait_excluded "$wait_file" "$started" "$now")"
+    [[ "$excluded" =~ ^[0-9]+$ ]] || excluded=0
+    if (( wall - excluded >= budget || wall >= budget + ${CFW_RENDER_PROVIDER_WAIT_CAP:-2700} )); then
+      if [[ -z "$directive" && -d "$root/.delivery-started" && ! -f "$root/.outcome" ]]; then
+        grace="${CFW_RENDER_FINISH_GRACE_SECS:-90}"
+      fi
+      (( grace == 0 )) || sleep "$grace"
+      break
+    fi
+  done
+  cr_kill_tree "$pid" TERM
+  sleep 1
+  cr_kill_tree "$pid" KILL
+}
+
 # ---------------------------------------------------------------------------
 # cr_default_env_file — where the settings file lives when CFW_RENDER_ENV is
 # not set: ~/.cfw-render/cfw-render.env. An install from before the folder
@@ -205,6 +472,8 @@ cr_load_config() {
     CFW_RENDER_MODE CFW_RENDER_WORKER_ID_FILE
     CFW_RENDER_HEARTBEAT_SECS CFW_RENDER_RENDERER_KIND CFW_RENDER_ORPHAN_GRACE_SECS
     CFW_RENDER_HOME CFW_RENDER_LOG_DIR CFW_RENDER_OUTPUTS CFW_RENDER_KEEP_OUTPUTS
+    CFW_RENDER_FINISH_GRACE_SECS CFW_RENDER_PROVIDER_BUDGET_HEYGEN CFW_RENDER_PROVIDER_WAIT_CAP
+    CFW_RENDER_MEDIA_BASE_URL CFW_RENDER_TEST_MEDIA_BASE_URL CFW_RENDER_LOCAL_CHECKPOINTS
   )
   local _cr_preset=() _v
   for _v in "${_cr_vars[@]}"; do
@@ -261,6 +530,16 @@ cr_load_config() {
   # render orphaned — absorbs a background write that lands a few hundred ms
   # after the Director's own turn ended, without masking a real failure.
   : "${CFW_RENDER_ORPHAN_GRACE_SECS:=5}"
+  : "${CFW_RENDER_FINISH_GRACE_SECS:=90}"
+  : "${CFW_RENDER_PROVIDER_BUDGET_HEYGEN:=900}"
+  : "${CFW_RENDER_PROVIDER_WAIT_CAP:=2700}"
+  # Bound arithmetic inputs before launching an engine (including env overrides).
+  for _v in CFW_RENDER_FINISH_GRACE_SECS CFW_RENDER_PROVIDER_BUDGET_HEYGEN CFW_RENDER_PROVIDER_WAIT_CAP CFW_RENDER_TIMEOUT_VIDEO CFW_RENDER_TIMEOUT_IMAGE; do
+    if [[ ! "${!_v}" =~ ^(0|[1-9][0-9]{0,4})$ ]] || (( ${!_v} > 86400 )); then
+      printf 'cfw-render: invalid bounded seconds: %s\n' "$_v" >&2
+      return 1
+    fi
+  done
   # [CFW-146] Renderer identity shown to the owner ("Working on your Mac" /
   # "on your computer"). Derived from the platform unless set:
   #   Darwin        → mac   (the owner's laptop)
@@ -278,7 +557,9 @@ cr_load_config() {
     CFW_RENDER_OLLAMA_KEYS_FILE CFW_RENDER_DIRECTOR_CMD \
     CFW_RENDER_MODE CFW_RENDER_WORKER_ID_FILE \
     CFW_RENDER_HEARTBEAT_SECS CFW_RENDER_RENDERER_KIND CFW_RENDER_ORPHAN_GRACE_SECS \
-    CFW_RENDER_HOME CFW_RENDER_LOG_DIR CFW_RENDER_OUTPUTS CFW_RENDER_KEEP_OUTPUTS
+    CFW_RENDER_HOME CFW_RENDER_LOG_DIR CFW_RENDER_OUTPUTS CFW_RENDER_KEEP_OUTPUTS \
+    CFW_RENDER_FINISH_GRACE_SECS CFW_RENDER_PROVIDER_BUDGET_HEYGEN CFW_RENDER_PROVIDER_WAIT_CAP \
+    CFW_RENDER_MEDIA_BASE_URL CFW_RENDER_TEST_MEDIA_BASE_URL CFW_RENDER_LOCAL_CHECKPOINTS
 
   local missing=()
   [[ -z "${CFW_API_BASE:-}" ]] && missing+=("CFW_API_BASE")
@@ -393,12 +674,70 @@ cr_log() {
 }
 
 # ---------------------------------------------------------------------------
+# cr_curl_with_key [curl args...]
+# Run curl with the render key in a header. The key is written to a mode-600
+# file and passed as -H @file. curl's argv never contains the key (WI2.102:
+# process listings were showing the header value). Do not pass the key as
+# another argument.
+#
+# Stdin is /dev/null. Job control is off and curl is started in the
+# background, so this call does not pass the caller's stdin through
+# (WI2.105). --data-binary @- therefore sends an empty body. Pass the body
+# as an argument or as a file (@path).
+#
+# The file is removed when this call ends, including when curl is killed or
+# this call receives TERM, INT or HUP (WI2.104). The trap lives in a subshell
+# so the caller's own traps stay in place. The subshell's exit status is
+# curl's.
+# ---------------------------------------------------------------------------
+cr_curl_with_key() {
+  local rc
+  (
+    set +m
+    hdr=""
+    curl_pid=""
+    # Installed before mktemp, so a signal during the call still removes the
+    # key file. EXIT covers a normal curl exit; INT/TERM/HUP cover a kill of
+    # this subshell while wait is blocked on curl.
+    _cr_drop_hdr() {
+      if [[ -n "$hdr" ]]; then
+        rm -f "$hdr"
+        hdr=""
+      fi
+      if [[ -n "$curl_pid" ]]; then
+        kill "$curl_pid" 2>/dev/null || true
+        curl_pid=""
+      fi
+    }
+    trap '_cr_drop_hdr' EXIT
+    trap '_cr_drop_hdr; exit 129' HUP
+    trap '_cr_drop_hdr; exit 130' INT
+    trap '_cr_drop_hdr; exit 143' TERM
+    hdr="$(mktemp "${TMPDIR:-/tmp}/cfw-render-hdr.XXXXXX")" || exit 1
+    chmod 600 "$hdr" || exit 1
+    printf 'cfw-render-key: %s\n' "$CFW_RENDER_WORKER_KEY" > "$hdr" || exit 1
+    curl -H "@$hdr" "$@" &
+    curl_pid=$!
+    if [[ -z "$curl_pid" ]]; then
+      exit 1
+    fi
+    wait "$curl_pid"
+    rc=$?
+    curl_pid=""
+    exit "$rc"
+  )
+  rc=$?
+  return "$rc"
+}
+
+# ---------------------------------------------------------------------------
 # cr_mcp_call <tool> <json-args>
 # Single curl JSON-RPC wrapper against $CFW_API_BASE/api/v1/mcp (pattern:
 # cfw-social/docs/mcp-brand-context-smoke.md "Manual curl reference"), headers
-# cfw-render-key + accept json/SSE, --max-time 30, 2 retries with backoff on
-# curl-level failure. Prints the unwrapped inner JSON (result.content[0].text)
-# on stdout; non-zero exit on curl failure / JSON-RPC error / isError.
+# cfw-render-key (via cr_curl_with_key, not argv) + accept json/SSE,
+# --max-time 30, 2 retries with backoff on curl-level failure. Prints the
+# unwrapped inner JSON (result.content[0].text) on stdout; non-zero exit on
+# curl failure / JSON-RPC error / isError.
 # ---------------------------------------------------------------------------
 cr_mcp_call() {
   local tool="$1" args_json="$2"
@@ -411,10 +750,12 @@ args = json.loads(sys.argv[2]) if sys.argv[2] else {}
 print(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}}))
 ' "$tool" "$args_json" 2>/dev/null)" || { printf 'cfw-render: cr_mcp_call could not build request JSON for %s\n' "$tool" >&2; return 1; }
 
-  local attempt resp rc
-  for attempt in 1 2 3; do
-    resp="$(curl -sS --max-time 30 -X POST "$url" \
-      -H "cfw-render-key: $CFW_RENDER_WORKER_KEY" \
+  local attempt resp rc max_attempts=3
+  # Completion has no retry acknowledgement contract: a lost response may mean
+  # the dish already exists. Do not repeat this terminal write automatically.
+  [[ "$tool" == complete_render_order ]] && max_attempts=1
+  for (( attempt=1; attempt<=max_attempts; attempt++ )); do
+    resp="$(cr_curl_with_key -sS --max-time 30 -X POST "$url" \
       -H "content-type: application/json" \
       -H "accept: application/json, text/event-stream" \
       -d "$body" 2>/dev/null)"
@@ -422,7 +763,7 @@ print(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
     if (( rc == 0 )) && [[ -n "$resp" ]]; then
       break
     fi
-    (( attempt < 3 )) && sleep $(( attempt * 2 ))
+    (( attempt < max_attempts )) && sleep $(( attempt * 2 ))
   done
   if (( rc != 0 )) || [[ -z "${resp:-}" ]]; then
     printf 'cfw-render: cr_mcp_call %s — curl failed after retries (rc=%s)\n' "$tool" "$rc" >&2
@@ -478,8 +819,7 @@ print(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
 
   local attempt resp rc http_code
   for attempt in 1 2 3; do
-    resp="$(curl -sS --max-time 30 -w '\n%{http_code}' -X POST "$url" \
-      -H "cfw-render-key: $CFW_RENDER_WORKER_KEY" \
+    resp="$(cr_curl_with_key -sS --max-time 30 -w '\n%{http_code}' -X POST "$url" \
       -H "content-type: application/json" \
       -H "accept: application/json, text/event-stream" \
       -d "$body" 2>/dev/null)"
@@ -578,15 +918,66 @@ print(json.dumps(d))
 # render watchdog's own `sleep $timeout_secs` outlives a normal-path completion
 # and wedges any caller that captures cfw-render.sh's output via `$( )` — see
 # CFW-292). Worse: it means a genuinely hung render is never actually killed by
-# the watchdog. Walk the tree with pgrep -P (present on both Linux and
-# macOS — no new dependency) so every descendant gets the signal.
+# the watchdog. Walk the tree with cr_proc_children (pgrep -P, present on both
+# Linux and macOS — no new dependency) so every descendant gets the signal.
 # ---------------------------------------------------------------------------
 cr_kill_tree() {
   local pid="$1" sig="${2:-TERM}" kid
-  for kid in $(pgrep -P "$pid" 2>/dev/null); do
+  for kid in $(cr_proc_children "$pid"); do
     cr_kill_tree "$kid" "$sig"
   done
   kill "-$sig" "$pid" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# cr_proc_children <pid> — print the pids of <pid>'s live children, one per
+# line. `pgrep -P` first, and its answer is final wherever it runs (exit 0 =
+# children, 1 = none). Only when pgrep itself cannot run or cannot read the
+# process table (exit >1: a sandbox refusing the binary, a box without it) ask
+# the kernel directly through python3 — libproc proc_listchildpids on macOS,
+# /proc on Linux — which needs no setuid binary. Same answer: direct children
+# by parent pid, nothing matched by name. Empty output when nothing is found.
+# ---------------------------------------------------------------------------
+cr_proc_children() {
+  local pid="$1" kids="" rc=0
+  kids="$(pgrep -P "$pid" 2>/dev/null)" || rc=$?
+  if (( rc <= 1 )); then
+    [[ -n "$kids" ]] && printf '%s\n' "$kids"
+    return 0
+  fi
+  python3 -c '
+import ctypes, os, sys
+ppid = int(sys.argv[1])
+kids = []
+try:
+    lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    lib.proc_listchildpids.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+    lib.proc_listchildpids.restype = ctypes.c_int
+    size = 256
+    while True:
+        buf = (ctypes.c_int * size)()
+        n = lib.proc_listchildpids(ppid, buf, ctypes.sizeof(buf))
+        if n < 0:
+            sys.exit(1)
+        if n < size:
+            kids = [p for p in buf[:n] if p > 0]
+            break
+        size *= 2
+except OSError:
+    # No libproc: a Linux box. /proc/<pid>/stat field 4 is the parent pid.
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            with open("/proc/" + name + "/stat") as f:
+                stat = f.read()
+        except OSError:
+            continue
+        if int(stat[stat.rindex(")") + 2:].split()[1]) == ppid:
+            kids.append(int(name))
+for p in sorted(kids):
+    print(p)
+' "$pid" 2>/dev/null || return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -861,6 +1252,16 @@ CR_CLAIM_BACKOFF_BASE_SECS="${CFW_RENDER_CAPACITY_UNIT_SECS:-60}"
 # awk, not $(( )): the test seam may be fractional (0.05 s).
 # shellcheck disable=SC2034
 CR_CLAIM_BACKOFF_MAX_SECS="$(awk -v u="${CFW_RENDER_CAPACITY_UNIT_SECS:-60}" 'BEGIN { print u * 10 }')"
+# Wake detection: the --loop sleeps in ticks of at most 2 s. When the wall
+# clock moves more than one tick plus this gap between two ticks, the Mac was
+# asleep (lid shut) and the loop claims at once instead of finishing a long
+# back-off. Read by bin/cfw-render.sh's --loop.
+# shellcheck disable=SC2034
+CR_WAKE_GAP_SECS=30
+
+# cr_now_epoch — wall-clock seconds. CFW_RENDER_DATE_CMD is a test seam (a fake
+# date that can jump forward, as after sleep).
+cr_now_epoch() { "${CFW_RENDER_DATE_CMD:-date}" +%s; }
 
 # [M2-04, D78] cr_capacity_setup_note — the setup summary line when max is 1.
 # Wording mirrored in cfw-social labels.ts by M2-12 (docs/capacity.md).
@@ -1377,24 +1778,58 @@ cr_computer_name() {
   printf '%s' "$CR_COMPUTER_NAME_CACHE"
 }
 
-# [M3-01c] cr_recent_append <order_json_file_or_empty> <outcome> [orderId] —
+# [M3-01c] cr_recent_append <order_json_file_or_empty> <outcome> [orderId] [identity_json] [owner_safe_reason] —
 # one finished request into recent.ndjson (24 h, max 50 lines, atomic).
+# Explicit identity is authoritative, even if empty/invalid: never read reused
+# scratch in that case. Three-argument callers retain the legacy file fallback.
 cr_recent_append() {
   local dir="$CFW_RENDER_STATE_DIR"
   mkdir -p "$dir" 2>/dev/null || return 0
   ( umask 077
     python3 -c '
-import json, sys, os, datetime
-f, outcome, oid, path = sys.argv[1:5]
+import json, sys, os, datetime, re
+f, outcome, oid, path, explicit, identity, reason = sys.argv[1:8]
+def obj(value): return value if isinstance(value, dict) else {}
+def text(value): return value if isinstance(value, str) else None
 o = {}
-if f and os.path.isfile(f):
-    try: o = json.load(open(f))
-    except Exception: o = {}
-m = {"complete": "done", "completed": "done"}
+if explicit:
+    try: o = obj(json.loads(identity))
+    except (ValueError, TypeError): pass
+else:
+    if f and os.path.isfile(f):
+        try: o = obj(json.load(open(f)))
+        except Exception: pass
+    attempt = obj(o.get("attempt"))
+    brand = obj(obj(o.get("taskOrder")).get("brand"))
+    o = {"orderId": text(o.get("id")) or oid or None,
+         "shortCode": o.get("shortCode"), "brand": o.get("brandName"),
+         "attemptId": text(attempt.get("id")) or text(o.get("attemptId")),
+         "brandSlug": text(brand.get("slug")) or text(o.get("brandSlug")), "recipe": o.get("recipe"), "kind": o.get("kind")}
+# Re-allowlist at the serialization boundary; no nested data or raw reasons.
+identity = {k: text(o.get(k)) for k in
+            ("orderId", "attemptId", "shortCode", "brand", "brandSlug", "recipe", "kind", "startedAt", "directorLog")}
+try:
+    start = identity["startedAt"]
+    if not start or not start.endswith("Z"): raise ValueError()
+    datetime.datetime.fromisoformat(start.replace("Z", "+00:00"))
+except (ValueError, TypeError): identity["startedAt"] = None
+log = identity["directorLog"]
+if log and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.out", log):
+    identity["directorLog"] = None
+# Reasons are supplied by the worker, not read from model output or scratch.
+# Reapply the existing support redactor before storing the bounded summary.
+import importlib.util
+spec = importlib.util.spec_from_file_location("render_redact", sys.argv[8])
+redactor = importlib.util.module_from_spec(spec)
+sys.dont_write_bytecode = True
+spec.loader.exec_module(redactor)
+reason = redactor.redact(" ".join(reason.split()))[:400]
+m = {"complete": "done", "completed": "done", "stage-completed": "done"}
 for k in ("released", "revoked", "engine_limit", "cancelled"): m[k] = "stopped"
 nowdt = datetime.datetime.now(datetime.timezone.utc)
-row = {"shortCode": o.get("shortCode"), "brand": o.get("brandName"), "result": m.get(outcome, "failed"),
-       "finishedAt": nowdt.strftime("%Y-%m-%dT%H:%M:%SZ"), "orderId": o.get("id") or oid or None}
+result = m.get(outcome, "failed")
+row = dict(identity, result=result, reason=(reason or None) if result != "done" else None,
+           finishedAt=nowdt.strftime("%Y-%m-%dT%H:%M:%SZ"))
 rows = []
 try:
     for line in open(path):
@@ -1411,8 +1846,36 @@ tmp = path + ".tmp.%d" % os.getpid()
 with open(tmp, "w") as fh:
     for r in rows: fh.write(json.dumps(r) + "\n")
 os.replace(tmp, path)
-' "${1:-}" "${2:-}" "${3:-}" "$dir/recent.ndjson"
+' "${1:-}" "${2:-}" "${3:-}" "$dir/recent.ndjson" "${4+x}" "${4:-}" "${5:-}" "$(dirname "${BASH_SOURCE[0]}")/cfw-render-redact.py"
   ) 2>/dev/null || true
+}
+
+# Refresh the read-only waiting list. Unsupported/invalid replies clear stale data.
+cr_queue_refresh() {
+  local out p="$CFW_RENDER_STATE_DIR/next.json"
+  if ! out="$(cr_mcp_call_soft list_render_queue "$(python3 -c 'import json,sys; print(json.dumps({"workerId": sys.argv[1]}))' "${CFW_WORKER_ID:-}")" 2>/dev/null)"; then
+    rm -f "$p"
+    return 0
+  fi
+  ( umask 077
+    python3 -c '
+import json, sys, os
+d = json.loads(sys.stdin.read())
+orders = d.get("orders") if isinstance(d, dict) else None
+if not isinstance(orders, list): raise ValueError("missing queue")
+rows = []
+for x in orders[:20]:
+    if not isinstance(x, dict) or not isinstance(x.get("id"), str): continue
+    def text(k):
+        v = x.get(k)
+        return v[:400] if isinstance(v, str) else None
+    rows.append({"orderId": text("id"), "shortCode": text("shortCode"), "brand": text("brandName"),
+                 "brandSlug": text("brandSlug"), "kind": text("kind"), "recipe": text("recipe"),
+                 "status": text("status"), "needs": text("needs"), "createdAt": text("createdAt")})
+p = sys.argv[1]; tmp = p + ".tmp.%d" % os.getpid()
+with open(tmp, "w") as f: json.dump(rows, f)
+os.replace(tmp, p)' "$p" <<< "$out"
+  ) 2>/dev/null || rm -f "$p"
 }
 
 # cr_status_write — atomically writes $CFW_RENDER_STATE_DIR/status.json in the
@@ -1452,7 +1915,7 @@ sd = a[15]
 brands = []
 for x in load(os.path.join(sd, "brands.json"), []) or []:
     if isinstance(x, dict) and x.get("id"):
-        brands.append({"id": x.get("id"), "name": x.get("name"), "serving": True})
+        brands.append({"id": x.get("id"), "name": x.get("name"), "serving": True, "slug": x.get("slug")})
 now = []
 for p in sorted(glob.glob(os.path.join(a[16], "*", "*", "current-step.json"))):
     d = load(p, None)
@@ -1467,22 +1930,28 @@ for line in reversed(lines):
         r = json.loads(line)
         if datetime.datetime.fromisoformat(r["finishedAt"].replace("Z", "+00:00")) < cut: continue
     except Exception: continue
-    recent.append({k: r.get(k) for k in ("shortCode", "brand", "result", "finishedAt")})
+    recent.append({k: r.get(k) for k in ("shortCode", "brand", "result", "finishedAt", "orderId", "attemptId", "brandSlug", "recipe", "kind", "reason", "startedAt", "directorLog")})
     if len(recent) >= 20: break
+nxt = load(os.path.join(sd, "next.json"), [])
+nxt = [x for x in nxt if isinstance(x, dict)][:20] if isinstance(nxt, list) else []
+conn = load(os.path.join(sd, "connection.json"), None)
+conn = {k: conn.get(k) for k in ("scope", "keyName", "keyHint", "connectedAt")} if isinstance(conn, dict) else None
 doc = {
   "schema": 1, "workerVersion": a[2], "engines": engines,
   "activeEngine": (a[14] if a[14] not in ("", "none") else None),
   "computer": {"name": a[1] or None, "max": n(a[11], 1), "running": n(a[10]), "onBattery": b(a[5]),
                "paused": b(a[3]), "pauseReason": a[4] or None, "updateRequired": b(a[7])},
-  "brands": brands, "now": now, "next": [], "recent": recent,
+  "brands": brands, "now": now, "next": nxt, "recent": recent, "connection": conn,
   "lastCheckAt": a[9] or None, "lastError": a[8] or None,
+  "cfwReach": (a[17] if a[17] in ("ok", "unreachable") else None),
+  "cfwReachSince": a[18] or None,
 }
 json.dump(doc, open(a[12], "w"), indent=2)
 ' "$(cr_computer_name)" "$(cr_worker_version)" "${CR_STATUS_PAUSED:-0}" \
       "${CR_STATUS_PAUSE_REASON:-}" "${CR_STATUS_ON_BATTERY:-0}" "" \
       "${CR_STATUS_UPDATE_REQUIRED:-0}" "${CR_STATUS_LAST_ERROR:-}" "${CR_STATUS_LAST_CHECK_AT:-}" \
       "${CR_STATUS_RUNNING:-0}" "${CR_STATUS_MAX:-1}" "$tmp" "$engines" "$active" "$dir" \
-      "${CFW_RENDER_SCRATCH:-/nonexistent}"
+      "${CFW_RENDER_SCRATCH:-/nonexistent}" "${CR_STATUS_CFW_REACH:-}" "${CR_STATUS_CFW_REACH_SINCE:-}"
   ) 2>/dev/null || { rm -f "$tmp"; return 1; }
   chmod 600 "$tmp" 2>/dev/null
   mv -f "$tmp" "$dir/status.json"

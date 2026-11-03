@@ -54,6 +54,17 @@ describe("Panel", () => {
     expect(actions.setPaused).toHaveBeenCalledWith(false);
   });
 
+  it("offline owner pause: keeps the offline callout but Resume clears the local pause", () => {
+    const actions = mk();
+    const s: StatusFile = { ...workingStatus, cfwReach: "unreachable", computer: { ...workingStatus.computer, paused: true, pauseReason: "owner" } };
+    render(<Panel payload={payload(s)} actions={actions} clock={() => NOW} />);
+    expect(screen.getByRole("alert").textContent).toContain("Can't reach CFW");
+    expect(screen.getByText("Offline")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    expect(actions.setPaused).toHaveBeenCalledWith(false);
+  });
+
   it("every provider limited: explains and links to AI providers", () => {
     const actions = mk();
     const s: StatusFile = { ...workingStatus, engines: [{ name: "codex", signedIn: true, limit: "limited", resetsAt: "2026-10-11T15:40:00Z" }] };

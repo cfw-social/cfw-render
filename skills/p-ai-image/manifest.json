@@ -1,0 +1,211 @@
+{
+  "manifestFormat": 1,
+  "recipe": "p-ai-image",
+  "recipeVersion": "2026.10.2",
+  "label": "AI Image Post",
+  "deliverable": {
+    "kind": "image",
+    "aspect": "1:1",
+    "width": 1080,
+    "height": 1080
+  },
+  "needs": {
+    "os": [
+      "macos"
+    ],
+    "engines": [
+      "codex",
+      "claude-code"
+    ],
+    "tools": [
+      "curl",
+      "ffmpeg",
+      "imagemagick",
+      "python3"
+    ],
+    "providers": [
+      "kie"
+    ]
+  },
+  "inputs": [
+    {
+      "id": "prompt",
+      "label": "Image description",
+      "kinds": [
+        "text"
+      ],
+      "required": true,
+      "count": {
+        "min": 1,
+        "max": 1
+      },
+      "neededAt": "start",
+      "prompt": "Describe the image you want: the subject, the setting, the mood and any text that must appear."
+    },
+    {
+      "id": "count",
+      "label": "How many images",
+      "kinds": [
+        "choice"
+      ],
+      "required": false,
+      "count": {
+        "min": 0,
+        "max": 1
+      },
+      "neededAt": {
+        "step": "generate"
+      },
+      "prompt": "How many images should be generated?",
+      "choices": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "6"
+      ]
+    },
+    {
+      "id": "aspect_ratio",
+      "label": "Image shape",
+      "kinds": [
+        "choice"
+      ],
+      "required": false,
+      "count": {
+        "min": 0,
+        "max": 1
+      },
+      "neededAt": {
+        "step": "generate"
+      },
+      "prompt": "Which shape?",
+      "choices": [
+        {
+          "id": "square_1_1",
+          "label": "Square 1:1 (1080×1080)"
+        },
+        {
+          "id": "portrait_9_16",
+          "label": "Portrait 9:16 (1080×1920)"
+        },
+        {
+          "id": "landscape_16_9",
+          "label": "Landscape 16:9 (1920×1080)"
+        }
+      ]
+    },
+    {
+      "id": "reference_image",
+      "label": "Reference image",
+      "kinds": [
+        "image"
+      ],
+      "required": false,
+      "count": {
+        "min": 0,
+        "max": 1
+      },
+      "neededAt": {
+        "step": "generate"
+      }
+    }
+  ],
+  "steps": [
+    {
+      "id": "plan_prompts",
+      "label": "Write the generation prompts",
+      "weight": 20,
+      "runsOn": "computer",
+      "uses": { "tools": ["python3"] },
+      "when": "always",
+      "instructions": "steps/01-plan-prompts.md",
+      "saves": [
+        {
+          "id": "prompts",
+          "kind": "json",
+          "preview": false
+        }
+      ],
+      "checks": [
+        {
+          "id": "prompts_shape",
+          "label": "One concrete prompt per requested image"
+        }
+      ],
+      "maxCheckRetries": 2,
+      "canAsk": [
+        "prompt"
+      ]
+    },
+    {
+      "id": "generate",
+      "label": "Generate the images",
+      "weight": 50,
+      "runsOn": "computer",
+      "uses": { "tools": ["curl", "ffmpeg", "python3"], "providers": [["kie"]] },
+      "when": "always",
+      "instructions": "steps/02-generate.md",
+      "saves": [
+        {
+          "id": "image_1",
+          "kind": "image",
+          "preview": true
+        },
+        {
+          "id": "contact_sheet",
+          "kind": "image",
+          "preview": true
+        },
+        {
+          "id": "images",
+          "kind": "json",
+          "preview": false
+        }
+      ],
+      "checks": [
+        {
+          "id": "image_dims",
+          "label": "Every image is exactly the chosen canvas"
+        },
+        {
+          "id": "not_black",
+          "label": "No image is black or blank"
+        }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "qa_gate",
+      "label": "Vision QA and final checks",
+      "weight": 30,
+      "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "imagemagick", "python3"] },
+      "when": "always",
+      "instructions": "steps/03-qa-gate.md",
+      "saves": [
+        {
+          "id": "final",
+          "kind": "image",
+          "preview": true
+        },
+        {
+          "id": "qa_report",
+          "kind": "json",
+          "preview": false
+        }
+      ],
+      "checks": [
+        {
+          "id": "vision_qa_pass",
+          "label": "Every image passed the vision QA gate"
+        },
+        {
+          "id": "final_dims",
+          "label": "Final image is exactly the chosen canvas"
+        }
+      ],
+      "maxCheckRetries": 1
+    }
+  ]
+}

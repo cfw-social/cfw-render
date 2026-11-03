@@ -1,0 +1,147 @@
+{
+  "manifestFormat": 1,
+  "recipe": "p-ai-character",
+  "recipeVersion": "2026.10.2",
+  "label": "AI Character Scenes",
+  "deliverable": {
+    "kind": "image",
+    "aspect": "9:16",
+    "width": 1080,
+    "height": 1920
+  },
+  "needs": {
+    "os": ["macos"],
+    "engines": ["codex", "claude-code"],
+    "tools": ["curl", "ffmpeg", "imagemagick", "python3"],
+    "providers": ["kie"]
+  },
+  "inputs": [
+    {
+      "id": "story_concept",
+      "label": "Story concept",
+      "kinds": ["text"],
+      "required": true,
+      "count": { "min": 1, "max": 1 },
+      "neededAt": "start",
+      "prompt": "One paragraph: who the character is, what they want, and the payoff of the story."
+    },
+    {
+      "id": "character_description",
+      "label": "Character description",
+      "kinds": ["text"],
+      "required": true,
+      "count": { "min": 1, "max": 1 },
+      "neededAt": "start",
+      "prompt": "Describe the character visually in all six attributes: face (or plush body), hair (or head/ears), eyes, clothing, one distinctive feature, and colour palette."
+    },
+    {
+      "id": "character_type",
+      "label": "Character type",
+      "kinds": ["choice"],
+      "required": false,
+      "count": { "min": 0, "max": 1 },
+      "neededAt": { "step": "character_lock" },
+      "prompt": "What kind of character is it?",
+      "choices": [
+        { "id": "human", "label": "Human" },
+        { "id": "plush", "label": "Plush toy / mascot" }
+      ]
+    },
+    {
+      "id": "num_scenes",
+      "label": "Number of scenes",
+      "kinds": ["choice"],
+      "required": false,
+      "count": { "min": 0, "max": 1 },
+      "neededAt": { "step": "character_lock" },
+      "prompt": "How many scenes in the story?",
+      "choices": ["3", "4", "5", "6"]
+    },
+    {
+      "id": "reference_image",
+      "label": "Existing character reference",
+      "kinds": ["image"],
+      "required": false,
+      "count": { "min": 0, "max": 1 },
+      "neededAt": { "step": "character_ref" }
+    }
+  ],
+  "steps": [
+    {
+      "id": "character_lock",
+      "label": "Lock the character and write the story arc",
+      "weight": 15,
+      "runsOn": "computer",
+      "uses": { "tools": ["python3"] },
+      "when": "always",
+      "instructions": "steps/01-character-lock.md",
+      "saves": [
+        { "id": "character_lock", "kind": "json", "preview": false },
+        { "id": "story_arc", "kind": "json", "preview": false }
+      ],
+      "checks": [
+        { "id": "six_attributes", "label": "All six character attributes are specific and visual" },
+        { "id": "arc_shape", "label": "One scene per act with a visual, emotion, camera and motion cue" }
+      ],
+      "maxCheckRetries": 2,
+      "canAsk": ["story_concept", "character_description"]
+    },
+    {
+      "id": "character_ref",
+      "label": "Generate the character reference",
+      "weight": 20,
+      "runsOn": "computer",
+      "uses": { "tools": ["curl", "ffmpeg", "python3"], "providers": [["kie"]] },
+      "when": "always",
+      "instructions": "steps/02-character-ref.md",
+      "saves": [
+        { "id": "char_ref", "kind": "image", "preview": true },
+        { "id": "ref_audit", "kind": "json", "preview": false }
+      ],
+      "checks": [
+        { "id": "ref_dims", "label": "Reference is a full-body portrait at the exact canvas" },
+        { "id": "not_black", "label": "Reference is not black or blank" },
+        { "id": "ref_matches_lock", "label": "Reference shows all six locked attributes" }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "scene_images",
+      "label": "Generate the scene images",
+      "weight": 40,
+      "runsOn": "computer",
+      "uses": { "tools": ["curl", "ffmpeg", "python3"], "providers": [["kie"]] },
+      "when": "always",
+      "instructions": "steps/03-scene-images.md",
+      "saves": [
+        { "id": "scene_1", "kind": "image", "preview": true },
+        { "id": "scene_sheet", "kind": "image", "preview": true },
+        { "id": "scenes", "kind": "json", "preview": false }
+      ],
+      "checks": [
+        { "id": "scene_dims", "label": "Every scene is exactly the canvas" },
+        { "id": "scenes_not_dark", "label": "Centre zone of every scene has visible content" },
+        { "id": "no_diverged_scenes", "label": "No scene diverged from the character reference" }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "qa_gate",
+      "label": "Vision QA and final checks",
+      "weight": 25,
+      "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "imagemagick", "python3"] },
+      "when": "always",
+      "instructions": "steps/04-qa-gate.md",
+      "saves": [
+        { "id": "final", "kind": "image", "preview": true },
+        { "id": "qa_report", "kind": "json", "preview": false }
+      ],
+      "checks": [
+        { "id": "vision_qa_pass", "label": "Every scene passed the character-consistency vision gate" },
+        { "id": "final_dims", "label": "Final cover scene is exactly the canvas" }
+      ],
+      "maxCheckRetries": 1
+    }
+  ]
+}

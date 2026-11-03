@@ -12,9 +12,54 @@
 // 2× capture is kept for sharpness but lands in slides-2x/; each PNG is then lanczos-downscaled
 // with ffmpeg into slides/ and the output dims are ffprobe-verified. SCALE=1 skips the downscale.
 // ffmpeg/ffprobe are required when SCALE>1 (fail fast, no silent 2160×2700 deliverable).
-import { chromium } from 'playwright';
+import { createRequire } from 'node:module';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
+
+// Playwright is installed in the step work folder (the process cwd). A static
+// import resolves from this file's folder, which has no node_modules.
+async function loadPlaywrightChromium() {
+  const cwd = process.cwd();
+  const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+  const workPlace = path.join(cwd, 'node_modules', 'playwright');
+  const scriptPlace = path.join(scriptDir, 'node_modules', 'playwright');
+
+  const pick = (mod) => {
+    if (mod && mod.chromium) return mod.chromium;
+    if (mod && mod.default && mod.default.chromium) return mod.default.chromium;
+    return null;
+  };
+
+  let resolved = '';
+  try {
+    resolved = createRequire(cwd + '/').resolve('playwright', { paths: [cwd] });
+  } catch {
+    resolved = '';
+  }
+  if (resolved) {
+    const workRoot = path.resolve(cwd) + path.sep;
+    if (path.resolve(resolved).startsWith(workRoot)) {
+      try {
+        const picked = pick(await import(pathToFileURL(path.resolve(resolved)).href));
+        if (picked) return picked;
+      } catch {
+        // The copy under the work folder did not load.
+      }
+    }
+  }
+  try {
+    const picked = pick(await import('playwright'));
+    if (picked) return picked;
+  } catch {
+    // Not installed beside this file either.
+  }
+  console.error(`render.mjs: Cannot find package 'playwright' in ${workPlace} or ${scriptPlace}`);
+  process.exit(1);
+}
+
+const chromium = await loadPlaywrightChromium();
 
 const HTML  = process.argv[2] || 'carousel.html';
 const WIDTH = parseInt(process.env.WIDTH  || '1080', 10);

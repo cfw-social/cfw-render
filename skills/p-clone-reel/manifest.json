@@ -1,0 +1,178 @@
+{
+  "manifestFormat": 1,
+  "recipe": "p-clone-reel",
+  "recipeVersion": "2026.10.2",
+  "label": "Clone reel",
+  "deliverable": {
+    "kind": "video",
+    "aspect": "9:16",
+    "width": 1080,
+    "height": 1920,
+    "durationSec": { "min": 30, "max": 60 }
+  },
+  "needs": {
+    "os": ["macos"],
+    "engines": ["codex", "claude-code"],
+    "tools": ["ffmpeg", "imagemagick", "node>=22", "npx", "chromium", "python3", "yt-dlp", "curl"],
+    "providers": ["heygen", "elevenlabs"]
+  },
+  "inputs": [
+    {
+      "id": "source_reel",
+      "label": "Reference reel",
+      "kinds": ["link", "video"],
+      "required": true,
+      "count": { "min": 1, "max": 1 },
+      "constraints": { "durationSec": { "min": 10, "max": 300 }, "orientation": "any" },
+      "neededAt": "start",
+      "prompt": "The reel to re-make in your brand's style: paste a public link (Instagram, TikTok, YouTube) or upload the video file."
+    },
+    {
+      "id": "topic",
+      "label": "Your topic",
+      "kinds": ["text"],
+      "required": false,
+      "count": { "min": 0, "max": 1 },
+      "neededAt": { "step": "adapt_script" },
+      "prompt": "What should YOUR version be about? One or two sentences. Leave empty to keep the reference reel's topic in your brand voice.",
+      "default": "brand"
+    },
+    {
+      "id": "section",
+      "label": "Section to adapt",
+      "kinds": ["choice"],
+      "required": false,
+      "count": { "min": 0, "max": 1 },
+      "neededAt": { "step": "adapt_script" },
+      "prompt": "Which part of the reference reel should the remake follow?",
+      "choices": [
+        { "id": "full", "label": "The whole reel" },
+        { "id": "opening", "label": "The opening hook only" },
+        { "id": "middle", "label": "The middle section" }
+      ],
+      "default": "full"
+    },
+    {
+      "id": "avatar_id",
+      "label": "HeyGen avatar",
+      "kinds": ["text"],
+      "required": false,
+      "count": { "min": 0, "max": 1 },
+      "neededAt": { "step": "generate_narration" },
+      "prompt": "The HeyGen avatar id to present the remake. Leave empty to use the brand's avatar, or to get a voice-only remake if the brand has none.",
+      "default": "brand"
+    },
+    {
+      "id": "voice_id",
+      "label": "Voice",
+      "kinds": ["text"],
+      "required": false,
+      "count": { "min": 0, "max": 1 },
+      "neededAt": { "step": "generate_narration" },
+      "prompt": "The voice id to narrate with (HeyGen voice when an avatar is used, ElevenLabs voice otherwise). Leave empty to use the brand's default.",
+      "default": "brand"
+    },
+    {
+      "id": "cta",
+      "label": "Call to action",
+      "kinds": ["text"],
+      "required": false,
+      "count": { "min": 0, "max": 1 },
+      "neededAt": { "step": "composite" },
+      "prompt": "The closing offer line and handle/URL for the end card. Leave empty to use the brand defaults.",
+      "default": "brand"
+    }
+  ],
+  "steps": [
+    {
+      "id": "ingest_reference",
+      "label": "Fetch and transcribe the reference",
+      "weight": 15,
+      "runsOn": "computer",
+      "uses": { "tools": ["yt-dlp", "ffmpeg", "python3"] },
+      "when": "always",
+      "instructions": "steps/01-ingest-reference.md",
+      "saves": [
+        { "id": "source_video", "kind": "video", "preview": false },
+        { "id": "source_transcript", "kind": "json", "preview": false },
+        { "id": "format_analysis", "kind": "json", "preview": false }
+      ],
+      "checks": [
+        { "id": "source_decodes", "label": "Reference reel decodes with audio" },
+        { "id": "words_found", "label": "Words found in the transcript" }
+      ],
+      "maxCheckRetries": 2,
+      "canAsk": ["source_reel"]
+    },
+    {
+      "id": "adapt_script",
+      "label": "Adapt the script to the brand",
+      "weight": 15,
+      "runsOn": "computer",
+      "uses": { "tools": ["python3"] },
+      "when": "always",
+      "instructions": "steps/02-adapt-script.md",
+      "saves": [{ "id": "adapted_script", "kind": "text", "preview": true }],
+      "checks": [{ "id": "script_length_matches_source", "label": "Adapted script matches the source timing" }],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "generate_narration",
+      "label": "Generate the narration",
+      "weight": 25,
+      "runsOn": "computer",
+      "uses": { "tools": ["curl", "ffmpeg", "python3"], "providers": [["heygen", "elevenlabs"]] },
+      "when": "always",
+      "instructions": "steps/03-generate-narration.md",
+      "saves": [{ "id": "narration", "kind": "video", "preview": false }],
+      "checks": [
+        { "id": "narration_has_audio", "label": "Narration has an audio stream" },
+        { "id": "narration_duration_window", "label": "Narration is 25–65 s" }
+      ],
+      "maxCheckRetries": 2,
+      "canAsk": ["avatar_id", "voice_id"]
+    },
+    {
+      "id": "composite",
+      "label": "Composite in the reference format",
+      "weight": 25,
+      "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "imagemagick", "node>=22", "npx", "chromium", "python3"] },
+      "when": "always",
+      "instructions": "steps/04-composite.md",
+      "saves": [{ "id": "composite_video", "kind": "video", "preview": false }],
+      "checks": [
+        { "id": "composite_dims", "label": "Composite is 1080×1920" },
+        { "id": "composite_not_black", "label": "Composite is not black" },
+        { "id": "vo_continuous_bed", "label": "Narration is continuous under the whole reel" }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "final_checks",
+      "label": "Final checks and captions",
+      "weight": 20,
+      "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "python3"] },
+      "when": "always",
+      "instructions": "steps/05-final-checks.md",
+      "saves": [
+        { "id": "final_video", "kind": "video", "preview": true },
+        { "id": "cover", "kind": "image", "preview": true },
+        { "id": "captions", "kind": "json", "preview": false }
+      ],
+      "checks": [
+        { "id": "qa_gate", "label": "Reel passes the QA gate" },
+        { "id": "duration_window", "label": "Duration is within the 27–63 s window" },
+        { "id": "canvas_1080x1920", "label": "Canvas is 1080×1920" },
+        { "id": "frame_not_black", "label": "Sampled frames are not black" },
+        { "id": "avatar_pip_visible", "label": "Avatar card is visible (when an avatar was used)" },
+        { "id": "no_greenscreen_residue", "label": "No green-screen residue" },
+        { "id": "source_content_visible", "label": "Reference-format visuals are visible" },
+        { "id": "latin_script_only", "label": "Captions use Latin script only" },
+        { "id": "cover_is_moneyshot", "label": "Cover is the money shot" }
+      ],
+      "maxCheckRetries": 2
+    }
+  ]
+}

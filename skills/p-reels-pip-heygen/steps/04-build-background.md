@@ -35,8 +35,17 @@ python3 -c "import json; json.dump(json.load(open('brief.json')).get('brand') or
 For beat `i` with `kind`, `start`, `end` (`dur = end - start`):
 
 - **`broll`** — `ffmpeg -y -ss "$IN" -t "$DUR" -i "$CLIP" -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30,format=yuv420p" -an -c:v libx264 -preset medium -crf 20 work/bg_beats/bg_beat$i.mp4`.
-- **`graphics`, typing / hook scene** — `VARIANT=pip-safe` with `c-typing-ui`:
-  `bash "$TYPING_UI_DIR/scripts/render.sh" --text "<copy>" --duration "$DUR" --brand work/brand.json --variant pip-safe --out work/bg_beats/bg_beat$i.mp4` (see `$TYPING_UI_DIR/SKILL.md` for the exact flags).
+- **`graphics`, typing / hook scene** — `c-typing-ui` ships templates, not a render script (its
+  `scripts/render-sample.sh` only renders a fixed demo). Fill the template the way
+  `$TYPING_UI_DIR/SKILL.md` "Usage — standalone render (one beat)" does: take
+  `$TYPING_UI_DIR/templates/typing-scene.html` (typing) or `hook-scene.html` (hook), strip the
+  `<template>` wrapper, fill every `{{FIELD}}` in it, wrap it in a full 1080×1920 document and
+  write `work/gfx_$i/index.html`. Typing: `DURATION=$DUR`, `PROMPT` = the copy HTML-escaped with
+  `&#10;` for each newline, `VARIANT=pip-safe`, `ACCENT` = `work/brand.json` accent without `#`,
+  `LABEL`, `TYPING_SPEED` (`1.0`), `BOTTOM_TAG` and `BOTTOM_TAG_DISPLAY` (`display:none` when the
+  tag is blank, else empty). Hook: `DURATION`, `EYEBROW`, `LINE1`–`LINE3`, `SUBHEAD`, `ACCENT` (the
+  hook template has no `VARIANT`). Copy `$GSAP` in as `gsap.min.js`; then
+  `( cd work/gfx_$i && npx hyperframes@0.7.5 lint && npx hyperframes@0.7.5 render --output ../bg_beats/bg_beat$i.mp4 --quality high --fps 30 )`.
 - **`graphics`, motion card** — write `work/gfx_$i/index.html` from the brand motion-card
   template: `<div class="mc-root" data-composition-id="root" data-start="0" data-duration="$DUR"
   data-width="1080" data-height="1920">` with the headline / eyebrow / ghost text from the scene,

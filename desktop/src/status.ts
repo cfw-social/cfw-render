@@ -21,7 +21,7 @@ export interface Computer {
   pauseReason?: string | null;
   updateRequired?: boolean;
 }
-export interface Brand { id?: string; name?: string; serving?: boolean }
+export interface Brand { id?: string; name?: string; serving?: boolean; slug?: string | null }
 export interface NowItem {
   shortCode?: string | null;
   brand?: string | null;
@@ -32,8 +32,37 @@ export interface NowItem {
   pct?: number | null;
   startedAt?: string | null;
 }
-export interface NextItem { shortCode?: string | null; brand?: string | null; recipe?: string | null }
-export interface RecentItem { shortCode?: string | null; brand?: string | null; result?: RunResult | string; finishedAt?: string | null }
+export interface NextItem {
+  shortCode?: string | null;
+  brand?: string | null;
+  recipe?: string | null;
+  orderId?: string | null;
+  brandSlug?: string | null;
+  kind?: string | null;
+  status?: string | null;
+  needs?: string | null;
+  createdAt?: string | null;
+}
+export interface Connection {
+  scope?: "brand" | "user" | "subset" | null;
+  keyName?: string | null;
+  keyHint?: string | null;
+  connectedAt?: string | null;
+}
+export interface RecentItem {
+  shortCode?: string | null;
+  brand?: string | null;
+  result?: RunResult | string;
+  finishedAt?: string | null;
+  orderId?: string | null;
+  attemptId?: string | null;
+  brandSlug?: string | null;
+  recipe?: string | null;
+  startedAt?: string | null;
+  directorLog?: string | null;
+  kind?: string | null;
+  reason?: string | null;
+}
 
 export interface StatusFile {
   schema: number;
@@ -41,12 +70,16 @@ export interface StatusFile {
   engines?: Engine[];
   activeEngine?: string | null;
   computer?: Computer;
+  connection?: Connection | null;
   brands?: Brand[];
   now?: NowItem[];
   next?: NextItem[];
   recent?: RecentItem[];
   lastCheckAt?: string | null;
   lastError?: string | null;
+  /** Did this Mac's last server call reach CFW? Set only from real calls; null until the first one. */
+  cfwReach?: "ok" | "unreachable" | null;
+  cfwReachSince?: string | null;
 }
 
 export type Liveness = "Running" | "NotRunning";
@@ -58,4 +91,6 @@ export interface StatusPayload {
   iconState: IconState;
   tooltip: string;
   providerLine: string;
+  /** Owner control-file state; worker status may lag behind a click. */
+  ownerPaused?: boolean;
 }

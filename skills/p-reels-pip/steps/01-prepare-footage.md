@@ -15,8 +15,8 @@ No other prior saves: this is the first compositing step.
 
 ## You must produce
 
-- `saves/voice_track.mp4` — the talking head at its **source** dimensions (white side-bands
-  cropped away), 30 fps, H.264 yuv420p, AAC 48 kHz stereo, loudnormed **once**
+- `saves/voice_track.mp4` — the talking head at its **source** dimensions (a matched pair of
+  baked-in bars cropped away — step 2), 30 fps, H.264 yuv420p, AAC 48 kHz stereo, loudnormed **once**
   (`I=-16:TP=-1.5:LRA=11`). No scaling to the canvas here: the PIP card is sized in `composite`.
 
 ## How
@@ -35,31 +35,106 @@ ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0
 echo "[pip] source ${TH_W}x${TH_H} ${BED_DUR}s"
 ```
 
-### 2. Detect + crop white side-bands (BEFORE anything else)
+### 2. Detect + crop a baked-in bar pair (BEFORE anything else)
 
-Reused 16:9 studio renders often carry baked-in white/cream bands down the left and right. Sample
-a frame, measure thin edge columns against the centre and crop LEFT/RIGHT only — never the top.
+Reused HeyGen / studio renders often carry a 16:9 picture baked between two flat bars (white,
+cream or mint) at the top and bottom, or a 9:16 picture between two side bars. WI2.71: the
+`bars.py` helper samples three frames and prints `crop=W:H:X:Y,` only for a **matched pair** —
+top+bottom (or left+right) bars of about the same size and the same flat colour that leave a
+picture within 5 % of 16:9 or 9:16. Anything else (a speaker on a plain backdrop, a one-sided
+margin) prints nothing and nothing is cropped, so the head is never cut. It measures frames the
+way ffmpeg shows them (rotation applied), so a rotated phone clip is read on the right axes.
+WI2.75: a flat seam of 6 rows or fewer (another flat colour) right beside a bar counts as part
+of that bar, so no grey line is left at the picture's edge; a band of 7 rows or more is kept.
 
 ```bash
-ffmpeg -y -ss 1 -i "$TH" -frames:v 1 work/probe.png
-CROP=$(python3 - "$TH_W" "$TH_H" <<'PY'
-import sys
-from PIL import Image
-W, H = int(sys.argv[1]), int(sys.argv[2])
-im = Image.open('work/probe.png').convert('L')
-def col_mean(x): return sum(im.getpixel((x, y)) for y in range(0, H, 8)) / len(range(0, H, 8))
-def band(xs):
-    n = 0
-    for x in xs:
-        if col_mean(x) > 225: n += 1
-        else: break
-    return n
-left, right = band(range(0, W // 3)), band(range(W - 1, W - W // 3, -1))
-if left + right > 8: print(f"crop={W-left-right}:{H}:{left}:0,")
-else: print("")
+cat > work/bars.py <<'PY'
+# WI2.71: find a matched pair of flat bars baked into the clip and print an ffmpeg crop.
+# Crops only top+bottom (or left+right) bars of about the same size and the same flat
+# colour, and only when what is left is within 5% of 16:9 or 9:16. Anything else: no crop.
+import subprocess, sys
+SRC, TOL, MIN_BAR, ASPECT_TOL, SEAM, SEAM_TOL = sys.argv[1], 12, 8, 0.05, 6, 32
+def grab(t):
+    # One frame as PPM. Its header gives the size ffmpeg shows after autorotation, so a
+    # rotated phone clip is measured on the same axes the later -vf crop sees.
+    out = subprocess.run(["ffmpeg", "-v", "error", "-ss", "%.2f" % t, "-i", SRC, "-frames:v", "1",
+        "-f", "image2pipe", "-c:v", "ppm", "-"], capture_output=True, check=True).stdout
+    if not out.startswith(b"P6"):
+        return None
+    head, pos = [], 2
+    while len(head) < 3:
+        while out[pos:pos + 1].isspace():
+            pos += 1
+        end = pos
+        while out[end:end + 1] and not out[end:end + 1].isspace():
+            end += 1
+        head.append(int(out[pos:end])); pos = end
+    w, h, data = head[0], head[1], out[pos + 1:]
+    return (w, h, data) if len(data) >= w * h * 3 else None
+def duration():
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", SRC],
+        capture_output=True, text=True, check=True).stdout.strip()
+    try:
+        return float(r)
+    except ValueError:
+        return 1.0
+def close(a, b, tol=TOL):
+    return max(abs(a[k] - b[k]) for k in range(3)) <= tol
+def run(fr, w, lines, pts, tol=TOL):
+    # how many lines from this edge inwards are one flat colour -> (count, colour)
+    ref, n = None, 0
+    for ln in lines:
+        row = [fr[(y * w + x) * 3:(y * w + x) * 3 + 3] for x, y in pts(ln)]
+        ref = ref or sorted(row)[len(row) // 2]    # median pixel: robust to a noisy first pixel
+        if not all(close(c, ref, tol) for c in row):
+            break
+        n += 1
+    return n, ref
+def bar(fr, w, lines, pts):
+    # WI2.75: a bar run also swallows ONE short flat seam (SEAM rows or fewer, another flat
+    # colour, within SEAM_TOL because video compression speckles it) right next to its inner edge, so no flat seam row stays at the picture's edge.
+    lines = list(lines)
+    n, ref = run(fr, w, lines, pts)
+    if n >= MIN_BAR:
+        m, _ = run(fr, w, lines[n:], pts, SEAM_TOL)   # a compressed seam is a bit noisy
+        if 1 <= m <= SEAM and n + m < len(lines):
+            n += m
+    return n, ref
+D = duration()
+frames = [f for f in (grab(D * p) for p in (0.2, 0.5, 0.8)) if f]
+if not frames or len({(f[0], f[1]) for f in frames}) != 1:
+    print(""); sys.exit(0)
+W, H = frames[0][0], frames[0][1]
+sides = [(bar(fr, W, range(H // 2), lambda y: [(x, y) for x in range(0, W, 4)]),
+          bar(fr, W, range(H - 1, H // 2, -1), lambda y: [(x, y) for x in range(0, W, 4)]),
+          bar(fr, W, range(W // 2), lambda x: [(x, y) for y in range(0, H, 4)]),
+          bar(fr, W, range(W - 1, W // 2, -1), lambda x: [(x, y) for y in range(0, H, 4)]))
+         for _, _, fr in frames]
+def edge(i):
+    # bar size = the smallest run over the sampled frames; its colour must hold in every frame
+    n, cols = min(s[i][0] for s in sides), [s[i][1] for s in sides]
+    if n < MIN_BAR or not all(close(c, cols[0]) for c in cols):
+        return 0, None
+    return n, cols[0]
+(top, ct), (bot, cb), (left, cl), (right, cr) = (edge(i) for i in range(4))
+def pair(a, ca, b, cb_, side):
+    # a matched pair: both bars present, the same flat colour, sizes within 2% of the side
+    return bool(a and b and close(ca, cb_) and abs(a - b) <= max(4, side * 0.02))
+def aspect_ok(w, h):
+    return any(abs((w / h) / r - 1) <= ASPECT_TOL for r in (16 / 9, 9 / 16))
+tb, lr = pair(top, ct, bot, cb, H), pair(left, cl, right, cr, W)
+cands = ([(top, bot, left, right)] if tb and lr else []) + ([(top, bot, 0, 0)] if tb else []) \
+    + ([(0, 0, left, right)] if lr else [])
+for t, b, l, r in cands:
+    t, l = t + t % 2, l + l % 2          # even x/y (yuv420p); never keeps a bar row
+    cw, ch = W - l - r, H - t - b
+    cw, ch = cw - cw % 2, ch - ch % 2    # even w/h
+    if cw >= W // 4 and ch >= H // 4 and aspect_ok(cw, ch):
+        print("crop=%d:%d:%d:%d," % (cw, ch, l, t)); sys.exit(0)
+print("")
 PY
-)
-echo "[pip] side-band crop: '${CROP:-none}'"
+CROP=$(python3 work/bars.py "$TH") || exit 1
+echo "[pip] bar crop: '${CROP:-none}'"
 ```
 
 ### 3. Seal the bed — loudnorm ONCE

@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { copy } from "../copy";
 import { DEFAULT_SECTION, isWebSection, sectionFromId, sectionFromWebPath, slugFromWebPath, type SectionId } from "../nav";
-import { health, panelModel } from "../panel/model";
+import { connectionSummary, health, panelModel } from "../panel/model";
 import { ProvidersScreen } from "../providers";
 import type { StatusPayload } from "../status";
 import { Icon } from "../ui/Icon";
@@ -125,7 +125,7 @@ export function MainWindow({ clock = Date.now }: { clock?: () => number } = {}) 
 
   const m = panelModel(payload, clock());
   const h = health(m);
-  const paused = h.kind === "paused" || h.kind === "battery";
+  const paused = m.paused;
 
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground">
@@ -134,6 +134,7 @@ export function MainWindow({ clock = Date.now }: { clock?: () => number } = {}) 
         web={web}
         slug={slug}
         health={h}
+        paused={paused}
         computerName={payload?.status?.computer?.name ?? null}
         onSection={(s) => go(s)}
         onPickBrand={(s) => {
@@ -144,14 +145,22 @@ export function MainWindow({ clock = Date.now }: { clock?: () => number } = {}) 
         onAllBrands={() => go("home", slugRef.current, "all")}
         onSignIn={() => go("home", null, "login")}
         onTogglePause={() => actions.setPaused(!paused)}
+        onRefresh={() => {
+          if (isWebSection(section)) {
+            invoke("web_reload").catch(() => go(section));
+          } else {
+            invoke("run_now").catch(() => {});
+            invoke<StatusPayload>("get_status").then(setPayload).catch(() => {});
+          }
+        }}
       />
       <main data-section={section} className="relative min-w-0 flex-1 overflow-y-auto">
         {/* Mac pages get a drag strip where the title bar would be. */}
         {!isWebSection(section) && <div data-tauri-drag-region className="sticky top-0 z-10 h-[30px] bg-background/90" />}
         {isWebSection(section) && <WebPlaceholder failed={webFailed} onRetry={() => go(section)} />}
-        {section === "renders" && <Renders payload={payload} actions={actions} clock={clock} />}
+        {section === "renders" && <Renders payload={payload} actions={actions} clock={clock} onPayload={setPayload} />}
         {section === "providers" && <ProvidersScreen />}
-        {section === "settings" && <Settings workerVersion={payload?.status?.workerVersion ?? null} />}
+        {section === "settings" && <Settings workerVersion={payload?.status?.workerVersion ?? null} connection={connectionSummary(payload)} />}
       </main>
     </div>
   );

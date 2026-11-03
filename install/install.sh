@@ -159,7 +159,8 @@ if (( FROM_APP )); then
     fi
     app_fail connecting 5 "No key was given" "Paste the key from CFW Settings"
   fi
-  if ! [[ "$BRAND_KEY" =~ ^cfw_[A-Za-z0-9_]+$ ]]; then
+  # CFW keys are base64url: `-` is a normal key character.
+  if ! [[ "$BRAND_KEY" =~ ^cfw_[A-Za-z0-9_-]+$ ]]; then
     BRAND_KEY=""
     app_fail connecting 5 "That key does not look right" "Copy the key again from CFW Settings"
   fi
@@ -218,8 +219,9 @@ app_step checking "done" "This computer is ready to install"
 app_step installing started "Installing CFW Render"
 
 mkdir -p "$PREFIX/bin" "$PREFIX/lib" "$PREFIX/config" "$PREFIX/scripts"
-cp -a "$REPO_DIR"/bin/*.sh "$PREFIX/bin/"
-cp -a "$REPO_DIR"/lib/*.md "$PREFIX/lib/"
+cp -a "$REPO_DIR"/bin/*.sh "$REPO_DIR"/bin/*.py "$PREFIX/bin/"
+cp -a "$REPO_DIR"/lib/*.md "$REPO_DIR"/lib/*.py "$PREFIX/lib/"
+cp -a "$REPO_DIR/config/agent-guides.json" "$PREFIX/config/"
 # scripts/ (verify-skills-bundle.sh, gen-skills-manifest.sh) — the worker's
 # cr_verify_skills_bundle shells out to verify-skills-bundle.sh at $PREFIX/scripts.
 cp -a "$REPO_DIR"/scripts/*.sh "$PREFIX/scripts/" 2>/dev/null || true
@@ -247,6 +249,13 @@ for guide in AGENTS.md CLAUDE.md; do
     cp -a "$REPO_DIR/$guide" "$PREFIX/$guide"
   fi
 done
+
+# Claims must report the bundled worker version, including on a fresh install.
+if [[ -f "$REPO_DIR/VERSION" ]]; then
+  cp -a "$REPO_DIR/VERSION" "$PREFIX/VERSION"
+else
+  echo "install.sh: WARNING — missing VERSION; CFW may refuse work until updated" >&2
+fi
 
 if (( FROM_APP )) && [[ ! -f "$ENV_FILE" ]]; then
   mkdir -p "$(dirname "$ENV_FILE")"

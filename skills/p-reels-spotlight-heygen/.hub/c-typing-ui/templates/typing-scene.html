@@ -309,11 +309,23 @@
       0
     );
 
-    // Typing: starts at 0.5s, finishes at DURATION * 0.88 (settled before clip ends)
-    var typeStart = 0.5;
-    var typeEnd   = Math.max(typeStart + 0.5, DURATION * 0.88 / TYPING_SPEED);
-    // Clamp typeEnd so it doesn't exceed clip duration
-    typeEnd = Math.min(typeEnd, DURATION - 0.4);
+    // Typing window (WI2.73): typing starts at 0.5 s and the whole prompt stays on screen for
+    // TYPING_HOLD seconds before the clip ends, whatever the duration or TYPING_SPEED. A clip too
+    // short to type in shows the whole prompt at once (never a half-typed line at the cut).
+    var TYPING_HOLD = 0.6;
+    function typingWindow(duration, speed) {
+      if (!(speed > 0)) speed = 1.0;
+      if (!(duration > 0)) return { start: 0, end: 0 };
+      var latest = Math.max(0, duration - TYPING_HOLD);
+      var start = Math.min(0.5, latest / 2);
+      var end = Math.max(start + 0.5, duration * 0.88 / speed);
+      end = Math.min(end, latest);
+      if (end < start) end = start;
+      return { start: start, end: end };
+    }
+    var typeWin   = typingWindow(DURATION, TYPING_SPEED);
+    var typeStart = typeWin.start;
+    var typeEnd   = typeWin.end;
 
     tl.to(proxy, {
       n: PROMPT_TEXT.length,

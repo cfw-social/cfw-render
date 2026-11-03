@@ -160,6 +160,29 @@ echo "IMAGE_URL: $R2_URL"
 
 ---
 
+## Script: `scripts/generate.py` (one still to a PNG file)
+
+Used by `p-longform` step 04. Python standard library only; one call = one image = about 0.8
+credits on `z-image`.
+
+```bash
+python3 "$SKILL_DIR/.hub/c-ai-media/scripts/generate.py" --provider kie --aspect 16:9 \
+  --prompt "<prompt>" --out work/visuals/img_01.png [--model z-image] [--timeout 150] [--dry-run]
+```
+
+- Key: the brand's `KIE_AI_API_KEY`, exported by the CFW render worker. It reads no other name and
+  no file (a worker-local key is never used). With no key it sends nothing and exits 3
+  (`IMAGE_FAILED: no Kie key …`): the step then renders GFX cards instead. It never prints the
+  key or the result URL, sends the key only to `api.kie.ai`, and never follows a redirect on an
+  API call.
+- Spend safety: the create call is made once and never retried (a retry could be charged twice);
+  status checks are retried. Waits up to `--timeout` seconds (default 150) and, on a timeout,
+  names the task id and does not start another.
+- Output: last stdout line `IMAGE_FILE: <path>` (exit 0) or `IMAGE_FAILED: <reason>` (exit 1 Kie
+  or network failure, 3 no key); a bad command line exits 2. A JPEG or WEBP result is converted to
+  PNG with ffmpeg. `--dry-run` checks the arguments and key and sends nothing.
+- This is the local-file variant of the return contract above (no R2 upload, no `IMAGE_URL:`).
+
 ## Model Reference (kie.ai text-to-image)
 
 | Model key | Quality | Speed | Credits | Best for |

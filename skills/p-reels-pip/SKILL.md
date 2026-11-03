@@ -28,6 +28,19 @@ metadata:
 
 # p-reels-pip — Bottom PIP Reel from Uploaded Talking-Head Video
 
+## Execution and reporting
+
+Read [Recipe stage reporting](../../docs/RECIPE-STAGE-REPORTING.md) before a tracked
+run. Managed work uses the installed worker/harness and the exact claimed manifest;
+its stage IDs select `steps/_shared.md` plus the referenced step file. The harness
+alone reports stages; step assistants must not call `complete_render_order` or
+emit competing MCP events. Standalone use does not report to CFW Social.
+
+Catalog presence and declared checks do not prove validator coverage or readiness.
+Missing validators/evidence block gates. See
+[reporting coverage](../../docs/RECIPE-REPORTING-COVERAGE.md) before claiming tracked
+execution is ready; local checkpoint eligibility is independently restricted.
+
 Produces one 9:16 (1080×1920) H.264 MP4: the user's **own uploaded talking-head clip** composited
 as a **rounded bottom-center PIP** over a **full-frame transcript-synced background** — uploaded
 b-roll where the words match, generated HyperFrames motion graphics everywhere else. The clip's
@@ -100,7 +113,7 @@ band in CSS (`--pip-band: 680px`).
 | Canvas color | `#0F172A` | Dark navy — visible only in letterbox gaps (scale-to-COVER removes them) |
 | Background fit | FIT + BLURRED-FILL | Clip shown whole (no crop); heavy-blurred zoomed copy fills frame edges. Replaces scale-to-COVER which cropped non-9:16 sources (e.g. website captures) badly. |
 | PIP source | uploaded talking-head | NOT HeyGen. Opaque by default — no chroma-key. |
-| PIP fit | scale-to-FIT (face never cropped) | `scale=CARD_W:CARD_H:force_original_aspect_ratio=decrease` — whole face shows, scaled to fit. Never crop the face. |
+| PIP fit | scale-to-FILL, top-biased crop (no bars) | `scale=CARD_W:CARD_H:force_original_aspect_ratio=increase,crop=CARD_W:CARD_H:(iw-ow)/2:0` — the card is filled edge to edge; the crop keeps the top, so the head is never cut. WI2.71: fit + pad showed bars in the card. |
 | PIP card | 364×504 default, bottom-center | Portrait box sized to the upload's aspect (70% of the earlier 520×720 — smaller, less obtrusive PIP, 2026-06-13). Rounded corners (yuva444p mask at scaled size). |
 | PIP ring | brand-accent ring + soft shadow, BAKED IN (2026-06-19) | Every card gets a rounded ring in the **brand accent** (Visual Identity Gate → `$W/brand.json {accent}`, override `PIP_RING_COLOR`; never hardcoded) plus a subtle drop shadow. Thickness `PIP_RING` (default 8px, `0`=off), shadow `PIP_SHADOW` (default 22px). Frame PNG = card+2·(ring+shadow), overlaid behind the masked head. |
 | PIP position | `overlay=(W-w)/2:(H-h-110)` | 110px bottom margin, always centered (all aspect ratios). BUG FIX bake-off #2: portrait sources were incorrectly placed bottom-left; now centered for all uploads. |
@@ -159,34 +172,108 @@ $FF -hide_banner -i "$TH" -t 60 -af volumedetect -f null - 2>&1 \
 # ~-90 dB = STOP — no narration; report and ask for a different source.
 ```
 
-### Step 1.5 — Detect + crop white side-bands (BEFORE anything else)
+### Step 1.5 — Detect + crop a baked-in bar pair (BEFORE anything else)
 
-Reused or exported clips often carry flat-white/cream **side margins** from the recording
-environment. Measure left/right edges vs the center; if bands exist, crop them (**left/right
-only — NEVER the top**; the head must not be clipped).
+Reused HeyGen / studio renders often carry a 16:9 picture baked between two flat bars (white,
+cream or mint) at the top and bottom, or a 9:16 picture between two side bars. WI2.71: the
+`bars.py` helper samples three frames and prints `crop=W:H:X:Y,` only for a **matched pair** —
+top+bottom (or left+right) bars of about the same size and the same flat colour that leave a
+picture within 5 % of 16:9 or 9:16. Anything else (a speaker on a plain backdrop, a one-sided
+margin) prints nothing and nothing is cropped, so the head is never cut. It measures frames the
+way ffmpeg shows them (rotation applied), so a rotated phone clip is read on the right axes.
+WI2.75: a flat seam of 6 rows or fewer (another flat colour) right beside a bar counts as part
+of that bar, so no grey line is left at the picture's edge; a band of 7 rows or more is kept.
 
 ```bash
-TH_W=$(ffprobe -v error -select_streams v -show_entries stream=width  -of csv=p=0 "$TH")
-TH_H=$(ffprobe -v error -select_streams v -show_entries stream=height -of csv=p=0 "$TH")
-
-col_luma() {  # x → avg luma (0-255) of a 2px column at mid-frame
-  v=$($FF -hide_banner -loglevel error -ss $(echo "$BED_DUR/2"|bc) -i "$TH" -vframes 1 \
-        -vf "crop=2:$TH_H:$1:0,scale=1:1,format=gray" -f rawvideo - 2>/dev/null | xxd -p)
-  echo $((16#$v))
-}
-
-BAND_LEFT=0
-for x in $(seq 0 5 $((TH_W/2))); do
-  [ "$(col_luma $x)" -lt 245 ] && { BAND_LEFT=$x; break; }
-done
-BAND_RIGHT=$TH_W
-for x in $(seq $((TH_W-2)) -5 $((TH_W/2))); do
-  [ "$(col_luma $x)" -lt 245 ] && { BAND_RIGHT=$((x+2)); break; }
-done
-CLEAN_W=$(( BAND_RIGHT - BAND_LEFT )); CLEAN_W=$(( CLEAN_W - CLEAN_W % 2 ))
-
-if [ "$BAND_LEFT" -gt 4 ] || [ "$BAND_RIGHT" -lt $((TH_W-4)) ]; then
-  $FF -y -i "$TH" -vf "crop=$CLEAN_W:$TH_H:$BAND_LEFT:0,setsar=1" \
+cat > "$W/bars.py" <<'PY'
+# WI2.71: find a matched pair of flat bars baked into the clip and print an ffmpeg crop.
+# Crops only top+bottom (or left+right) bars of about the same size and the same flat
+# colour, and only when what is left is within 5% of 16:9 or 9:16. Anything else: no crop.
+import subprocess, sys
+SRC, TOL, MIN_BAR, ASPECT_TOL, SEAM, SEAM_TOL = sys.argv[1], 12, 8, 0.05, 6, 32
+def grab(t):
+    # One frame as PPM. Its header gives the size ffmpeg shows after autorotation, so a
+    # rotated phone clip is measured on the same axes the later -vf crop sees.
+    out = subprocess.run(["ffmpeg", "-v", "error", "-ss", "%.2f" % t, "-i", SRC, "-frames:v", "1",
+        "-f", "image2pipe", "-c:v", "ppm", "-"], capture_output=True, check=True).stdout
+    if not out.startswith(b"P6"):
+        return None
+    head, pos = [], 2
+    while len(head) < 3:
+        while out[pos:pos + 1].isspace():
+            pos += 1
+        end = pos
+        while out[end:end + 1] and not out[end:end + 1].isspace():
+            end += 1
+        head.append(int(out[pos:end])); pos = end
+    w, h, data = head[0], head[1], out[pos + 1:]
+    return (w, h, data) if len(data) >= w * h * 3 else None
+def duration():
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", SRC],
+        capture_output=True, text=True, check=True).stdout.strip()
+    try:
+        return float(r)
+    except ValueError:
+        return 1.0
+def close(a, b, tol=TOL):
+    return max(abs(a[k] - b[k]) for k in range(3)) <= tol
+def run(fr, w, lines, pts, tol=TOL):
+    # how many lines from this edge inwards are one flat colour -> (count, colour)
+    ref, n = None, 0
+    for ln in lines:
+        row = [fr[(y * w + x) * 3:(y * w + x) * 3 + 3] for x, y in pts(ln)]
+        ref = ref or sorted(row)[len(row) // 2]    # median pixel: robust to a noisy first pixel
+        if not all(close(c, ref, tol) for c in row):
+            break
+        n += 1
+    return n, ref
+def bar(fr, w, lines, pts):
+    # WI2.75: a bar run also swallows ONE short flat seam (SEAM rows or fewer, another flat
+    # colour, within SEAM_TOL because video compression speckles it) right next to its inner edge, so no flat seam row stays at the picture's edge.
+    lines = list(lines)
+    n, ref = run(fr, w, lines, pts)
+    if n >= MIN_BAR:
+        m, _ = run(fr, w, lines[n:], pts, SEAM_TOL)   # a compressed seam is a bit noisy
+        if 1 <= m <= SEAM and n + m < len(lines):
+            n += m
+    return n, ref
+D = duration()
+frames = [f for f in (grab(D * p) for p in (0.2, 0.5, 0.8)) if f]
+if not frames or len({(f[0], f[1]) for f in frames}) != 1:
+    print(""); sys.exit(0)
+W, H = frames[0][0], frames[0][1]
+sides = [(bar(fr, W, range(H // 2), lambda y: [(x, y) for x in range(0, W, 4)]),
+          bar(fr, W, range(H - 1, H // 2, -1), lambda y: [(x, y) for x in range(0, W, 4)]),
+          bar(fr, W, range(W // 2), lambda x: [(x, y) for y in range(0, H, 4)]),
+          bar(fr, W, range(W - 1, W // 2, -1), lambda x: [(x, y) for y in range(0, H, 4)]))
+         for _, _, fr in frames]
+def edge(i):
+    # bar size = the smallest run over the sampled frames; its colour must hold in every frame
+    n, cols = min(s[i][0] for s in sides), [s[i][1] for s in sides]
+    if n < MIN_BAR or not all(close(c, cols[0]) for c in cols):
+        return 0, None
+    return n, cols[0]
+(top, ct), (bot, cb), (left, cl), (right, cr) = (edge(i) for i in range(4))
+def pair(a, ca, b, cb_, side):
+    # a matched pair: both bars present, the same flat colour, sizes within 2% of the side
+    return bool(a and b and close(ca, cb_) and abs(a - b) <= max(4, side * 0.02))
+def aspect_ok(w, h):
+    return any(abs((w / h) / r - 1) <= ASPECT_TOL for r in (16 / 9, 9 / 16))
+tb, lr = pair(top, ct, bot, cb, H), pair(left, cl, right, cr, W)
+cands = ([(top, bot, left, right)] if tb and lr else []) + ([(top, bot, 0, 0)] if tb else []) \
+    + ([(0, 0, left, right)] if lr else [])
+for t, b, l, r in cands:
+    t, l = t + t % 2, l + l % 2          # even x/y (yuv420p); never keeps a bar row
+    cw, ch = W - l - r, H - t - b
+    cw, ch = cw - cw % 2, ch - ch % 2    # even w/h
+    if cw >= W // 4 and ch >= H // 4 and aspect_ok(cw, ch):
+        print("crop=%d:%d:%d:%d," % (cw, ch, l, t)); sys.exit(0)
+print("")
+PY
+CROP=$(python3 "$W/bars.py" "$TH") || exit 1
+echo "[p-reels-pip] bar crop: '${CROP:-none}'"
+if [ -n "$CROP" ]; then
+  $FF -y -i "$TH" -vf "${CROP}setsar=1" \
     -c:v libx264 -pix_fmt yuv420p -c:a copy "$W/th-clean.mp4"
   TH_CLEAN="$W/th-clean.mp4"
 else
@@ -240,7 +327,7 @@ else
     cfw-transcribe --input "$W/bed.mp4" --out "$W/transcript.srt" --format srt
   elif command -v mlx_whisper >/dev/null 2>&1; then
     echo "[p-reels-pip] cfw-transcribe not found — falling back to mlx_whisper"
-    mlx_whisper "$W/bed.mp4" --model mlx-community/whisper-small --output-dir "$W" --output-format srt
+    mlx_whisper "$W/bed.mp4" --model mlx-community/whisper-small-mlx --output-dir "$W" --output-format srt
     mv "$W/bed.srt" "$W/transcript.srt"
   elif command -v whisper >/dev/null 2>&1; then
     echo "[p-reels-pip] cfw-transcribe not found — falling back to whisper CLI"
@@ -311,7 +398,7 @@ if [ ${#BROLL_CLIPS[@]} -gt 0 ]; then
       if command -v cfw-transcribe >/dev/null 2>&1; then
         cfw-transcribe --input "$clip" --out "$srt_out" --format srt 2>/dev/null
       elif command -v mlx_whisper >/dev/null 2>&1; then
-        mlx_whisper "$clip" --model mlx-community/whisper-small --output-dir "$(dirname "$srt_out")" --output-format srt 2>/dev/null && \
+        mlx_whisper "$clip" --model mlx-community/whisper-small-mlx --output-dir "$(dirname "$srt_out")" --output-format srt 2>/dev/null && \
         mv "$(dirname "$srt_out")/$(basename "$clip" .mp4).srt" "$srt_out" 2>/dev/null || true
       elif command -v whisper >/dev/null 2>&1; then
         whisper "$clip" --model small --output_dir "$(dirname "$srt_out")" --output_format srt 2>/dev/null && \
@@ -622,7 +709,7 @@ done
 
 ### Step 7 — Composite the talking-head PIP over the background
 
-The talking head is scale-to-FIT (whole face preserved — never cropped). Positioned bottom-center
+The talking head is scale-to-FILL with a top-biased crop (no bars; the head is never cut). Positioned bottom-center
 with a 110px bottom margin (never flush). Audio comes from the talking-head track.
 
 ```bash
@@ -695,7 +782,7 @@ fi
 # (RGBA from PIL) feeds as the alpha plane source; alphamerge copies that plane
 # onto the converted TH, yielding an YUVA stream that overlay can handle.
 # Filter chain (mask path):
-#   [TH] scale→FIT → format=yuva444p → [thfit]
+#   [TH] scale→FILL + top-biased crop → format=yuva444p → [thfit]
 #   [thfit][MASK]  alphamerge → [avpip]   (MASK alpha becomes TH alpha)
 #   [BG] format=yuv420p → [bg]
 #   [bg][avpip]    overlay → [v]
@@ -709,10 +796,10 @@ if [ -n "$MASK_PATH" ] && [ -n "$FRAME_PATH" ]; then
   # The frame PNG is card+2*PIP_PAD; it sits PIP_PAD lower than the card so the
   # ring/shadow extends evenly. eof_action defaults to 'repeat' so the static frame
   # persists for the whole bed (NO shortest on the frame overlay — only on the TH).
-  # pad=...:(ow-iw)/2:0 letterbox-centers the scale-to-FIT result to exactly the
-  # card dims so alphamerge dimensions match (bake-off #2 fix preserved).
+  # increase + crop=...:(iw-ow)/2:0 fills the card to exactly the card dims so
+  # alphamerge dimensions match (bake-off #2 fix preserved) — no pad bars (WI2.71).
   PFROM=$(( MARGIN - PIP_PAD ))
-  FC="[1:v]scale=${CARD_W}:${CARD_H}:force_original_aspect_ratio=decrease,pad=${CARD_W}:${CARD_H}:(ow-iw)/2:0,setsar=1,format=yuva444p[thfit];[thfit][2:v]alphamerge[avpip];[0:v]format=yuv420p[bg];[bg][3:v]overlay=(W-w)/2:(H-h-${PFROM}):format=auto[bgf];[bgf][avpip]overlay=${XPOS}:(H-h-${MARGIN}):format=auto:shortest=1[v];[1:a]anull[a]"
+  FC="[1:v]scale=${CARD_W}:${CARD_H}:force_original_aspect_ratio=increase,crop=${CARD_W}:${CARD_H}:(iw-ow)/2:0,setsar=1,format=yuva444p[thfit];[thfit][2:v]alphamerge[avpip];[0:v]format=yuv420p[bg];[bg][3:v]overlay=(W-w)/2:(H-h-${PFROM}):format=auto[bgf];[bgf][avpip]overlay=${XPOS}:(H-h-${MARGIN}):format=auto:shortest=1[v];[1:a]anull[a]"
   $FF -y -i "$W/bg-all.mp4" -i "$W/bed.mp4" -i "$MASK_PATH" -i "$FRAME_PATH" \
     -filter_complex "$FC" \
     -map "[v]" -map "[a]" \
@@ -722,11 +809,10 @@ if [ -n "$MASK_PATH" ] && [ -n "$FRAME_PATH" ]; then
 elif [ -n "$MASK_PATH" ]; then
   # Rounded card, no ring (PIP_RING=0 or frame gen skipped).
   # BUG FIX (bake-off #2 2026-06-12 — alphamerge AVERROR(EINVAL) dim mismatch):
-  # A 9:16 talking head scales to FIT inside the card leaving a horizontal gap.
   # alphamerge requires both inputs (scaled TH and the mask) to have IDENTICAL
-  # dimensions. Fix: pad=${CARD_W}:${CARD_H}:(ow-iw)/2:0 letterbox-centers to the
-  # card dims before the format conversion.
-  FC="[1:v]scale=${CARD_W}:${CARD_H}:force_original_aspect_ratio=decrease,pad=${CARD_W}:${CARD_H}:(ow-iw)/2:0,setsar=1,format=yuva444p[thfit];[thfit][2:v]alphamerge[avpip];[0:v]format=yuv420p[bg];[bg][avpip]overlay=${XPOS}:(H-h-${MARGIN}):format=auto:shortest=1[v];[1:a]anull[a]"
+  # dimensions. WI2.71: scale-to-FILL then crop=${CARD_W}:${CARD_H}:(iw-ow)/2:0
+  # gives exactly the card dims with no pad bars; y=0 keeps the head.
+  FC="[1:v]scale=${CARD_W}:${CARD_H}:force_original_aspect_ratio=increase,crop=${CARD_W}:${CARD_H}:(iw-ow)/2:0,setsar=1,format=yuva444p[thfit];[thfit][2:v]alphamerge[avpip];[0:v]format=yuv420p[bg];[bg][avpip]overlay=${XPOS}:(H-h-${MARGIN}):format=auto:shortest=1[v];[1:a]anull[a]"
   $FF -y -i "$W/bg-all.mp4" -i "$W/bed.mp4" -i "$MASK_PATH" \
     -filter_complex "$FC" \
     -map "[v]" -map "[a]" \
@@ -734,7 +820,7 @@ elif [ -n "$MASK_PATH" ]; then
     -c:a aac -b:a 192k -ar 48000 -ac 2 -movflags +faststart \
     "$W/composed.mp4"
 else
-  FC="[1:v]scale=${CARD_W}:${CARD_H}:force_original_aspect_ratio=decrease,setsar=1[thfit];[0:v]format=yuv420p[bg];[bg][thfit]overlay=${XPOS}:(H-h-${MARGIN}):format=auto:shortest=1[v];[1:a]anull[a]"
+  FC="[1:v]scale=${CARD_W}:${CARD_H}:force_original_aspect_ratio=increase,crop=${CARD_W}:${CARD_H}:(iw-ow)/2:0,setsar=1[thfit];[0:v]format=yuv420p[bg];[bg][thfit]overlay=${XPOS}:(H-h-${MARGIN}):format=auto:shortest=1[v];[1:a]anull[a]"
   $FF -y -i "$W/bg-all.mp4" -i "$W/bed.mp4" \
     -filter_complex "$FC" \
     -map "[v]" -map "[a]" \
@@ -746,7 +832,7 @@ fi
 ```
 
 **PIP geometry rationale (from fmt2 canonical + fmt5 fix):**
-- `force_original_aspect_ratio=decrease` → whole face visible, never cropped (fmt5 v1 bug fix)
+- `force_original_aspect_ratio=increase,crop=…:(iw-ow)/2:0` → card filled, no bars, the top (head) kept (WI2.71; fit + pad showed bars)
 - `overlay=(W-w)/2:(H-h-110)` → 110px bottom margin (fmt5 v1 buried PIP at y=1380 flush bottom)
 - Card is portrait (not fixed square) → mask generated at scaled size, not a fixed 540² PNG
 
@@ -1132,7 +1218,7 @@ done
 - [ ] **(a) Background is NOT black** — behind/around the PIP there is real footage or motion
       graphics. Black background = build failed → fix Step 6 and re-render.
 - [ ] **(b) Complete face shows in the PIP** — forehead to chin, not cropped at top OR bottom,
-      not stretched. Cropped face = scale-to-FIT failed → fix Step 7.
+      not stretched. Cut head = the card crop is not top-biased → fix Step 7.
 - [ ] **(c) PIP is fully on-screen with a margin** — entire PIP card inside the frame with a
       clear gap at the bottom. Flush/buried = margin was dropped → fix `overlay` in Step 7.
 - [ ] **(d) Content does NOT cover the PIP** — graphics/captions in the upper zone only;
@@ -1253,9 +1339,9 @@ Clean up `$W` after the URL is confirmed.
   B-roll is shown whole (no cropping), a heavy-blurred copy fills the frame edges.
   `pad`/`force_original_aspect_ratio=decrease` alone letterboxes (dead bars) — wrong.
   The old scale-to-COVER (`increase+crop`) cropped non-9:16 sources like website captures badly.
-- **Scale-to-FIT (PIP), never crop the face.**
-  `scale=CARD_W:CARD_H:force_original_aspect_ratio=decrease` → whole face visible.
-  fmt5 v1 cut the chin with a square crop — this is the explicit fix.
+- **Scale-to-FILL (PIP), top-biased crop — never cut the head.**
+  `scale=CARD_W:CARD_H:force_original_aspect_ratio=increase,crop=CARD_W:CARD_H:(iw-ow)/2:0` → no bars.
+  fmt5 v1 cut the chin with a centred square crop; WI2.71 replaced fit + pad, which showed bars.
 - **PIP margin = 110px (never flush).** fmt5 v1 put the PIP at `y=1380` flush to the bottom edge —
   it was buried/clipped on some devices. `overlay=(W-w)/2:(H-h-110)` guarantees full visibility.
 - **PIP is always centered** regardless of aspect ratio. bake-off #2 fix: portrait sources (h > w)

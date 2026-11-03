@@ -56,6 +56,7 @@
         box-sizing: border-box;
       }
       #{{ID}} .eyebrow {
+        white-space: nowrap; max-width: 900px;  /* WI2.94: one line; the script fits it to the safe width */
         font-family: 'JetBrains Mono', monospace;
         font-weight: 700; font-size: 30px;
         letter-spacing: 0.2em; text-transform: uppercase;
@@ -64,12 +65,14 @@
       }
       #{{ID}} .stat {
         font-weight: 700; font-size: 340px; line-height: 0.9;
+        white-space: nowrap;  /* WI2.83: one line; the script fits it to the safe width */
         letter-spacing: -0.02em; text-transform: uppercase;
         color: {{ACCENT}};
         text-shadow: 0 0 60px {{ACCENT}}73;
         will-change: transform, opacity;
       }
       #{{ID}} .label {
+        white-space: nowrap;  /* WI2.94: one line; the script fits it to the safe width */
         font-weight: 600; font-size: 84px; line-height: 1.0;
         letter-spacing: -0.01em; text-transform: uppercase;
         color: {{FG}};
@@ -102,6 +105,25 @@
         label.innerHTML = label.textContent.split(/\s+/).filter(Boolean)
           .map(function (w) { return '<span class="word">' + w + "</span>"; }).join(" ");
 
+        // WI2.83: fit the stat to the safe width. 340px is the design size; a long stat
+        // ("100,000") is scaled down until it is no wider than STAT_MAX_W (1080 minus the
+        // 72px side padding, with room for the 1.03 breathe). Refit once fonts load.
+        var STAT_SIZE = 340, STAT_MAX_W = 900;
+        function fitStat(el, base, maxW) {
+          el.style.fontSize = base + "px";
+          var w = el.scrollWidth;
+          if (w <= maxW) return base;
+          var size = Math.floor(base * maxW / w);
+          el.style.fontSize = size + "px";
+          while (size > 8 && el.scrollWidth > maxW) { size -= 2; el.style.fontSize = size + "px"; }
+          return size;
+        }
+        var statEl = document.querySelector(scope + ".js-stat");
+        fitStat(statEl, STAT_SIZE, STAT_MAX_W);
+        if (document.fonts && document.fonts.ready) {
+          document.fonts.ready.then(function () { fitStat(statEl, STAT_SIZE, STAT_MAX_W); });
+        }
+
         var tl = gsap.timeline({ paused: true });
 
         // Ambient — glow breathes; ring expands and fades out once. Nothing static.
@@ -114,7 +136,12 @@
           { y: 0, opacity: 1, duration: 0.4, ease: "power3.out" }, 0.1);
 
         // The slam: stat punches in oversized then settles with a soft breathe.
-        tl.fromTo(scope + ".js-stat", { scale: 2.4, opacity: 0 },
+        // WI2.85: start at 2.4x, capped so the slam's first frame is no wider than SLAM_MAX_W
+        // (1080 minus 2x72px side padding). A short stat ("3X") keeps the full 2.4x slam.
+        var SLAM_SCALE = 2.4, SLAM_MAX_W = 936;
+        function slamCap() { return Math.min(SLAM_SCALE, SLAM_MAX_W / Math.max(1, statEl.scrollWidth)); }
+        var slamFrom = slamCap();
+        tl.fromTo(scope + ".js-stat", { scale: function () { return slamFrom; }, opacity: 0 },
           { scale: 1, opacity: 1, duration: 0.45, ease: "power4.out" }, 0.25);
         tl.to(scope + ".js-stat", { scale: 1.03, duration: 0.6, ease: "sine.inOut" }, 0.9);
         tl.to(scope + ".js-stat", { scale: 1.0, duration: Math.max(0.4, DUR - 2.0), ease: "sine.inOut" }, 1.55);
@@ -122,7 +149,33 @@
         tl.fromTo(scope + ".js-label .word", { yPercent: 110, opacity: 0 },
           { yPercent: 0, opacity: 1, duration: 0.5, ease: "back.out(1.6)", stagger: 0.07 }, 0.55);
 
+        // WI2.85: after the fonts refit above, re-measure the fitted stat once and re-record the slam.
+        if (document.fonts && document.fonts.ready) {
+          document.fonts.ready.then(function () { slamFrom = slamCap(); tl.invalidate(); });
+        }
+
         window.__timelines["{{ID}}"] = tl;
+
+        // WI2.94: keep each takeover text line on ONE line. A line starts at its design size and,
+        // when wider than its safe width (>= 80px from both frame edges), its font is scaled down
+        // until it fits; the text is never cut. Refit once fonts load.
+        function fitLine(el, base, maxW) {
+          if (!el) return base;
+          el.style.fontSize = base + "px";
+          var w = el.scrollWidth;
+          if (w <= maxW) return base;
+          var size = Math.floor(base * maxW / w);
+          el.style.fontSize = size + "px";
+          while (size > 8 && el.scrollWidth > maxW) { size -= 1; el.style.fontSize = size + "px"; }
+          return size;
+        }
+        var LINE_FITS = [
+          [document.querySelector(scope + ".js-eyebrow"), 30, 900],
+          [document.querySelector(scope + ".js-label"), 84, 900]
+        ];
+        function fitLines() { LINE_FITS.forEach(function (f) { fitLine(f[0], f[1], f[2]); }); }
+        fitLines();
+        if (document.fonts && document.fonts.ready) { document.fonts.ready.then(fitLines); }
       })();
     </script>
   </div>

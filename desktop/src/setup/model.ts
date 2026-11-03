@@ -46,8 +46,9 @@ export function setupModel(events: SetupEvent[]): SetupModel {
   return m;
 }
 
-/** Same shape check as the app's Rust side (`setup::valid_key`); CFW does the real check. */
-export const looksLikeBrandKey = (k: string) => /^cfw_[A-Za-z0-9_]{8,200}$/.test(k.trim());
+/** Same shape check as the app's Rust side (`setup::valid_key`); CFW does the real check.
+ *  CFW keys are base64url, so `-` is a normal key character. */
+export const looksLikeBrandKey = (k: string) => /^cfw_[A-Za-z0-9_-]{8,200}$/.test(k.trim());
 
 export interface ToolsModel { state: "idle" | StepState; pct: number | null; message?: string }
 

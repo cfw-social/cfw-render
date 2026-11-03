@@ -59,8 +59,12 @@ Schema:
         \"words\":[{\"w\":\"TEXT\",\"s\":start,\"e\":end,\"em\":false}] } ],
   \"sfx\": [ {\"t\":s,\"name\":\"whoosh-deep|whoosh-air|impact-sub|impact-punch|riser|click|pop|swipe\",\"gain\":0.0-0.6} ] }
 RULES:
-1. caption_groups cover the FULL duration, 2-4 words each, non-overlapping, break on sentence
-   boundaries or pauses >=150ms. Words VERBATIM from the transcript.
+1. caption_groups cover the FULL duration, 2-4 words each (up to 6 to keep a phrase whole),
+   non-overlapping, break at punctuation, clause starts or pauses >=150ms. Never end a group on a
+   preposition, article, possessive, conjunction or auxiliary (with, of, the, her, his, and, is),
+   and never leave a lone 1-2 word fragment from mid-clause (She approved them / with flour still
+   on her hands, - not She approved them with / FLOUR STILL / on her hands,). Words VERBATIM from
+   the transcript.
 2. LATIN SCRIPT ONLY: transliterate any non-Latin script word phonetically. NEVER translate —
    Hinglish stays Hinglish.
 3. At most ONE word per group gets \"em\":true. Some groups have none.

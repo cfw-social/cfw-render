@@ -4,6 +4,7 @@ import type { Health } from "../panel/model";
 import type { SectionId } from "../nav";
 import { Icon, type IconName } from "../ui/Icon";
 import { Dot } from "../ui/kit";
+import { useClickGuard } from "../ui/useClickGuard";
 
 export interface WebBrand { name: string; slug: string; isCurrent: boolean }
 export interface WebBrands { signedIn: boolean; brands: WebBrand[] }
@@ -114,23 +115,27 @@ export function Rail({
   web,
   slug,
   health,
+  paused,
   computerName,
   onSection,
   onPickBrand,
   onAllBrands,
   onSignIn,
   onTogglePause,
+  onRefresh,
 }: {
   section: SectionId;
   web: WebBrands | null;
   slug: string | null;
   health: Health;
+  paused: boolean;
   computerName: string | null;
   onSection: (s: SectionId) => void;
   onPickBrand: (slug: string) => void;
   onAllBrands: () => void;
   onSignIn: () => void;
   onTogglePause: () => void;
+  onRefresh?: () => void;
 }) {
   const item = (it: { id: SectionId; icon: IconName; label: string }, extra?: ReactNode) => {
     const on = it.id === section;
@@ -149,8 +154,8 @@ export function Rail({
       </li>
     );
   };
+  const guard = useClickGuard();
   const providerTrouble = health.kind === "limit" || health.kind === "noProvider";
-  const paused = health.kind === "paused" || health.kind === "battery";
 
   return (
     <aside className="flex h-full w-[208px] shrink-0 flex-col border-r border-border bg-card">
@@ -172,10 +177,16 @@ export function Rail({
           <p className="truncate text-[13px] font-semibold">{health.label}</p>
           {computerName && <p className="mt-0.5 truncate text-[11px] text-subtle">{computerName}</p>}
         </div>
+        {onRefresh && (
+          <button type="button" onClick={onRefresh} aria-label={copy.webRefresh} title={copy.webRefresh}
+            className="flex h-8 w-8 items-center justify-center rounded-[6px] border border-border bg-white text-muted-foreground hover:bg-secondary">
+            <Icon name="refresh-cw" size={14} />
+          </button>
+        )}
         {health.kind !== "notRunning" && (
           <button
             type="button"
-            onClick={onTogglePause}
+            onClick={() => guard(onTogglePause)}
             aria-label={paused ? copy.nav.resume : copy.nav.pause}
             title={paused ? copy.nav.resume : copy.nav.pause}
             className="flex h-8 w-8 items-center justify-center rounded-[6px] border border-border bg-white text-muted-foreground hover:bg-secondary"

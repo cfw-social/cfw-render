@@ -31,44 +31,121 @@ ffmpeg -hide_banner -i "$AVATAR" -af "silencedetect=noise=-35dB:d=0.5" -f null -
   | grep -E "silence_(start|end)" || echo "narration continuous"
 ```
 
-### 2. Detect & crop white side bands (BEFORE anything else)
+### 2. Detect & crop a baked-in bar pair (BEFORE anything else)
 
-Reused 16:9 studio renders often carry baked-in white/cream bands down the left and right. Measure
-thin edge columns against the centre and, if bands exist, crop LEFT/RIGHT only — **never the top**
-(the head must not be cut). `crop=W:H:X:0` — the y-offset `0` guarantees the top edge is kept.
+Reused HeyGen / studio renders often carry a 16:9 picture baked between two flat bars (white,
+cream or mint) at the top and bottom, or a 9:16 picture between two side bars. WI2.71: the
+`bars.py` helper samples three frames and prints `crop=W:H:X:Y,` only for a **matched pair** —
+top+bottom (or left+right) bars of about the same size and the same flat colour that leave a
+picture within 5 % of 16:9 or 9:16. Anything else (a speaker on a plain backdrop, a one-sided
+margin) prints nothing and nothing is cropped, so the head is never cut. It measures frames the
+way ffmpeg shows them (rotation applied), so a rotated phone clip is read on the right axes.
+WI2.75: a flat seam of 6 rows or fewer (another flat colour) right beside a bar counts as part
+of that bar, so no grey line is left at the picture's edge; a band of 7 rows or more is kept.
 
 ```bash
-W_SRC=$(ffprobe -v error -select_streams v -show_entries stream=width -of csv=p=0 "$AVATAR")
-H_SRC=$(ffprobe -v error -select_streams v -show_entries stream=height -of csv=p=0 "$AVATAR")
-col_luma () {
-  v=$(ffmpeg -hide_banner -loglevel error -ss 13 -i "$AVATAR" -vframes 1 \
-        -vf "crop=2:$H_SRC:$1:0,scale=1:1,format=gray" -f rawvideo - 2>/dev/null | xxd -p)
-  echo $((16#$v))
-}
-LEFT=0;  for x in $(seq 0 5 $((W_SRC/2)));    do [ "$(col_luma $x)" -lt 245 ] && { LEFT=$x;  break; }; done
-RIGHT=$W_SRC; for x in $(seq $((W_SRC-2)) -5 $((W_SRC/2))); do [ "$(col_luma $x)" -lt 245 ] && { RIGHT=$((x+2)); break; }; done
-CW=$(( RIGHT - LEFT )); CW=$(( CW - CW % 2 ))
-if [ "$LEFT" -gt 4 ] || [ "$RIGHT" -lt $((W_SRC-4)) ]; then
-  ffmpeg -y -i "$AVATAR" -vf "crop=$CW:$H_SRC:$LEFT:0,setsar=1" \
-    -c:v libx264 -pix_fmt yuv420p -c:a copy work/avatar-clean.mp4
-  AVATAR_CLEAN=work/avatar-clean.mp4
-else
-  AVATAR_CLEAN="$AVATAR"
-fi
+cat > work/bars.py <<'PY'
+# WI2.71: find a matched pair of flat bars baked into the clip and print an ffmpeg crop.
+# Crops only top+bottom (or left+right) bars of about the same size and the same flat
+# colour, and only when what is left is within 5% of 16:9 or 9:16. Anything else: no crop.
+import subprocess, sys
+SRC, TOL, MIN_BAR, ASPECT_TOL, SEAM, SEAM_TOL = sys.argv[1], 12, 8, 0.05, 6, 32
+def grab(t):
+    # One frame as PPM. Its header gives the size ffmpeg shows after autorotation, so a
+    # rotated phone clip is measured on the same axes the later -vf crop sees.
+    out = subprocess.run(["ffmpeg", "-v", "error", "-ss", "%.2f" % t, "-i", SRC, "-frames:v", "1",
+        "-f", "image2pipe", "-c:v", "ppm", "-"], capture_output=True, check=True).stdout
+    if not out.startswith(b"P6"):
+        return None
+    head, pos = [], 2
+    while len(head) < 3:
+        while out[pos:pos + 1].isspace():
+            pos += 1
+        end = pos
+        while out[end:end + 1] and not out[end:end + 1].isspace():
+            end += 1
+        head.append(int(out[pos:end])); pos = end
+    w, h, data = head[0], head[1], out[pos + 1:]
+    return (w, h, data) if len(data) >= w * h * 3 else None
+def duration():
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", SRC],
+        capture_output=True, text=True, check=True).stdout.strip()
+    try:
+        return float(r)
+    except ValueError:
+        return 1.0
+def close(a, b, tol=TOL):
+    return max(abs(a[k] - b[k]) for k in range(3)) <= tol
+def run(fr, w, lines, pts, tol=TOL):
+    # how many lines from this edge inwards are one flat colour -> (count, colour)
+    ref, n = None, 0
+    for ln in lines:
+        row = [fr[(y * w + x) * 3:(y * w + x) * 3 + 3] for x, y in pts(ln)]
+        ref = ref or sorted(row)[len(row) // 2]    # median pixel: robust to a noisy first pixel
+        if not all(close(c, ref, tol) for c in row):
+            break
+        n += 1
+    return n, ref
+def bar(fr, w, lines, pts):
+    # WI2.75: a bar run also swallows ONE short flat seam (SEAM rows or fewer, another flat
+    # colour, within SEAM_TOL because video compression speckles it) right next to its inner edge, so no flat seam row stays at the picture's edge.
+    lines = list(lines)
+    n, ref = run(fr, w, lines, pts)
+    if n >= MIN_BAR:
+        m, _ = run(fr, w, lines[n:], pts, SEAM_TOL)   # a compressed seam is a bit noisy
+        if 1 <= m <= SEAM and n + m < len(lines):
+            n += m
+    return n, ref
+D = duration()
+frames = [f for f in (grab(D * p) for p in (0.2, 0.5, 0.8)) if f]
+if not frames or len({(f[0], f[1]) for f in frames}) != 1:
+    print(""); sys.exit(0)
+W, H = frames[0][0], frames[0][1]
+sides = [(bar(fr, W, range(H // 2), lambda y: [(x, y) for x in range(0, W, 4)]),
+          bar(fr, W, range(H - 1, H // 2, -1), lambda y: [(x, y) for x in range(0, W, 4)]),
+          bar(fr, W, range(W // 2), lambda x: [(x, y) for y in range(0, H, 4)]),
+          bar(fr, W, range(W - 1, W // 2, -1), lambda x: [(x, y) for y in range(0, H, 4)]))
+         for _, _, fr in frames]
+def edge(i):
+    # bar size = the smallest run over the sampled frames; its colour must hold in every frame
+    n, cols = min(s[i][0] for s in sides), [s[i][1] for s in sides]
+    if n < MIN_BAR or not all(close(c, cols[0]) for c in cols):
+        return 0, None
+    return n, cols[0]
+(top, ct), (bot, cb), (left, cl), (right, cr) = (edge(i) for i in range(4))
+def pair(a, ca, b, cb_, side):
+    # a matched pair: both bars present, the same flat colour, sizes within 2% of the side
+    return bool(a and b and close(ca, cb_) and abs(a - b) <= max(4, side * 0.02))
+def aspect_ok(w, h):
+    return any(abs((w / h) / r - 1) <= ASPECT_TOL for r in (16 / 9, 9 / 16))
+tb, lr = pair(top, ct, bot, cb, H), pair(left, cl, right, cr, W)
+cands = ([(top, bot, left, right)] if tb and lr else []) + ([(top, bot, 0, 0)] if tb else []) \
+    + ([(0, 0, left, right)] if lr else [])
+for t, b, l, r in cands:
+    t, l = t + t % 2, l + l % 2          # even x/y (yuv420p); never keeps a bar row
+    cw, ch = W - l - r, H - t - b
+    cw, ch = cw - cw % 2, ch - ch % 2    # even w/h
+    if cw >= W // 4 and ch >= H // 4 and aspect_ok(cw, ch):
+        print("crop=%d:%d:%d:%d," % (cw, ch, l, t)); sys.exit(0)
+print("")
+PY
+CROP=$(python3 work/bars.py "$AVATAR") || exit 1
+echo "[spotlight] bar crop: '${CROP:-none}'"
+AVATAR_CLEAN="$AVATAR"
 ```
 
 ### 3. Build the bed — full length, scale-to-cover, loudnormed ONCE
 
 ```bash
 ffmpeg -y -i "$AVATAR_CLEAN" \
-  -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30" \
+  -vf "${CROP}scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30" \
   -af "loudnorm=I=-16:TP=-1.5:LRA=11" \
   -c:v libx264 -pix_fmt yuv420p -c:a aac -ar 48000 -ac 2 work/base.mp4
 DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 work/base.mp4)
 ```
 
 `avatar_layout: letterbox` → replace the `-vf` with
-`scale=1080:-2,pad=1080:1920:0:(1920-ih)/2:color=0x0F172A,setsar=1,fps=30` (use the brand `bg` hex
+`${CROP}scale=1080:-2,pad=1080:1920:0:(1920-ih)/2:color=0x0F172A,setsar=1,fps=30` (use the brand `bg` hex
 from `brief.json` when known). **Do not slice the bed** — one unbroken audio track. Loudnorm
 happens here and never again in any later step.
 
@@ -95,12 +172,58 @@ if python3 -c "exit(0 if float('$TRIM_START') > 0.3 else 1)"; then
 fi
 ```
 
+### 4b. Give the end card a silent tail (WI2.89)
+
+The end card never covers speech (WI2.86), so the bed needs room after the last spoken word.
+When the speech runs to the end of the clip (or nearly), hold the last frame with silence until
+`cta_duration` + 0.5 s follows the speech end (a tail of at most 3.5 s). The speech end is
+where the final silence starts (`silencedetect` −40 dB, 0.3 s); with no trailing silence it is
+the clip end. `cta_card: off` adds no tail, and a clip that already ends in enough silence is
+left as it is. The tail is part of the sealed bed: captions, takeovers, checks and the reel all
+time against it, and the end card then shows in full right after the last word.
+
+```bash
+opt () { python3 -c "import json; print(json.load(open('brief.json')).get('options',{}).get('$1','$2'))"; }
+python3 - work/base.mp4 "$(opt cta_card on)" "$(opt cta_duration 3.0)" <<'PY' || exit 1
+# WI2.89: hold the last frame with silence so the end card fits after the last spoken word.
+import math, os, re, subprocess, sys
+src, card, want = sys.argv[1], sys.argv[2], float(sys.argv[3])
+MARGIN, MAX_TAIL = 0.5, 3.5   # speech end + cta_duration + MARGIN, tail at most MAX_TAIL
+def dur(p):
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", p],
+                         capture_output=True, text=True, check=True).stdout.strip()
+    return float(out)
+if card != "on":
+    print("[spotlight] end-card tail: cta_card off, no tail"); sys.exit(0)
+d = dur(src)
+log = subprocess.run(["ffmpeg", "-hide_banner", "-i", src, "-af", "silencedetect=noise=-40dB:d=0.3", "-f", "null", "-"],
+                     capture_output=True, text=True).stderr
+starts = [float(x) for x in re.findall(r"silence_start: (-?[0-9.]+)", log)]
+ends = [float(x) for x in re.findall(r"silence_end: (-?[0-9.]+)", log)]
+speech_end = d                       # no silence runs to the end: the speech fills the clip
+if starts and (len(ends) < len(starts) or ends[-1] >= d - 0.05):
+    speech_end = max(0.0, starts[-1])
+tail = math.ceil(max(0.0, min(want + MARGIN, MAX_TAIL) - (d - speech_end)) * 30) / 30
+if tail <= 0:
+    print("[spotlight] end-card tail: %.2fs of silence already follows the speech, no tail" % (d - speech_end)); sys.exit(0)
+tmp = src[:-4] + "-tail.mp4"
+subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", src, "-vf", "tpad=stop_mode=clone:stop_duration=%.3f" % tail,
+                "-af", "apad=pad_dur=%.3f" % tail, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30",
+                "-c:a", "aac", "-ar", "48000", "-ac", "2", tmp], check=True)
+got = dur(tmp)
+if abs(got - (d + tail)) > 0.1:
+    sys.exit("end-card tail: bed is %.3fs, expected %.3fs" % (got, d + tail))
+os.replace(tmp, src)
+print("[spotlight] end-card tail: speech ends %.2fs, held the last frame + silence for %.2fs (bed %.2fs)" % (speech_end, tail, got))
+PY
+```
+
 ### 5. Seal and save
 
 ```bash
 cp work/base.mp4 saves/voice_track.mp4
 ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 saves/voice_track.mp4   # 1080,1920
-ffprobe -v error -show_entries format=duration -of csv=p=0 saves/voice_track.mp4                             # 20–60 s
+ffprobe -v error -show_entries format=duration -of csv=p=0 saves/voice_track.mp4                             # 20–64 s (with the WI2.89 tail)
 ```
 
 From here on `voice_track.mp4` is sealed: no later step may cut, re-time or re-normalise it.

@@ -8,3 +8,5 @@ url https://r2.example.com/o.mp4?X-Amz=1&sig=[redacted]&token=[redacted]&width=7
 also https://app.cfw.social/cb?code=[redacted]&state=keep&password=[redacted]
 path /Users/[user]/CFW Render/logs/cfw-render.log and /Users/Shared stays
 plain line with no secrets
+dashed brand key cfw_[redacted] end
+dashed render key cfw_render_[redacted] end

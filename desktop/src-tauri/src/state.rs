@@ -25,6 +25,20 @@ pub struct StatusFile {
     pub recent: Vec<RecentItem>,
     pub last_check_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
+    pub connection: Option<Connection>,
+    /// "ok" | "unreachable": did the worker's last server call reach CFW.
+    /// The only source of "Can't reach CFW"; `last_error` never is.
+    pub cfw_reach: Option<String>,
+    pub cfw_reach_since: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Connection {
+    pub scope: Option<String>,
+    pub key_name: Option<String>,
+    pub key_hint: Option<String>,
+    pub connected_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -78,6 +92,7 @@ pub struct Brand {
     pub id: String,
     pub name: String,
     pub serving: bool,
+    pub slug: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -99,6 +114,12 @@ pub struct NextItem {
     pub short_code: Option<String>,
     pub brand: Option<String>,
     pub recipe: Option<String>,
+    pub order_id: Option<String>,
+    pub brand_slug: Option<String>,
+    pub kind: Option<String>,
+    pub status: Option<String>,
+    pub needs: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,6 +135,14 @@ pub enum RunResult {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct RecentItem {
+    pub order_id: Option<String>,
+    pub attempt_id: Option<String>,
+    pub brand_slug: Option<String>,
+    pub recipe: Option<String>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub director_log: Option<String>,
+    pub kind: Option<String>,
+    pub reason: Option<String>,
     pub short_code: Option<String>,
     pub brand: Option<String>,
     pub result: RunResult,
@@ -164,6 +193,9 @@ pub fn icon_state(
     };
     if s.computer.update_required {
         return attention("Update this computer");
+    }
+    if s.cfw_reach.as_deref() == Some("unreachable") {
+        return attention("Can't reach CFW");
     }
     if s.computer.paused {
         return if s.computer.pause_reason.as_deref() == Some("battery") {
@@ -282,6 +314,49 @@ mod tests {
     }
 
     #[test]
+    fn debug_identity_survives_status_round_trip() {
+        let s = parse_status(r#"{"schema":1,"recent":[{"orderId":"order-1","attemptId":"attempt-1","brandSlug":"brand-a","recipe":"reel","startedAt":"2026-10-11T10:00:00Z","directorLog":"order-1-123.out"},{}]}"#).unwrap();
+        let value = serde_json::to_value(&s).unwrap();
+        assert_eq!(value["recent"][0]["orderId"], "order-1");
+        assert_eq!(value["recent"][0]["attemptId"], "attempt-1");
+        assert_eq!(value["recent"][0]["brandSlug"], "brand-a");
+        assert_eq!(value["recent"][0]["recipe"], "reel");
+        assert_eq!(value["recent"][0]["startedAt"], "2026-10-11T10:00:00Z");
+        assert_eq!(value["recent"][0]["directorLog"], "order-1-123.out");
+        assert!(value["recent"][1]["orderId"].is_null());
+        assert!(value["recent"][1]["attemptId"].is_null());
+    }
+
+    #[test]
+    fn passes_through_connection_queue_and_reasons() {
+        let s = parse_status(r#"{ "schema": 1,
+          "connection": { "scope": "user", "keyName": "Setup — Mac", "keyHint": "cfw_render_vasant…", "connectedAt": "2026-10-11T10:00:00Z" },
+          "brands": [{ "id": "b_1", "name": "Brand A", "serving": true, "slug": "brand-a" }],
+          "next": [{ "orderId": "o1", "shortCode": "R-AB12", "brand": "Brand A", "brandSlug": "brand-a", "kind": "video",
+                     "recipe": "p-reels", "status": "needs_input", "needs": "a voiceover", "createdAt": "2026-10-11T11:00:00Z" }],
+          "recent": [{ "orderId": "o2", "attemptId": "a2", "directorLog": "o2-1791718200-unique.out", "shortCode": "49WR", "brand": "Brand A", "brandSlug": "brand-a", "recipe": "p-reels-faceless",
+                       "kind": "video", "result": "failed", "reason": "the voiceover step needs a text-to-speech credential",
+                       "startedAt": "2026-10-11T11:30:00Z", "finishedAt": "2026-10-11T11:31:00Z" }] }"#)
+        .unwrap();
+        let c = s.connection.as_ref().unwrap();
+        assert_eq!((c.scope.as_deref(), c.key_name.as_deref()), (Some("user"), Some("Setup — Mac")));
+        assert_eq!(s.brands[0].slug.as_deref(), Some("brand-a"));
+        assert_eq!(s.next[0].status.as_deref(), Some("needs_input"));
+        assert_eq!(s.next[0].needs.as_deref(), Some("a voiceover"));
+        assert_eq!(s.recent[0].reason.as_deref(), Some("the voiceover step needs a text-to-speech credential"));
+        assert_eq!(s.recent[0].order_id.as_deref(), Some("o2"));
+        // The payload the webview gets keeps the same camelCase names.
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["recent"][0]["reason"], "the voiceover step needs a text-to-speech credential");
+        assert_eq!(v["recent"][0]["attemptId"], "a2");
+        assert_eq!(v["recent"][0]["directorLog"], "o2-1791718200-unique.out");
+        assert_eq!(v["recent"][0]["startedAt"], "2026-10-11T11:30:00Z");
+        assert_eq!(v["recent"][0]["finishedAt"], "2026-10-11T11:31:00Z");
+        assert_eq!(v["next"][0]["brandSlug"], "brand-a");
+        assert_eq!(v["connection"]["scope"], "user");
+    }
+
+    #[test]
     fn parses_partial() {
         let s = parse_status(r#"{"schema":1,"computer":{"paused":true}}"#).unwrap();
         assert!(s.computer.paused);
@@ -330,6 +405,33 @@ mod tests {
 
     fn st(s: &StatusFile) -> (IconState, String) {
         icon_state(Some(s), None, now())
+    }
+
+    #[test]
+    fn cant_reach_cfw_comes_only_from_cfw_reach() {
+        let mut s = fresh();
+        s.cfw_reach = Some("unreachable".into());
+        assert_eq!(st(&s), (IconState::Attention, "Can't reach CFW".into()));
+        // An update outranks it; a stale file is "not running" first.
+        s.computer.update_required = true;
+        assert_eq!(st(&s), (IconState::Attention, "Update this computer".into()));
+        // lastError texts never mean offline.
+        for e in [
+            "AI credit ran out; add credit or pick another AI",
+            "AI limit reached; resumes 2026-10-11T15:40:00Z",
+            "Update this computer",
+        ] {
+            let mut s = fresh();
+            s.cfw_reach = Some("ok".into());
+            s.last_error = Some(e.into());
+            assert_ne!(st(&s).1, "Can't reach CFW", "{e}");
+            s.cfw_reach = None;
+            assert_ne!(st(&s).1, "Can't reach CFW", "{e}");
+        }
+        let p = parse_status(r#"{"schema":1,"cfwReach":"unreachable","cfwReachSince":"2026-10-11T11:00:00Z"}"#).unwrap();
+        assert_eq!(p.cfw_reach.as_deref(), Some("unreachable"));
+        assert_eq!(p.cfw_reach_since.as_deref(), Some("2026-10-11T11:00:00Z"));
+        assert_eq!(parse_status(r#"{"schema":1}"#).unwrap().cfw_reach, None);
     }
 
     #[test]

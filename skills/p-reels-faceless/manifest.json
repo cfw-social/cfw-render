@@ -1,0 +1,203 @@
+{
+  "manifestFormat": 1,
+  "recipe": "p-reels-faceless",
+  "recipeVersion": "2026.10.2",
+  "label": "Faceless reel",
+  "deliverable": {
+    "kind": "video",
+    "aspect": "9:16",
+    "width": 1080,
+    "height": 1920,
+    "durationSec": { "min": 30, "max": 90 }
+  },
+  "needs": {
+    "os": ["macos"],
+    "engines": ["codex", "claude-code"],
+    "tools": ["ffmpeg", "imagemagick", "node>=22", "npx", "chromium", "python3"],
+    "providers": ["elevenlabs"]
+  },
+  "inputs": [
+    {
+      "id": "script",
+      "label": "Voice-over script",
+      "kinds": ["text"],
+      "required": true,
+      "count": { "min": 1, "max": 1 },
+      "neededAt": "start",
+      "prompt": "Paste the narration script (roughly 80–230 words for a 30–90 second reel): a hook line first, then one idea per sentence, ending on the call to action.",
+      "alternatives": [
+        {
+          "id": "research_script",
+          "label": "Research and write my script first",
+          "runsSteps": ["research", "script"]
+        }
+      ]
+    },
+    {
+      "id": "voice_id",
+      "label": "ElevenLabs voice",
+      "kinds": ["text"],
+      "required": false,
+      "count": { "min": 0, "max": 1 },
+      "neededAt": { "step": "voice_over" },
+      "prompt": "The ElevenLabs voice id to narrate with. Leave empty to use the brand's default voice.",
+      "default": "brand"
+    },
+    {
+      "id": "broll",
+      "label": "B-roll clips",
+      "kinds": ["video"],
+      "required": false,
+      "count": { "min": 0, "max": null },
+      "constraints": { "orientation": "any" },
+      "neededAt": { "step": "plan_beats" }
+    },
+    {
+      "id": "cta",
+      "label": "Call to action",
+      "kinds": ["text"],
+      "required": false,
+      "count": { "min": 0, "max": 1 },
+      "neededAt": { "step": "render_graphics" },
+      "prompt": "The closing offer line and handle/URL for the final CTA card. Leave empty to use the brand defaults.",
+      "default": "brand"
+    },
+    {
+      "id": "outro",
+      "label": "Outro clip",
+      "kinds": ["video"],
+      "required": false,
+      "count": { "min": 0, "max": 1 },
+      "constraints": { "orientation": "portrait", "durationSec": { "min": 1, "max": 8 } },
+      "neededAt": { "step": "assemble" }
+    }
+  ],
+  "steps": [
+    {
+      "id": "research",
+      "label": "Research the topic",
+      "weight": 0,
+      "runsOn": "server",
+      "when": { "alternative": "research_script" },
+      "saves": [
+        { "id": "research_notes", "kind": "text", "preview": false },
+        { "id": "sources", "kind": "json", "preview": false }
+      ],
+      "checks": [{ "id": "sources_present", "label": "Sources present" }]
+    },
+    {
+      "id": "script",
+      "label": "Write the script",
+      "weight": 0,
+      "runsOn": "server",
+      "when": { "alternative": "research_script" },
+      "saves": [{ "id": "approved_script", "kind": "text", "preview": true }],
+      "checks": [{ "id": "script_timed_30_90s", "label": "Script is timed to 30–90 s" }]
+    },
+    {
+      "id": "voice_over",
+      "label": "Generate the voice-over",
+      "weight": 10,
+      "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "python3"], "providers": [["elevenlabs"]] },
+      "when": "always",
+      "instructions": "steps/01-voice-over.md",
+      "saves": [{ "id": "voice_bed", "kind": "video", "preview": false }],
+      "checks": [
+        { "id": "bed_has_audio", "label": "Voice bed has an audio stream" },
+        { "id": "bed_duration_window", "label": "Voice bed is 30–90 s" }
+      ],
+      "maxCheckRetries": 2,
+      "canAsk": ["script", "voice_id"]
+    },
+    {
+      "id": "transcribe",
+      "label": "Transcribe",
+      "weight": 10,
+      "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "python3"] },
+      "when": "always",
+      "instructions": "steps/02-transcribe.md",
+      "saves": [{ "id": "transcripts", "kind": "json", "preview": false }],
+      "checks": [{ "id": "words_found", "label": "Words found in the transcript" }],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "plan_beats",
+      "label": "Plan the scenes",
+      "weight": 15,
+      "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "node>=22", "python3"] },
+      "when": "always",
+      "instructions": "steps/03-plan-beats.md",
+      "saves": [
+        { "id": "scene_plan", "kind": "json", "preview": false },
+        { "id": "beat_list", "kind": "json", "preview": false }
+      ],
+      "checks": [{ "id": "beats_cover_bed", "label": "Beats cover the whole voice bed" }],
+      "maxCheckRetries": 2,
+      "canAsk": ["broll"]
+    },
+    {
+      "id": "render_graphics",
+      "label": "Render the graphics",
+      "weight": 30,
+      "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "node>=22", "npx", "chromium"] },
+      "when": "always",
+      "instructions": "steps/04-render-graphics.md",
+      "saves": [{ "id": "body_video", "kind": "video", "preview": false }],
+      "checks": [
+        { "id": "body_dims", "label": "Body track is 1080×1920" },
+        { "id": "body_not_black", "label": "Body track is not black" },
+        { "id": "body_matches_bed", "label": "Body track length matches the voice bed" }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "assemble",
+      "label": "Assemble",
+      "weight": 15,
+      "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "imagemagick", "node>=22", "npx", "chromium"] },
+      "when": "always",
+      "instructions": "steps/05-assemble.md",
+      "saves": [{ "id": "assembled_video", "kind": "video", "preview": false }],
+      "checks": [
+        { "id": "vo_continuous_bed", "label": "Voice is continuous under the whole reel" },
+        { "id": "brand_outro_at_end", "label": "Reel ends on the brand outro" }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "final_checks",
+      "label": "Final checks and captions",
+      "weight": 20,
+      "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "python3"] },
+      "when": "always",
+      "instructions": "steps/06-final-checks.md",
+      "saves": [
+        { "id": "final_video", "kind": "video", "preview": true },
+        { "id": "cover", "kind": "image", "preview": true },
+        { "id": "captions", "kind": "json", "preview": false }
+      ],
+      "checks": [
+        { "id": "qa_gate", "label": "Reel passes the QA gate" },
+        { "id": "duration_window", "label": "Duration is within the 27–93 s window" },
+        { "id": "canvas_1080x1920", "label": "Canvas is 1080×1920" },
+        { "id": "frame_not_black", "label": "Sampled frames are not black" },
+        { "id": "cover_has_contrast", "label": "Cover frame is bright or high-contrast" },
+        { "id": "final_loudness", "label": "Loudness is −14 LUFS ± 1.5" },
+        { "id": "no_overlapping_text", "label": "Captions never overlap card text" },
+        { "id": "text_legible_mobile", "label": "Text is legible on a phone" },
+        { "id": "brand_colors_correct", "label": "Cards use the brand palette" },
+        { "id": "foreground_hero_present", "label": "Every card has an illustrative hero" },
+        { "id": "latin_script_only", "label": "Captions use Latin script only" },
+        { "id": "broll_beats_correct", "label": "B-roll beats show the planned clip" },
+        { "id": "cover_is_moneyshot", "label": "Cover is the money shot" }
+      ],
+      "maxCheckRetries": 2
+    }
+  ]
+}

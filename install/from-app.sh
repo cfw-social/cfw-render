@@ -71,14 +71,147 @@ print(json.dumps(a))' "$FA_WORKER_ID" "$@")"
   cr_mcp_call_soft report_byoa_setup_step "$args"
 }
 
+# fa_reload_agent <plist> — bootout + bootstrap com.cfw.render. Right after a
+# bootout of a RUNNING job, launchd can still be tearing it down and refuses
+# the bootstrap ("Bootstrap failed: 5: Input/output error"); retry for a few
+# seconds. Returns non-zero if the job never loaded, so the caller reports it
+# instead of claiming success with no worker running.
+fa_reload_agent() {
+  local plist="$1" tries="${CFW_RENDER_BOOTSTRAP_TRIES:-10}" i
+  launchctl bootout "gui/$(id -u)/com.cfw.render" >/dev/null 2>&1 || true
+  for (( i = 1; i <= tries; i++ )); do
+    launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1 && return 0
+    (( i < tries )) && sleep "${CFW_RENDER_BOOTSTRAP_WAIT_SEC:-1}"
+  done
+  return 1
+}
+
+# fa_pending_keys <add|list|remove> — private revocation outbox beside worker-id.
+# Keys travel on stdin/stdout (callers capture stdout), never process arguments.
+# Refuse unsafe/corrupt state rather than silently forgetting a live credential.
+fa_pending_keys() {
+  python3 -c '
+import json, os, re, secrets, stat, sys
+
+
+def valid_key(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"cfw_render_[A-Za-z0-9_-]{1,4096}", value) is not None
+
+
+def unique_object(pairs: list) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate field")
+        result[key] = value
+    return result
+
+
+def run() -> None:
+    action, worker = sys.argv[1:]
+    # Resolve ancestor aliases (macOS /var, /tmp), then walk by descriptor.
+    # The state directory itself and its files must not be symlinks.
+    parent = os.path.dirname(os.path.abspath(worker))
+    parent = os.path.join(os.path.realpath(os.path.dirname(parent)), os.path.basename(parent))
+    directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in parent.split("/"):
+            if not part:
+                continue
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        info = os.fstat(directory)
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise ValueError("state directory must be private")
+        name = "pending-key-revocations.json"
+        keys = []
+        try:
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        except FileNotFoundError:
+            pass
+        else:
+            with os.fdopen(fd, "r") as source:
+                info = os.fstat(source.fileno())
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                        or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+                    raise ValueError("unsafe pending file")
+                raw = source.read(1048577)
+                if len(raw) > 1048576:
+                    raise ValueError("pending file too large")
+                data = json.loads(raw, object_pairs_hook=unique_object)
+                if (not isinstance(data, dict) or set(data) != {"version", "keys"}
+                        or type(data["version"]) is not int or data["version"] != 1):
+                    raise ValueError("invalid pending schema")
+                keys = data["keys"]
+                if (not isinstance(keys, list) or len(keys) > 256
+                        or not all(valid_key(key) for key in keys) or len(set(keys)) != len(keys)):
+                    raise ValueError("invalid pending keys")
+        if action == "list":
+            for key in keys:
+                print(key)
+            return
+        incoming = sys.stdin.read(1048577).splitlines()
+        if not all(valid_key(key) for key in incoming):
+            raise ValueError("invalid key")
+        if action == "add":
+            keys = sorted(set(keys + incoming))
+        elif action == "remove":
+            keys = sorted(set(keys) - set(incoming))
+        else:
+            raise ValueError("invalid action")
+        payload = json.dumps({"version": 1, "keys": keys}) + "\n"
+        if len(keys) > 256 or len(payload) > 1048576:
+            raise ValueError("pending state full")
+        tmp = ".pending-key-revocations-" + secrets.token_hex(16)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        try:
+            with os.fdopen(fd, "w") as target:
+                os.fchmod(target.fileno(), 0o600)
+                target.write(payload)
+                target.flush()
+                os.fsync(target.fileno())
+            os.replace(tmp, name, src_dir_fd=directory, dst_dir_fd=directory)
+            os.fsync(directory)
+        finally:
+            try:
+                os.unlink(tmp, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+    finally:
+        os.close(directory)
+
+
+try:
+    run()
+except (OSError, ValueError, TypeError, UnicodeError):
+    # Never echo parser input, paths, keys, or exception text.
+    print("install.sh: pending key revocation state is unavailable or invalid", file=sys.stderr)
+    sys.exit(1)
+' "$1" "$WORKER_ID_FILE"
+}
+
+fa_pending_fail() {
+  app_fail connecting 6 "Could not preserve pending key revocations" "Keep the private state folder and retry; contact support if this continues"
+}
+
 fa_connect_and_probe() {
   app_step installing "done" "CFW Render is installed"
   app_step connecting started "Connecting to CFW"
   local base code resp render_key
   base="$(fa_api_base)"
   FA_WORKER_ID="$(tr -d '[:space:]' < "$WORKER_ID_FILE")"
-  local device
+  local device old_key
   device="$(cr_computer_name 2>/dev/null || hostname)"; device="${device:0:100}"; device="${device:-This Mac}"
+  # Journal BEFORE exchange/env replacement. A failed probe must not lose the
+  # previous parent-scoped key, even across multiple attempts or app restarts.
+  old_key="$(env_value CFW_RENDER_WORKER_KEY)"
+  if [[ -n "$old_key" ]]; then
+    printf '%s\n' "$old_key" | fa_pending_keys add || fa_pending_fail
+  else
+    fa_pending_keys add < /dev/null || fa_pending_fail
+  fi
+  old_key=""
   # Exchange: the brand key goes in a header read from stdin (-H @-).
   resp="$(printf 'x-api-key: %s\n' "$BRAND_KEY" | curl -sS --max-time 30 -w '\n%{http_code}' -X POST \
     "${base%/}/api/v1/render-worker-keys/exchange" -H @- -H "content-type: application/json" \
@@ -97,14 +230,40 @@ try:
     print(json.loads(sys.stdin.read())["key"]["plain"])
 except Exception:
     pass' <<< "$resp")"
+  [[ "$render_key" =~ ^cfw_render_[A-Za-z0-9_-]+$ ]] || app_fail connecting 6 "CFW sent an unexpected reply" "Try again in a minute"
+  # Which key this is, for the app ("Connected for all your brands"): scope, name and a short
+  # prefix only — never the key. Kept in the private state dir beside worker-id.
+  ( umask 077
+    python3 -c '
+import json, sys, os, datetime
+try:
+    k = json.loads(sys.stdin.read()).get("key") or {}
+except Exception:
+    k = {}
+pre = (k.get("prefix") or "")[:17]
+c = {"scope": k.get("scope") if k.get("scope") in ("brand", "user", "subset") else None,
+     "keyName": (k.get("name") or k.get("deviceName") or None),
+     "keyHint": (pre + "…") if pre.startswith("cfw_render_") else None,
+     "connectedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+p = sys.argv[1]; tmp = p + ".tmp"
+json.dump(c, open(tmp, "w")); os.replace(tmp, p)' "$(dirname "$WORKER_ID_FILE")/connection.json" <<< "$resp"
+  ) 2>/dev/null || true
   resp=""
-  [[ "$render_key" =~ ^cfw_render_[A-Za-z0-9_]+$ ]] || app_fail connecting 6 "CFW sent an unexpected reply" "Try again in a minute"
+  # Also journal the issued key before writing env: an interrupted/failed env
+  # write must not orphan it. The current key is never revoked when draining.
+  printf '%s\n' "$render_key" | fa_pending_keys add || fa_pending_fail
   printf '%s\n' "$render_key" | fa_env_set CFW_RENDER_WORKER_KEY "$ENV_FILE"
   printf '%s\n' "$base" | fa_env_set CFW_API_BASE "$ENV_FILE"
   export CFW_API_BASE="$base" CFW_RENDER_WORKER_KEY="$render_key"
   render_key=""
 
-  local step out
+  local step out probe_brand=""
+  # Open (or resume) this computer's setup session first: CFW keeps progress per
+  # computer and refuses step reports without one. A key covering several brands
+  # names no brand here; CFW picks one to test, and the test unlocks them all.
+  out="$(cr_mcp_call_soft get_byoa_setup_instructions "$(python3 -c 'import json,sys;print(json.dumps({"workerId": sys.argv[1]}))' "$FA_WORKER_ID")")" \
+    || app_fail connecting 6 "CFW did not accept the set-up report" "Try again in a minute"
+  [[ "$(fa_json_get ok <<< "$out")" == "true" ]] || app_fail connecting 6 "CFW said: $(fa_json_get error <<< "$out")" "Try again in a minute"
   # provider_keys_needed is not reported here: telling which recipe needs a
   # missing provider key is not cheap from the installer (follow-up).
   for step in deps credential recipe_fetch; do
@@ -113,8 +272,7 @@ except Exception:
   done
 
   if [[ "${CFW_RENDER_SKIP_LAUNCHCTL:-0}" != "1" && "${CFW_RENDER_INSTALL_NO_LAUNCHCTL:-0}" != "1" ]] && command -v launchctl >/dev/null 2>&1; then
-    launchctl bootout "gui/$(id -u)/com.cfw.render" >/dev/null 2>&1 || true
-    launchctl bootstrap "gui/$(id -u)" "$PLIST_DST" >/dev/null 2>&1 \
+    fa_reload_agent "$PLIST_DST" \
       || app_fail connecting 6 "Could not start CFW Render in the background" "Restart your Mac and try again"
   fi
   app_step connecting "done" "Connected to CFW"
@@ -123,10 +281,14 @@ except Exception:
   out="$(cr_mcp_call_soft create_probe_render_order "$(python3 -c 'import json,sys;print(json.dumps({"workerId": sys.argv[1]}))' "$FA_WORKER_ID")")" \
     || app_fail test_render 6 "Could not start the test render" "Try again in a minute"
   [[ "$(fa_json_get ok <<< "$out")" == "true" ]] || app_fail test_render 7 "Could not start the test render: $(fa_json_get error <<< "$out")" "Try again in a minute"
+  # Report the test against the brand CFW tested (multi-brand keys); older servers send none.
+  probe_brand="$(fa_json_get brandId <<< "$out")"
+  [[ "$probe_brand" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || probe_brand=""
   local timeout="${CFW_RENDER_PROBE_TIMEOUT_SEC:-900}" poll="${CFW_RENDER_PROBE_POLL_SEC:-5}" start err
   start="$(date +%s)"
   while :; do
-    if out="$(fa_setup_report probe_render)" && [[ "$(fa_json_get ok <<< "$out")" == "true" ]]; then
+    if out="$(fa_setup_report probe_render "$(python3 -c 'import json,sys;print(json.dumps({"brandId": sys.argv[1]} if sys.argv[1] else {}))' "$probe_brand")")" \
+       && [[ "$(fa_json_get ok <<< "$out")" == "true" ]]; then
       break
     fi
     err="$(fa_json_get error <<< "${out:-}")"
@@ -140,6 +302,21 @@ except Exception:
     sleep "$poll"
   done
   app_step test_render "done" "The test render worked"
+  local pending
+  pending="$(fa_pending_keys list)" || fa_pending_fail
+  while IFS= read -r old_key; do
+    [[ -n "$old_key" ]] || continue
+    if [[ "$old_key" != "$CFW_RENDER_WORKER_KEY" && "$old_key" != "$(env_value CFW_RENDER_WORKER_KEY)" ]]; then
+      # Each old key authorizes only its own revocation, across parent scopes.
+      # Failure (including an ambiguous response) stays in the durable outbox.
+      if ! out="$(CFW_RENDER_WORKER_KEY="$old_key" cr_mcp_call_soft revoke_this_computer '{}' 2>/dev/null)" || [[ "$(fa_json_get ok <<< "$out")" != "true" ]]; then
+        echo "install.sh: WARNING — a previous key could not be turned off; retained for retry after the next successful setup" >&2
+        continue
+      fi
+    fi
+    printf '%s\n' "$old_key" | fa_pending_keys remove || fa_pending_fail
+  done <<< "$pending"
+  old_key=""; pending=""
   app_step ready "done" "This computer is ready"
 }
 
@@ -166,8 +343,8 @@ fa_update() {
   chmod +x "$PREFIX"/bin/*.sh "$PREFIX"/scripts/*.sh 2>/dev/null || true
   local plist="$HOME/Library/LaunchAgents/com.cfw.render.plist"
   if [[ -f "$plist" && "${CFW_RENDER_SKIP_LAUNCHCTL:-0}" != "1" && "${CFW_RENDER_INSTALL_NO_LAUNCHCTL:-0}" != "1" ]] && command -v launchctl >/dev/null 2>&1; then
-    launchctl bootout "gui/$(id -u)/com.cfw.render" >/dev/null 2>&1 || true
-    launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1 || true
+    fa_reload_agent "$plist" \
+      || app_fail ready 6 "Updated, but CFW Render could not restart in the background" "Restart your Mac"
   fi
   app_step ready "done" "Updated"
 }

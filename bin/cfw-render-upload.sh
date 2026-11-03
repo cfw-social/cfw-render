@@ -97,8 +97,8 @@ print(json.dumps(o))' "$@"
 api_post_json() { # api_post_json <path> <json> → body on stdout; prints "HTTP <code>" line to stderr on failure; rc≠0 on failure
   local path="$1" body="$2" out code
   out="$(mktemp)"
-  code="$(curl -sS --max-time 60 -o "$out" -w '%{http_code}' -X POST "$API$path" \
-            -H "cfw-render-key: $CFW_RENDER_WORKER_KEY" -H "content-type: application/json" \
+  code="$(cr_curl_with_key -sS --max-time 60 -o "$out" -w '%{http_code}' -X POST "$API$path" \
+            -H "content-type: application/json" \
             --data-binary "$body" 2>/dev/null)" || code="000"
   if [ "$code" != "200" ]; then
     echo "HTTP $code $(head -c 300 "$out" 2>/dev/null | tr '\n' ' ')" >&2; rm -f "$out"; return 1
@@ -109,8 +109,7 @@ api_post_json() { # api_post_json <path> <json> → body on stdout; prints "HTTP
 # ── legacy multipart (≤ 4 MiB on Vercel) ────────────────────────────────────
 upload_multipart() { # <file> <mime> → cdnUrl on stdout
   local file="$1" mime="$2" resp
-  resp="$(curl -fsS --max-time 300 -X POST "$API/api/v1/render/upload" \
-            -H "cfw-render-key: $CFW_RENDER_WORKER_KEY" \
+  resp="$(cr_curl_with_key -fsS --max-time 300 -X POST "$API/api/v1/render/upload" \
             -F "files=@$file;type=$mime" \
             -F "orderId=$CFW_ORDER_ID" \
             -F "workerId=$CFW_WORKER_ID" 2>/dev/null)" \

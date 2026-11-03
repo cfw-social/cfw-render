@@ -6,7 +6,8 @@ reel is NOT delivered.
 
 ## You receive
 
-- `prior/assembled_video.mp4` — the finished reel at bed length (graded, captioned, end card).
+- `prior/assembled_video.mp4` — the finished reel at bed length (graded, captioned; with `cta_card`
+  on, the full end card right after the last spoken word, over the bed's silent tail — WI2.89).
 - `prior/edit_plan.json` — `cover_at`, `takeovers[]`, `duration`.
 - `prior/beat_list.json` — only when b-roll was planned (b-roll windows for the continuity proof).
 - `prior/transcripts.json` — `.words` (source for the post captions).

@@ -109,8 +109,7 @@ if (( DRY )); then
   fi
 
   # Live check WITHOUT claiming: tools/list must show the 4 worker tools.
-  tools_resp="$(curl -sS --max-time 15 -X POST "${CFW_API_BASE%/}/api/v1/mcp" \
-    -H "cfw-render-key: $CFW_RENDER_WORKER_KEY" \
+  tools_resp="$(cr_curl_with_key -sS --max-time 15 -X POST "${CFW_API_BASE%/}/api/v1/mcp" \
     -H "content-type: application/json" \
     -H "accept: application/json, text/event-stream" \
     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' 2>/dev/null)"
@@ -163,13 +162,11 @@ fi
 cr_tick_lock_acquire || { cr_log "tick lock held by another run — quiet no-op"; exit 0; }
 trap 'cr_tick_lock_release' EXIT
 
-# 48h scratch janitor — leftover forensics from failed runs get wiped.
+# Stopped retention is based on last activity, with active-owner and uncertain
+# delivery protection. Claims and the sweep share this tick's admission lock.
 if [[ -d "$CFW_RENDER_SCRATCH" ]]; then
-  find "$CFW_RENDER_SCRATCH" -mindepth 2 -maxdepth 2 -type d -mtime +2 -print0 2>/dev/null \
-    | while IFS= read -r -d '' d; do
-        cr_log "janitor: removing stale scratch dir older than 48h: $d"
-        rm -rf "$d"
-      done
+  python3 "$SELF_DIR/cfw-render-checkpoint.py" janitor "$CFW_RENDER_SCRATCH" \
+    || { cr_log "janitor: unable to validate scratch retention; stopping"; exit 1; }
 fi
 
 JOURNAL="$CFW_RENDER_STATE_DIR/journal.tsv"
@@ -198,33 +195,89 @@ brand = (o.get("taskOrder") or {}).get("brand") or {}
 print(brand.get("slug") or "")
 ' <<< "$order_json" 2>/dev/null)"
 
-  if [[ -z "$order_id" ]]; then
-    cr_log "spawn_director: order JSON missing id — skipping"
+  if [[ ! "$order_id" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,199}$ ]]; then
+    cr_log "spawn_director: order JSON missing or invalid id — skipping"
     return 1
   fi
+
+  # Freeze diagnostic identity now; never rediscover it from reused scratch.
+  local recent_identity
+  recent_identity="$(python3 -c '
+import datetime, json, sys
+def obj(value): return value if isinstance(value, dict) else {}
+def text(value): return value if isinstance(value, str) else None
+o = obj(json.load(sys.stdin))
+brand = obj(obj(o.get("taskOrder")).get("brand"))
+print(json.dumps({"orderId": text(o.get("id")), "shortCode": text(o.get("shortCode")),
+    "attemptId": text(obj(o.get("attempt")).get("id")) or text(o.get("attemptId")),
+    "brand": text(o.get("brandName")) or text(brand.get("name")), "brandSlug": text(brand.get("slug")) or text(o.get("brandSlug")),
+    "recipe": text(o.get("recipe")), "kind": text(o.get("kind")),
+    "startedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "directorLog": None}))
+' <<< "$order_json")" || return 1
 
   brand_slug="$(sanitize_slug "${raw_slug:-$brand_id}")"
   if [[ -z "$brand_slug" ]]; then
     cr_log "spawn_director: order $order_id has malformed/missing taskOrder.brand — blocking"
     cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"order was underspecified — missing brand context"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "" "$kind" "blocked" "" "" >> "$JOURNAL"
-    cr_recent_append "" blocked "$order_id"
+    cr_recent_append "" blocked "$order_id" "$recent_identity" "order was underspecified — missing brand context"
     return 1
   fi
 
-  local order_dir="$CFW_RENDER_SCRATCH/$brand_slug/$order_id"
+  local order_dir="$CFW_RENDER_SCRATCH/$brand_slug/$order_id" checkpoint_mode
+  checkpoint_mode="$(python3 -c 'import json,sys; o=json.load(sys.stdin); c=o.get("checkpoint"); print(c.get("mode", "invalid") if isinstance(c, dict) else "invalid" if "checkpoint" in o else "")' <<< "$order_json")" || return 1
+  if [[ -n "$checkpoint_mode" ]]; then
+    if [[ "$checkpoint_mode" != local-v1 || "${CFW_RENDER_LOCAL_CHECKPOINTS:-0}" != 1 ]] ||
+       [[ "$(python3 -c 'import json,sys; print(1 if json.load(sys.stdin).get("manifest") else 0)' <<< "$order_json")" != 1 ]]; then
+      cr_log "order $order_id — unsupported checkpoint claim; refusing Director fallback"
+      return 1
+    fi
+  fi
+  if [[ -e "$order_dir/.delivery-started" ]]; then
+    cr_log "order $order_id — previous delivery needs reconciliation; refusing automatic rerun"
+    cr_recent_append "" failed "$order_id" "$recent_identity" "previous delivery needs reconciliation in CFW"
+    return 1
+  fi
+  umask 077
+  # exec makes Python's parent the actual job shell, including Bash 3 on macOS
+  # (where BASHPID is unavailable and $$ still names the outer worker).
+  CR_JOB_PID="$(exec python3 -c 'import os; print(os.getppid())')" || return 1
+  python3 "$SELF_DIR/cfw-render-checkpoint.py" active "$order_dir" "$CR_JOB_PID" \
+    || { cr_log "order $order_id — unsafe or already active scratch folder"; return 1; }
+  CR_JOB_DIR="$order_dir"; CR_JOB_CHECKPOINT_MODE="$checkpoint_mode"
+  trap 'if [[ -d "$CR_JOB_DIR" ]]; then python3 "$SELF_DIR/cfw-render-checkpoint.py" finish "$CR_JOB_DIR" "$CR_JOB_CHECKPOINT_MODE" "$CR_JOB_PID" || cr_log "order cleanup failed; inspect stopped scratch files"; fi' EXIT
   mkdir -p "$order_dir/ingredients" "$order_dir/clips" "$order_dir/work" "$order_dir/final"
+  rm -f "$order_dir/order.json"
   printf '%s' "$order_json" > "$order_dir/order.json"
+  local CFW_ATTEMPT_ID
+  # Current Social accepts completed attempts only for negotiated stage ranges.
+  # Ordinary manifests report attempt_completed before legacy delivery, so keep
+  # their existing no-attemptId contract until that server gate is extended.
+  CFW_ATTEMPT_ID="$(python3 -c '
+import json,sys
+o=json.load(sys.stdin)
+ranged = bool(o.get("stageRange") or (o.get("taskOrder") or {}).get("stageRange"))
+aid = (o.get("attempt") or {}).get("id") or o.get("attemptId") or ""
+local = (o.get("checkpoint") or {}).get("mode") == "local-v1"
+print("" if o.get("manifest") and not ranged and not local else aid)
+' <<< "$order_json")"
+  export CFW_ATTEMPT_ID
 
   # [CFW-313] Brand-scoped provider credential gate. A HeyGen recipe must
-  # carry taskOrder.credentials.heygen — a brand-scoped OAuth credential
-  # cfw-social embeds into the order at claim time from THAT brand's own
-  # connected HeyGen account. This worker NEVER falls back to any
-  # worker-local/vault HeyGen key — absent or malformed means this brand
-  # simply hasn't connected HeyGen yet (or the companion cfw-social piece of
-  # CFW-313 hasn't shipped), and the honest answer is to block, not to
-  # borrow another brand's credential.
-  local heygen_mode="" heygen_token="" heygen_expires="" heygen_pool="" heygen_expired=""
+  # carry a HeyGen credential from THAT brand, embedded into the order by
+  # cfw-social at claim time. Either source passes:
+  #   - taskOrder.credentials.heygen — a brand-scoped OAuth credential, or
+  #   - order.providerKeys — the brand's own HeyGen key
+  #     ({provider:"heygen", value, expiresAt?}), the form production
+  #     cfw-social sends on a manifest claim. The step harness exports it as
+  #     HEYGEN_API_KEY (cr_h_export_step_keys), so a manifest order is the only
+  #     kind this path admits.
+  # This worker NEVER falls back to any worker-local/vault HeyGen key — if
+  # neither source is usable this brand simply hasn't connected HeyGen yet,
+  # and the honest answer is to block, not to borrow another brand's
+  # credential.
+  local heygen_mode="" heygen_token="" heygen_expires="" heygen_pool="" heygen_expired="" heygen_pk=""
   if cr_recipe_needs_heygen "$recipe"; then
     IFS=$'\x1f' read -r heygen_mode heygen_token heygen_expires heygen_pool heygen_expired <<< "$(python3 -c '
 import datetime, json, sys
@@ -244,12 +297,44 @@ if expires:
 print("\x1f".join([mode, token, expires, pool, expired]))
 ' <<< "$order_json" 2>/dev/null)"
 
-    if [[ "$heygen_mode" != "oauth" || -z "$heygen_token" || "$heygen_expired" == "1" ]]; then
-      cr_log "spawn_director: order $order_id (recipe=$recipe) has no usable brand-scoped HeyGen OAuth credential on taskOrder.credentials.heygen (mode=$heygen_mode expired=$heygen_expired) — blocking (never falling back to a worker-local key)"
+    # providerKeys path. Same rules the harness applies before it exports the
+    # key (cr_h_export_step_keys): a manifest order, a heygen entry with a
+    # non-blank string value, and an expiresAt, if present, that is timezone-
+    # aware and in the future. Only "1" or "0" leaves Python — the value never
+    # reaches a variable, a log line or argv. Any error counts as not usable.
+    heygen_pk="$(python3 -c '
+import datetime, json, sys
+usable = "0"
+try:
+    o = json.load(sys.stdin)
+    if isinstance(o.get("manifest"), dict) and o["manifest"]:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        for k in o.get("providerKeys") or []:
+            if not isinstance(k, dict) or k.get("provider") != "heygen":
+                continue
+            v = k.get("value")
+            if not isinstance(v, str) or not v.strip() or "\x00" in v:
+                continue
+            if "expiresAt" in k:
+                e = k["expiresAt"]
+                if not isinstance(e, str):
+                    continue
+                exp_dt = datetime.datetime.fromisoformat(e.replace("Z", "+00:00"))
+                if exp_dt.tzinfo is None or exp_dt <= now:
+                    continue
+            usable = "1"
+            break
+except Exception:
+    usable = "0"
+print(usable)
+' <<< "$order_json" 2>/dev/null)"
+
+    if [[ "$heygen_pk" != "1" && ( "$heygen_mode" != "oauth" || -z "$heygen_token" || "$heygen_expired" == "1" ) ]]; then
+      cr_log "spawn_director: order $order_id (recipe=$recipe) has no usable brand-scoped HeyGen OAuth credential on taskOrder.credentials.heygen and no usable heygen providerKeys entry (mode=$heygen_mode expired=$heygen_expired providerKey=$heygen_pk) — blocking (never falling back to a worker-local key)"
       cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"this brand'"'"'s HeyGen account isn'"'"'t connected — connect it in brand settings","needs":"decision"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
         || cr_log "order $order_id — block_render_order (no-heygen-credential) call failed; lease expiry is the backstop"
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "blocked" "" "" >> "$JOURNAL"
-    cr_recent_append "$order_dir/order.json" blocked "$order_id"
+      cr_recent_append "" blocked "$order_id" "$recent_identity" "this brand's HeyGen account isn't connected — connect it in brand settings"
       return 1
     fi
   fi
@@ -265,7 +350,13 @@ print("\x1f".join([mode, token, expires, pool, expired]))
     cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"this render'"'"'s recipe files are out of sync — a redeploy is needed"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
       || cr_log "order $order_id — block_render_order (skills-mismatch) call failed; lease expiry is the backstop"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "blocked" "" "" >> "$JOURNAL"
-    cr_recent_append "$order_dir/order.json" blocked "$order_id"
+    cr_recent_append "" blocked "$order_id" "$recent_identity" "this render's recipe files are out of sync — a redeploy is needed"
+    return 1
+  fi
+
+  # A range cannot fall back to the whole-recipe Director, even on a malformed claim.
+  if [[ "$(python3 -c 'import json,sys; o=json.load(sys.stdin); print("1" if not o.get("manifest") and ("stageRange" in o or "stopAfterStepId" in o or "stageRange" in (o.get("taskOrder") or {})) else "0")' <<< "$order_json")" == "1" ]]; then
+    cr_log "order $order_id — stage range requires a manifest; refusing Director fallback"
     return 1
   fi
 
@@ -273,7 +364,14 @@ print("\x1f".join([mode, token, expires, pool, expired]))
   # Director. Completion goes through cfw-render-report.sh complete with the
   # LAST completed step's saves, exactly like the Director path does.
   if [[ "$(python3 -c 'import json,sys; print("1" if json.load(sys.stdin).get("manifest") else "0")' <<< "$order_json" 2>/dev/null)" == "1" ]]; then
-    local h_rc=0 h_out="" h_outcome="harness-failed"
+    local h_rc=0 h_out="" h_outcome="harness-failed" h_fail_reason="" h_log_at=0
+    local h_log="${CFW_RENDER_LOG_DIR:-${CFW_RENDER_STATE_DIR:-$HOME/.cfw-render}}/cfw-render.log"
+    # Only harness lines written during this run name the failure. Older lines
+    # in the shared log belong to other orders.
+    if [[ -f "$h_log" ]]; then
+      h_log_at="$(wc -c < "$h_log" | tr -d '[:space:]')" || h_log_at=0
+    fi
+    case "$h_log_at" in ""|*[!0-9]*) h_log_at=0 ;; esac
     # The harness result goes through a file, not $(...): the harness forks a
     # heartbeat loop and the engine CLI, and any inherited stdout would hold a
     # command substitution open after the step loop has already returned.
@@ -286,32 +384,102 @@ print("\x1f".join([mode, token, expires, pool, expired]))
       cr_harness_run "$order_dir/order.json" "$order_dir" "$CFW_RENDER_SKILLS_DIR/$recipe" > "$order_dir/harness-result.json"
     ) </dev/null || h_rc=$?
     h_out="$(cat "$order_dir/harness-result.json" 2>/dev/null || true)"
+    if (( h_rc == 0 )) && [[ "$checkpoint_mode" == local-v1 ]]; then
+      h_out="$(python3 "$SELF_DIR/cfw-render-checkpoint.py" final "$order_dir" "$CFW_WORKER_ID")" || h_rc=31
+    fi
     if (( h_rc == 0 )); then
       # [M2-06] Only media saves are deliverables. A `json`/`md` save is a
       # side file: the report script would otherwise type `captions.json` as
       # an image after the video and the server rejects it ("image after a
       # video must be role poster"). A save with id `captions` is the
       # recipe's captions file and goes to the report as CFW_CAPTIONS_FILE.
+      # WI2.43/WI2.45: carousel completion selects ordered slide_N.png via the
+      # shared cr_select_deliverables in cfw-render-lib.sh (tested by case 39).
       local -a h_files=() h_captions=""
       while IFS=$'\t' read -r f role; do
         [[ -n "$f" ]] || continue
         if [[ "$role" == "captions" ]]; then h_captions="$f"; else h_files+=("$f"); fi
-      done < <(python3 -c '
-import json, sys, os
-MEDIA = {"mp4", "mov", "webm", "m4v", "png", "jpg", "jpeg", "gif", "webp", "pdf", "mp3", "wav", "m4a"}
-a = json.loads(sys.argv[1] or "[]")
-for x in a:
-    p = x["path"]; ext = os.path.splitext(p)[1].lstrip(".").lower()
-    if x.get("id") == "captions" and ext == "json": print(p + "\tcaptions")
-    elif ext in MEDIA: print(p + "\tmedia")' "$h_out" 2>/dev/null)
-      if (( ${#h_files[@]} > 0 )) && ( cd "$order_dir" && CFW_ORDER_ID="$order_id" CFW_CAPTIONS_FILE="${h_captions:-final/captions.json}" CFW_RENDER_KEEP_DIR="$(cr_keep_output_dir "$brand_slug" "$order_id")" PATH="$SELF_DIR:$PATH" cfw-render-report.sh complete "${h_files[@]}" ); then
+      done < <(cr_select_deliverables "$order_dir" "$h_out")
+      # cr_load_config sources the settings file without exporting the worker
+      # key, API base, or worker id. Publish them in this subshell, the same
+      # way the step subshell does, or the report script cannot see them.
+      if (( ${#h_files[@]} > 0 )) && ( cd "$order_dir" && export CFW_WORKER_ID CFW_API_BASE CFW_RENDER_WORKER_KEY && CFW_ORDER_ID="$order_id" CFW_CAPTIONS_FILE="${h_captions:-final/captions.json}" CFW_RENDER_KEEP_DIR="$(cr_keep_output_dir "$brand_slug" "$order_id")" PATH="$SELF_DIR:$PATH" cfw-render-report.sh complete "${h_files[@]}" ); then
         h_outcome="completed"
       else
         cr_log "order $order_id — harness finished but complete_render_order failed"
+        # block refuses when a delivery may already have landed. That refusal
+        # stays a log line; the lease expiry is the backstop.
+        if ( cd "$order_dir" && export CFW_WORKER_ID CFW_API_BASE CFW_RENDER_WORKER_KEY && CFW_ORDER_ID="$order_id" PATH="$SELF_DIR:$PATH" cfw-render-report.sh block "could not hand off the finished render" ); then
+          h_outcome="failed"
+        else
+          cr_log "order $order_id — block after failed completion was not acknowledged; lease expiry is the backstop"
+        fi
       fi
     else
-      case "$h_rc" in 20) h_outcome="cancelled" ;; 21) h_outcome="released" ;; 22) h_outcome="revoked" ;; 23) h_outcome="superseded" ;; 24) h_outcome="engine_limit" ;; 30) h_outcome="failed" ;; esac
+      case "$h_rc" in 20) h_outcome="cancelled" ;; 21) h_outcome="released" ;; 22) h_outcome="revoked" ;; 23) h_outcome="superseded" ;; 24) h_outcome="engine_limit" ;; 25) h_outcome="stage-completed" ;; 30) h_outcome="failed" ;; 31) h_outcome="checkpoint-blocked" ;; esac
       cr_log "order $order_id — harness exited $h_rc ($h_outcome)"
+      # WI2.54: exit 1 means the harness stopped before it reported
+      # attempt_failed (input staging is the live case). Report it now so the
+      # order fails instead of staying claimed until the lease ends. Other
+      # exit codes already reported, released, or completed.
+      if (( h_rc == 1 )); then
+        local h_attempt_id="" h_detail="" h_fail_json="" h_seq="0"
+        h_attempt_id="$(python3 -c '
+import json, sys
+try:
+    order = json.load(open(sys.argv[1]))
+except Exception:
+    order = {}
+if not isinstance(order, dict):
+    order = {}
+attempt = order.get("attempt") if isinstance(order.get("attempt"), dict) else {}
+aid = attempt.get("id") if isinstance(attempt.get("id"), str) else ""
+if not aid and isinstance(order.get("attemptId"), str):
+    aid = order["attemptId"]
+print(aid)
+' "$order_dir/order.json" 2>/dev/null)" || h_attempt_id=""
+        h_detail="$(python3 -c '
+import sys
+path, start = sys.argv[1], sys.argv[2]
+try:
+    start = int(start)
+except ValueError:
+    start = 0
+try:
+    with open(path, "rb") as handle:
+        handle.seek(max(0, start))
+        data = handle.read().decode("utf-8", "replace")
+except Exception:
+    data = ""
+detail = ""
+for line in data.splitlines():
+    if "harness:" not in line:
+        continue
+    text = " ".join(line.split("harness:", 1)[1].split())
+    if text:
+        detail = text
+print(detail[:180])
+' "$h_log" "$h_log_at" 2>/dev/null)" || h_detail=""
+        if [[ -n "$h_detail" ]]; then
+          h_fail_reason="harness-failed: $h_detail"
+        else
+          h_fail_reason="harness-failed"
+        fi
+        if [[ -n "$h_attempt_id" ]]; then
+          if [[ -f "$order_dir/seq" ]]; then
+            h_seq="$(tr -d '[:space:]' < "$order_dir/seq" 2>/dev/null || true)"
+          fi
+          case "$h_seq" in
+            ""|*[!0-9]*) h_seq=0 ;;
+          esac
+          h_seq=$(( h_seq + 1 ))
+          h_fail_json="$(python3 -c 'import json,sys; print(json.dumps({"message": sys.argv[1]}))' "$h_fail_reason" 2>/dev/null)" || h_fail_json='{"message":"harness-failed"}'
+          cr_report_step "$order_id" "$CFW_WORKER_ID" "$h_attempt_id" "$h_seq" attempt_failed "$h_fail_json" >/dev/null \
+            || cr_log "order $order_id — attempt_failed report was not acknowledged; lease expiry is the backstop"
+        else
+          cr_log "order $order_id — harness exited 1 without an attempt id; lease expiry is the backstop"
+        fi
+      fi
       # [M2-04, D76] stop_after_step (22) and attempt_superseded (23): this
       # brand is no longer ours to serve from this computer — delete the
       # order folder (order.json carries the brand's credentials/providerKeys,
@@ -319,8 +487,8 @@ for x in a:
       # reports: the attempt is already released (22) or belongs to another
       # computer (23). [M3-01b] 24 = released for an engine usage limit:
       # the attempt is released; the server re-queues it.
-      if (( h_rc == 22 || h_rc == 23 || h_rc == 24 )); then
-        cr_recent_append "$order_dir/order.json" "$h_outcome" "$order_id"
+      if (( h_rc == 22 || h_rc == 23 )) || { (( h_rc == 24 )) && [[ "$checkpoint_mode" != local-v1 ]]; }; then
+        cr_recent_append "" "$h_outcome" "$order_id" "$recent_identity"
         rm -rf "$order_dir"
         rm -rf "$(cr_keep_output_dir "$brand_slug" "$order_id")" 2>/dev/null
         cr_log "order $order_id — brand files and keys deleted after $h_outcome"
@@ -329,7 +497,7 @@ for x in a:
       fi
     fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "$h_outcome" "$h_rc" "harness" >> "$JOURNAL"
-    cr_recent_append "$order_dir/order.json" "$h_outcome" "$order_id"
+    cr_recent_append "" "$h_outcome" "$order_id" "$recent_identity"
     return 0
   fi
 
@@ -344,8 +512,11 @@ if not gate:
 print(gate)
 ' <<< "$order_json" 2>/dev/null)"
 
-  local timeout_secs
+  local timeout_secs wait_file provider_note
   if [[ "$kind" == "image" ]]; then timeout_secs="$CFW_RENDER_TIMEOUT_IMAGE"; else timeout_secs="$CFW_RENDER_TIMEOUT_VIDEO"; fi
+  timeout_secs="$(cr_recipe_budget "$timeout_secs" "$recipe" "$kind")"
+  wait_file="$(mktemp "$order_dir/work/provider-wait.XXXXXX")" || return 1
+  provider_note="$(cr_provider_wait_note)"
   local timeout_min=$(( (timeout_secs + 59) / 60 ))
 
   local prompt
@@ -360,11 +531,36 @@ subs = {
     "{{failCap}}": sys.argv[6],
     "{{timeoutMin}}": sys.argv[7],
     "{{fanoutModels}}": sys.argv[8],
+    "{{providerNote}}": sys.argv[9],
 }
 for k, v in subs.items():
     tpl = tpl.replace(k, v)
 print(tpl)
-' "$SELF_DIR/../lib/director-prompt.md" "$order_id" "$CFW_RENDER_SKILLS_DIR" "$recipe" "$gate" "$CFW_RENDER_GATE_FAIL_CAP" "$timeout_min" "$CFW_RENDER_FANOUT_MODELS" 2>/dev/null)"
+' "$SELF_DIR/../lib/director-prompt.md" "$order_id" "$CFW_RENDER_SKILLS_DIR" "$recipe" "$gate" "$CFW_RENDER_GATE_FAIL_CAP" "$timeout_min" "$CFW_RENDER_FANOUT_MODELS" "$provider_note" 2>/dev/null)"
+
+  # Allocate exclusively before heartbeat/engine start. Same-second retries
+  # must not overwrite earlier attempt evidence; IDs cannot escape runs/.
+  local ts out_file model_state_file
+  ts="$(date +%s)"
+  model_state_file="$order_dir/work/.director-model"
+  if ! out_file="$(python3 -c '
+import os, re, sys, tempfile
+runs, oid, ts = sys.argv[1:4]
+if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,199}", oid) or not re.fullmatch(r"[0-9]+", ts):
+    sys.exit(1)
+runs = os.path.realpath(runs)
+fd, path = tempfile.mkstemp(prefix=oid + "-" + ts + "-", suffix=".out", dir=runs)
+os.close(fd)
+print(path)
+' "$RUNS_DIR" "$order_id" "$ts" 2>/dev/null)"; then
+    cr_log "order $order_id — cannot allocate Director transcript; blocking before launch"
+    cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"render could not create its diagnostic log"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
+      || cr_log "order $order_id — block_render_order (log allocation) call failed; lease expiry is the backstop"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "blocked" "" "" >> "$JOURNAL"
+    cr_recent_append "" blocked "$order_id" "$recent_identity" "render could not create its diagnostic log"
+    return 1
+  fi
+  recent_identity="$(python3 -c 'import json,sys,os; d=json.load(sys.stdin); d["directorLog"]=os.path.basename(sys.argv[1]); print(json.dumps(d))' "$out_file" <<< "$recent_identity")" || return 1
 
   cr_event "$order_id" stage fetch-assets "Gathering ingredients" 5
 
@@ -378,12 +574,6 @@ print(tpl)
   # terminal outcome — stopping it here, after wait, is too late: the Director
   # already called complete/block from inside its own tree before it exits.
   [[ -n "$heartbeat_pid" ]] && echo "$heartbeat_pid" > "$order_dir/.heartbeat.pid"
-
-  local ts out_file model_state_file
-  ts="$(date +%s)"
-  out_file="$RUNS_DIR/${order_id}-${ts}.out"
-  model_state_file="$order_dir/work/.director-model"
-  : > "$out_file"
 
   # [CFW-286] Enable job control HERE — in the frame that backgrounds the
   # subshell below — not inside it. Job control gives a `(...) &` job its own
@@ -399,6 +589,7 @@ print(tpl)
   (
     cd "$order_dir" || exit 1
     export CFW_ORDER_ID="$order_id"
+    export CFW_RENDER_WAIT_FILE="$wait_file"
     export CFW_WORKER_ID
     export CFW_API_BASE
     export CFW_RENDER_WORKER_KEY
@@ -446,28 +637,39 @@ print(tpl)
   # the lookup races a very short-lived process (e.g. a config error that
   # exits in milliseconds) and comes back empty, fall back to the bare PID —
   # today's behavior, never a hard failure of the drainer.
-  local director_pgid director_kill_target
-  director_pgid="$(ps -o pgid= -p "$director_pid" 2>/dev/null | tr -d ' ')"
+  #
+  # When `ps` itself cannot run (exit >1: a sandbox refusing the setuid
+  # binary, a box without it) the process table is still known from the
+  # shell's own job control: `set -m` above gave the `( ... ) &` job a new
+  # process group whose id is the job's own pid, so that is the group to
+  # signal — the Director's tree and nothing else. Unchanged wherever ps runs.
+  local director_pgid director_kill_target ps_rc=0
+  director_pgid="$(ps -o pgid= -p "$director_pid" 2>/dev/null)" || ps_rc=$?
+  director_pgid="${director_pgid//[[:space:]]/}"
   if [[ -n "$director_pgid" ]]; then
     director_kill_target="-$director_pgid"
+  elif (( ps_rc > 1 )) && [[ "$-" == *m* ]]; then
+    director_kill_target="-$director_pid"
   else
     director_kill_target="$director_pid"
   fi
 
-  # Watchdog kills the whole tree (CFW-292). Redirected so the orphaned `sleep`
-  # it leaves behind cannot hold the caller's stdout open — that was the
-  # test-gate hang and the stray `sleep 3600`s found on the Mac (CFW-286).
-  ( sleep "$timeout_secs"; cr_kill_tree "$director_pid" TERM; sleep 30; cr_kill_tree "$director_pid" KILL ) >/dev/null 2>&1 &
+  # CFW-316: bounded provider waits and explicit-delivery finish grace.
+  # Never infer finished/ordered outputs by enumerating final/.
+  cr_budget_watchdog "$director_pid" "$timeout_secs" "$wait_file" "$order_dir" >/dev/null 2>&1 &
   local watchdog_pid=$!
 
   wait "$director_pid"
   local director_exit=$?
+  if (( director_exit == 143 || director_exit == 137 )); then
+    kill -KILL "$director_kill_target" 2>/dev/null
+  fi
   cr_kill_tree "$watchdog_pid" TERM; wait "$watchdog_pid" 2>/dev/null
   # Stop the pulse before ANY outcome is reported — a heartbeat after
   # complete/block would be rejected ("order not claimed by this worker").
   cr_heartbeat_stop "$heartbeat_pid"
 
-  local outcome_file="$order_dir/.outcome" outcome model_served=""
+  local outcome_file="$order_dir/.outcome" outcome model_served="" fail_reason=""
   [[ -f "$model_state_file" ]] && model_served="$(cat "$model_state_file" 2>/dev/null)"
 
   # [CFW-286] The Director's turn ended (not a watchdog kill) but .outcome
@@ -495,8 +697,25 @@ print(tpl)
     else
       cr_log "order $order_id ended with outcome=$outcome — scratch kept for 48h janitor"
     fi
+  elif [[ -f "$order_dir/.delivery-started/upload-failed" && ! -L "$order_dir/.delivery-started/upload-failed" ]]; then
+    # The report process owns the delivery lock and proved that no terminal
+    # completion was submitted. Reporting this known failure cannot duplicate it.
+    outcome="failed"
+    fail_reason="could not upload the finished files"
+    ( cd "$order_dir" && CFW_ORDER_ID="$order_id" CFW_WORKER_ID="$CFW_WORKER_ID" \
+      "$SELF_DIR/cfw-render-report.sh" block "$fail_reason" ) \
+      || cr_log "order $order_id — upload-failure block was not acknowledged; artifacts retained"
+  elif [[ -e "$order_dir/.delivery-started" ]]; then
+    # Server success may precede the local .outcome write. Neither repeat
+    # delivery nor send a conflicting block; preserve the ordered intent.
+    outcome="failed"
+    fail_reason="delivery result is uncertain — check CFW before retrying"
+    cr_log "order $order_id — delivery result uncertain; artifacts retained, no automatic retry"
+    kill -TERM "$director_kill_target" 2>/dev/null
   elif (( director_exit == 143 || director_exit == 137 )); then
+    : > "$order_dir/.retain-artifacts"
     outcome="timeout"
+    fail_reason="render exceeded the time budget"
     cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"render exceeded the time budget","needs":"capacity"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
       || cr_log "order $order_id — block_render_order (timeout) call failed; lease expiry is the backstop"
   else
@@ -514,6 +733,7 @@ print(tpl)
       # a step and ended its turn without waiting on it. This is the CFW-286
       # bug itself, made visible instead of hidden inside "crashed".
       outcome="orphaned"
+      fail_reason="render ended without finishing — a background step was still running"
       cr_log "order $order_id — Director exited cleanly (rc=0) with no complete/block after a ${grace_secs}s grace window; a background step was likely still running when its turn ended (CFW-286)"
       cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"render ended without finishing — a background step was still running when the Director'"'"'s turn ended"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
         || cr_log "order $order_id — block_render_order (orphaned) call failed; lease expiry is the backstop"
@@ -521,6 +741,7 @@ print(tpl)
       # Nonzero exit (bad exit code, uncaught exception, OOM, etc.) — a
       # genuine crash, distinct from the clean-exit orphaned case above.
       outcome="crashed"
+      fail_reason="render failed unexpectedly"
       cr_log "order $order_id — Director exited nonzero (exit=$director_exit) with no complete/block"
       cr_mcp_call block_render_order "$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"reason":"render failed unexpectedly"}))' "$order_id" "$CFW_WORKER_ID")" >/dev/null 2>&1 \
         || cr_log "order $order_id — block_render_order (crash) call failed; lease expiry is the backstop"
@@ -529,7 +750,7 @@ print(tpl)
 
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$order_id" "$brand_slug" "$kind" "$outcome" "$director_exit" "$model_served" >> "$JOURNAL"
-  cr_recent_append "$order_dir/order.json" "$outcome" "$order_id"
+  cr_recent_append "" "$outcome" "$order_id" "$recent_identity" "$fail_reason"
 }
 
 # ---------------------------------------------------------------------------
@@ -561,6 +782,7 @@ prune_running() {
 # server, or the single `order` from an older one). rc 1 = call failed.
 claim_once() {
   local capacity resp
+  CLAIM_CALLS=$(( CLAIM_CALLS + 1 ))
   capacity="$(cr_capacity_json "$1" "$2" "$3" "$4")"
   # [CFW-146] renderer identity → "Working on your Mac"; [M1-08] capabilities
   # → manifest orders; [M2-04] capacity → the server hands out at most
@@ -589,7 +811,7 @@ print(json.dumps(a))' "$CFW_WORKER_ID" "$CFW_RENDER_RENDERER_KIND" "$claim_label
 import json, sys, os
 b = json.loads(sys.stdin.read()).get("computerBrands")
 if not isinstance(b, list): sys.exit(0)
-out = [{"id": x.get("id"), "name": x.get("name")} for x in b if isinstance(x, dict) and x.get("id")]
+out = [{"id": x.get("id"), "name": x.get("name"), "slug": x.get("slug")} for x in b if isinstance(x, dict) and x.get("id")]
 p = sys.argv[1]; tmp = p + ".tmp.%d" % os.getpid()
 json.dump(out, open(tmp, "w")); os.replace(tmp, p)' "$CFW_RENDER_STATE_DIR/brands.json" <<< "$resp" ) 2>/dev/null || true
   # SERVER_KNOWS_CAPACITY flips once a reply carries `orders[]`: only an M2
@@ -616,6 +838,25 @@ CLAIM_WORKER_VERSION="$(cr_worker_version)"
 export CR_STATUS_UPDATE_REQUIRED=0 CR_STATUS_LAST_ERROR="" CR_STATUS_LAST_CHECK_AT=""
 export CR_STATUS_PAUSED=0 CR_STATUS_PAUSE_REASON="" CR_STATUS_ON_BATTERY=0 CR_STATUS_ALLOW_BATTERY=0
 export CR_STATUS_RUNNING=0 CR_STATUS_MAX=1
+# cfwReach — "ok" | "unreachable", set only from a round's actual server call
+# (the claim when taking requests, the pause check-in when paused). The Mac app
+# reads it for "Can't reach CFW"; lastError keeps its own meanings untouched.
+export CR_STATUS_CFW_REACH="" CR_STATUS_CFW_REACH_SINCE=""
+CLAIM_CALLS=0
+
+# cr_reach_set ok|unreachable — records the outcome of a server call; stamps
+# cfwReachSince and logs one line when the value flips.
+cr_reach_set() {
+  local next="$1"
+  [[ "$next" == "$CR_STATUS_CFW_REACH" ]] && return 0
+  if [[ "$next" == "unreachable" ]]; then
+    cr_log "connection: can't reach CFW — retrying"
+  elif [[ "$CR_STATUS_CFW_REACH" == "unreachable" ]]; then
+    cr_log "connection: reached CFW again"
+  fi
+  CR_STATUS_CFW_REACH="$next"
+  CR_STATUS_CFW_REACH_SINCE="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+}
 
 # spawn_orders <file> — start one order process per JSON line; sets SPAWNED.
 SPAWNED=0
@@ -659,6 +900,7 @@ claim_round() {
       CR_STATUS_LAST_ERROR="AI limit reached; resumes $limit_earliest"
       cr_log "engine: every signed-in engine is at its usage limit — not claiming until $limit_earliest"
       prune_running; STARTED=0
+      cr_queue_refresh
       return 0
     fi
     # [M3-08b] Only out-of-credit limits (no reset time) remain.
@@ -666,6 +908,7 @@ claim_round() {
       CR_STATUS_LAST_ERROR="AI credit ran out; add credit or pick another AI"
       cr_log "engine: every signed-in engine is limited (out of credit) — not claiming"
       prune_running; STARTED=0
+      cr_queue_refresh
       return 0
     fi
   fi
@@ -700,36 +943,79 @@ claim_round() {
     fi
   fi
   rm -f "$tmp"
+  cr_queue_refresh
   STARTED=$started
   return $rc
 }
 
 # [M3-01a] pause gate. gated_claim_round — runs claim_round unless the owner
-# paused this computer or it is on battery (without allow-battery); tells the
-# server once per state change; writes status.json after every round/skip.
+# paused this computer or it is on battery (without allow-battery). While
+# paused, every round checks in with set_computer_paused (the site's "paused"
+# needs a fresh report); resuming sends {"paused":false} once. Writes
+# status.json after every round/skip.
 LAST_PAUSE_STATE="__unset__"
+# Disable check-ins only when the server explicitly says the tool is missing.
+# Temporary tool/database errors must retry on the next paused round.
+PING_SUPPORTED=1
 gated_claim_round() {
-  local state rc=0 args
+  local state rc=0 args prc reply
+  # lastCheckAt = the loop is alive, paused or not (the app shows "not
+  # running" when it goes stale).
+  CR_STATUS_LAST_CHECK_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   state="$(cr_pause_state)"
   if [[ "$state" != "$LAST_PAUSE_STATE" ]]; then
     if [[ "$state" != "none" ]]; then
       cr_log "paused ($state): not taking new requests; running requests continue"
-      args="$(python3 -c 'import json,sys; print(json.dumps({"paused": True, "reason": sys.argv[1]}))' "$state")"
-    else
-      args='{"paused":false}'
-    fi
-    if [[ "$state" != "none" || "$LAST_PAUSE_STATE" != "__unset__" ]]; then
-      [[ "$state" == "none" ]] && cr_log "resumed: taking requests again"
-      cr_mcp_call_soft set_computer_paused "$args" >/dev/null 2>&1 \
-        || cr_log "set_computer_paused call failed (server may not have the tool yet) — carrying on"
+    elif [[ "$LAST_PAUSE_STATE" != "__unset__" ]]; then
+      cr_log "resumed: taking requests again"
+      if (( PING_SUPPORTED )); then
+        cr_mcp_call_soft set_computer_paused '{"paused":false}' >/dev/null 2>&1 \
+          || cr_log "set_computer_paused call failed (server may not have the tool yet) — carrying on"
+      fi
     fi
     LAST_PAUSE_STATE="$state"
   fi
   if [[ "$state" == "none" ]]; then
-    CR_STATUS_LAST_CHECK_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    CLAIM_CALLS=0
     claim_round && rc=0 || rc=$?
+    # An engine-limited round makes no call: leave cfwReach as last known.
+    if (( CLAIM_CALLS > 0 )); then
+      if (( rc == 2 )); then cr_reach_set unreachable; else cr_reach_set ok; fi
+    fi
   else
     prune_running; STARTED=0
+    if (( PING_SUPPORTED )); then
+      args="$(python3 -c 'import json,sys; print(json.dumps({"paused": True, "reason": sys.argv[1]}))' "$state")"
+      reply="$(cr_mcp_call_soft set_computer_paused "$args" 2>/dev/null)" && prc=0 || prc=$?
+      case "$prc" in
+        0) cr_reach_set ok ;;
+        75) cr_reach_set unreachable ;;
+        *)
+          cr_reach_set ok
+          # Match only known missing-tool replies, never arbitrary error text.
+          # Do not log the response: it can contain private server details.
+          if (( prc == 70 )) && python3 -c '
+import json, sys
+raw = sys.stdin.read().strip()
+missing = raw == "MCP error -32602: Tool set_computer_paused not found"
+try:
+    error = json.loads(raw)
+except ValueError:
+    error = None
+if isinstance(error, dict):
+    missing = (error.get("code"), error.get("message")) in (
+        (-32601, "Unknown tool: set_computer_paused"),
+        (-32602, "Tool set_computer_paused not found"),
+    )
+sys.exit(0 if missing else 1)
+' <<< "$reply"; then
+            PING_SUPPORTED=0
+            cr_log "set_computer_paused unavailable on this server — carrying on"
+          else
+            cr_log "set_computer_paused call failed — retrying next round"
+          fi ;;
+      esac
+    fi
   fi
   [[ "$state" == "none" ]] && CR_STATUS_PAUSED=0 || CR_STATUS_PAUSED=1
   CR_STATUS_PAUSE_REASON=""; [[ "$state" != "none" ]] && CR_STATUS_PAUSE_REASON="$state"
@@ -759,13 +1045,37 @@ fi
 # ---------------------------------------------------------------------------
 loop_sleep() { # loop_sleep <secs> — returns early when a running order ends,
   # on run-now (ctl), or when the pause state changes (M3-01a).
-  local secs="$1" step tick ticks before after i
+  local secs="$1" step tick ticks before after i prev now wake_limit
   step="$(awk -v s="$secs" 'BEGIN { s = s / 10; if (s < 0.05) s = 0.05; printf "%.3f", s }')"
   tick="$(awk -v s="$step" 'BEGIN { printf "%.3f", (s < 2) ? s : 2 }')"
+  # Epoch differences are integers, so floor(tick + gap) preserves the strict
+  # comparison even for sub-two-second ticks used by fast loops.
+  wake_limit="$(awk -v t="$tick" -v g="$CR_WAKE_GAP_SECS" 'BEGIN { printf "%d", t+g }')"
   ticks="$(awk -v s="$secs" -v t="$tick" 'BEGIN { n = int(s / t + 0.999); if (n < 1) n = 1; print n }')"
   prune_running; before=$RUNNING
+  # CR_WAKE_BASE is taken before the back-off log. The wake test jumps the
+  # clock only after that line is visible, so a sample taken afterwards can
+  # land past the jump and then look like an ordinary 2s tick for the whole
+  # back-off. Any other caller samples here.
+  prev=""
+  if [[ "${CR_WAKE_BASE:-}" =~ ^[0-9]+$ ]]; then prev="$CR_WAKE_BASE"; fi
+  CR_WAKE_BASE=""
+  if [[ ! "$prev" =~ ^[0-9]+$ ]]; then prev="$(cr_now_epoch)"; fi
+  # The jump can already have landed while this function was setting up.
+  # Noticing it before the first sleep keeps a long tick from hiding it.
+  now="$(cr_now_epoch)"
+  if [[ "$now" =~ ^[0-9]+$ && "$prev" =~ ^[0-9]+$ ]] && (( now - prev > wake_limit )); then
+    CR_WOKE=1; cr_log "woke from sleep ($(( now - prev ))s gap): checking for requests now"; return 0
+  fi
   for (( i = 0; i < ticks; i++ )); do
     sleep "$tick"
+    # Wake: the wall clock jumped well past one tick (the Mac slept). Claim
+    # now; the main loop also resets the back-off.
+    now="$(cr_now_epoch)"
+    if [[ "$now" =~ ^[0-9]+$ && "$prev" =~ ^[0-9]+$ ]] && (( now - prev > wake_limit )); then
+      CR_WOKE=1; cr_log "woke from sleep ($(( now - prev ))s gap): checking for requests now"; return 0
+    fi
+    prev="$now"
     if [[ -e "$CFW_RENDER_STATE_DIR/run-now" ]]; then
       rm -f "$CFW_RENDER_STATE_DIR/run-now"; cr_log "run-now: claiming now"; return 0
     fi
@@ -777,6 +1087,8 @@ loop_sleep() { # loop_sleep <secs> — returns early when a running order ends,
 }
 
 backoff=0
+CR_WOKE=0
+CR_WAKE_BASE=""
 cr_log "loop: started (pid $$) — idle claim every ${CR_CAPACITY_IDLE_CLAIM_SECS}s, back-off ${CR_CLAIM_BACKOFF_BASE_SECS}s..${CR_CLAIM_BACKOFF_MAX_SECS}s"
 while true; do
   cr_tick_lock_touch
@@ -789,9 +1101,13 @@ while true; do
       'BEGIN { n = (b == 0) ? base : b * 2; if (n > mx) n = mx; print n }')"
     if [[ "$next" != "$backoff" ]]; then
       backoff="$next"
+      # Before the line the wake test waits on. It jumps the clock after the
+      # line is visible; the baseline has to already be in the past.
+      CR_WAKE_BASE="$(cr_now_epoch)"
       cr_log "claim back-off: claim_render_order keeps failing — retrying every ${backoff}s (cap ${CR_CLAIM_BACKOFF_MAX_SECS}s)"
     fi
-    loop_sleep "$backoff"
+    CR_WOKE=0; loop_sleep "$backoff"
+    if (( CR_WOKE )); then backoff=0; cr_log "claim back-off: reset after sleep"; fi
     continue
   fi
   if [[ "$backoff" != "0" ]]; then

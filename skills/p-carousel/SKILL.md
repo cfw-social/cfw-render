@@ -24,6 +24,19 @@ requires: node, chromium
 
 # pipeline-carousel — Premium HTML Carousel (PDF)
 
+## Execution and reporting
+
+Read [Recipe stage reporting](../../docs/RECIPE-STAGE-REPORTING.md) before a tracked
+run. Managed work uses the installed worker/harness and the exact claimed manifest;
+its stage IDs select `steps/_shared.md` plus the referenced step file. The harness
+alone reports stages; step assistants must not call `complete_render_order` or
+emit competing MCP events. Standalone use does not report to CFW Social.
+
+Catalog presence and declared checks do not prove validator coverage or readiness.
+Missing validators/evidence block gates. See
+[reporting coverage](../../docs/RECIPE-REPORTING-COVERAGE.md) before claiming tracked
+execution is ready; local checkpoint eligibility is independently restricted.
+
 
 > **SELF-IMPROVEMENT RULE — READ FIRST:**
 > 1. Before executing ANY step in this skill, read `LEARNINGS.md` in this same folder.
@@ -149,9 +162,14 @@ python3 -c 'import json; d=json.load(open("final/captions.json")); assert d and 
 
 ### Step 8 — Deliver ⛔ CHECKPOINT
 
-Deliver: slide PNGs (cover first, in order) + PDF last + `final/captions.json`
-(`cfw-render-report.sh complete final/slide-1.png … final/carousel-<slug>.pdf`
-picks the captions file up automatically and sends it as `captions`).
+Deliver: individual slide PNGs in slide order (`slide_1.png` … `slide_N.png`,
+cover first as slide 1) + PDF last (standalone) + `final/captions.json`. Never
+send `cover.png` or `slide_sheet.png` as a deliverable — those are previews
+only. Managed runs: the worker selects `steps/render_slides/saves/slide_N.png`
+from `slides.json` and passes them to `cfw-render-report.sh complete` with the
+captions file. Standalone:
+`cfw-render-report.sh complete final/slide-1.png … final/carousel-<slug>.pdf`
+(captions picked up automatically).
 **Gate: User approves caption before scheduling.**
 
 ## Self-Improvement Feedback Loop

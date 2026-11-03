@@ -1,6 +1,7 @@
 # Generate the avatar video
 
-Turn the narration `script` into the talking-head video with the brand's HeyGen avatar. This is
+Turn the narration `script` into the talking-head video with the brand's HeyGen avatar, or adopt a
+pre-made clip the owner attached as `avatar_video` (then HeyGen is not called). This is
 provider work only — no compositing, no captions, no grade happens here. The output becomes the
 `talking_head` every later step builds on, so it must be a clean, decodable 20–60 s clip with the
 avatar's voice as its audio.
@@ -13,6 +14,8 @@ avatar's voice as its audio.
   one; dir absent → `brief.json.brand.heygen.avatarId`.
 - `inputs/voice_id/voice_id.json` — `{"text": "<HeyGen voice id>"}` when supplied; dir absent
   → `brief.json.brand.heygen.voiceId`.
+- `inputs/avatar_video/<file>` — OPTIONAL: one pre-made talking-head clip (HeyGen web app or any
+  source). When present it replaces the HeyGen render (§0); dir absent → render with HeyGen.
 - `brief.json` — `brand` (`heygen.avatarId`, `heygen.voiceId` when the brand has them).
 
 Provider keys come ONLY from the environment (`HEYGEN_API_KEY`), exported by the harness from the brand's
@@ -20,12 +23,46 @@ connected provider accounts. Never read a secrets file, never print a key.
 
 ## You must produce
 
-- `saves/talking_head.mp4` — the finished avatar render, portrait or landscape (the PIP card is scale-to-fit), H.264 + AAC, 20–60 s, audio
+- `saves/talking_head.mp4` — the finished avatar render, portrait or landscape (the PIP card is filled with a top-biased crop, no bars), H.264 + AAC, 20–60 s, audio
   present. Not re-encoded, not trimmed, not loudnormed (that is `prepare_footage`'s job).
 
 ## How
 
+### 0. A pre-made clip replaces the HeyGen render — adopt it first
+
+The owner may attach a finished talking-head clip as the optional `avatar_video` input (made in
+the HeyGen web app or anywhere else). When `inputs/avatar_video/` holds a video, that clip IS the
+avatar render: copy it to `work/avatar.mp4`, skip the asks, the key check and §1 below (the HeyGen
+API is NOT called, no key is needed or read), and go straight to §2. If the folder exists but holds
+no decodable video (for example the download failed), the step FAILS: it never falls through to the
+paid API when the owner supplied a clip. Run this first:
+
 ```bash
+mkdir -p work saves
+CLIP=""
+for f in inputs/avatar_video/*; do
+  [ -f "$f" ] || continue
+  if ffprobe -v error -select_streams v:0 -show_entries stream=codec_type -of csv=p=0 "$f" 2>/dev/null | grep -q video; then CLIP="$f"; break; fi
+done
+if [ -n "$CLIP" ]; then
+  DUR0=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$CLIP")
+  python3 -c "d=float('$DUR0'); assert 20 <= d <= 60, f'avatar_video is {d:.1f}s - outside 20-60 s'" || exit 1
+  cp "$CLIP" work/avatar.mp4
+  echo "avatar_video: adopted - the HeyGen API is not called; continue at section 2"
+elif [ -d inputs/avatar_video ]; then
+  echo "avatar_video was supplied but holds no decodable video (download failed?) - not falling back to the HeyGen API"; exit 1
+else
+  echo "avatar_video: none - render with HeyGen as below"
+fi
+```
+
+If it printed `avatar_video: adopted`, do not run the setup block or §1; run §2 on `work/avatar.mp4`.
+If it printed `avatar_video: none`, carry on below exactly as before.
+
+### Setup and asks (HeyGen render path only)
+
+```bash
+if [ -d inputs/avatar_video ]; then echo "avatar_video supplied - the HeyGen API path must not run"; exit 1; fi
 mkdir -p work saves
 RECIPE=$(python3 -c "import json;print(json.load(open('brief.json'))['recipe'])")
 SKILL_DIR="$CFW_RENDER_SKILLS_DIR/$RECIPE"
@@ -51,12 +88,12 @@ WORDS=$(printf '%s' "$SCRIPT" | wc -w | tr -d ' ')
 [ "$WORDS" -ge 40 ] && [ "$WORDS" -le 180 ] || { echo "{ \"inputId\": \"script\", \"reason\": \"The script is $WORDS words — a 20–60 second reel needs roughly 50–150 words.\", \"count\": 1 }" > needs_input.json; exit 0; }
 ```
 
-### 1. Render with HeyGen (REST path of `c-heygen`) — never pay twice
+### 1. Render with HeyGen (REST path of `c-heygen`) — never pay twice (skipped when a clip was adopted)
 
 Follow `$SKILL_DIR/.hub/c-heygen/SKILL.md` **Path 4 (REST API)** with the HeyGen key from the
 environment: `POST https://api.heygen.com/v2/video/generate` with `character.type=avatar`,
 `avatar_id=$AVATAR_ID`, `voice.type=text`, `input_text=$SCRIPT`, `voice_id=$VOICE_ID`, a solid
-background and `dimension` `{"width":1280,"height":720}` (the PIP card scales to fit). Auth is the `X-Api-Key` header, not Bearer. The MCP / browser
+background and `dimension` `{"width":1280,"height":720}` (the PIP card fills with a top-biased crop). Auth is the `X-Api-Key` header, not Bearer. The MCP / browser
 / human paths of `c-heygen` are not available in this harness — on a REST failure, fail the step.
 
 Idempotency: key the render on `sha256(script|avatar|voice)` and keep `work/render-<key>.json`
@@ -98,7 +135,7 @@ curl -sL "$URL" -o work/avatar.mp4
 printf '{"video_id":"%s","status":"completed"}' "$VIDEO_ID" > "$STATE"
 ```
 
-### 2. Verify and save
+### 2. Verify and save (both paths: the adopted clip and the HeyGen render)
 
 ```bash
 DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 work/avatar.mp4)
@@ -113,7 +150,9 @@ cp work/avatar.mp4 saves/talking_head.mp4
 
 ## If you cannot proceed
 
-This step may ask for **`script`, `avatar_id` or `voice_id`** (see above): write `needs_input.json`
+With an `avatar_video` clip this step never asks: a clip that fails §2 (no audio, outside 20–60 s,
+wrong orientation) is a failure with one plain line, never a fallback to the HeyGen API.
+Without a clip, this step may ask for **`script`, `avatar_id` or `voice_id`** (see above): write `needs_input.json`
 and stop without a save when the script is missing / the wrong length or when neither the owner
 nor the brand supplies an avatar or voice id. A missing provider key, a provider error or a
 render that will not complete is a failure, not an ask: exit non-zero with one plain line that

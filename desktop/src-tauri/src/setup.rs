@@ -43,10 +43,22 @@ pub struct SetupStatus {
 
 static CHILD: Mutex<Option<Child>> = Mutex::new(None);
 static CANCELLED: AtomicBool = AtomicBool::new(false);
+static SETUP_BUSY: AtomicBool = AtomicBool::new(false);
+
+/// Reserve before asynchronous key minting, not just after spawning the installer.
+pub struct SetupPermit;
+impl Drop for SetupPermit {
+    fn drop(&mut self) { SETUP_BUSY.store(false, Ordering::SeqCst); }
+}
+pub fn reserve_setup() -> Result<SetupPermit, String> {
+    SETUP_BUSY.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .map(|_| SetupPermit).map_err(|_| "Setup is already running.".into())
+}
 
 pub fn valid_key(k: &str) -> bool {
     let Some(rest) = k.strip_prefix("cfw_") else { return false };
-    (8..=200).contains(&rest.len()) && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    // CFW mints keys from base64url, so `-` is a real key character (~40% of keys).
+    (8..=200).contains(&rest.len()) && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 fn setup_marker() -> Option<PathBuf> {
@@ -227,8 +239,10 @@ pub fn setup_run(app: AppHandle, brand_key: String, install_tools: bool) -> Resu
     if !valid_key(brand_key.trim()) {
         return Err("That doesn't look like a brand key. It starts with cfw_.".into());
     }
+    let permit = reserve_setup()?;
     let installer = installer_path(app.path().resource_dir().ok().as_deref());
     std::thread::spawn(move || {
+        let _permit = permit;
         let emit = emitter(app);
         finish(run_setup(installer, brand_key, install_tools, &emit), &emit);
     });
@@ -253,11 +267,30 @@ pub fn setup_install_tools(app: AppHandle) {
     });
 }
 
+/// Run setup with a key the app made itself (account-wide), showing progress in the setup window.
+/// The key goes only to the installer's stdin, exactly like a pasted one.
+pub fn start_run_with_key(app: AppHandle, key: String, permit: SetupPermit) -> Result<(), String> {
+    if !valid_key(key.trim()) {
+        return Err("CFW sent an unexpected reply".into());
+    }
+    let installer = installer_path(app.path().resource_dir().ok().as_deref());
+    open_setup(app.clone());
+    let _ = app.emit("setup-external-run", ());
+    std::thread::spawn(move || {
+        let _permit = permit;
+        let emit = emitter(app);
+        finish(run_setup(installer, key, false, &emit), &emit);
+    });
+    Ok(())
+}
+
 #[tauri::command]
 pub fn setup_adopt(app: AppHandle) -> Result<(), String> {
+    let permit = reserve_setup()?;
     let installer = installer_path(app.path().resource_dir().ok().as_deref())
         .ok_or("The CFW Render installer wasn't found. Reinstall the app and try again.")?;
     std::thread::spawn(move || {
+        let _permit = permit;
         let emit = emitter(app);
         finish(run_installer(&installer, None, &emit), &emit);
     });
@@ -288,6 +321,14 @@ pub fn open_setup(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reservation_blocks_duplicate_setup_and_releases_on_error() {
+        let permit = reserve_setup().unwrap();
+        assert!(reserve_setup().is_err());
+        drop(permit);
+        assert!(reserve_setup().is_ok());
+    }
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
 
@@ -315,7 +356,10 @@ mod tests {
     #[test]
     fn key_format() {
         assert!(valid_key("cfw_abcdefgh"));
+        // CFW keys are base64url: '-' and '_' both occur in real keys.
+        assert!(valid_key("cfw_Ab3-xY_9kLmN-pQrS"));
         assert!(!valid_key("cfw_short"));
+        assert!(!valid_key("cfw_abc+defgh/ij"));
         assert!(!valid_key("cfw_abc def gh"));
         assert!(!valid_key("xyz_abcdefgh"));
     }

@@ -43,7 +43,14 @@ For beat `i` with `kind`, `start`, `end` (`dur = end - start`, `IN`/`OUT` from `
   "inputs/broll/$CLIP" -an work/top_beats/_in$i.mp4` then
   `python3 "$WOWX_DIR/wowx_motion.py" work/top_beats/_in$i.mp4 -m <card-orbit if i%4==2 else card-focus> work/top_beats/top_beat$i.mp4 --bg "0x$BRAND_BG" --canvas 1080x960 --card-scale 0.86 --corner-radius 0.04 --intensity 1.1`.
 - **`broll`, `broll_style=blurred-fill`** — `ffmpeg -y -ss "$IN" -t "$DUR" -i "inputs/broll/$CLIP" -filter_complex "[0:v]split[a][b];[a]scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960,boxblur=40:2,setsar=1[bg];[b]scale=1080:960:force_original_aspect_ratio=decrease,setsar=1[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p,fps=30[v]" -map "[v]" -an -c:v libx264 -preset medium -crf 20 work/top_beats/top_beat$i.mp4`.
-- **`graphics`, typing / hook scene** — `bash "$TYPING_UI_DIR/scripts/render.sh" --text "<copy>" --duration "$DUR" --brand work/brand.json --variant top-half --out work/top_beats/top_beat$i.mp4` (see `$TYPING_UI_DIR/SKILL.md`); if `top-half` is unsupported, render `pip-safe` and crop: `-vf crop=1080:960:0:0`.
+- **`graphics`, typing / hook scene** — `c-typing-ui` ships templates, not a render script (its
+  `scripts/render-sample.sh` only renders a fixed demo), and it has no `top-half` variant. Fill
+  `$TYPING_UI_DIR/templates/typing-scene.html` (typing: `VARIANT=pip-safe`, `BOTTOM_TAG` blank —
+  the pip-safe tag sits at y=980, below the crop) or `hook-scene.html` (hook) into
+  `work/gfx_$i/index.html` exactly as `$TYPING_UI_DIR/SKILL.md` "Usage — standalone render (one
+  beat)" shows, copy `$GSAP` in as `gsap.min.js`, render it at 1080×1920 with
+  `( cd work/gfx_$i && npx hyperframes@0.7.5 lint && npx hyperframes@0.7.5 render --output ../top_beats/_full$i.mp4 --quality high --fps 30 )`, then keep the top half:
+  `ffmpeg -y -i work/top_beats/_full$i.mp4 -vf crop=1080:960:0:0,format=yuv420p -an -c:v libx264 -preset medium -crf 20 work/top_beats/top_beat$i.mp4`.
 - **`graphics`, motion card** — write `work/gfx_$i/index.html` from `$TEMPLATE`: fill
   `{{DURATION}}`, `{{EYEBROW}}`, `{{GHOST}}`, `{{TITLE_HTML}}`, `{{ACCENT}}`, `{{BG}}`, `{{FG}}`
   from the scene + `work/brand.json`; turn `<div class="sc-root">` into

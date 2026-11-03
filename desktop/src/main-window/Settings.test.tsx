@@ -16,6 +16,16 @@ afterEach(() => {
 const box = (name: string) => screen.getByRole("checkbox", { name }) as HTMLInputElement;
 
 describe("Settings", () => {
+  it("connection lists every brand, never '+N more'", () => {
+    invoke.mockResolvedValue(null);
+    const brands = Array.from({ length: 14 }, (_, i) => `Brand ${i + 1}`);
+    render(<Settings workerVersion={null} connection={{ line: "Connected for all your brands (14)", keyLine: "Key: MacBook Pro (2)", brands, allBrands: true }} />);
+    const list = screen.getByRole("list", { name: "Connection" });
+    expect(list.querySelectorAll("li").length).toBe(14);
+    expect(screen.getByText("Brand 14")).toBeTruthy();
+    expect(screen.queryByText(/more$/)).toBeNull();
+  });
+
   it("reads checkbox state from get_settings and shows disabled items", async () => {
     invoke.mockImplementation((cmd: string) => Promise.resolve(cmd === "get_settings" ? { allowBattery: true, startAtLogin: false } : cmd === "get_support_settings" ? { shareCrashReports: true } : cmd === "get_update_settings" ? { autoUpdate: true, available: false } : null));
     render(<Settings workerVersion="1.0.0" />);

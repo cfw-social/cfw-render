@@ -4,14 +4,23 @@ Every recipe can declare, in one machine-readable file, its ordered steps and
 the inputs it needs from the user. CFW uses it to show "step 3 of 7", to ask
 for missing inputs before a computer ever connects, and to resume a run at a
 step. This page is for recipe authors. The contract is
-`plans/m1/CONTRACTS.md` sections 2–3 in the cfw-social repo; this page copies
-it and does not add fields.
+`plans/m1/CONTRACTS.md` sections 2–3 in the cfw-social repo. The local
+checkpoint proposal is a separate, gated worker contract, not a deployed Social
+protocol (see below).
 
 - **File:** `skills/<recipe>/manifest.json` (source of truth, one per recipe).
 - **Schema:** `schemas/recipe-manifest.v1.schema.json` (JSON Schema 2020-12).
 - **Validator:** `python3 scripts/validate-manifests.py` (also run by `scripts/lint.sh`).
 - **Reference manifest:** `skills/p-reels-spotlight/manifest.json` (Spotlight reel).
 - **Recipes without a manifest** keep today's behaviour exactly (Director prompt, five generic stages).
+
+## Reporting ownership and readiness
+
+Read [Recipe stage reporting](RECIPE-STAGE-REPORTING.md) for managed versus
+standalone execution, single-owner MCP reporting, failed gates and interruption
+handling. Declared checks and catalog diagrams are not proof of executable
+validators. See [coverage](RECIPE-REPORTING-COVERAGE.md) for tested boundaries and
+blocked recipes. No display manifest is enabled by these documents.
 
 ## Fields
 
@@ -39,7 +48,7 @@ it and does not add fields.
 | `steps[].runsOn` | `computer` or `server` (`server` steps can also run on a computer under D43; M1 runs them on the server only). |
 | `steps[].when` | `"always"`, `{ "inputPresent": "<inputId>" }` or `{ "alternative": "<alternativeId>" }`. A step whose condition is false is reported `step_skipped`. |
 | `steps[].instructions` | Path relative to the skill folder. Holds only this step's instructions (D45). Required for `computer` steps; the file must exist. |
-| `steps[].saves` | Outputs uploaded to CFW Media when the step completes, so another computer can resume after it (D30). `preview: true` shows it in run details. |
+| `steps[].saves` | Declared outputs. Legacy mode uploads them to CFW Media for cross-computer recovery. Negotiated local mode keeps bytes on the assigned computer and reports metadata only; `preview: true` does not make a file a final deliverable or a web preview. |
 | `steps[].checks` | Run by the harness after the step. The step only completes when every check passes. |
 | `steps[].maxCheckRetries` | How many times the harness reruns the step after a failed check before failing the attempt. |
 | `steps[].canAsk` | Input ids this step may raise a mid-run ask for. |
@@ -83,6 +92,38 @@ Exit `0` means every manifest is valid; `1` lists each error as
 `<path>: <message>`. The validator is standard-library Python; if the
 `jsonschema` package happens to be installed it is used as an extra layer, but
 every rule is also hand-checked so the result is the same without it.
+
+## Gated local recovery (not deployed)
+
+The worker includes same-computer checkpoint and validator helpers, but accepts
+local execution only when `CFW_RENDER_LOCAL_CHECKPOINTS=1` and the authorized
+claim explicitly carries `checkpoint.mode=local-v1`. It advertises no checkpoint
+capability. Current Social does not generate this protocol; changing the local
+flag alone cannot activate it. Unsupported local claims fail before engine launch
+and never fall back to Director execution.
+
+Local checkpoints require installation/order/brand/generation/version identity,
+contained files with matching checksums, acknowledged per-attempt report
+sequences and explicit ordered `finalOutputs` references. Unknown validators fail
+closed. Resume cannot repeat an uncertain terminal delivery: artifacts are retained
+for investigation rather than automatically re-uploaded. Web metadata is not a
+backup of local media. Acknowledged local completions retain scrubbed saves for
+48 hours after the job stops, then become eligible for cleanup. Ordinary
+(nonlocal) acknowledged completions remove scratch immediately; uncertain
+terminal results remain protected rather than expiring automatically.
+
+The authoring schema, Social parser/claim/report/completion counterparts and
+Spotlight 2026.10.4 activation remain blocked. Bundled production versions are
+unchanged; they do not declare this final-output contract. Synthetic fixtures
+exercise the runtime without enabling recipes. See the coverage record.
+
+## Negotiated stage bounds
+
+A supported `stageRange` executes only its negotiated steps and validates restored
+save paths/checksums. Nonfinal completion does not deliver final media. Existing
+ordinary manifest and Director execution remain separate. Local-checkpoint claims
+combined with any stage bounds are rejected before starting an engine; the worker
+does not advertise combined support or silently run the whole recipe.
 
 ## Adding a manifest to another recipe
 

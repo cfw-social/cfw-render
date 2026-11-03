@@ -14,10 +14,11 @@ fn security() -> Command {
     c
 }
 
-/// `cfw_` + 8..200 of `[A-Za-z0-9_]` — also guarantees no whitespace/newline can inject a command.
+/// `cfw_` + 8..200 of `[A-Za-z0-9_-]` (CFW keys are base64url, so `-` occurs) —
+/// still no whitespace/newline, so nothing can inject a `security -i` command.
 pub fn valid_key(key: &str) -> bool {
     let Some(rest) = key.strip_prefix("cfw_") else { return false };
-    (8..=200).contains(&rest.len()) && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    (8..=200).contains(&rest.len()) && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 fn account(slug: &str) -> String {
@@ -60,4 +61,21 @@ pub fn delete(slug: &str) -> Result<(), String> {
     }
     let _ = security().args(["delete-generic-password", "-s", SERVICE, "-a", &account(slug)]).status();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_key;
+
+    #[test]
+    fn brand_key_shape() {
+        assert!(valid_key("cfw_abcdefgh"));
+        // CFW keys are base64url: '-' must be accepted.
+        assert!(valid_key("cfw_Ab3-xY_9kLmN-pQrS"));
+        assert!(!valid_key("cfw_short"));
+        // nothing that could break out of a `security -i` line
+        assert!(!valid_key("cfw_abc def gh"));
+        assert!(!valid_key("cfw_abcdefgh\nadd-generic-password"));
+        assert!(!valid_key("xyz_abcdefgh"));
+    }
 }

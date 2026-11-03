@@ -34,6 +34,7 @@ pub struct StatusPayload {
     pub icon_state: IconState,
     pub tooltip: String,
     pub provider_line: String,
+    pub owner_paused: bool,
 }
 
 struct AppState {
@@ -58,6 +59,7 @@ fn current_payload() -> StatusPayload {
         status,
         icon_state,
         tooltip,
+        owner_paused: is_pause_file_present(),
     }
 }
 
@@ -77,7 +79,7 @@ fn refresh(app: &AppHandle) {
         let _ = tray.set_title(Some(tray_title(p.icon_state)));
     }
     if let Some(st) = app.try_state::<AppState>() {
-        let paused = p.status.as_ref().is_some_and(|s| s.computer.paused) || is_pause_file_present();
+        let paused = p.owner_paused || p.status.as_ref().is_some_and(|s| s.computer.paused && s.computer.pause_reason.as_deref() == Some("battery"));
         let _ = st.pause_item.set_text(if paused { "Resume" } else { "Pause" });
     }
     let _ = app.emit("status", p);
@@ -88,7 +90,7 @@ fn is_pause_file_present() -> bool {
 }
 
 pub(crate) fn show_main(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
+    if let Some(w) = app.get_window("main") {
         set_dock(app, true);
         let _ = w.show();
         let _ = w.set_focus();
@@ -200,6 +202,14 @@ fn set_dock(app: &AppHandle, visible: bool) {
 #[cfg(not(target_os = "macos"))]
 fn set_dock(_app: &AppHandle, _visible: bool) {}
 
+/// The trusted local UI explicitly confirms account-wide reach before calling this.
+#[tauri::command]
+async fn setup_with_account(app: AppHandle) -> Result<(), String> {
+    let permit = setup::reserve_setup()?;
+    let key = web::mint_account_key(&app).await?;
+    setup::start_run_with_key(app, key, permit)
+}
+
 #[tauri::command]
 fn run_now() -> Result<(), String> {
     control::run_now().map_err(err)
@@ -294,8 +304,14 @@ fn build_tray(app: &AppHandle) -> tauri::Result<(TrayIcon, MenuItem<Wry>)> {
             "quit" => app.exit(0),
             _ => {}
         });
-    if let Some(icon) = app.default_window_icon() {
-        builder = builder.icon(icon.clone());
+    // A template lets macOS tint the existing mark for either menu-bar theme.
+    match tauri::image::Image::from_bytes(include_bytes!("../icons/tray-template.png")) {
+        Ok(icon) => builder = builder.icon(icon).icon_as_template(true),
+        Err(_) => {
+            if let Some(icon) = app.default_window_icon() {
+                builder = builder.icon(icon.clone());
+            }
+        }
     }
     Ok((builder.build(app)?, pause))
 }
@@ -349,6 +365,8 @@ pub fn run() {
             web::web_hide,
             web::web_reload,
             web::web_brands,
+            web::open_render_in_browser,
+            setup_with_account,
             support::uninstall,
             support::send_logs_preview,
             support::send_logs,
@@ -366,7 +384,7 @@ pub fn run() {
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            app.set_activation_policy(tauri::ActivationPolicy::Regular);
 
             let handle = app.handle().clone();
             let (_tray, pause_item) = build_tray(&handle)?;
@@ -390,9 +408,6 @@ pub fn run() {
             WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();
-                if window.label() == "main" {
-                    set_dock(window.app_handle(), false);
-                }
             }
             WindowEvent::Resized(_) if window.label() == "main" => {
                 web::layout(window.app_handle());
@@ -420,6 +435,60 @@ pub fn run() {
 
 #[cfg(test)]
 mod settings_tests {
+    #[test]
+    fn app_icons_have_detail_at_standard_and_retina_sizes() {
+        fn check_png(bytes: &[u8]) -> u32 {
+            let image = tauri::image::Image::from_bytes(bytes).unwrap();
+            assert_eq!(image.width(), image.height());
+            let colors: std::collections::HashSet<_> = image.rgba().chunks_exact(4)
+                .filter(|pixel| pixel[3] != 0)
+                .map(|pixel| [pixel[0], pixel[1], pixel[2]])
+                .collect();
+            assert!(colors.len() > 32, "app icon must contain artwork, not a flat placeholder");
+            assert!(image.rgba().chunks_exact(4).any(|pixel| pixel[3] == 0),
+                "app icon must retain its transparent outer margin");
+            image.width()
+        }
+        assert_eq!(check_png(include_bytes!("../icons/32x32.png")), 32);
+        assert_eq!(check_png(include_bytes!("../icons/128x128.png")), 128);
+
+        let icns = include_bytes!("../icons/icon.icns");
+        assert_eq!(&icns[..4], b"icns");
+        let length = u32::from_be_bytes(icns[4..8].try_into().unwrap()) as usize;
+        assert_eq!(length, icns.len());
+        let mut sizes = std::collections::HashSet::new();
+        let mut offset = 8;
+        while offset < icns.len() {
+            assert!(offset + 8 <= icns.len());
+            let length = u32::from_be_bytes(icns[offset + 4..offset + 8].try_into().unwrap()) as usize;
+            assert!(length >= 8 && length <= icns.len() - offset);
+            let payload = &icns[offset + 8..offset + length];
+            if payload.starts_with(b"\x89PNG\r\n\x1a\n") {
+                sizes.insert(check_png(payload));
+            }
+            offset += length;
+        }
+        for size in [32, 64, 128, 256, 512, 1024] {
+            assert!(sizes.contains(&size), "Mac icon is missing detailed {size}px artwork");
+        }
+    }
+
+    #[test]
+    fn tray_template_and_payload_keep_platform_contract() {
+        let img = tauri::image::Image::from_bytes(include_bytes!("../icons/tray-template.png")).unwrap();
+        assert_eq!((img.width(), img.height()), (44, 44));
+        assert!(img.rgba().chunks(4).any(|p| p[3] != 0));
+        assert!(img.rgba().chunks(4).all(|p| p[3] == 0 || (p[0] == 0 && p[1] == 0 && p[2] == 0)));
+        let p = super::StatusPayload {
+            status: None, liveness: crate::state::Liveness::NotRunning,
+            icon_state: crate::state::IconState::Idle, tooltip: String::new(),
+            provider_line: String::new(), owner_paused: true,
+        };
+        assert_eq!(serde_json::to_value(&p).unwrap()["ownerPaused"], true);
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(conf["productName"], "CFW Render");
+        assert_eq!(conf["identifier"], "social.cfw.render");
+    }
     use super::*;
 
     #[test]

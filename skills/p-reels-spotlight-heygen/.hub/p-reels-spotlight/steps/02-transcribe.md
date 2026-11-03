@@ -141,5 +141,5 @@ missing or the bed yields zero words after a `medium` retry, exit non-zero with 
 ## Checks the harness runs
 
 - `words_found` — `saves/transcripts.json` parses, `words` is a non-empty array of
-  `{text,start,end}` with monotonically non-decreasing starts and the last `end` within ~3 s of the
-  bed duration.
+  `{text,start,end}` with monotonically non-decreasing starts and the last `end` within ~4.5 s of the
+  bed duration (the bed ends in a silent end-card tail of up to 3.5 s, WI2.89).

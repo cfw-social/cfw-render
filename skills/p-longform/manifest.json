@@ -1,0 +1,292 @@
+{
+  "manifestFormat": 1,
+  "recipe": "p-longform",
+  "recipeVersion": "2026.10.2",
+  "label": "Longform video",
+  "deliverable": {
+    "kind": "video",
+    "aspect": "16:9",
+    "width": 1920,
+    "height": 1080,
+    "durationSec": { "min": 300, "max": 1200 }
+  },
+  "needs": {
+    "os": ["macos"],
+    "engines": ["codex", "claude-code"],
+    "tools": ["ffmpeg", "imagemagick", "node>=22", "npx", "chromium", "python3", "curl"],
+    "providers": ["heygen", "elevenlabs"]
+  },
+  "inputs": [
+    {
+      "id": "script",
+      "label": "Script",
+      "kinds": ["text"],
+      "required": true,
+      "count": { "min": 1, "max": 1 },
+      "neededAt": "start",
+      "prompt": "Paste the full script (roughly 750–3000 words for a 5–20 minute video). A TTS-clean script is used as is; a draft is cleaned up before any render.",
+      "alternatives": [
+        {
+          "id": "research_script",
+          "label": "Research and write my script first",
+          "runsSteps": ["research", "script"]
+        }
+      ]
+    },
+    {
+      "id": "format",
+      "label": "Format",
+      "kinds": ["choice"],
+      "required": true,
+      "count": { "min": 1, "max": 1 },
+      "neededAt": "start",
+      "prompt": "Which kind of longform video is this?",
+      "choices": [
+        { "id": "vsl", "label": "VSL — sales letter video (hook → problem → solution → proof → offer → CTA)" },
+        { "id": "demo", "label": "Demo — product or feature walkthrough led by screen recordings" },
+        { "id": "tutorial", "label": "Tutorial — step-by-step educational with animated diagrams and slides" }
+      ]
+    },
+    {
+      "id": "source_video",
+      "label": "Existing avatar render",
+      "kinds": ["video"],
+      "required": false,
+      "count": { "min": 0, "max": 1 },
+      "constraints": { "durationSec": { "min": 240, "max": 1260 }, "orientation": "landscape" },
+      "neededAt": { "step": "avatar_render" }
+    },
+    {
+      "id": "avatar_id",
+      "label": "HeyGen avatar",
+      "kinds": ["text"],
+      "required": false,
+      "count": { "min": 0, "max": 1 },
+      "neededAt": { "step": "avatar_render" },
+      "prompt": "The HeyGen avatar id to present the video. Leave empty to use the brand's avatar, or to get a voice-only video if the brand has none.",
+      "default": "brand"
+    },
+    {
+      "id": "voice_id",
+      "label": "Voice",
+      "kinds": ["text"],
+      "required": false,
+      "count": { "min": 0, "max": 1 },
+      "neededAt": { "step": "avatar_render" },
+      "prompt": "The voice id to narrate with (HeyGen voice when an avatar is used, ElevenLabs voice otherwise). Leave empty to use the brand's default.",
+      "default": "brand"
+    },
+    {
+      "id": "broll",
+      "label": "B-roll, screen recordings or demo captures",
+      "kinds": ["video", "image"],
+      "required": false,
+      "count": { "min": 0, "max": null },
+      "constraints": { "orientation": "any" },
+      "neededAt": { "step": "plan_broll" }
+    },
+    {
+      "id": "cta",
+      "label": "Call to action",
+      "kinds": ["text"],
+      "required": false,
+      "count": { "min": 0, "max": 1 },
+      "neededAt": { "step": "build_visuals" },
+      "prompt": "The closing offer line and handle/URL for the CTA card. Leave empty to use the brand defaults.",
+      "default": "brand"
+    },
+    {
+      "id": "outro",
+      "label": "Outro clip",
+      "kinds": ["video"],
+      "required": false,
+      "count": { "min": 0, "max": 1 },
+      "constraints": { "orientation": "landscape", "durationSec": { "min": 1, "max": 15 } },
+      "neededAt": { "step": "composite" }
+    },
+    {
+      "id": "captions",
+      "label": "Burn captions",
+      "kinds": ["choice"],
+      "required": false,
+      "count": { "min": 0, "max": 1 },
+      "neededAt": { "step": "post_process" },
+      "prompt": "Burn word-level captions into the video?",
+      "choices": [
+        { "id": "off", "label": "No captions (default)" },
+        { "id": "on", "label": "Yes, burn captions" }
+      ],
+      "default": "off"
+    }
+  ],
+  "steps": [
+    {
+      "id": "research",
+      "label": "Research the topic",
+      "weight": 0,
+      "runsOn": "server",
+      "when": { "alternative": "research_script" },
+      "saves": [
+        { "id": "research_notes", "kind": "text", "preview": false },
+        { "id": "sources", "kind": "json", "preview": false }
+      ],
+      "checks": [{ "id": "sources_present", "label": "Sources present" }]
+    },
+    {
+      "id": "script",
+      "label": "Write the script",
+      "weight": 0,
+      "runsOn": "server",
+      "when": { "alternative": "research_script" },
+      "saves": [{ "id": "approved_script", "kind": "text", "preview": true }],
+      "checks": [{ "id": "script_timed_5_20min", "label": "Script is timed to 5–20 min" }]
+    },
+    {
+      "id": "prepare_script",
+      "label": "Prepare the script and section map",
+      "weight": 5,
+      "runsOn": "computer",
+      "uses": { "tools": ["python3"] },
+      "when": "always",
+      "instructions": "steps/01-prepare-script.md",
+      "saves": [
+        { "id": "tts_script", "kind": "text", "preview": true },
+        { "id": "section_map", "kind": "json", "preview": false }
+      ],
+      "checks": [
+        { "id": "script_timed_5_20min", "label": "Script is timed to 5–20 min" },
+        { "id": "sections_follow_format", "label": "Section map follows the chosen format" }
+      ],
+      "maxCheckRetries": 2,
+      "canAsk": ["script", "format"]
+    },
+    {
+      "id": "avatar_render",
+      "label": "Render the avatar",
+      "weight": 25,
+      "runsOn": "computer",
+      "uses": { "tools": ["curl", "ffmpeg", "python3"], "providers": [["heygen", "elevenlabs"]] },
+      "when": "always",
+      "instructions": "steps/02-avatar-render.md",
+      "saves": [{ "id": "avatar_video", "kind": "video", "preview": false }],
+      "checks": [
+        { "id": "avatar_has_audio", "label": "Avatar track has an audio stream" },
+        { "id": "avatar_duration_window", "label": "Avatar track is 4–21 min" },
+        { "id": "avatar_bg_uniform", "label": "Avatar background is uniform (clean green or opaque)" }
+      ],
+      "maxCheckRetries": 1,
+      "canAsk": ["avatar_id", "voice_id", "source_video"]
+    },
+    {
+      "id": "transcribe",
+      "label": "Transcribe",
+      "weight": 5,
+      "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "python3"] },
+      "when": "always",
+      "instructions": "steps/03-transcribe.md",
+      "saves": [{ "id": "transcripts", "kind": "json", "preview": false }],
+      "checks": [{ "id": "words_found", "label": "Words found in the transcript" }],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "build_visuals",
+      "label": "Build the visual layer",
+      "weight": 20,
+      "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "imagemagick", "node>=22", "npx", "chromium"], "optionalProviders": ["kie"] },
+      "when": "always",
+      "instructions": "steps/04-build-visuals.md",
+      "saves": [
+        { "id": "visuals_manifest", "kind": "json", "preview": false },
+        { "id": "gfx_contact_sheet", "kind": "image", "preview": true }
+      ],
+      "checks": [
+        { "id": "gfx_count_met", "label": "Enough graphics cards were rendered" },
+        { "id": "gfx_dims", "label": "Every card is 1920×1080" },
+        { "id": "cta_card_present", "label": "A CTA card exists" }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "plan_broll",
+      "label": "Plan the b-roll",
+      "weight": 5,
+      "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "python3"] },
+      "when": "always",
+      "instructions": "steps/05-plan-broll.md",
+      "saves": [{ "id": "broll_plan", "kind": "json", "preview": false }],
+      "checks": [
+        { "id": "plan_covers_runtime", "label": "Plan covers the whole runtime" },
+        { "id": "coverage_target_met", "label": "B-roll / GFX coverage meets the target" }
+      ],
+      "maxCheckRetries": 2,
+      "canAsk": ["broll"]
+    },
+    {
+      "id": "composite",
+      "label": "Composite",
+      "weight": 20,
+      "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "node>=22", "npx", "chromium"] },
+      "when": "always",
+      "instructions": "steps/06-composite.md",
+      "saves": [{ "id": "composite_video", "kind": "video", "preview": false }],
+      "checks": [
+        { "id": "composite_dims", "label": "Composite is 1920×1080" },
+        { "id": "composite_not_black", "label": "Composite is not black" },
+        { "id": "vo_continuous", "label": "Narration is continuous under the whole video" }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "post_process",
+      "label": "SFX, loudness and captions",
+      "weight": 10,
+      "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "python3"] },
+      "when": "always",
+      "instructions": "steps/07-post-process.md",
+      "saves": [{ "id": "mastered_video", "kind": "video", "preview": false }],
+      "checks": [
+        { "id": "master_loudness", "label": "Loudness is −14 LUFS ± 1.5" },
+        { "id": "master_has_speech", "label": "Mix carries speech" }
+      ],
+      "maxCheckRetries": 2
+    },
+    {
+      "id": "final_checks",
+      "label": "Final checks and captions",
+      "weight": 10,
+      "runsOn": "computer",
+      "uses": { "tools": ["ffmpeg", "python3"] },
+      "when": "always",
+      "instructions": "steps/08-final-checks.md",
+      "saves": [
+        { "id": "final_video", "kind": "video", "preview": true },
+        { "id": "cover", "kind": "image", "preview": true },
+        { "id": "chapters", "kind": "json", "preview": false },
+        { "id": "captions", "kind": "json", "preview": false }
+      ],
+      "checks": [
+        { "id": "qa_gate", "label": "Video passes the QA gate" },
+        { "id": "duration_window", "label": "Duration is within the 300–1200 s window" },
+        { "id": "canvas_1920x1080", "label": "Canvas is 1920×1080" },
+        { "id": "frame0_not_black", "label": "Frame 0 is bright" },
+        { "id": "bg_not_black", "label": "Sampled frames are not black" },
+        { "id": "avatar_full_whole_face", "label": "Full-avatar beats show the whole face" },
+        { "id": "pip_card_on_screen", "label": "PIP card is fully on screen" },
+        { "id": "gfx_clears_pip", "label": "Graphics clear the PIP zone" },
+        { "id": "bg_fills_frame", "label": "Background fills the frame" },
+        { "id": "captions_legible", "label": "Captions are legible (when on)" },
+        { "id": "frame0_moneyshot", "label": "Cover is the money shot" },
+        { "id": "broll_coverage", "label": "B-roll / GFX coverage meets the target" },
+        { "id": "cta_visible_end", "label": "CTA card is visible in the final 60 s" },
+        { "id": "lipsync_plausible", "label": "Lip sync is plausible" },
+        { "id": "no_green_fringe", "label": "No green fringe around the avatar" }
+      ],
+      "maxCheckRetries": 2
+    }
+  ]
+}
