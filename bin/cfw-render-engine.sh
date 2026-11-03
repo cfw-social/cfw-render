@@ -397,11 +397,13 @@ print(json.dumps({"engine": sys.argv[1], "os": sys.argv[2], "manifests": json.lo
 #
 # Writes go through sandbox-exec. The profile allows writes only under the
 # work folder, the isolated config dirs and a private tmp dir (plus device
-# nodes libc already opens). Reads stay open. If sandbox-exec is missing,
-# or it fails for any reason other than "already inside a sandbox", the
-# coder is not started. macOS refuses a nested sandbox_apply, so a coder
-# that is already sandboxed keeps this isolated config and the enclosing
-# write sandbox; that limit is logged, not hidden.
+# nodes libc already opens, and Chrome's own singleton-socket folders under the
+# user temp dir; HyperFrames' font cache is redirected into the private tmp).
+# Reads stay open. If sandbox-exec is missing, or it fails for any reason other
+# than "already inside a sandbox", the coder is not started. macOS refuses a
+# nested sandbox_apply, so a coder that is already sandboxed keeps this
+# isolated config and the enclosing write sandbox; that limit is logged, not
+# hidden.
 # ---------------------------------------------------------------------------
 cr_engine_sb_quote() {
   local s="$1"
@@ -421,6 +423,52 @@ cr_engine_allow_write_subpath() {
     quoted="$(cr_engine_sb_quote "$physical")"
     printf '(allow file-write* (subpath %s))\n' "$quoted"
   fi
+}
+
+# cr_engine_allow_browser_socket_dirs — a browser the coder starts (HyperFrames
+# render, Playwright) opens its profile lock socket in a folder under the macOS
+# user temp dir (`getconf DARWIN_USER_TEMP_DIR`, /var/folders/xx/yyyy/T). Chrome
+# takes that dir from the system, not from TMPDIR, so the private tmp does not
+# help. Without this rule the launch aborts with "Failed to create a
+# ProcessSingleton" and puppeteer reports "The browser is already running".
+# Allow only Chrome's own socket folders there: <bundle id>.<random>, such as
+# com.google.Chrome.AbC123 or org.chromium.Chromium.AbC123 (optional leading
+# dot), and what is inside them. Never the whole temp dir, and never another
+# com.google.* folder. The temp dir is resolved to its real path (/var is a link
+# to /private/var) because the sandbox checks the target. Fails closed (rc 1)
+# when the temp dir cannot be resolved.
+#
+# The rule cannot tell the Chrome the coder is about to start from a Chrome that
+# already runs on this Mac (the owner's desktop Chrome keeps its SingletonSocket
+# folder here, and the updater leaves many more). So every Chrome-named entry
+# that already exists directly under the temp dir when the profile is built gets
+# an explicit write deny after the allow (the later rule wins). Only a folder
+# Chrome creates afresh inside the sandboxed run stays writable. A temp dir we
+# cannot list is not read as "nothing there": it fails closed (rc 1).
+cr_engine_allow_browser_socket_dirs() {
+  local ut phys re entry name
+  ut="$(/usr/bin/getconf DARWIN_USER_TEMP_DIR 2>/dev/null)" || return 1
+  [[ -n "$ut" ]] || return 1
+  phys="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]).rstrip("/"))' "$ut" 2>/dev/null)" || return 1
+  [[ -n "$phys" && -d "$phys" && -r "$phys" && -x "$phys" ]] || return 1
+  re="$(python3 -c 'import re, sys; print(re.escape(sys.argv[1]))' "$phys" 2>/dev/null)" || return 1
+  [[ -n "$re" ]] || return 1
+  printf '(allow file-write* (regex #"^%s/\\.?(com\\.google\\.[Cc]hrome|org\\.chromium\\.Chromium)(\\.[^/]+)?(/.*)?$"))\n' "$re"
+  # Deny what already exists. A superset of the names the regex allows is fine:
+  # denying more is the safe direction.
+  (
+    shopt -s nullglob dotglob
+    for entry in "$phys"/*; do
+      name="${entry##*/}"
+      case "$name" in
+        com.google.[Cc]hrome|com.google.[Cc]hrome.*|org.chromium.Chromium|org.chromium.Chromium.*| \
+        .com.google.[Cc]hrome|.com.google.[Cc]hrome.*|.org.chromium.Chromium|.org.chromium.Chromium.*)
+          printf '(deny file-write* (subpath %s))\n' "$(cr_engine_sb_quote "$entry")"
+          ;;
+      esac
+    done
+  )
+  return 0
 }
 
 # cr_engine_codex_signin_file — the owner's codex sign-in file (path only).
@@ -485,6 +533,7 @@ cr_engine_write_profile() {
     cr_engine_allow_write_subpath "$claude" || return 1
     cr_engine_allow_write_subpath "$codex" || return 1
     cr_engine_allow_write_subpath "$tmp" || return 1
+    cr_engine_allow_browser_socket_dirs || return 1
     if [[ -n "$signin" ]]; then
       # The sandbox checks the link's target, so allow that one real file.
       physical="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$signin" 2>/dev/null)" || return 1
@@ -560,6 +609,10 @@ cr_engine_run() {
     export CFW_RENDER_ENGINE_PROMPT_FILE="$prompt_file" CFW_ENGINE_NAME="$engine"
     export CLAUDE_CONFIG_DIR="$CR_CODER_CLAUDE_DIR" CODEX_HOME="$CR_CODER_CODEX_DIR"
     export TMPDIR="$CR_CODER_TMP" TMP="$CR_CODER_TMP" TEMP="$CR_CODER_TMP"
+    # HyperFrames caches downloaded fonts under ~/.cache; the write profile refuses
+    # that, so a font it has not cached before (Barlow Condensed) fails with EPERM.
+    # Keep that cache inside the private tmp.
+    export HYPERFRAMES_FONT_CACHE_DIR="$CR_CODER_TMP/hyperframes-fonts"
     export CFW_RENDER_CODER_SANDBOX="$CR_ENGINE_SANDBOX_MODE"
     if [[ "$CR_ENGINE_SANDBOX_MODE" == "apply" ]]; then
       exec /usr/bin/sandbox-exec -f "$CR_CODER_ROOT/profile.sb" "${cmd[@]}" < "$prompt_file" || exit $?
