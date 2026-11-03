@@ -35,6 +35,7 @@ Layouts: `AVATAR_FULL | PIP_CORNER | PIP_SIDE | FULLSCREEN_BROLL | SIDE_BY_SIDE`
 
 ```bash
 mkdir -p work saves
+SKILL_DIR="$CFW_RENDER_SKILLS_DIR/p-longform"
 ls inputs/broll/ 2>/dev/null | sort > work/broll-files.txt || true
 FMT=$(python3 -c "import json;print(json.load(open('prior/section_map.json'))['format'])")
 NB=$(wc -l < work/broll-files.txt | tr -d ' ')
@@ -64,8 +65,14 @@ video walks through."). A `vsl` / `tutorial` with no footage proceeds on GFX + s
 
 Walk the transcript section by section:
 
-- `hook` (first ≤ 30 s) and the final `cta` beat: `AVATAR_FULL` (hook; a card on a voice-only run) and the CTA card
-  `FULLSCREEN_BROLL` pinned so it ends at `duration` — these are exempt from coverage.
+- `hook` (first ≤ 30 s): `AVATAR_FULL` (a card on a voice-only run); exempt from coverage.
+- The final `cta` beat is the **end card**, and it is the LAST row of the plan: `asset` is
+  `gfx:cta`, `layout` is `FULLSCREEN_BROLL`, `zoom` is `none` (a slow zoom would crop and move the
+  card), it starts at `duration` minus the card's `seconds`
+  (from `prior/visuals_manifest.json`, normally 8; at least 5 s, at most 12 s) and ends exactly at
+  `duration`. Nothing comes after it and nothing else uses `gfx:cta`. It is exempt from coverage.
+  The composite shows it untouched. The owner's outro clip, if there is one, is added after it by
+  the composite and is never planned here.
 - `talking-head` sections: `AVATAR_FULL`, broken every ≤ 25 s by a PIP row with the nearest
   matching footage so no bare-avatar stretch exceeds 25 s.
 - `concept` sections: the section's HyperFrames composition as `FULLSCREEN_BROLL` with
@@ -91,8 +98,13 @@ if os.environ.get("NOPIP") == "1":
     p["pip_mode"] = "none"
 assert abs(rows[0]["start"]) < 0.05 and abs(rows[-1]["end"] - d) < 0.5, "rows must span 0 → duration"
 for a, b in zip(rows, rows[1:]): assert abs(a["end"] - b["start"]) < 0.05, f"gap/overlap at {a['end']}"
+cta = rows[-1]
+assert cta["asset"] == "gfx:cta" and sum(1 for r in rows if r["asset"] == "gfx:cta") == 1, "the LAST row must be the end card (gfx:cta), and the only one"
+assert cta["layout"] == "FULLSCREEN_BROLL", "the end card row is FULLSCREEN_BROLL"
+assert cta.get("zoom") in (None, "none"), "the end card row has zoom none: a zoom crops and moves the card"
+assert cta["end"] - cta["start"] >= 5.0, f"end card row is {cta['end'] - cta['start']:.1f} s: it needs at least 5 s"
 cov = sum(r["end"] - r["start"] for r in rows if r["layout"] != "AVATAR_FULL")
-hook = min(30, rows[0]["end"]); cta = next(r for r in rows if r["asset"] == "gfx:cta")
+hook = min(30, rows[0]["end"])
 eligible = d - hook - (cta["end"] - cta["start"])
 pct = round(100 * cov / eligible, 1); p["coverage_pct"] = pct
 want = (json.load(open("brief.json")).get("options") or {}).get("broll_coverage") or 80
@@ -101,7 +113,12 @@ assert len(uniq) >= 4, f"only {len(uniq)} unique assets (need ≥ 4)"
 assert pct >= want, f"coverage {pct}% below target {want}%"
 json.dump(p, open("saves/broll_plan.json", "w"), indent=1); print(f"OK coverage {pct}%, {len(uniq)} assets, {len(rows)} rows")
 PY
+python3 "$SKILL_DIR/scripts/end-card.py" verify-plan --dir .
 ```
+
+The last command is the test the harness runs as `plan_covers_runtime`: rows contiguous from 0 to
+`duration`, the last row the end card (`gfx:cta`, `FULLSCREEN_BROLL`, zoom `none`, 5 to 12 s, not shorter than
+the card itself).
 
 Coverage short with footage available → add rows; short with none → write `needs_input.json` for
 `broll` with the measured percentage and the target in the reason, e.g.
@@ -112,7 +129,8 @@ here unless the owner has lowered `options.broll_coverage`.
 
 ## Checks the harness runs
 
-- `plan_covers_runtime` — rows are contiguous from 0 to `duration` with no gap or overlap, and
-  the last `gfx:cta` row ends within the final 60 s.
+- `plan_covers_runtime` — `end-card.py verify-plan`: rows are contiguous from 0 to `duration` with
+  no gap or overlap, and the last row is the end card: `gfx:cta`, used once, `FULLSCREEN_BROLL`, zoom
+  `none`, at least 5 s (at most 12 s), as long as the card, ending at `duration`.
 - `coverage_target_met` — `coverage_pct` ≥ `options.broll_coverage` (default 80) and ≥ 4 unique
   assets are used.

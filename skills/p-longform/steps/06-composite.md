@@ -84,6 +84,13 @@ nothing of its own. It exits 2 (nothing encoded) when an input is missing or the
 unusable, naming the row, and 1 when ffmpeg fails. A finished segment is not rebuilt on a rerun.
 Run it with `--dry-run` first to see the checks and commands without encoding.
 
+**The end card row is last and untouched.** The plan's last row is the `gfx:cta` card. Place it
+last, in the card's own frames from its first frame, held on its last frame if the row is longer.
+Draw nothing on it: no caption, no lower-third, no logo, no label, no fade and no zoom. It is never
+reordered, trimmed at the front or covered by the presenter. Check the last segment
+(`ls work/seg/*.mp4 | sort -V | tail -1`): its picture is the card, and its end is the end of the
+narration. Only the owner's outro clip may come after it.
+
 ### 3. Concat, outro, verify
 
 ```bash

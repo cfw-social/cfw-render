@@ -79,7 +79,9 @@ ffmpeg -y -i work/loudnorm.mp4 -vf "ass=work/captions.ass" -c:v libx264 -pix_fmt
 ```
 
 `captions = off` → `ffmpeg -y -i work/loudnorm.mp4 -c copy -movflags +faststart saves/mastered_video.mp4`.
-Captions never render over the outro or the CTA card's text area.
+Captions never render over the outro or the end card. Read the last row of `prior/broll_plan.json`
+(`gfx:cta`): no caption event starts at or after that row's `start`, and a caption that is on
+screen then ends at that `start`. The end card stays clean so the final check can match it.
 
 ### 4. Verify
 

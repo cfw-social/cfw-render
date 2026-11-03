@@ -1,0 +1,30 @@
+{
+  "_note": "Per-brand tokens the Longform end card reads (scripts/end-card.py resolve): cta.line, cta.handle, palette, fonts. Trimmed from the p-reels-faceless file of the same brand: no voice pin, no captions, no vertical outro still (this recipe is 16:9; an outro clip arrives as inputs/outro).",
+  "brand": "Mr Growth Guide",
+  "slug": "vasanth-sek8tv",
+  "aliases": [
+    "mgg",
+    "mr-growth-guide"
+  ],
+  "cfw_brand_id": "cmpt8h9bt000004gvjhe1bnms",
+  "palette": {
+    "bg": "#0F172A",
+    "split_bg": "#0B1020",
+    "accent": "#F97316",
+    "secondary": "#8B5CF6",
+    "teal": "#06B6D4",
+    "fg": "#FFFFFF",
+    "fg_soft": "#F1F5F9",
+    "caption_active": "#FFFF00"
+  },
+  "fonts": {
+    "display": "Oswald",
+    "mono": "JetBrains Mono",
+    "caption": "Montserrat",
+    "slides": "Poppins"
+  },
+  "cta": {
+    "line": "Follow for daily AI builds",
+    "handle": "@mr.growthguide"
+  }
+}

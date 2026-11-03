@@ -11,9 +11,13 @@ Nothing creative happens here; a failing gate means the video is NOT delivered.
 - `prior/transcripts.json` — `sections` (chapters), `words` (post text source), `avatar_mode`
   (`supplied`, `avatar` or `voice`).
 - `prior/section_map.json` — `format`.
+- `prior/visuals_manifest.json` — the `end_card` object (the words on the brand end card: `kicker`,
+  `hero`, `handle`) and the end card asset's `ref_png_b64`, the reference still the video's last
+  seconds must match. The post text takes its call to action from `end_card.hero` and
+  `end_card.handle`; an empty handle means no handle anywhere in the post text.
 - `inputs/cta/cta.md` — the typed offer line as raw text (the worker stages every typed answer as
-  `<id>.md`; `cta.json` `{"text","brandName","handle"}` and `cta.txt` are read too); brand name
-  and handle come from `brief.json.brand` unless the JSON form carries them; else the brand only.
+  `<id>.md`; `cta.json` `{"text","brandName","handle"}` and `cta.txt` are read too), and
+  `inputs/outro/` when supplied. `end_card` already says which source won; do not redo that choice.
 - `brief.json` — `targets`, `brand.slug`, intent, `options.broll_coverage`.
 
 ## You must produce
@@ -78,8 +82,12 @@ frame: `ffmpeg -ss T -i saves/final_video.mp4 -vf signalstats -frames:v 1 -f nul
 for pct in 15 30 45 60 75 90; do
   t=$(python3 -c "print(round($DUR*0.$pct,1))"); ffmpeg -y -ss "$t" -i saves/final_video.mp4 -frames:v 1 work/qa_$pct.png
 done
-ffmpeg -y -sseof -45 -i saves/final_video.mp4 -frames:v 1 work/qa_cta.png
+ffmpeg -y -sseof -3 -i saves/final_video.mp4 -frames:v 1 work/qa_cta.png
 ```
+
+`qa_cta.png` is the frame 3 s before the end, where the end card must be on screen. When an outro
+clip follows the card, that frame can show the outro; take the card's frame instead with
+`-sseof -<outro seconds + 3>`.
 
 Per frame, with the plan row for that time: (a) background never a bare black void; (b) on
 full-avatar beats the whole face is visible, not cropped or stretched, no green ghost fringe;
@@ -87,7 +95,8 @@ full-avatar beats the whole face is visible, not cropped or stretched, no green 
 and captions clear that corner; (e) the background fills 1920×1080 — no pillarbox / letterbox
 bands; (f) captions (when on) legible with the accent active word, inside the lower band;
 (g) frame 0 is the money shot; (h) GFX / b-roll coverage is plausible against the plan; (i) the
-`qa_cta.png` frame shows the branded CTA card; (j) lip movement plausibly matches speech on
+`qa_cta.png` frame shows the brand end card: the brand name, the offer line and the handle (when
+the brand has one) and no other words, no production labels, no sentence from the script; (j) lip movement plausibly matches speech on
 avatar beats; (k) no green fringe anywhere colorkey ran. A failed item means you stop and report
 which — do not "fix" the picture here (that is a rerun of an earlier step).
 
@@ -111,12 +120,13 @@ mv saves/eval work/eval 2>/dev/null || true   # scorecard → work/eval/scorecar
 ```
 
 HARD (verdict FAIL): loudness −14 ± 1.5, frame-0 `YAVG > 30`, resolution 1920×1080 / fps, audio
-present, duration 300–1200 s. PERCEPTUAL (NEEDS_VISION): (a)–(k) — resolve each with your pass.
+present, duration 300–1200 s, and `end_card_final` (the video's last seconds match the brand end
+card; see section 4). PERCEPTUAL (NEEDS_VISION): (a)–(k) — resolve each with your pass.
 
 ### 4. Delivery gate (mechanical, hard)
 
 ```bash
-python3 - <<'PY' || { echo "DELIVERY BLOCKED — fix the render (rerun the failing step); do not deliver."; exit 1; }
+SKILL_DIR="$SKILL_DIR" python3 - <<'PY' || { echo "DELIVERY BLOCKED — fix the render (rerun the failing step); do not deliver."; exit 1; }
 import json, os, subprocess
 fail = []
 m = json.loads(subprocess.run(["ffprobe","-v","error","-select_streams","v:0","-show_entries","stream=width,height:format=duration","-of","json","saves/final_video.mp4"], capture_output=True, text=True).stdout)
@@ -126,10 +136,17 @@ if not (300 <= d <= 1200): fail.append(f"duration {d:.0f}s outside 300–1200s")
 sc = "work/eval/scorecard.json"
 if not os.path.exists(sc): fail.append("c-eval-runner scorecard missing — run the QA gate")
 elif json.load(open(sc)).get("verdict") == "FAIL": fail.append("c-eval-runner verdict = FAIL")
+ec = subprocess.run(["python3", os.path.join(os.environ["SKILL_DIR"], "scripts", "end-card.py"), "verify-final", "--dir", ".", "--video", "saves/final_video.mp4"], capture_output=True, text=True)
+if ec.returncode != 0: fail.append("end card: " + ((ec.stdout + ec.stderr).strip().splitlines() or ["check did not run"])[-1])
 if fail: print("DELIVERY GATE FAILURES:"); [print("  x", f) for f in fail]; raise SystemExit(1)
 print("DELIVERY GATE PASSED")
 PY
 ```
+
+The gate includes the end-card test (`end-card.py verify-final`). If it fails, the video does not
+end on the brand end card: the cause is in `build_visuals`, `plan_broll`, `composite` or captions
+(section 5 of step 04; the last row of the plan; the untouched last segment; no captions on the
+card). Rerun that step. Do not patch the final video.
 
 ### 5. Chapters and per-platform post text
 
@@ -151,9 +168,18 @@ timestamp so the right earlier step can be rerun.
 - `duration_window` — duration within 300–1200 s.
 - `canvas_1920x1080` — video stream exactly 1920×1080.
 - `frame0_not_black` — frame at 1 % has `YAVG > 30`.
+- `cta_visible_end` — `end-card.py verify-final`, a hard check (it fails, it never waits for a
+  vision pass): the frame 1 s before the end of the card matches the end card's reference still
+  (structure-weighted SSIM of at least 0.80, taken as the best over small shifts and light blur, so a
+  card a few pixels off or zoomed by about 1 % still matches), the frame 14 s earlier does not, and
+  the last frame is not black. With an outro clip the offsets count back from where the outro
+  starts, and the black test moves to the frame just before the outro (the outro may fade out). If
+  the order was resumed from visuals saved before this check existed, there is no reference still:
+  rerun the order from `build_visuals`. The same check runs inside the QA gate as `end_card_final`.
 - Perceptual (vision pass): `bg_not_black`, `avatar_full_whole_face`, `pip_card_on_screen`,
   `gfx_clears_pip`, `bg_fills_frame`, `captions_legible` (skipped when captions are off),
-  `frame0_moneyshot`, `broll_coverage`, `cta_visible_end`, `lipsync_plausible`, `no_green_fringe`.
+  `frame0_moneyshot`, `broll_coverage`, `cta_visible_end` (the vision reading of the same frame),
+  `lipsync_plausible`, `no_green_fringe`.
   The avatar ones (`avatar_full_whole_face`, `pip_card_on_screen`, `gfx_clears_pip`,
   `lipsync_plausible`, `no_green_fringe`) are skipped when the run has no presenter or no PIP
   card, as listed under the visual QA frames.
