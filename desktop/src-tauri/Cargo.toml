@@ -28,6 +28,8 @@ tauri-plugin-autostart = "2"
 regex = "1"
 tauri-plugin-updater = "=2.13.3"
 tauri-plugin-process = "=2.4.0"
+vt100 = "0.17.0"
+libc = "0.2.190"
 
 [dev-dependencies]
 tempfile = "3"
