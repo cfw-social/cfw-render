@@ -55,6 +55,7 @@ The harness runs you in a fresh **step workdir** — the current directory. Use 
 | `work/` | Your scratch space. Anything here is discarded when the step ends. |
 | `needs_input.json` | Written by you ONLY when the step cannot proceed without an input listed in your step's `canAsk`. In this recipe only `outline` may ask, and only for `topic`. |
 | `$CFW_RENDER_SKILLS_DIR` | Exported by the harness: the skills bundle root. Every step resolves `RECIPE=$(python3 -c "import json;print(json.load(open('brief.json'))['recipe'])")` and `SKILL_DIR="$CFW_RENDER_SKILLS_DIR/$RECIPE"`; the recipe's own `template.html`, `render.mjs` and `acceptance.json` live there, and vendored components at `$SKILL_DIR/.hub/<name>` (`c-script`, `c-vision-qa`, `c-eval-runner`). Nothing else on the machine is read. |
+| `$CFW_PLAYWRIGHT_PIN` | Exported by the worker from `config/playwright-pin.json`: the one Playwright version this recipe may install (used by `render_slides` only). Read the pin only through the step's own line `PW="${CFW_PLAYWRIGHT_PIN:?CFW_PLAYWRIGHT_PIN missing}"`. It is missing only if that line errors. Do not probe it with printenv or echo first; on macOS `printenv A B` prints only A. Never guess a version. |
 
 Never read any file outside the workdir and `$CFW_RENDER_SKILLS_DIR`. There is no `.env`, no key
 file and no hosted-box path. This recipe calls no external provider.
@@ -98,8 +99,10 @@ ask). When the owner answers, the harness reruns the step from scratch.
 ## Tool notes
 
 - Rendering uses Playwright's bundled Chromium through `$SKILL_DIR/render.mjs`
-  (`WIDTH=… HEIGHT=… SCALE=2 node "$SKILL_DIR/render.mjs" work/carousel.html`); install
-  Playwright locally in `work/` (`npm i playwright`) if it is not resolvable. The 2× capture is
+  (`WIDTH=… HEIGHT=… SCALE=2 node "$SKILL_DIR/render.mjs" work/carousel.html`). Playwright is
+  **pinned**: step `render_slides` installs exactly `playwright@$CFW_PLAYWRIGHT_PIN` in `work/`.
+  Never run a bare `npm i playwright` (the newest release needs a Chromium revision this
+  computer has not cached) and never download a browser yourself. The 2× capture is
   lanczos-downscaled to exactly the canvas; `ffmpeg`/`ffprobe` are required for that.
 - Read dimensions with `ffprobe -v error -select_streams v:0 -show_entries stream=width,height
   -of default=noprint_wrappers=1 FILE`.

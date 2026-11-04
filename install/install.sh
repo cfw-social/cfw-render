@@ -132,10 +132,50 @@ if [[ -z "$PREFIX" ]]; then
   PREFIX="$CFW_HOME/app"
 fi
 
+# ── [B8/B10] ensure_pinned_browser — the pinned Playwright browser, installed ONLY when
+# its cache folders are missing. The preflight requires the exact Chromium revisions
+# config/playwright-pin.json names, and a bare `npx playwright install chromium` would
+# fetch whatever is newest, so the carousel render would die at chromium.launch()
+# (R-7LU5). This ONE function serves the fresh install and `--from-app --update`.
+# Needs cfw-render-lib.sh sourced. Pin cached: rc 0, nothing runs. Installed: rc 0.
+# No npx: rc 2, nothing installed (the caller decides). A failed install stops here
+# with npx's own output (app: step checking, exit 4). In app mode fd 1 is already
+# fd 2, so npx output never reaches the JSON step lines on fd 3.
+ensure_pinned_browser() {
+  local pw_rc=0
+  if cr_preflight_chromium >/dev/null; then
+    return 0
+  fi
+  app_step checking started "Installing the browser CFW Render needs (one time)"
+  cr_install_pinned_chromium || pw_rc=$?
+  if (( pw_rc == 1 )); then
+    (( FROM_APP )) && app_fail checking 4 "Could not install the browser CFW Render needs" "Check your internet connection and try again"
+    echo "install.sh: ABORTING — the pinned Playwright browser could not be installed (see above)." >&2
+    echo "  Nothing was installed. Fix the error above and re-run install.sh." >&2
+    exit 1
+  fi
+  return "$pw_rc"
+}
+
 # ── [M3-05a] --from-app --update: after an app update, refresh the app files
 # in $PREFIX from the bundle and reload the LaunchAgent. No key, no stdin.
 if (( UPDATE )); then
   (( FROM_APP )) || { echo "install.sh: --update requires --from-app" >&2; exit 2; }
+  # [B8/B10] An app update can ship a new config/playwright-pin.json, and the worker's
+  # per-tick preflight then refuses every claim until that browser is cached. Install it
+  # here, BEFORE any file is replaced: if it cannot be installed the old worker (and the
+  # browser it already has) keeps running and the app retries on its next launch. With
+  # the pin already cached nothing runs. The pin read is the bundle's, the file fa_update
+  # copies to $PREFIX/config below.
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/bin/cfw-render-lib.sh"
+  # The app starts this installer with the GUI's minimal PATH (no node, no npx). Look
+  # where the worker itself looks: the private toolchain first, then Homebrew.
+  PATH="$(cr_resolve_worker_path):$PATH" ensure_pinned_browser || {
+    echo "install.sh: ABORTING the update — the pinned Playwright browser is not cached and npx is not available to install it." >&2
+    echo "  Nothing was changed. Run: $(cr_preflight_hint npx)   then: $(cr_preflight_hint chromium)" >&2
+    app_fail checking 4 "CFW Render needs Node.js to install its browser" "Install Node.js, then reopen CFW Render"
+  }
   fa_update
   exit 0
 fi
@@ -182,6 +222,12 @@ echo "install.sh: OS=$OS prefix=$PREFIX env-file=$ENV_FILE user=$RUN_USER mode=$
 # looks installed and burns real work.
 # shellcheck source=/dev/null
 source "$REPO_DIR/bin/cfw-render-lib.sh"
+
+# ── [B8/B10] The pinned Playwright browser, BEFORE the preflight (which now requires
+# it; a fresh computer has none cached). No npx (rc 2) falls through on purpose: the
+# preflight below fails and names node and the exact command.
+ensure_pinned_browser || true
+
 if (( FROM_APP )); then
   if ! pf_err="$(cr_preflight 2>&1 >/dev/null)"; then
     printf '%s\n' "$pf_err" >&2
@@ -222,6 +268,8 @@ mkdir -p "$PREFIX/bin" "$PREFIX/lib" "$PREFIX/config" "$PREFIX/scripts"
 cp -a "$REPO_DIR"/bin/*.sh "$REPO_DIR"/bin/*.py "$PREFIX/bin/"
 cp -a "$REPO_DIR"/lib/*.md "$REPO_DIR"/lib/*.py "$PREFIX/lib/"
 cp -a "$REPO_DIR/config/agent-guides.json" "$PREFIX/config/"
+# The Playwright pin: the installed worker's preflight and recipe steps read it.
+cp -a "$REPO_DIR/config/playwright-pin.json" "$PREFIX/config/"
 # scripts/ (verify-skills-bundle.sh, gen-skills-manifest.sh) — the worker's
 # cr_verify_skills_bundle shells out to verify-skills-bundle.sh at $PREFIX/scripts.
 cp -a "$REPO_DIR"/scripts/*.sh "$PREFIX/scripts/" 2>/dev/null || true

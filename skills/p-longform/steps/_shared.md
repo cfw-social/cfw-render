@@ -114,9 +114,12 @@ ask). When the owner answers, the harness reruns the step from scratch.
 ## Brand rules (every step)
 
 - **Frame 0 is NEVER black** (`YAVG > 30`) — the cover freeze of the strongest illustrative beat.
-  **The last frame is NEVER black** — the video ends on the CTA card or the brand outro.
-- **CTA is integrated by default**: a branded CTA card (offer line + handle/URL) is baked into the
-  final 60 s, as the last illustrative card. Mandatory for `vsl`, default for `demo` / `tutorial`.
+  **The last frame is NEVER black** — the video ends on the BRAND end card (then the brand outro
+  clip, when the owner supplied one). Never a content card, never the presenter alone.
+- **CTA is integrated by default**: the brand end card (brand name, offer line and handle/URL) is
+  the LAST row of the plan, 5–12 s (normally 8 s), ending exactly where the narration ends and
+  shown untouched. Mandatory for `vsl`, default for `demo` / `tutorial`. Hard checks fail a run
+  that does not end on it.
 - **Every graphics card is illustrative** — title + an animation / hero that depicts the point
   (feed grid staggering in, count-up stat, waveform, chips). A title-only card is a defect.
 - **Palette / typography come from the brand**: brand brief → palette in `brief.json` → the
@@ -124,12 +127,26 @@ ask). When the owner answers, the harness reruns the step from scratch.
   (`'Poppins'`, `'Inter'`, `'Oswald'`, `'JetBrains Mono'`) — never a `var(--font-*)`.
 - **PIP card** is a rounded rectangle (~304×380, bottom corner alternating left/right across beats,
   ~72 px margin, thin gold `#D4A84C` border, soft shadow) — never a circle, never borderless.
-  Graphics and captions never enter the PIP zone of the current beat.
+  Graphics never enter the PIP zone of the current beat. Captions are different: they are made once,
+  by `scripts/captions.py` in `post_process`, from the transcript, in x 420–1500 (clear of both PIP
+  corners), and they cover every spoken word until the end card. They are never skipped, shortened
+  or moved because of a card, a slide or a full-screen still; a full-frame still is fitted above the
+  caption band instead (`scripts/caption-safe.py`, composite step 1b).
 - **Green-screen keying is two-pass `colorkey`** (`0x00FF00:0.25:0.05` then `0x00FF00:0.40:0.01`),
   never `chromakey`; detect the background type from edge pixels first — an opaque avatar is not
   keyed.
-- **End-card copy is per-brand**: offer line from `inputs/cta/cta.md` (typed answer), brand name
-  and handle from `brief.json.brand`. No handle → no handle line. Never invent one.
+- **End-card copy is per-brand and is never written by you.** `scripts/end-card.py resolve` takes
+  the first source that exists: (1) an `inputs/outro/` clip (it plays after the card and adds no
+  words); (2) the typed `inputs/cta/cta.md`, `cta.json` or `cta.txt`; (3) `$SKILL_DIR/brand-overrides/<brand.slug>/brand.json`
+  (`cta.line`, `cta.handle`, `palette`, `fonts`); (4) `brief.json.brand.name` plus "Follow for
+  more", with no handle. The kicker is the brand name. No handle → no handle line; a handle is
+  never invented and never copied from the script. A literal handle exists only inside
+  `brand-overrides/`.
+- **No production labels on any card or end card**: no layout name (`AVATAR_FULL`, `PIP_CORNER`,
+  `PIP_SIDE`, `FULLSCREEN_BROLL`, `SIDE_BY_SIDE`) and no tag, stamp or footer reading "b-roll",
+  "graphics", "template" or "screenshot". A card shows only words the viewer should read, and the
+  end card shows only the brand name, the offer line and the handle. A sentence from the narration
+  is never end-card copy.
 - Kitchen words are banned in anything owner-facing (`reason` texts, captions, chapter titles).
 
 ## Style defaults

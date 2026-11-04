@@ -35,9 +35,35 @@ source "$SELF_DIR/cfw-render-lib.sh"
 : "${CFW_ORDER_ID:?cfw-render-report: CFW_ORDER_ID not set in env}"
 : "${CFW_WORKER_ID:?cfw-render-report: CFW_WORKER_ID not set in env}"
 : "${CFW_API_BASE:?cfw-render-report: CFW_API_BASE not set in env}"
-: "${CFW_RENDER_WORKER_KEY:?cfw-render-report: CFW_RENDER_WORKER_KEY not set in env}"
+
+# ---------------------------------------------------------------------------
+# cr_redact_signed_links — stdin → stdout. WI2.152 / B39. A signed link is a
+# bearer credential: whoever holds the approval URL can open the review. The
+# worker's stdout/stderr land in cfw-render.out.log in plain text, so every
+# reply this script echoes goes through this first. It keeps the path up to the
+# token and prints <token> for the rest. Defined here, not in the lib, so a
+# caller that swaps in its own lib cannot lose it:
+#   https://host/a/AbC123  → https://host/a/<token>
+#   …?token=AbC123&x=1     → …?token=<token>&x=1   (token|sig|signature|key|auth|code|password)
+# ---------------------------------------------------------------------------
+cr_redact_signed_links() {
+  python3 -c '
+import re, sys
+text = sys.stdin.read()
+text = re.sub(r"(https?://[^\s\"\x27/]+/(?:a|approve|approval|approvals)/)[^\s\"\x27?#/\\]+", r"\1<token>", text)
+text = re.sub(r"([?&](?:token|sig|signature|key|auth|code|password)=)[^&\s\"\x27#\\]*", r"\1<token>", text)
+sys.stdout.write(text)
+'
+}
 
 VERB="${1:-}"; shift || true
+
+# WI2.152: the coder runs without the worker key, and provider-wait-start/-end
+# (called from a step) never talk to CFW. Only the verbs that do need the key.
+case "$VERB" in
+  stage|complete|block)
+    : "${CFW_RENDER_WORKER_KEY:?cfw-render-report: CFW_RENDER_WORKER_KEY not set in env}" ;;
+esac
 
 case "$VERB" in
   stage)
@@ -49,7 +75,7 @@ case "$VERB" in
     args="$(python3 -c 'import json,sys; print(json.dumps({"orderId":sys.argv[1],"workerId":sys.argv[2],"kind":"stage","stage":sys.argv[3],"message":sys.argv[4],"pct":int(sys.argv[5])} if sys.argv[5] else {"orderId":sys.argv[1],"workerId":sys.argv[2],"kind":"stage","stage":sys.argv[3],"message":sys.argv[4]}))' \
       "$CFW_ORDER_ID" "$CFW_WORKER_ID" "$stage" "$message" "$pct")"
     resp="$(cr_mcp_call append_render_event "$args")" || { echo "cfw-render-report: stage event failed" >&2; exit 1; }
-    echo "$resp"
+    printf '%s\n' "$resp" | cr_redact_signed_links
     ;;
 
   complete)
@@ -251,7 +277,7 @@ print(json.dumps(d))
     resp="$(cr_mcp_call complete_render_order "$complete_args")" || { echo "cfw-render-report: complete_render_order failed" >&2; exit 1; }
     ok="$(python3 -c 'import json,sys; print("1" if json.loads(sys.stdin.read()).get("ok") else "0")' <<< "$resp" 2>/dev/null)"
     if [[ "$ok" != "1" ]]; then
-      echo "cfw-render-report: complete_render_order returned ok:false — treating as fatal: $resp" >&2
+      echo "cfw-render-report: complete_render_order returned ok:false — treating as fatal: $(printf '%s' "$resp" | cr_redact_signed_links)" >&2
       exit 1
     fi
 
@@ -275,7 +301,9 @@ print(json.dumps(d))
     # complete_render_order and the server rejects further events ("Order not
     # claimed by this worker"). Every deliverable already went in the call above.
 
-    echo "$resp"
+    # B39: the reply carries approvalUrl (a signed /a/<token> link). Print the
+    # reply without the token; the worker's stdout is a plain-text log.
+    printf '%s\n' "$resp" | cr_redact_signed_links
     ;;
 
   block)
@@ -302,7 +330,7 @@ print(json.dumps(d))
     cr_heartbeat_stop_if_pending
     resp="$(cr_mcp_call block_render_order "$args")" || { echo "cfw-render-report: block_render_order failed" >&2; exit 1; }
     echo "block" > .outcome
-    echo "$resp"
+    printf '%s\n' "$resp" | cr_redact_signed_links
     ;;
 
   provider-wait-start|provider-wait-end)

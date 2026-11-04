@@ -18,10 +18,16 @@ all use these timestamps — never estimates from word counts.
 { "duration": 736.4,
   "avatar_mode": "supplied",
   "words": [{"w": "Most", "start": 0.12, "end": 0.38}, ...],
+  "spoken_words": [{"w": "Most", "start": 0.12, "end": 0.38}, ...],
   "segments": [{"text": "...", "start": 0.12, "end": 4.9}, ...],
   "sections": [{"id": "hook", "title": "Hook", "type": "talking-head", "start": 0.0, "end": 31.2}, ...],
   "srt": "1\n00:00:00,120 --> 00:00:04,900\n...\n" }
 ```
+
+`words` is the script, aligned to the speech. `spoken_words` is what was actually heard, straight from
+the recogniser (`work/words-raw.json`), including words the speaker said that are not in the script and
+that alignment drops. Captions are built from both, so no spoken moment is left without a caption;
+save every recognised word, unedited.
 
 `sections` carries the section map re-expressed in seconds (`start` of its first word, `end` =
 start of the next section; last ends at `duration`). `avatar_mode` is `supplied` (the owner's clip),
@@ -96,6 +102,7 @@ PY
 MODE="$MODE" python3 - <<'PY'
 import json, os
 w = json.load(open("work/words-aligned.json")); sm = json.load(open("prior/section_map.json"))
+heard = [{"w": x["w"], "start": round(x["start"], 3), "end": round(x["end"], 3)} for x in json.load(open("work/words-raw.json"))["words"]]
 dur = float(__import__("subprocess").run(["ffprobe","-v","error","-show_entries","format=duration","-of","csv=p=0","prior/avatar_video.mp4"],capture_output=True,text=True).stdout)
 secs = []
 for i, s in enumerate(sm["sections"]):
@@ -112,7 +119,7 @@ if cur: segs.append({"text": " ".join(x["w"] for x in cur), "start": cur[0]["sta
 def ts(x): h=int(x//3600); m=int(x%3600//60); s=x%60; return f"{h:02d}:{m:02d}:{int(s):02d},{int(round((s-int(s))*1000)):03d}"
 srt = "".join(f"{i+1}\n{ts(s['start'])} --> {ts(s['end'])}\n{s['text']}\n\n" for i, s in enumerate(segs))
 assert len(w) >= 500, f"only {len(w)} words recognised"
-json.dump({"duration": round(dur,2), "avatar_mode": os.environ["MODE"], "words": w, "segments": segs, "sections": secs, "srt": srt}, open("saves/transcripts.json","w"))
+json.dump({"duration": round(dur,2), "avatar_mode": os.environ["MODE"], "words": w, "spoken_words": heard, "segments": segs, "sections": secs, "srt": srt}, open("saves/transcripts.json","w"))
 print(f"OK {len(w)} words, {len(segs)} segments, {len(secs)} sections, avatar_mode={os.environ['MODE']}")
 PY
 ```

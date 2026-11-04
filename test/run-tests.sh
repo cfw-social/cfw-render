@@ -1213,8 +1213,16 @@ assert hashlib.sha256((repo/pin['path']).read_bytes()).hexdigest() == pin['sha25
 with tempfile.TemporaryDirectory(prefix='cfw-update-test-') as tmp:
     root = pathlib.Path(tmp)
     guards = root/'guards'; guards.mkdir()
+    # `--update` installs the pinned browser when its cache folders are missing (B8), so
+    # give it a finished cache named from the pin: the case stays offline, and the npx
+    # guard below trips if an install is attempted anyway.
+    pw = json.loads((repo/'config/playwright-pin.json').read_text())
+    cache = root/'ms-playwright'
+    for folder in ('chromium-'+pw['chromiumRevision'], 'chromium_headless_shell-'+pw['chromiumHeadlessShellRevision']):
+        (cache/folder).mkdir(parents=True)
+        (cache/folder/'INSTALLATION_COMPLETE').write_text('')
     # Defense in depth: even a regressed skip flag must not touch real services.
-    for name in ('launchctl', 'curl', 'claude', 'codex'):
+    for name in ('launchctl', 'curl', 'claude', 'codex', 'npx'):
         stub = guards/name
         stub.write_text('#!/bin/bash\nprintf "%s\\n" "$0" >> "$HOME/unexpected-command"\nexit 97\n')
         stub.chmod(0o700)
@@ -1246,7 +1254,8 @@ with tempfile.TemporaryDirectory(prefix='cfw-update-test-') as tmp:
             path.write_bytes(data); path.chmod(0o600)
         env = {'HOME': str(home), 'PATH': str(guards)+os.pathsep+os.environ['PATH'],
                'TMPDIR': os.environ.get('TMPDIR', '/tmp'),
-               'CFW_RENDER_SKIP_LAUNCHCTL': '1', 'CFW_RENDER_INSTALL_NO_LAUNCHCTL': '1'}
+               'CFW_RENDER_SKIP_LAUNCHCTL': '1', 'CFW_RENDER_INSTALL_NO_LAUNCHCTL': '1',
+               'PLAYWRIGHT_BROWSERS_PATH': str(cache)}
         with (home/'stdin').open('w+b') as stdin:
             stdin.write(b'KEEP-THIS-LINE\n'); stdin.seek(0)
             result = subprocess.run(['bash', str(repo/'install/install.sh'), '--mode', 'byoa',
@@ -1350,14 +1359,30 @@ export CFW_RENDER_PMSET_CMD="$FAKE_BIN/pmset"
 # layout. A box with a real cache keeps using it, so the preflight cases still
 # exercise the real discovery there.
 if ! ( source "$REPO_DIR/bin/cfw-render-lib.sh"; cr_preflight_chromium ) >/dev/null 2>&1; then
+  # The preflight wants the EXACT pinned revision folders, finished (B8/B10), so the
+  # fixture is named from config/playwright-pin.json. Nothing here is ever launched.
   FAKE_PLAYWRIGHT="$(mktemp -d)"
-  mkdir -p "$FAKE_PLAYWRIGHT/chromium_headless_shell-fixture/chrome-mac"
-  printf '#!/usr/bin/env bash\n# test fixture standing in for a Playwright headless shell; never launched\nexit 0\n' \
-    > "$FAKE_PLAYWRIGHT/chromium_headless_shell-fixture/chrome-mac/chrome-headless-shell"
-  chmod +x "$FAKE_PLAYWRIGHT/chromium_headless_shell-fixture/chrome-mac/chrome-headless-shell"
+  fake_pw_crev="$( source "$REPO_DIR/bin/cfw-render-lib.sh"; cr_playwright_pin_field chromiumRevision )"
+  fake_pw_hrev="$( source "$REPO_DIR/bin/cfw-render-lib.sh"; cr_playwright_pin_field chromiumHeadlessShellRevision )"
+  mkdir -p "$FAKE_PLAYWRIGHT/chromium-$fake_pw_crev" "$FAKE_PLAYWRIGHT/chromium_headless_shell-$fake_pw_hrev"
+  : > "$FAKE_PLAYWRIGHT/chromium-$fake_pw_crev/INSTALLATION_COMPLETE"
+  : > "$FAKE_PLAYWRIGHT/chromium_headless_shell-$fake_pw_hrev/INSTALLATION_COMPLETE"
   export PLAYWRIGHT_BROWSERS_PATH="$FAKE_PLAYWRIGHT"
   echo "note: no Playwright browser is visible to this run; preflight uses the fixture under PLAYWRIGHT_BROWSERS_PATH"
 fi
+
+# pin_cache_fixture <dir> — a finished browser cache named from config/playwright-pin.json
+# (what cr_preflight_chromium requires). `install.sh --from-app --update` installs the
+# pinned browser when it is missing, so the update cases, which point HOME at a temp
+# dir, pass this as PLAYWRIGHT_BROWSERS_PATH and stay offline.
+pin_cache_fixture() {
+  local crev hrev
+  crev="$( source "$REPO_DIR/bin/cfw-render-lib.sh"; cr_playwright_pin_field chromiumRevision )"
+  hrev="$( source "$REPO_DIR/bin/cfw-render-lib.sh"; cr_playwright_pin_field chromiumHeadlessShellRevision )"
+  mkdir -p "$1/chromium-$crev" "$1/chromium_headless_shell-$hrev"
+  : > "$1/chromium-$crev/INSTALLATION_COMPLETE"
+  : > "$1/chromium_headless_shell-$hrev/INSTALLATION_COMPLETE"
+}
 
 # The worker skips normal claims while the 1-minute load average is above the
 # CPU count (cr_capacity_ok). On a busy dev Mac that made the capacity cases
@@ -5687,7 +5712,8 @@ mkdir -p "$r5c/home/CFW Render/app/bin" "$r5c/home/CFW Render/app/config"
 printf 'stale\n' > "$r5c/home/CFW Render/app/bin/cfw-render.sh"
 printf 'local\n' > "$r5c/home/CFW Render/app/config/local-only.json"
 printf 'KEEP-THIS-LINE\n' > "$r5c/stdin"
-( export HOME="$r5c/home" CFW_RENDER_SKIP_LAUNCHCTL=1
+pin_cache_fixture "$r5c/pw"
+( export HOME="$r5c/home" CFW_RENDER_SKIP_LAUNCHCTL=1 PLAYWRIGHT_BROWSERS_PATH="$r5c/pw"
   { "$REPO_DIR/install/install.sh" --mode byoa --non-interactive --from-app --update > "$r5c/out.jsonl" 2> "$r5c/err.log"
     echo "rc=$?" > "$r5c/rc"; cat > "$r5c/rest"; } < "$r5c/stdin" )
 if [[ "$(cat "$r5c/rc")" == "rc=0" && "$(cat "$r5c/out.jsonl")" == '{"step": "ready", "state": "done", "message": "Updated"}' ]] \
@@ -5717,7 +5743,8 @@ fi
 exit 0
 EOF_LC
 chmod +x "$r5d/bin/launchctl"
-r5d_run() { ( export HOME="$r5d/home" PATH="$r5d/bin:$PATH" CFW_RENDER_BOOTSTRAP_WAIT_SEC=0 CFW_RENDER_BOOTSTRAP_TRIES=3
+pin_cache_fixture "$r5d/pw"
+r5d_run() { ( export HOME="$r5d/home" PATH="$r5d/bin:$PATH" CFW_RENDER_BOOTSTRAP_WAIT_SEC=0 CFW_RENDER_BOOTSTRAP_TRIES=3 PLAYWRIGHT_BROWSERS_PATH="$r5d/pw"
   "$REPO_DIR/install/install.sh" --mode byoa --non-interactive --from-app --update > "$r5d/out.jsonl" 2> "$r5d/err.log" < /dev/null
   echo "$?" > "$r5d/rc" ); }
 echo 1 > "$r5d/fail-left"; r5d_run

@@ -59,6 +59,20 @@ export function MainWindow({ clock = Date.now }: { clock?: () => number } = {}) 
   slugRef.current = slug;
   const sectionRef = useRef(section);
   sectionRef.current = section;
+  /** The brand the embedded website is on now; null on pages with no brand (All brands, sign-in). */
+  const shownSlugRef = useRef<string | null>(null);
+
+  /** Show a section: website sections drive the embedded view, Mac sections hide it. */
+  const go = useCallback((next: SectionId, nextSlug: string | null = slugRef.current, webSection?: string) => {
+    setSection(next);
+    if (isWebSection(next)) {
+      setWebFailed(false);
+      shownSlugRef.current = webSection === "all" || webSection === "login" ? null : nextSlug;
+      invoke("web_show", { section: webSection ?? next, slug: nextSlug }).catch(() => setWebFailed(true));
+    } else {
+      invoke("web_hide").catch(() => {});
+    }
+  }, []);
 
   /** `trustSignedOut`: only the website landing on /login proves the owner is signed out; an early
    *  check can run before the embedded view has its cookies. */
@@ -72,21 +86,13 @@ export function MainWindow({ clock = Date.now }: { clock?: () => number } = {}) 
           const pick = (w.brands.find((b) => b.isCurrent) ?? w.brands[0]).slug;
           setSlug(pick);
           saveSlug(pick);
+          // The page may still be the dead brand's "Brand not found": open the same section for the real one.
+          // Not from a Mac section: go() there would only hide the website view that is already hidden.
+          if (cur && isWebSection(sectionRef.current) && shownSlugRef.current === cur) go(sectionRef.current, pick);
         }
       })
       .catch(() => {});
-  }, []);
-
-  /** Show a section: website sections drive the embedded view, Mac sections hide it. */
-  const go = useCallback((next: SectionId, nextSlug: string | null = slugRef.current, webSection?: string) => {
-    setSection(next);
-    if (isWebSection(next)) {
-      setWebFailed(false);
-      invoke("web_show", { section: webSection ?? next, slug: nextSlug }).catch(() => setWebFailed(true));
-    } else {
-      invoke("web_hide").catch(() => {});
-    }
-  }, []);
+  }, [go]);
 
   useEffect(() => {
     invoke<StatusPayload>("get_status").then(setPayload).catch(() => {});
@@ -107,10 +113,12 @@ export function MainWindow({ clock = Date.now }: { clock?: () => number } = {}) 
           return;
         }
         if (path.startsWith("/login") || path.startsWith("/signup")) {
+          shownSlugRef.current = null;
           setWeb({ signedIn: false, brands: [] });
           return;
         }
         const s = slugFromWebPath(path);
+        shownSlugRef.current = s;
         if (s && s !== slugRef.current) {
           setSlug(s);
           saveSlug(s);

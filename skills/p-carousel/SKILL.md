@@ -95,7 +95,11 @@ Write full copy per slide:
 
 ```bash
 cd <production>
-[ -d node_modules/playwright ] || npm i playwright >/dev/null 2>&1
+# Playwright is pinned: export CFW_PLAYWRIGHT_PIN from cfw-render's config/playwright-pin.json
+# first. Never a bare `npm i playwright` (newest release, uncached Chromium revision: B8).
+PW="${CFW_PLAYWRIGHT_PIN:?set CFW_PLAYWRIGHT_PIN to the version in config/playwright-pin.json}"
+[ "$(python3 -c "import json;print(json.load(open('node_modules/playwright/package.json'))['version'])" 2>/dev/null)" = "$PW" ] \
+  || npm i --no-save --no-audit --no-fund "playwright@$PW"
 # render.mjs auto-discovers every <section class="slide" id="sN">, captures each at 2x into
 # slides-2x/ and lanczos-downscales into slides/ at EXACTLY 1080×1350 (ffprobe-verified —
 # the acceptance `dims` gate is exact; CFW-131). Needs ffmpeg/ffprobe when SCALE>1.

@@ -216,7 +216,8 @@ exit "$rc"
             {"id": "qa", "uses": {"tools": ["python3"]}},
         ]
         expected = {
-            "legacy": {name: fixture_key(p) for p, name in names.items()},
+            # WI2.152: a step that declares no `uses` receives no provider key.
+            "legacy": {},
             "generate": {names[p]: fixture_key(p) for p in ("kie", "fal", "replicate")},
             "qa": {},
         }

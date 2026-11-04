@@ -501,6 +501,10 @@ cr_load_config() {
   : "${CFW_RENDER_SCRATCH:=$HOME/.cfw-render/scratch}"
   : "${CFW_RENDER_STATE_DIR:=$HOME/.cfw-render}"
   : "${CFW_RENDER_SKILLS_DIR:=$(cr_default_skills_dir)}"
+  # B8: the one Playwright version recipe steps may install. Always read from the pin
+  # file, never from the environment. Unreadable leaves it empty: the preflight FAILs
+  # on the same file and a step that needs it stops (`${CFW_PLAYWRIGHT_PIN:?}`).
+  CFW_PLAYWRIGHT_PIN="$(cr_playwright_pin_field playwright 2>/dev/null || true)"
   : "${CFW_RENDER_DIRECTOR_MODEL:=sonnet}"
   : "${CFW_RENDER_FANOUT_MODELS:=glm-5.2,kimi-k2}"
   : "${CFW_RENDER_TIMEOUT_VIDEO:=3600}"
@@ -559,7 +563,8 @@ cr_load_config() {
     CFW_RENDER_HEARTBEAT_SECS CFW_RENDER_RENDERER_KIND CFW_RENDER_ORPHAN_GRACE_SECS \
     CFW_RENDER_HOME CFW_RENDER_LOG_DIR CFW_RENDER_OUTPUTS CFW_RENDER_KEEP_OUTPUTS \
     CFW_RENDER_FINISH_GRACE_SECS CFW_RENDER_PROVIDER_BUDGET_HEYGEN CFW_RENDER_PROVIDER_WAIT_CAP \
-    CFW_RENDER_MEDIA_BASE_URL CFW_RENDER_TEST_MEDIA_BASE_URL CFW_RENDER_LOCAL_CHECKPOINTS
+    CFW_RENDER_MEDIA_BASE_URL CFW_RENDER_TEST_MEDIA_BASE_URL CFW_RENDER_LOCAL_CHECKPOINTS \
+    CFW_PLAYWRIGHT_PIN
 
   local missing=()
   [[ -z "${CFW_API_BASE:-}" ]] && missing+=("CFW_API_BASE")
@@ -788,7 +793,8 @@ if result.get("isError"):
     sys.exit(1)
 content = result.get("content", [])
 if not content or "text" not in content[0]:
-    print(f"cfw-render: cr_mcp_call — unexpected result shape: {result}", file=sys.stderr)
+    # Shape only: a claim reply carries providerKeys, and the err log is plain text.
+    print(f"cfw-render: cr_mcp_call — unexpected result shape (keys: {sorted(result) if isinstance(result, dict) else type(result).__name__})", file=sys.stderr)
     sys.exit(1)
 # The inner text is itself JSON — validate then print verbatim.
 inner = content[0]["text"]
@@ -855,7 +861,7 @@ if result.get("isError"):
     print(text or json.dumps(result))
     sys.exit(70)
 if not text:
-    print(f"unexpected result shape: {result}")
+    print(f"unexpected result shape (keys: {sorted(result) if isinstance(result, dict) else type(result).__name__})")
     sys.exit(70)
 json.loads(text)
 sys.stdout.write(text)
@@ -1572,7 +1578,7 @@ cr_install_select_engine() {
 # Install hint for one missing tool on this OS. Never a silent fallback — the
 # operator gets the exact command.
 cr_preflight_hint() { # cr_preflight_hint <tool>
-  local tool="$1" os
+  local tool="$1" os pv
   os="$(uname -s 2>/dev/null || echo unknown)"
   case "$tool" in
     curl)            [[ "$os" == Darwin ]] && echo "brew install curl" || echo "apt-get install -y curl" ;;
@@ -1580,33 +1586,108 @@ cr_preflight_hint() { # cr_preflight_hint <tool>
     node|npx)        [[ "$os" == Darwin ]] && echo "brew install node" || echo "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs" ;;
     ffmpeg|ffprobe)  [[ "$os" == Darwin ]] && echo "brew install ffmpeg" || echo "apt-get install -y ffmpeg" ;;
     magick)          [[ "$os" == Darwin ]] && echo "brew install imagemagick" || echo "apt-get install -y imagemagick   (IM6 ships only 'convert' — then add the IM7 verb shim: printf '#!/bin/sh\\nexec convert \"\$@\"\\n' >/usr/local/bin/magick && chmod +x /usr/local/bin/magick)" ;;
-    claude)          echo "npm i -g @anthropic-ai/claude-code   then authenticate on THIS host: claude auth login   (verify: claude auth status)" ;;
-    chromium)        [[ "$os" == Darwin ]] && echo "npx playwright install chromium" || echo "npx playwright install --with-deps chromium   (or: apt-get install -y chromium)" ;;
+    claude)          echo "npm i -g @anthropic-ai/claude-code   then sign in to Claude from the CFW Renderer app (Providers → Claude → Sign in; it saves a long-lived token in this Mac's Keychain, service com.cfw.render)   (verify: the app's Providers screen shows Claude connected)" ;;
+    chromium)
+      # The exact pinned version, never a bare `playwright` (that is the newest release,
+      # which wants a Chromium revision this computer has not cached: B8).
+      if pv="$(cr_playwright_pin_field playwright 2>/dev/null)"; then
+        [[ "$os" == Darwin ]] && echo "npx playwright@$pv install chromium" || echo "npx playwright@$pv install --with-deps chromium"
+      else
+        echo "restore config/playwright-pin.json (re-run install.sh or update the CFW Render app), then re-run this check"
+      fi ;;
     fonts)           [[ "$os" == Darwin ]] && echo "brew install fontconfig" || echo "apt-get install -y fontconfig fonts-dejavu-core fonts-liberation2 fonts-noto-core" ;;
     *)               echo "install $tool and put it on PATH" ;;
   esac
 }
 
-# Resolve a Chromium/headless-shell binary for the HTML compositor. Playwright
-# caches under PLAYWRIGHT_BROWSERS_PATH or the per-OS default; a system Chrome
-# also counts. Prints the path on success.
+# ---------------------------------------------------------------------------
+# Playwright pin (B8, B10). ONE file pins the Playwright version and the Chromium
+# revisions it needs: config/playwright-pin.json. The recipe step (through the
+# CFW_PLAYWRIGHT_PIN variable cr_load_config exports), the preflight below and
+# install/install.sh all read it, so they cannot disagree. A newer Playwright
+# wants a Chromium revision this computer has not cached, and every slide render
+# then dies at chromium.launch() (R-7LU5).
+# ---------------------------------------------------------------------------
+cr_playwright_pin_file() { printf '%s' "$_CR_REPO_ROOT/config/playwright-pin.json"; }
+
+# cr_playwright_pin_field <playwright|chromiumRevision|chromiumHeadlessShellRevision>
+# Prints one field, shape-checked (an exact x.y.z release, or digits). On any
+# problem prints the reason on stderr and returns 1: no default, no fallback.
+cr_playwright_pin_field() {
+  python3 -c '
+import json, re, sys
+path, field = sys.argv[1], sys.argv[2]
+shape = {"playwright": r"[0-9]+\.[0-9]+\.[0-9]+",
+         "chromiumRevision": r"[0-9]+",
+         "chromiumHeadlessShellRevision": r"[0-9]+"}
+if field not in shape:
+    sys.exit("unknown pin field %s" % field)
+try:
+    value = json.load(open(path))[field]
+except FileNotFoundError:
+    sys.exit("%s is missing" % path)
+except Exception as e:
+    sys.exit("%s has no usable \"%s\" (%s)" % (path, field, e))
+if not isinstance(value, str) or not re.fullmatch(shape[field], value):
+    sys.exit("%s: \"%s\" must match %s" % (path, field, shape[field]))
+sys.stdout.write(value)' "$(cr_playwright_pin_file)" "$1"
+}
+
+# The folder Playwright itself looks in: PLAYWRIGHT_BROWSERS_PATH when set, else
+# the per-OS default. One root, because a run that sets the variable never looks
+# anywhere else; checking other roots here would pass a host the run cannot use.
+cr_playwright_cache_root() {
+  if [[ -n "${PLAYWRIGHT_BROWSERS_PATH:-}" ]]; then
+    printf '%s' "$PLAYWRIGHT_BROWSERS_PATH"
+  elif [[ "$(uname -s 2>/dev/null)" == "Darwin" ]]; then
+    printf '%s' "$HOME/Library/Caches/ms-playwright"
+  else
+    printf '%s' "$HOME/.cache/ms-playwright"
+  fi
+}
+
+# cr_preflight_chromium — rc 0 iff the EXACT pinned Playwright browser is cached:
+# chromium-<chromiumRevision> and chromium_headless_shell-<chromiumHeadlessShellRevision>,
+# each finished (Playwright writes INSTALLATION_COMPLETE only when an install ends).
+# Any other cached revision does NOT count: carousel renders launch exactly this
+# pair. A system Chrome does not count either. stdout: where it was found (rc 0),
+# or the reason it was not (rc 1), so the caller can show the cause. Read-only.
 cr_preflight_chromium() {
-  local root exe b
-  for root in "${PLAYWRIGHT_BROWSERS_PATH:-}" \
-              "$HOME/Library/Caches/ms-playwright" \
-              "$HOME/.cache/ms-playwright" \
-              "/root/.cache/ms-playwright" \
-              "/ms-playwright"; do
-    [[ -n "$root" && -d "$root" ]] || continue
-    exe="$(find "$root" -maxdepth 8 \
-             \( -name 'headless_shell' -o -name 'chrome-headless-shell' -o -name 'chrome' -o -name 'Chromium' \) \
-             -type f -perm -u+x 2>/dev/null | head -1)"
-    [[ -n "$exe" ]] && { printf '%s' "$exe"; return 0; }
+  local ver crev hrev root cdir hdir have d note=""
+  ver="$(cr_playwright_pin_field playwright 2>&1)" || { printf '%s' "$ver"; return 1; }
+  crev="$(cr_playwright_pin_field chromiumRevision 2>&1)" || { printf '%s' "$crev"; return 1; }
+  hrev="$(cr_playwright_pin_field chromiumHeadlessShellRevision 2>&1)" || { printf '%s' "$hrev"; return 1; }
+  root="$(cr_playwright_cache_root)"
+  cdir="$root/chromium-$crev"
+  hdir="$root/chromium_headless_shell-$hrev"
+  if [[ -f "$cdir/INSTALLATION_COMPLETE" && -f "$hdir/INSTALLATION_COMPLETE" ]]; then
+    printf 'Playwright %s: chromium-%s + chromium_headless_shell-%s in %s' "$ver" "$crev" "$hrev" "$root"
+    return 0
+  fi
+  for d in "$cdir" "$hdir"; do
+    [[ -d "$d" && ! -f "$d/INSTALLATION_COMPLETE" ]] && note="$note; ${d##*/} is incomplete"
   done
-  for b in chromium chromium-browser google-chrome google-chrome-stable; do
-    if command -v "$b" >/dev/null 2>&1; then command -v "$b"; return 0; fi
+  have=""
+  for d in "$root"/chromium-* "$root"/chromium_headless_shell-*; do
+    [[ -d "$d" ]] && have="$have${have:+, }${d##*/}"
   done
+  printf 'Playwright %s needs chromium-%s and chromium_headless_shell-%s in %s (found: %s%s)' \
+    "$ver" "$crev" "$hrev" "$root" "${have:-no Playwright browsers}" "$note"
   return 1
+}
+
+# cr_install_pinned_chromium — install the pinned browser: `npx --yes playwright@<ver>
+# install chromium` (that command fetches both the chromium and headless-shell
+# revisions the version expects). The caller has already seen cr_preflight_chromium
+# fail. rc 0 installed; rc 1 the install failed (npx's own output is shown, nothing
+# is hidden); rc 2 there is no npx to run it with (the preflight that follows then
+# names node and the exact command). It does not re-check: the preflight does.
+cr_install_pinned_chromium() {
+  local ver
+  ver="$(cr_playwright_pin_field playwright 2>&1)" || { printf 'cfw-render: %s\n' "$ver" >&2; return 1; }
+  command -v npx >/dev/null 2>&1 || return 2
+  echo "cfw-render: installing the pinned Playwright browser: npx --yes playwright@$ver install chromium"
+  npx --yes "playwright@$ver" install chromium
 }
 
 # Fonts. Deliberately checks the GENERIC families, not the brand families the
@@ -1705,7 +1786,7 @@ cr_preflight() {
   if path="$(cr_preflight_chromium)"; then
     _cr_pf_row 0 "chromium" "$path"
   else
-    _cr_pf_row 1 "chromium" "no Playwright/Chromium browser found — HTML compositions cannot render"
+    _cr_pf_row 1 "chromium" "${path:-pinned Playwright browser not found} — carousel and HTML renders cannot launch"
     missing+=("chromium")
   fi
 

@@ -162,11 +162,24 @@ The same gate runs automatically in three places:
   explicitly and prints the shim.
 - **`claude`** — the render Director. Skipped when `CFW_RENDER_DIRECTOR_CMD` is
   set (tests / a stub Director). Note the binary being present is **not** proof
-  it is authenticated — after installing, run `claude auth login` on that computer
-  and confirm with `claude auth status` (this was the whole CFW-188 gate).
-- **Chromium** — resolved from `PLAYWRIGHT_BROWSERS_PATH`, the per-OS
-  `ms-playwright` cache, or a system Chrome/Chromium. HTML compositions cannot
-  render without it.
+  it is authenticated — the worker counts Claude as signed in only when this Mac's
+  Keychain holds the long-lived token the CFW Renderer app saves (Providers →
+  Claude → Sign in; service `com.cfw.render`, account `claude-code`; WI24). Without
+  the app: run `claude setup-token`, then add the printed token to that Keychain
+  item with `security -i` so it never goes on a command line. Each Claude step
+  receives it as `CLAUDE_CODE_OAUTH_TOKEN` in its own environment; `~/.claude` is
+  never read (this was the whole CFW-188 gate).
+- **Chromium** — the **exact** Playwright browser pinned in
+  `config/playwright-pin.json` (one file: Playwright version plus the
+  `chromium` and `chromium-headless-shell` revisions). The preflight looks only
+  in `PLAYWRIGHT_BROWSERS_PATH` when set, else the per-OS `ms-playwright` cache,
+  and needs both `chromium-<rev>` and `chromium_headless_shell-<rev>` finished.
+  Another cached revision or a system Chrome does not count: a newer Playwright
+  wants a revision this computer has not cached, so every carousel slide dies at
+  launch. The failure names the fix, `npx playwright@<pinned version> install
+  chromium`; `install/install.sh` runs it on a fresh computer, and recipe steps
+  install exactly the pinned version (the worker exports it as
+  `CFW_PLAYWRIGHT_PIN`). To bump the pin, change all three values together.
 - **Fonts** — deliberately the *generic* families (`sans-serif`, `serif`,
   `monospace`) must resolve to real, readable font files, **not** the brand
   families the recipes name (Inter, Oswald, JetBrains Mono, Poppins…). The
@@ -183,7 +196,7 @@ then on the Mac:
 
 ```bash
 bin/cfw-render-preflight.sh                 # fix whatever it names, re-run until PASS
-claude auth login && claude auth status
+# Claude: sign in from the CFW Renderer app (Providers → Claude → Sign in), or `claude setup-token` + the Keychain item described above
 install -m 600 config/cfw-render.env.example ~/.cfw-render/cfw-render.env
 #   set CFW_API_BASE=https://app.cfw.social and CFW_RENDER_WORKER_KEY=<this computer's key>
 install/install.sh --mode byoa              # copies to "~/CFW Render/app", writes the LaunchAgent, runs --dry

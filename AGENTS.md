@@ -68,8 +68,8 @@ bin/cfw-render-preflight.sh --quiet  # failures only
 ```
 
 It checks: `curl`, `python3`, `node`, `npx`, `ffmpeg`, `ffprobe`, ImageMagick 7
-(`magick` — v6 `convert` alone is not enough), a Playwright/Chromium browser, a
-usable system font, and a `claude` CLI that runs. Each failure prints the command
+(`magick` — v6 `convert` alone is not enough), the pinned Playwright/Chromium browser
+(`config/playwright-pin.json`), a usable system font, and a `claude` CLI that runs. Each failure prints the command
 that installs it. **Ask the owner once before installing anything**; never
 install silently.
 

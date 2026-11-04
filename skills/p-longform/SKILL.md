@@ -85,7 +85,7 @@ Also useful (ask if not obvious from context):
 | `num_gfx` | integer | `6` | HTML GFX cards to create (stat reveals, quotes, CTA banners). |
 | `num_images` | integer | `4` | AI-generated still images via c-ai-media (supplements GFX). |
 | `sfx` | `true` \| `false` | `true` | Mix subtle SFX bed (intro sting, section transitions). |
-| `captions` | `true` \| `false` | `false` | Burn word-level captions from SRT (top-center, yellow active word). |
+| `captions` | `true` \| `false` | `true` | Burn word-level captions (lower band, brand-accent active word), built by `scripts/captions.py` from the transcript. On unless the owner answers `off`; a missing answer is not a refusal. |
 | `remotion` | `true` \| `false` | `false` for vsl/demo; `true` for tutorial | Render Remotion compositions for animated diagram sections. |
 | `pip_mode` | `full` \| `corner` \| `none` | `corner` | Avatar layout: `full` = talking-head fills frame; `corner` = PIP bottom-right; `none` = VO only. |
 
@@ -162,7 +162,7 @@ match, HyperFrames motion graphics everywhere else), a **premium SFX + color-gra
 beats** (`72px` margin; right-beat `x=1544,y=628`, left-beat `x=72,y=628`). Owner-approved 2026-07
 (ref `cfw-marketing/docs/vsl/dfy/renders/restaurants-3min-premium-v1.mp4`), sized slightly smaller
 than that reference. The old circular / plain-rect `384×330` PIP is **retired as the default**.
-Graphics templates reserve the bottom band; captions clear whichever bottom corner the PIP occupies.
+Graphics templates reserve the bottom band; captions sit in x 420–1500, which clears the PIP card in either bottom corner, and are never skipped on a card or slide.
 
 > ⚠️ **Clone-from-circular trap:** the framed-inset face carries ONLY the rounded-rect `pip-mask.png`
 > `alphamerge` + `pip-frame.png` overlay — no circle/oval/vignette. If you clone a circular-PIP build
@@ -237,9 +237,10 @@ Graphics templates reserve the bottom band; captions clear whichever bottom corn
      fix before continuing).
 
 7. **`c-reel-premium` pass** (Steps P1–P4, landscape): **color grade + SFX always**; kinetic
-   captions only when `captions=on` (default off for longform — heavy for 20 min). Use the LOCAL
-   landscape templates `caption-overlay-ls.html` + `root-shell-polish-ls.html`; `CAP_TOP=820`,
-   captions left of x=1480 (clear the PIP). One pass, `amix=normalize=0` (NEVER re-loudnorm).
+   captions unless the owner said `off` (the default is on). Captions come from
+   `scripts/captions.py` (ASS, one fixed style, every spoken word; `CAP_TOP=820`, text in x 420–1500),
+   burned in `post_process` and checked by `master_has_speech`; there is no HTML caption template for
+   this recipe. One pass, `amix=normalize=0` (NEVER re-loudnorm).
 
 8. **First-frame cover** (default on): extract the money-shot frame at `cover_at`, build a 0.4s
    silent freeze (`anullsrc` via `-f lavfi -i`, NEVER `-af`), prepend via re-encoded concat. Keep
@@ -252,7 +253,7 @@ Graphics templates reserve the bottom band; captions clear whichever bottom corn
     (a) background not black; (b) `full` beats show the whole face (not cropped/stretched);
     (c) `pip` beats show the framed-inset PIP card fully on-screen with margin — rounded corners +
     gold border + soft shadow intact, alternating corner honored (not a bare rect/circle);
-    (d) graphics/captions never cover the PIP; (e) background fills the frame (no pillarbox/letterbox/distortion); (f) captions legible
+    (d) graphics never cover the PIP (captions stay in x 420–1500, clear of it); (e) background fills the frame (no pillarbox/letterbox/distortion); (f) captions legible
     with brand accent (if on); (g) frame 0 is the money-shot, not black/hook. **Any fail → fix,
     re-render, look again. Never ship a failing VSL.**
 
@@ -524,8 +525,8 @@ ffmpeg -i composite.mp4 \
   -c:v copy -c:a aac -b:a 192k -ar 48000 -ac 2 -y loudnorm.mp4
 ```
 
-**8c. Captions** (if `captions: true`):
-→ Burn word-level captions from SRT → top-center, yellow active word
+**8c. Captions** (unless `captions: false`):
+→ `python3 scripts/captions.py build` then `verify`, then burn `work/captions.ass` → lower band, brand-accent active word
 → Skill: `c-ffmpeg`
 
 ---
