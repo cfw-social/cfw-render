@@ -148,6 +148,20 @@ export const copy = {
     version: (app: string | null, worker: string | null) =>
       `App ${app ?? "unknown"}${copy_sep}Worker ${worker ?? "not installed"}`,
   },
+  // [WI27] Settings > Server. Production is the normal choice; Local dev is for building CFW itself.
+  server: {
+    title: "Server",
+    production: "Production",
+    productionNote: "CFW at app.cfw.social. The normal choice.",
+    localDev: "Local dev",
+    localDevNote: "A CFW Social running on this Mac at localhost:3005. It has its own settings and folders, so your production setup stays as it is.",
+    badge: (server: string | null) => `Local dev — ${server ?? "no server"}`,
+    restartNote: (name: string) => `Restart CFW Render to switch to ${name}. Nothing changes until then.`,
+    restart: "Restart now",
+    saveFailed: (why: string) => `Couldn't save the server choice: ${why}`,
+    devOff: "Not available in Local dev. It would change the production setup.",
+    devNotRunning: { title: "The local worker isn't running", body: "Start it with pnpm dev:stack in cfw-social." },
+  },
   engineFallback: { codex: "ChatGPT", "claude-code": "Claude" } as Record<string, string>,
   providers: {
     title: "AI providers",

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { CopyRenderDebug } from "./CopyRenderDebug";
 import { copy } from "../copy";
 import { connectionSummary, health, renderItems, rendersModel, type ItemState, type RenderItem } from "../panel/model";
+import { withServer, type ServerView } from "../server";
 import type { StatusPayload } from "../status";
 import { Icon } from "../ui/Icon";
 import { Button, Card, Pill, ProgressBar, SectionLabel, type Tone } from "../ui/kit";
@@ -117,16 +118,19 @@ export function Renders({
   actions,
   clock = Date.now,
   onPayload,
+  server = null,
 }: {
   payload: StatusPayload | null;
   actions: PanelActions;
   clock?: () => number;
   /** Receives the fresh status after Refresh. */
   onPayload?: (p: StatusPayload) => void;
+  /** [WI27] Local dev says how its worker is started. */
+  server?: ServerView | null;
 }) {
   const t = clock();
   const m = rendersModel(payload, t);
-  const h = health(m);
+  const h = withServer(health(m), server);
   const conn = connectionSummary(payload);
   const items = renderItems(payload, t);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);

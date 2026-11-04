@@ -123,6 +123,7 @@ export function Rail({
   onSignIn,
   onTogglePause,
   onRefresh,
+  devBadge = null,
 }: {
   section: SectionId;
   web: WebBrands | null;
@@ -136,6 +137,8 @@ export function Rail({
   onSignIn: () => void;
   onTogglePause: () => void;
   onRefresh?: () => void;
+  /** [WI27] "Local dev — localhost:3005" while the app runs in Local dev; null in Production. */
+  devBadge?: string | null;
 }) {
   const item = (it: { id: SectionId; icon: IconName; label: string }, extra?: ReactNode) => {
     const on = it.id === section;
@@ -161,6 +164,11 @@ export function Rail({
     <aside className="flex h-full w-[208px] shrink-0 flex-col border-r border-border bg-card">
       {/* Room for the window's traffic lights; drag the window from here. */}
       <div data-tauri-drag-region className="h-[46px] shrink-0" />
+      {devBadge && (
+        <p role="status" title={devBadge} className="mx-3 mb-2 truncate rounded-[6px] border border-warn-border bg-warn-bg px-2 py-1 text-center text-[11px] font-semibold text-warn-strong">
+          {devBadge}
+        </p>
+      )}
       <BrandSwitcher web={web} slug={slug} onPick={onPickBrand} onAll={onAllBrands} onSignIn={onSignIn} />
       <nav aria-label="CFW Render" className="mt-3 flex-1 overflow-y-auto border-t border-border px-2 py-3">
         <ul className="flex flex-col gap-0.5">{WEB_ITEMS.map((it) => item(it))}</ul>

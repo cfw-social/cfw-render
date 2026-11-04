@@ -1,4 +1,5 @@
 import { copy } from "../copy";
+import { devBadge, withServer, type ServerView } from "../server";
 import type { StatusPayload } from "../status";
 import { Icon } from "../ui/Icon";
 import { Button, MARK_URL, Pill, ProgressBar, SectionLabel } from "../ui/kit";
@@ -35,9 +36,21 @@ function DoneLine({ d, onWhy }: { d: DoneRow; onWhy: () => void }) {
 }
 
 /** The menu-bar panel: what this Mac is doing, what needs you, and one obvious next action. */
-export function Panel({ payload, actions, clock = Date.now }: { payload: StatusPayload | null; actions: PanelActions; clock?: () => number }) {
+export function Panel({
+  payload,
+  actions,
+  clock = Date.now,
+  server = null,
+}: {
+  payload: StatusPayload | null;
+  actions: PanelActions;
+  clock?: () => number;
+  /** [WI27] Local dev shows a badge and says how its worker is started. */
+  server?: ServerView | null;
+}) {
   const m = panelModel(payload, clock());
-  const h = health(m);
+  const h = withServer(health(m), server);
+  const badge = devBadge(server);
   // When it isn't running, the last status file is stale: don't claim anything is rendering.
   const down = h.kind === "notRunning";
   const now = down ? undefined : m.now[0];
@@ -65,6 +78,9 @@ export function Panel({ payload, actions, clock = Date.now }: { payload: StatusP
         <h1 className="flex-1 text-sm font-semibold">{copy.appName}</h1>
         <Pill tone={h.tone} dot>{h.label}</Pill>
       </header>
+      {badge && (
+        <p role="status" className="border-b border-warn-border bg-warn-bg px-4 py-1.5 text-center text-[11px] font-semibold text-warn-strong">{badge}</p>
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {h.callout && (

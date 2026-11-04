@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sys
 import tempfile
@@ -14,7 +15,7 @@ from email.message import Message
 from http.client import HTTPException
 from pathlib import Path
 from typing import BinaryIO
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 # media.cfw.social sits behind Cloudflare, whose browser integrity check answers
 # urllib's default "Python-urllib/3.x" with 403 (error 1010). Name the worker
@@ -93,13 +94,33 @@ def contained(root: Path, relative: Path) -> Path:
     return path
 
 
-def approved_url(url: str, media_base: str = "", test_base: str = "") -> bool:
+def dev_base_from_env() -> str:
+    """[WI27] The dev profile's own CFW origin (http(s) on localhost or 127.0.0.1).
+    A local CFW with no R2 keeps saved outputs in its dev object store, so a dev
+    worker may restore from it. Empty for the production profile."""
+    if os.environ.get("CFW_RENDER_PROFILE") != "dev":
+        return ""
+    try:
+        base = urlsplit(os.environ.get("CFW_API_BASE", ""))
+        if (base.scheme in ("http", "https") and base.hostname in ("localhost", "127.0.0.1")
+                and not base.username and not base.password):
+            return f"{base.scheme}://{base.netloc}"
+    except ValueError:
+        pass
+    return ""
+
+
+def approved_url(url: str, media_base: str = "", test_base: str = "", dev_base: str = "") -> bool:
     try:
         parsed = urlsplit(url)
         if parsed.username or parsed.password or parsed.fragment:
             return False
         if any(ord(c) <= 32 or ord(c) == 127 for c in url):
             return False
+        if dev_base and f"{parsed.scheme}://{parsed.netloc}" == dev_base \
+                and parsed.path.startswith("/api/v1/render/dev-object/") \
+                and not any(seg in (".", "..") for seg in unquote(parsed.path).replace("\\", "/").split("/")):
+            return True
         if test_base:
             test = urlsplit(test_base)
             if (test.scheme == "http" and test.hostname == "127.0.0.1"
@@ -118,16 +139,17 @@ def approved_url(url: str, media_base: str = "", test_base: str = "") -> bool:
 
 
 class MediaRedirect(urllib.request.HTTPRedirectHandler):
-    def __init__(self, media_base: str, test_base: str) -> None:
+    def __init__(self, media_base: str, test_base: str, dev_base: str = "") -> None:
         super().__init__()
         self.media_base = media_base
         self.test_base = test_base
+        self.dev_base = dev_base
 
     def redirect_request(
         self, req: urllib.request.Request, fp: BinaryIO, code: int,
         msg: str, headers: Message, newurl: str,
     ) -> urllib.request.Request | None:
-        if not approved_url(newurl, self.media_base, self.test_base):
+        if not approved_url(newurl, self.media_base, self.test_base, self.dev_base):
             raise ValueError("unapproved saved output redirect")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
@@ -141,6 +163,7 @@ class SavedOutputError(ValueError):
 def restore(order: dict, root: Path, media_base: str = "", test_base: str = "") -> list[dict]:
     bounds = plan(order)
     root = root.resolve()
+    dev_base = dev_base_from_env()
     known = {}
     for index, step in enumerate(order["manifest"]["steps"]):
         for save in step.get("saves", []):
@@ -157,7 +180,7 @@ def restore(order: dict, root: Path, media_base: str = "", test_base: str = "") 
         if index >= bounds["restoreBefore"]:
             continue  # never restore stale outputs at/after the actual resume point
         url = saved["url"]
-        if not approved_url(url, media_base, test_base):
+        if not approved_url(url, media_base, test_base, dev_base):
             raise ValueError("unapproved saved output URL")
         checksum = saved.get("checksum") or ""
         algo, digest = "sha256", ""
@@ -174,7 +197,7 @@ def restore(order: dict, root: Path, media_base: str = "", test_base: str = "") 
         relative = Path("steps") / key[0] / "saves" / f"{key[1]}.{extension}"
         contained(root, relative)
         selected.append((key, relative, url, algo, digest))
-    opener = urllib.request.build_opener(MediaRedirect(media_base, test_base))
+    opener = urllib.request.build_opener(MediaRedirect(media_base, test_base, dev_base))
     opener.addheaders = [("User-Agent", USER_AGENT)]
     restored = []
     for key, relative, url, algo, digest in selected:

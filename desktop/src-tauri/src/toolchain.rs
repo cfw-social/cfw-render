@@ -48,12 +48,13 @@ pub fn arch() -> &'static str {
     }
 }
 
-/// `~/CFW Render` (or `$CFW_RENDER_HOME`).
+/// `~/CFW Render` (or `$CFW_RENDER_HOME`). Local dev: `~/.cfw-render-dev/render-home`, never the production one.
 pub fn render_home() -> Result<PathBuf, String> {
-    if let Some(h) = std::env::var_os(HOME_ENV).filter(|h| !h.is_empty()) {
-        return Ok(PathBuf::from(h));
-    }
-    dirs::home_dir().map(|h| h.join("CFW Render")).ok_or_else(|| "No home folder".into())
+    let env = std::env::var_os(HOME_ENV).filter(|h| !h.is_empty()).map(PathBuf::from);
+    crate::profile::render_home_for(crate::profile::active(), env, dirs::home_dir().as_deref()).map_err(|e| match e {
+        crate::profile::FolderError::NoHome => "No home folder".to_string(),
+        other => other.to_string(),
+    })
 }
 
 pub fn tools_dir() -> Result<PathBuf, String> {

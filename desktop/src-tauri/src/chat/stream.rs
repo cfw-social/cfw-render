@@ -13,12 +13,13 @@ pub enum Event {
     Error(String),
 }
 
-/// `https://<host>...` URLs in `text`, cut at whitespace/quotes/brackets and trailing punctuation.
-pub fn links(text: &str, host: &str) -> Vec<Event> {
-    let prefix = format!("https://{host}");
+/// `<origin>...` URLs in `text` (origin = `https://app.cfw.social`, or a local `http://` origin in
+/// Local dev), cut at whitespace/quotes/brackets and trailing punctuation.
+pub fn links(text: &str, origin: &str) -> Vec<Event> {
+    let prefix = origin;
     let mut out = Vec::new();
     let mut rest = text;
-    while let Some(i) = rest.find(&prefix) {
+    while let Some(i) = rest.find(prefix) {
         let tail = &rest[i..];
         let end = tail.find(|c: char| c.is_whitespace() || "\"'<>()[]{}`\\".contains(c)).unwrap_or(tail.len());
         let url = tail[..end].trim_end_matches(['.', ',', ';', ':', '!', '?']);
@@ -49,7 +50,7 @@ fn mcp_name(raw: &str) -> String {
     raw.rsplit("__").next().unwrap_or(raw).to_string()
 }
 
-pub fn parse_claude(line: &str, host: &str) -> Vec<Event> {
+pub fn parse_claude(line: &str, origin: &str) -> Vec<Event> {
     let Ok(v) = serde_json::from_str::<Value>(line.trim()) else { return vec![] };
     let mut out = Vec::new();
     match v.get("type").and_then(Value::as_str) {
@@ -67,7 +68,7 @@ pub fn parse_claude(line: &str, host: &str) -> Vec<Event> {
                             out.push(Event::LimitHit(t));
                             continue;
                         }
-                        let l = links(&t, host);
+                        let l = links(&t, origin);
                         out.push(Event::Text(t));
                         out.extend(l);
                     }
@@ -79,7 +80,7 @@ pub fn parse_claude(line: &str, host: &str) -> Vec<Event> {
         Some("user") => {
             // tool results: surface links only.
             if let Some(content) = v.pointer("/message/content") {
-                out.extend(links(&content.to_string(), host));
+                out.extend(links(&content.to_string(), origin));
             }
         }
         Some("result") => {
@@ -98,7 +99,7 @@ pub fn parse_claude(line: &str, host: &str) -> Vec<Event> {
     out
 }
 
-pub fn parse_codex(line: &str, host: &str) -> Vec<Event> {
+pub fn parse_codex(line: &str, origin: &str) -> Vec<Event> {
     let Ok(v) = serde_json::from_str::<Value>(line.trim()) else { return vec![] };
     let mut out = Vec::new();
     match v.get("type").and_then(Value::as_str) {
@@ -112,14 +113,14 @@ pub fn parse_codex(line: &str, host: &str) -> Vec<Event> {
             match item.get("type").and_then(Value::as_str) {
                 Some("agent_message") => {
                     let t = s(&item, "text").unwrap_or_default();
-                    let l = links(&t, host);
+                    let l = links(&t, origin);
                     out.push(Event::Text(t));
                     out.extend(l);
                 }
                 Some("mcp_tool_call") => {
                     out.push(Event::ToolCall { name: s(&item, "tool").unwrap_or_default() });
                     if let Some(r) = item.get("result") {
-                        out.extend(links(&r.to_string(), host));
+                        out.extend(links(&r.to_string(), origin));
                     }
                 }
                 _ => {}

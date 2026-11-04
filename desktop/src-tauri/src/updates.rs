@@ -141,6 +141,10 @@ async fn check_once(app: &AppHandle) -> Result<bool, String> {
 /// After an app update, refresh `~/CFW Render/app` from the bundled worker.
 /// Runs once per app version; only when the worker is installed.
 fn refresh_worker_after_update(app: &AppHandle) {
+    // That folder is the production install: Local dev leaves it alone.
+    if crate::profile::active().is_local_dev() {
+        return;
+    }
     let version = app.package_info().version.to_string();
     let Ok(dir) = state_dir() else { return };
     let synced = read_json(&dir).get("workerSyncedVersion").and_then(Value::as_str).map(str::to_owned);

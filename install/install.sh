@@ -53,6 +53,14 @@ while (( $# )); do
   esac
 done
 
+# [WI27] Install and uninstall work only on the production install
+# (~/.cfw-render, "~/CFW Render", com.cfw.render). A dev-profile worker is set
+# up by cfw-social's `pnpm seed:dev` instead, so refuse rather than touch it.
+if [[ -n "${CFW_RENDER_PROFILE:-}" && "${CFW_RENDER_PROFILE}" != prod ]]; then
+  echo "install.sh: CFW_RENDER_PROFILE=${CFW_RENDER_PROFILE} — install and uninstall only manage the production install. Set up a dev worker with 'pnpm seed:dev' in cfw-social." >&2
+  exit 2
+fi
+
 # ── [M3-06a] --uninstall [--delete-outputs] [--yes]: remove CFW Render from
 # this Mac (logic in install/uninstall.sh). Always exits 0 once confirmed.
 if (( UNINSTALL )); then

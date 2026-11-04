@@ -229,10 +229,11 @@ pub fn scan_new_crashes(reports: &Path, state: &Path, now: u64) -> Vec<CrashRepo
     found.iter().filter_map(|(_, p)| fs::read_to_string(p).ok()).filter_map(|r| reduce_crash(&r)).collect()
 }
 
-pub(crate) fn api_base(env_file: &Path) -> String {
-    std::env::var("CFW_RENDER_API_BASE").ok().filter(|b| !b.is_empty())
-        .or_else(|| env_value(env_file, "CFW_API_BASE"))
-        .unwrap_or_else(|| "https://app.cfw.social".into())
+/// Production: `CFW_RENDER_API_BASE`, then the env file's `CFW_API_BASE`, then app.cfw.social.
+/// Local dev: the env file, else localhost:3005, and never a server off this Mac (`profile`).
+pub(crate) fn api_base(env_file: &Path) -> Result<String, String> {
+    let env = std::env::var("CFW_RENDER_API_BASE").ok().filter(|b| !b.is_empty());
+    crate::profile::api_base_for(crate::profile::active(), env, env_value(env_file, "CFW_API_BASE"))
 }
 
 pub(crate) fn curl_cmd() -> String {
@@ -241,9 +242,9 @@ pub(crate) fn curl_cmd() -> String {
 
 /// POST one crash report. The key goes in a 0600 header file (`-H @file`) and
 /// the body in a temp file; both are removed when this returns.
-pub fn post_crash(state: &Path, report: &CrashReport, occurred_at: Option<&str>) -> Result<(), String> {
-    let env_file = state.join("cfw-render.env");
-    let key = env_value(&env_file, "CFW_RENDER_WORKER_KEY").ok_or("this computer has no render key")?;
+/// `env_file` is the worker's settings file (`profile::env_file`), which holds the render key.
+pub fn post_crash(env_file: &Path, report: &CrashReport, occurred_at: Option<&str>) -> Result<(), String> {
+    let key = env_value(env_file, "CFW_RENDER_WORKER_KEY").ok_or("this computer has no render key")?;
     let dir = tempfile_dir()?;
     let hdr = dir.join("h");
     write_private(&hdr, format!("cfw-render-key: {key}\ncontent-type: application/json\n").as_bytes())?;
@@ -253,7 +254,7 @@ pub fn post_crash(state: &Path, report: &CrashReport, occurred_at: Option<&str>)
     }
     let body_file = dir.join("b");
     write_private(&body_file, body.to_string().as_bytes())?;
-    let url = format!("{}/api/v1/computers/crash", api_base(&env_file).trim_end_matches('/'));
+    let url = format!("{}/api/v1/computers/crash", api_base(env_file)?.trim_end_matches('/'));
     let out = Command::new(curl_cmd())
         .args(["-sS", "--max-time", "30", "-o", "/dev/null", "-w", "%{http_code}", "-X", "POST", &url])
         .arg("-H").arg(format!("@{}", hdr.display()))
@@ -273,12 +274,12 @@ fn tempfile_dir() -> Result<PathBuf, String> {
 }
 
 /// Scan + (if sharing is on) post. Returns how many reports were posted.
-pub fn crash_scan_in(reports: &Path, state: &Path, now: u64) -> usize {
+pub fn crash_scan_in(reports: &Path, state: &Path, env_file: &Path, now: u64) -> usize {
     let found = scan_new_crashes(reports, state, now);
     if !read_settings(state).share_crash_reports {
         return 0;
     }
-    found.iter().filter(|r| post_crash(state, r, None).is_ok()).count()
+    found.iter().filter(|r| post_crash(env_file, r, None).is_ok()).count()
 }
 
 // ── worker ctl / installer ────────────────────────────────────────────────
@@ -334,11 +335,13 @@ pub fn set_share_crash_reports(enabled: bool) -> Result<(), String> {
 pub async fn crash_scan() -> Result<usize, String> {
     let reports = home()?.join("Library/Logs/DiagnosticReports");
     let st = state()?;
-    tauri::async_runtime::spawn_blocking(move || crash_scan_in(&reports, &st, now_secs())).await.map_err(|e| e.to_string())
+    let env_file = crate::profile::env_file();
+    tauri::async_runtime::spawn_blocking(move || crash_scan_in(&reports, &st, &env_file, now_secs())).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn send_logs_preview() -> Result<LogsPreview, String> {
+    crate::profile::production_only("Send logs")?;
     let out = tauri::async_runtime::spawn_blocking(|| run_ctl(&["send-logs", "--dry"])).await.map_err(|e| e.to_string())??;
     parse_preview(&out).ok_or_else(|| "CFW Render could not gather the logs".into())
 }
@@ -350,6 +353,7 @@ pub struct LogsSent {
 
 #[tauri::command]
 pub async fn send_logs() -> Result<LogsSent, String> {
+    crate::profile::production_only("Send logs")?;
     let out = tauri::async_runtime::spawn_blocking(|| run_ctl(&["send-logs", "--yes"])).await.map_err(|e| e.to_string())??;
     parse_reference(&out).map(|reference| LogsSent { reference }).ok_or_else(|| "CFW did not send a reference".into())
 }
@@ -357,6 +361,8 @@ pub async fn send_logs() -> Result<LogsSent, String> {
 #[tauri::command]
 pub async fn uninstall(app: tauri::AppHandle, delete_outputs: bool) -> Result<(), String> {
     use tauri::Emitter;
+    // The uninstaller removes the production install; Local dev never runs it.
+    crate::profile::production_only("Uninstall")?;
     let installer = installer_path()?;
     let emitter = app.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
@@ -471,12 +477,13 @@ mod tests {
 
         write_settings(st.path(), &SupportSettings { share_crash_reports: false }).unwrap();
         assert!(!read_settings(st.path()).share_crash_reports);
-        assert_eq!(crash_scan_in(reports.path(), st.path(), now_secs()), 0);
+        let env_file = st.path().join("cfw-render.env");
+        assert_eq!(crash_scan_in(reports.path(), st.path(), &env_file, now_secs()), 0);
         assert!(!tools.path().join("curl.log").exists());
 
         write_settings(st.path(), &SupportSettings { share_crash_reports: true }).unwrap();
         fs::remove_file(st.path().join("crash-scan.json")).unwrap();
-        assert_eq!(crash_scan_in(reports.path(), st.path(), now_secs()), 1);
+        assert_eq!(crash_scan_in(reports.path(), st.path(), &env_file, now_secs()), 1);
         let argv = fs::read_to_string(tools.path().join("curl.log")).unwrap();
         assert!(argv.contains("/api/v1/computers/crash") && !argv.contains("supersecret"));
         let bodies = fs::read_to_string(tools.path().join("bodies.log")).unwrap();

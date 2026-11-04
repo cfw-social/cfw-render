@@ -13,7 +13,6 @@ use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Url, Webv
 
 pub const LABEL: &str = "web";
 pub const RAIL_WIDTH: f64 = 208.0;
-const DEFAULT_BASE: &str = "https://app.cfw.social";
 
 fn user_agent() -> String {
     format!(
@@ -22,17 +21,11 @@ fn user_agent() -> String {
     )
 }
 
-fn parse_http(s: &str) -> Option<Url> {
-    Url::parse(s).ok().filter(|u| matches!(u.scheme(), "http" | "https") && u.host().is_some())
-}
-
-/// `CFW_RENDER_WEB_BASE` → API base (env / worker env file) → app.cfw.social.
-pub fn web_base() -> Url {
-    if let Some(u) = std::env::var("CFW_RENDER_WEB_BASE").ok().filter(|b| !b.is_empty()).and_then(|b| parse_http(&b)) {
-        return u;
-    }
-    let env_file = crate::control::state_dir().map(|d| d.join("cfw-render.env")).unwrap_or_default();
-    parse_http(&crate::support::api_base(&env_file)).unwrap_or_else(|| Url::parse(DEFAULT_BASE).expect("default base"))
+/// Production: `CFW_RENDER_WEB_BASE` → API base (env / worker env file) → app.cfw.social; never fails.
+/// Local dev: the Local dev API base, or an error (never a fall back to production).
+pub fn web_base() -> Result<Url, String> {
+    let env = std::env::var("CFW_RENDER_WEB_BASE").ok().filter(|b| !b.is_empty());
+    crate::profile::web_base_for(crate::profile::active(), env, crate::support::api_base(&crate::profile::env_file()))
 }
 
 fn valid_slug(s: &str) -> bool {
@@ -111,7 +104,7 @@ pub fn layout(app: &AppHandle) {
 
 #[tauri::command]
 pub fn web_show(app: AppHandle, section: String, slug: Option<String>) -> Result<(), String> {
-    let base = web_base();
+    let base = web_base()?;
     let url = section_url(&base, slug.as_deref(), &section)?;
     match app.get_webview(LABEL) {
         Some(wv) => wv.navigate(url).map_err(|e| e.to_string())?,
@@ -274,7 +267,7 @@ fn curl_with_cookie(url: &Url, cookie: &str, json_body: Option<&str>) -> Result<
 /// main thread, which reading cookies needs.
 #[tauri::command]
 pub async fn web_brands(app: AppHandle) -> Result<WebBrands, String> {
-    let url = web_base().join("/api/v1/brands/mine").map_err(|e| e.to_string())?;
+    let url = web_base()?.join("/api/v1/brands/mine").map_err(|e| e.to_string())?;
     let Some(cookie) = session_cookie(&app, &url)? else {
         return Ok(WebBrands { signed_in: false, brands: vec![] });
     };
@@ -309,7 +302,7 @@ pub fn parse_mint_reply(status: u16, body: &str) -> Result<String, String> {
 
 /// Make an account-wide (every brand) setup key with the signed-in website session.
 pub async fn mint_account_key(app: &AppHandle) -> Result<String, String> {
-    let url = web_base().join("/api/v1/api-keys").map_err(|e| e.to_string())?;
+    let url = web_base()?.join("/api/v1/api-keys").map_err(|e| e.to_string())?;
     let cookie = session_cookie(app, &url)?.ok_or("Sign in to CFW first (Home), then try again.")?;
     let (code, body) = curl_with_cookie(&url, &cookie, Some(ACCOUNT_KEY_REQUEST))?;
     parse_mint_reply(code, &body)
@@ -341,7 +334,7 @@ pub fn render_page_url(base: &Url, brand_slug: &str, order_id: &str, short_code:
 
 #[tauri::command]
 pub fn open_render_in_browser(brand_slug: String, order_id: String, short_code: Option<String>) -> Result<(), String> {
-    let url = render_page_url(&web_base(), &brand_slug, &order_id, short_code.as_deref())?;
+    let url = render_page_url(&web_base()?, &brand_slug, &order_id, short_code.as_deref())?;
     open_external(&url);
     Ok(())
 }

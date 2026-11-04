@@ -5,6 +5,7 @@ import { copy } from "../copy";
 import { DEFAULT_SECTION, isWebSection, sectionFromId, sectionFromWebPath, slugFromWebPath, type SectionId } from "../nav";
 import { connectionSummary, health, panelModel } from "../panel/model";
 import { ProvidersScreen } from "../providers";
+import { devBadge, useServer } from "../server";
 import type { StatusPayload } from "../status";
 import { Icon } from "../ui/Icon";
 import { Button } from "../ui/kit";
@@ -55,6 +56,7 @@ export function MainWindow({ clock = Date.now }: { clock?: () => number } = {}) 
   const [web, setWeb] = useState<WebBrands | null>(null);
   const [slug, setSlug] = useState<string | null>(readSlug);
   const [webFailed, setWebFailed] = useState(false);
+  const server = useServer();
   const slugRef = useRef(slug);
   slugRef.current = slug;
   const sectionRef = useRef(section);
@@ -153,6 +155,7 @@ export function MainWindow({ clock = Date.now }: { clock?: () => number } = {}) 
         onAllBrands={() => go("home", slugRef.current, "all")}
         onSignIn={() => go("home", null, "login")}
         onTogglePause={() => actions.setPaused(!paused)}
+        devBadge={devBadge(server)}
         onRefresh={() => {
           if (isWebSection(section)) {
             invoke("web_reload").catch(() => go(section));
@@ -166,7 +169,7 @@ export function MainWindow({ clock = Date.now }: { clock?: () => number } = {}) 
         {/* Mac pages get a drag strip where the title bar would be. */}
         {!isWebSection(section) && <div data-tauri-drag-region className="sticky top-0 z-10 h-[30px] bg-background/90" />}
         {isWebSection(section) && <WebPlaceholder failed={webFailed} onRetry={() => go(section)} />}
-        {section === "renders" && <Renders payload={payload} actions={actions} clock={clock} onPayload={setPayload} />}
+        {section === "renders" && <Renders payload={payload} actions={actions} clock={clock} onPayload={setPayload} server={server} />}
         {section === "providers" && <ProvidersScreen />}
         {section === "settings" && <Settings workerVersion={payload?.status?.workerVersion ?? null} connection={connectionSummary(payload)} />}
       </main>

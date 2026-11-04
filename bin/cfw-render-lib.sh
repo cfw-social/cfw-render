@@ -431,6 +431,10 @@ cr_budget_watchdog() {
 # that only when the new file is absent, so an existing install keeps working.
 # ---------------------------------------------------------------------------
 cr_default_env_file() {
+  if [[ "$(cr_profile 2>/dev/null)" == dev ]]; then
+    printf '%s' "$(cr_dev_home)/cfw-render.env"
+    return 0
+  fi
   local new="$HOME/.cfw-render/cfw-render.env"
   local legacy="$HOME/ecosystem/vault/cfw-render.env"
   if [[ ! -e "$new" && -r "$legacy" ]]; then
@@ -438,6 +442,56 @@ cr_default_env_file() {
   else
     printf '%s' "$new"
   fi
+}
+
+# ---------------------------------------------------------------------------
+# [WI27] Profiles. CFW_RENDER_PROFILE=dev runs a second, local-only worker next
+# to the installed one: its own settings file and folders (all under the
+# hidden ~/.cfw-render-dev), the server http://localhost:3005 and the launchd label
+# com.cfw.render.dev. It refuses a server that is not on this computer and any
+# folder of the production install, so a dev run can never touch it. Unset or
+# "prod" keeps every default exactly as before.
+# ---------------------------------------------------------------------------
+cr_profile() {
+  case "${CFW_RENDER_PROFILE:-prod}" in
+    prod) printf 'prod' ;;
+    dev) printf 'dev' ;;
+    *) return 1 ;;
+  esac
+}
+
+cr_launchd_label() {
+  if [[ "$(cr_profile 2>/dev/null)" == dev ]]; then
+    printf 'com.cfw.render.dev'
+  else
+    printf 'com.cfw.render'
+  fi
+}
+
+# A dev worker talks only to a CFW on this computer.
+cr_dev_api_base_ok() {
+  [[ "$1" =~ ^https?://(localhost|127\.0\.0\.1)(:[0-9]{1,5})?/?$ ]]
+}
+
+# The dev profile's folders: the same layout the cfw-social seed writes.
+cr_dev_home() { printf '%s' "$HOME/.cfw-render-dev"; }
+cr_dev_state_dir_default() { printf '%s' "$(cr_dev_home)/render-state"; }
+
+# A dev worker never uses a folder of the production install. The path must be
+# absolute; it is resolved (symlinks of its existing part, "." and "..") and
+# compared without case, because APFS treats ~/.CFW-render as ~/.cfw-render.
+cr_dev_path_ok() {
+  [[ "${1:-}" == /* ]] || return 1
+  python3 - "$1" "$HOME" <<'PY'
+import os, sys
+path = os.path.realpath(sys.argv[1]).rstrip("/").lower()
+home = sys.argv[2]
+for prod in (os.path.join(home, ".cfw-render"), os.path.join(home, "CFW Render")):
+    prod = os.path.realpath(prod).rstrip("/").lower()
+    if path == prod or path.startswith(prod + "/"):
+        sys.exit(1)
+sys.exit(0)
+PY
 }
 
 # ---------------------------------------------------------------------------
@@ -474,6 +528,7 @@ cr_load_config() {
     CFW_RENDER_HOME CFW_RENDER_LOG_DIR CFW_RENDER_OUTPUTS CFW_RENDER_KEEP_OUTPUTS
     CFW_RENDER_FINISH_GRACE_SECS CFW_RENDER_PROVIDER_BUDGET_HEYGEN CFW_RENDER_PROVIDER_WAIT_CAP
     CFW_RENDER_MEDIA_BASE_URL CFW_RENDER_TEST_MEDIA_BASE_URL CFW_RENDER_LOCAL_CHECKPOINTS
+    CFW_RENDER_PROFILE
   )
   local _cr_preset=() _v
   for _v in "${_cr_vars[@]}"; do
@@ -493,6 +548,22 @@ cr_load_config() {
     [[ -n "${_cr_preset[$_i]}" ]] && printf -v "$_v" '%s' "${_cr_preset[$_i]}"
     _i=$(( _i + 1 ))
   done
+
+  # [WI27] Profile: process env, else the settings file. The dev profile fills
+  # its own server and folders first, so the production defaults below never
+  # apply to it.
+  local profile
+  if ! profile="$(cr_profile)"; then
+    printf 'cfw-render: CFW_RENDER_PROFILE must be prod or dev\n' >&2
+    return 1
+  fi
+  if [[ "$profile" == dev ]]; then
+    : "${CFW_API_BASE:=http://localhost:3005}"
+    : "${CFW_RENDER_STATE_DIR:=$(cr_dev_state_dir_default)}"
+    : "${CFW_RENDER_SCRATCH:=$CFW_RENDER_STATE_DIR/scratch}"
+    # Inside the hidden dev folder: the home folder takes no new visible root.
+    : "${CFW_RENDER_HOME:=$(cr_dev_home)/render-home}"
+  fi
 
   # [M2-04] Parallel requests (D52). Empty = measure this computer
   # (cr_capacity_max: memory + performance cores table). A value set by the
@@ -555,6 +626,25 @@ cr_load_config() {
       CFW_RENDER_RENDERER_KIND="byo"
     fi
   fi
+  if [[ "$profile" == dev ]]; then
+    if ! cr_dev_api_base_ok "$CFW_API_BASE"; then
+      printf 'cfw-render: the dev profile only talks to CFW on this computer (http://localhost or 127.0.0.1); refusing CFW_API_BASE\n' >&2
+      return 1
+    fi
+    for _v in CFW_RENDER_STATE_DIR CFW_RENDER_SCRATCH CFW_RENDER_HOME CFW_RENDER_LOG_DIR \
+              CFW_RENDER_OUTPUTS CFW_RENDER_WORKER_ID_FILE; do
+      if ! cr_dev_path_ok "${!_v}"; then
+        printf 'cfw-render: the dev profile never uses the production install folders; refusing %s\n' "$_v" >&2
+        return 1
+      fi
+    done
+    if ! cr_dev_path_ok "$env_file"; then
+      printf 'cfw-render: the dev profile never reads the production settings file\n' >&2
+      return 1
+    fi
+  fi
+  CFW_RENDER_PROFILE="$profile"
+  export CFW_RENDER_PROFILE
   export CFW_RENDER_CONCURRENCY CFW_RENDER_SCRATCH CFW_RENDER_STATE_DIR \
     CFW_RENDER_SKILLS_DIR CFW_RENDER_DIRECTOR_MODEL CFW_RENDER_FANOUT_MODELS \
     CFW_RENDER_TIMEOUT_VIDEO CFW_RENDER_TIMEOUT_IMAGE CFW_RENDER_GATE_FAIL_CAP \

@@ -159,7 +159,7 @@ pub fn search_path() -> OsString {
     }
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(home) = dirs::home_dir() {
-        dirs.push(home.join("CFW Render/app/tools/current/bin"));
+        dirs.push(crate::profile::tools_bin_for(crate::profile::active(), &home));
     }
     dirs.push("/opt/homebrew/bin".into());
     dirs.push("/usr/local/bin".into());

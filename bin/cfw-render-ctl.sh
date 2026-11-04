@@ -64,7 +64,7 @@ print("running: %s/%s" % (c.get("running", 0), c.get("max", "?")))
     echo ""
     echo "timer status:"
     if command -v launchctl >/dev/null 2>&1; then
-      launchctl print "gui/$(id -u)/com.cfw.render" 2>&1 | head -5 || echo "  com.cfw.render not loaded"
+      launchctl print "gui/$(id -u)/$(cr_launchd_label)" 2>&1 | head -5 || echo "  $(cr_launchd_label) not loaded"
     else
       echo "  no launchctl on this computer"
     fi
@@ -222,6 +222,11 @@ os.execv(sys.argv[1], sys.argv[1:])' "$0" "$VERB" "$@"
       case "$sl_ans" in y|Y|yes|YES) ;; *) echo "Not sent."; exit 0 ;; esac
     fi
     sl_base="${CFW_RENDER_API_BASE:-${CFW_API_BASE:-https://app.cfw.social}}"
+    # [WI27] A dev worker's logs and key go only to the CFW on this computer.
+    if [[ "$(cr_profile 2>/dev/null)" == dev ]] && ! cr_dev_api_base_ok "$sl_base"; then
+      echo "cfw-render-ctl: the dev profile only sends logs to CFW on this computer; refusing $sl_base" >&2
+      exit 1
+    fi
     # EXIT alone does not run when this shell is killed while a foreground
     # curl is still going (WI2.104). Same pattern as cr_curl_with_key: trap
     # TERM, INT and HUP, start curl in the background, and wait. The key file
@@ -323,6 +328,13 @@ except Exception:
     # [M3-08b] Drop an engine's usage/credit limit from engine-limits.json.
     [[ -n "${1:-}" ]] || { echo "cfw-render-ctl: usage: clear-limit <engine>" >&2; exit 2; }
     # No cr_load_config: works without a worker key (state dir defaults).
+    # [WI27] Under the dev profile the default is the dev state folder, never
+    # the installed worker's ~/.cfw-render.
+    if [[ "$(cr_profile 2>/dev/null)" == dev ]]; then
+      : "${CFW_RENDER_STATE_DIR:=$(cr_dev_state_dir_default)}"
+      cr_dev_path_ok "$CFW_RENDER_STATE_DIR" || { echo "cfw-render-ctl: the dev profile never uses the production install folders" >&2; exit 1; }
+      export CFW_RENDER_STATE_DIR
+    fi
     # shellcheck disable=SC1091
     source "$SELF_DIR/cfw-render-engine.sh"
     cr_engine_limit_clear "$1"

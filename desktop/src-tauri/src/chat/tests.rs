@@ -244,10 +244,17 @@ fn keychain_roundtrip_and_remove_brand() {
 
 #[test]
 fn parsers_and_urls() {
-    let host = "app.cfw.social";
-    assert_eq!(stream::parse_codex(r#"{"type":"turn.failed","error":{"message":"boom"}}"#, host), [stream::Event::Error("boom".into())]);
-    assert!(matches!(stream::parse_claude(r#"{"type":"result","is_error":true,"result":"You've reached your usage limit"}"#, host)[0], stream::Event::LimitHit(_)));
-    assert!(stream::links("see https://evil.com/x and https://app.cfw.social.evil.com/y", host).is_empty());
+    let origin = "https://app.cfw.social";
+    assert_eq!(origin_of(DEFAULT_MCP_URL), origin);
+    assert_eq!(stream::parse_codex(r#"{"type":"turn.failed","error":{"message":"boom"}}"#, origin), [stream::Event::Error("boom".into())]);
+    assert!(matches!(stream::parse_claude(r#"{"type":"result","is_error":true,"result":"You've reached your usage limit"}"#, origin)[0], stream::Event::LimitHit(_)));
+    assert!(stream::links("see https://evil.com/x and https://app.cfw.social.evil.com/y", origin).is_empty());
+    assert!(stream::links("plain http://app.cfw.social/x is not the origin", origin).is_empty());
+    // [WI27] Local dev: links on the local origin (http included), nothing else.
+    let local = origin_of("http://localhost:3005/api/v1/mcp");
+    assert_eq!(local, "http://localhost:3005");
+    assert_eq!(stream::links("open http://localhost:3005/a/b.", &local), [stream::Event::Link { label: "Open b".into(), url: "http://localhost:3005/a/b".into() }]);
+    assert!(stream::links("see http://localhost:30050/x and https://app.cfw.social/y", &local).is_empty());
     assert!(allowed_url("https://app.cfw.social/a/b"));
     assert!(!allowed_url("http://app.cfw.social/a"));
     assert!(!allowed_url("https://app.cfw.social.evil.com/"));

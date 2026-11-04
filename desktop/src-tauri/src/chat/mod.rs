@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use stream::Event;
 
 pub const MCP_URL_ENV: &str = "CFW_RENDER_MCP_URL";
-pub const DEFAULT_MCP_URL: &str = "https://app.cfw.social/api/v1/mcp";
+pub const DEFAULT_MCP_URL: &str = crate::profile::PROD_MCP_URL;
 /// Env var the CLI child reads the brand key from, so the key never hits argv.
 /// codex: `env_http_headers`; claude: `${CFW_BRAND_KEY}` inside the inline
 /// `--mcp-config` header, which claude expands from its own environment
@@ -29,18 +29,26 @@ pub fn valid_slug(slug: &str) -> bool {
     (1..=64).contains(&slug.len()) && slug.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-pub fn mcp_url() -> String {
-    std::env::var(MCP_URL_ENV).ok().filter(|u| u.starts_with("https://")).unwrap_or_else(|| DEFAULT_MCP_URL.into())
+/// Production: an `https://` override, else app.cfw.social. Local dev: a local override, else the
+/// Local dev API base; a server off this Mac is refused (see `profile`).
+pub fn mcp_url() -> Result<String, String> {
+    let env = std::env::var(MCP_URL_ENV).ok().filter(|u| !u.is_empty());
+    crate::profile::mcp_url_for(crate::profile::active(), env, crate::support::api_base(&crate::profile::env_file()))
 }
 
-pub fn mcp_host() -> String {
-    let u = mcp_url();
-    u.trim_start_matches("https://").split(['/', '?', '#']).next().unwrap_or("").to_string()
+/// `https://app.cfw.social` (or `http://localhost:3005` in Local dev): the scheme and host of `url`.
+pub fn origin_of(url: &str) -> String {
+    let (scheme, rest) = url.split_once("://").unwrap_or(("https", url));
+    format!("{scheme}://{}", rest.split(['/', '?', '#']).next().unwrap_or(""))
 }
 
-/// Only `https://` on the MCP host may be opened.
+pub fn mcp_origin() -> Result<String, String> {
+    mcp_url().map(|u| origin_of(&u))
+}
+
+/// Only the MCP server's own origin (https, or local http in Local dev) may be opened.
 pub fn allowed_url(url: &str) -> bool {
-    let prefix = format!("https://{}", mcp_host());
+    let Ok(prefix) = mcp_origin() else { return false };
     url.strip_prefix(&prefix).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
         && !url.chars().any(|c| c.is_whitespace() || c.is_control())
 }
@@ -209,8 +217,11 @@ fn run_one(slug: &str, engine: &str, text: &str, key: &str, dir: &Path, emit: &d
         return Outcome::Failed(format!("{} isn't installed.", engines::display(engine)));
     };
     let resume = session::load(dir).get(engine).cloned();
-    let url = mcp_url();
-    let host = mcp_host();
+    let url = match mcp_url() {
+        Ok(u) => u,
+        Err(e) => return Outcome::Failed(e),
+    };
+    let origin = origin_of(&url);
     let args = turn_args(engine, &url, resume.as_deref());
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     let mut cmd = crate::signin::command(&exe, &argv, &path);
@@ -233,7 +244,7 @@ fn run_one(slug: &str, engine: &str, text: &str, key: &str, dir: &Path, emit: &d
     if let Some(out) = stdout {
         for line in BufReader::new(out).lines() {
             let Ok(line) = line else { break };
-            let events = if engine == "codex" { stream::parse_codex(&line, &host) } else { stream::parse_claude(&line, &host) };
+            let events = if engine == "codex" { stream::parse_codex(&line, &origin) } else { stream::parse_claude(&line, &origin) };
             for e in events {
                 let mut ce = ev(slug, "", Some(engine));
                 match e {

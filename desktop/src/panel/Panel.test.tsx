@@ -31,6 +31,21 @@ describe("Panel", () => {
     expect(actions.setPaused).toHaveBeenCalledWith(true);
   });
 
+  it("[WI27] Local dev: shows the server badge and says how the local worker starts", () => {
+    const actions = mk();
+    const server = { active: "localDev", chosen: "localDev", server: "localhost:3005", restartNeeded: false, error: null, switchVisible: true } as const;
+    render(<Panel payload={payload(workingStatus, { liveness: "NotRunning" })} actions={actions} clock={() => NOW} server={server} />);
+    expect(screen.getByRole("status").textContent).toBe("Local dev — localhost:3005");
+    const alert = screen.getByRole("alert").textContent ?? "";
+    expect(alert).toContain("The local worker isn't running");
+    expect(alert).toContain("pnpm dev:stack in cfw-social");
+    cleanup();
+    // Production: no badge, today's text.
+    render(<Panel payload={payload(workingStatus, { liveness: "NotRunning" })} actions={actions} clock={() => NOW} />);
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("alert").textContent).toContain("CFW Render isn't running");
+  });
+
   it("not running: says so and offers Start", () => {
     const actions = mk();
     render(<Panel payload={payload(workingStatus, { liveness: "NotRunning" })} actions={actions} clock={() => NOW} />);

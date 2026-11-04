@@ -3,6 +3,7 @@
 pub mod apikeys;
 pub mod chat;
 pub mod control;
+pub mod profile;
 pub mod setup;
 pub mod signin;
 pub mod state;
@@ -75,7 +76,7 @@ fn tray_title(s: IconState) -> &'static str {
 fn refresh(app: &AppHandle) {
     let p = current_payload();
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        let _ = tray.set_tooltip(Some(format!("CFW Render — {}\n{}", p.tooltip, p.provider_line)));
+        let _ = tray.set_tooltip(Some(format!("{} — {}\n{}", profile::active().app_title(), p.tooltip, p.provider_line)));
         let _ = tray.set_title(Some(tray_title(p.icon_state)));
     }
     if let Some(st) = app.try_state::<AppState>() {
@@ -205,6 +206,7 @@ fn set_dock(_app: &AppHandle, _visible: bool) {}
 /// The trusted local UI explicitly confirms account-wide reach before calling this.
 #[tauri::command]
 async fn setup_with_account(app: AppHandle) -> Result<(), String> {
+    profile::production_only("Setup")?;
     let permit = setup::reserve_setup()?;
     let key = web::mint_account_key(&app).await?;
     setup::start_run_with_key(app, key, permit)
@@ -285,7 +287,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<(TrayIcon, MenuItem<Wry>)> {
 
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
-        .tooltip("CFW Render")
+        .tooltip(profile::active().app_title())
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, rect, .. } = event {
@@ -380,9 +382,14 @@ pub fn run() {
             apikeys::open_provider_key_url,
             updates::check_for_update,
             updates::get_update_settings,
-            updates::set_auto_update
+            updates::set_auto_update,
+            profile::get_server_profile,
+            profile::set_server_profile,
+            profile::restart_app
         ])
         .setup(|app| {
+            // [WI27] First: every path, base and label below asks the profile fixed here.
+            profile::init(app.path().app_config_dir().ok().as_deref());
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Regular);
 
@@ -398,7 +405,7 @@ pub fn run() {
                 refresh(&ticker);
             });
 
-            if !setup::setup_status().installed { setup::open_setup(handle.clone()); }
+            if setup::should_open_setup() { setup::open_setup(handle.clone()); }
             autostart_first_run(&handle);
             updates::start(&handle);
             refresh(&handle);
@@ -422,7 +429,7 @@ pub fn run() {
         .run(|app, event| {
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
-                if !setup::setup_status().installed {
+                if setup::should_open_setup() {
                     setup::open_setup(app.clone());
                 } else {
                     show_main(app);

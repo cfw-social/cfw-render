@@ -68,6 +68,87 @@ describe("Settings", () => {
     expect(await screen.findByText("Sent. Reference: LOG-AB12. Quote it to CFW support.")).toBeTruthy();
   });
 
+  // A production run with CFW_RENDER_DEV_TOOLS=1 (or a debug build): the switch shows.
+  const PROD = { active: "production", chosen: "production", server: "app.cfw.social", restartNeeded: false, error: null, switchVisible: true };
+  const LOCAL = { active: "localDev", chosen: "localDev", server: "localhost:3005", restartNeeded: false, error: null, switchVisible: false };
+
+  it("server switch: hidden for a plain production app, so normal users never see it", async () => {
+    invoke.mockImplementation((cmd: string) => Promise.resolve(cmd === "get_server_profile" ? { ...PROD, switchVisible: false } : null));
+    render(<Settings workerVersion={null} />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("get_server_profile"));
+    expect(await screen.findByText("App 0.1.0 · Worker not installed")).toBeTruthy();
+    expect(screen.queryByRole("radiogroup", { name: "Server" })).toBeNull();
+    expect(screen.queryByText("Server")).toBeNull();
+    // Production otherwise unchanged.
+    expect((screen.getByRole("button", { name: "Uninstall CFW Render…" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("server switch: shown with the dev-tools flag", async () => {
+    invoke.mockImplementation((cmd: string) => Promise.resolve(cmd === "get_server_profile" ? PROD : null));
+    render(<Settings workerVersion={null} />);
+    expect(await screen.findByRole("radiogroup", { name: "Server" })).toBeTruthy();
+  });
+
+  it("server switch: shown when already in Local dev, so it can be switched back", async () => {
+    invoke.mockImplementation((cmd: string) => Promise.resolve(cmd === "get_server_profile" ? LOCAL : null));
+    render(<Settings workerVersion={null} />);
+    expect(await screen.findByRole("radiogroup", { name: "Server" })).toBeTruthy();
+    expect((screen.getByRole("radio", { name: "Local dev" }) as HTMLInputElement).checked).toBe(true);
+  });
+  const radio = (name: string) => screen.getByRole("radio", { name }) as HTMLInputElement;
+
+  it("server switch: Production by default; Local dev is saved for the next start and offers Restart now", async () => {
+    invoke.mockImplementation((cmd: string, args?: { server?: string }) =>
+      Promise.resolve(
+        cmd === "get_server_profile"
+          ? PROD
+          : cmd === "set_server_profile"
+            ? { ...PROD, chosen: args?.server, restartNeeded: args?.server !== "production" }
+            : null,
+      ),
+    );
+    render(<Settings workerVersion={null} />);
+    expect(await screen.findByRole("radiogroup", { name: "Server" })).toBeTruthy();
+    await waitFor(() => expect(radio("Production").checked).toBe(true));
+    expect(radio("Local dev").checked).toBe(false);
+    expect(screen.queryByRole("button", { name: "Restart now" })).toBeNull();
+
+    fireEvent.click(radio("Local dev"));
+    expect(invoke).toHaveBeenCalledWith("set_server_profile", { server: "localDev" });
+    expect(await screen.findByText("Restart CFW Render to switch to Local dev. Nothing changes until then.")).toBeTruthy();
+    expect(radio("Local dev").checked).toBe(true);
+    // Production stays usable until the restart: nothing switched halfway.
+    expect((screen.getByRole("button", { name: "Uninstall CFW Render…" }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Restart now" }));
+    expect(invoke).toHaveBeenCalledWith("restart_app");
+
+    fireEvent.click(radio("Production"));
+    expect(invoke).toHaveBeenCalledWith("set_server_profile", { server: "production" });
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Restart now" })).toBeNull());
+  });
+
+  it("server switch: a failed save says why and keeps the old choice", async () => {
+    invoke.mockImplementation((cmd: string) =>
+      cmd === "set_server_profile" ? Promise.reject("disk full") : Promise.resolve(cmd === "get_server_profile" ? PROD : null),
+    );
+    render(<Settings workerVersion={null} />);
+    await waitFor(() => expect(radio("Production").checked).toBe(true));
+    fireEvent.click(radio("Local dev"));
+    expect((await screen.findByRole("alert")).textContent).toBe("Couldn't save the server choice: disk full");
+    expect(radio("Production").checked).toBe(true);
+  });
+
+  it("in Local dev, Send logs and Uninstall are off, so the production install is never touched", async () => {
+    invoke.mockImplementation((cmd: string) =>
+      Promise.resolve(cmd === "get_server_profile" ? { active: "localDev", chosen: "localDev", server: "localhost:3005", restartNeeded: false, error: null } : null),
+    );
+    render(<Settings workerVersion={null} />);
+    await waitFor(() => expect(radio("Local dev").checked).toBe(true));
+    expect((screen.getByRole("button", { name: "Send logs to CFW…" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Uninstall CFW Render…" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getAllByText("Not available in Local dev. It would change the production setup.").length).toBe(2);
+  });
+
   it("uninstall opens a confirm dialog with the delete-outputs checkbox", async () => {
     invoke.mockResolvedValue({ allowBattery: false, startAtLogin: false, shareCrashReports: true });
     render(<Settings workerVersion={null} />);

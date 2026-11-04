@@ -5,6 +5,8 @@ use std::io::{self, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+use crate::profile;
+
 pub const STATE_DIR_ENV: &str = "CFW_RENDER_STATE_DIR";
 
 #[derive(Debug, thiserror::Error)]
@@ -19,11 +21,13 @@ pub enum ControlError {
     Command(String),
 }
 
+/// `CFW_RENDER_STATE_DIR`, else `~/.cfw-render` (Local dev: `~/.cfw-render-dev`; see `profile`).
 pub fn state_dir() -> Result<PathBuf, ControlError> {
-    if let Some(d) = std::env::var_os(STATE_DIR_ENV).filter(|d| !d.is_empty()) {
-        return Ok(PathBuf::from(d));
-    }
-    dirs::home_dir().map(|h| h.join(".cfw-render")).ok_or(ControlError::NoHome)
+    let env = std::env::var_os(STATE_DIR_ENV).filter(|d| !d.is_empty()).map(PathBuf::from);
+    profile::state_dir_for(profile::active(), env, dirs::home_dir().as_deref()).map_err(|e| match e {
+        profile::FolderError::NoHome => ControlError::NoHome,
+        other => ControlError::Command(other.to_string()),
+    })
 }
 
 /// Atomic write: temp file in the same dir (mode 0600) then rename.
@@ -72,7 +76,6 @@ pub fn allow_battery() -> Result<bool, ControlError> {
     Ok(state_dir()?.join("allow-battery").exists())
 }
 
-pub const LAUNCHD_LABEL: &str = "com.cfw.render";
 // System tools by absolute path: a GUI app's PATH is launchd's default and
 // must not decide which binary runs.
 const LAUNCHCTL: &str = "/bin/launchctl";
@@ -89,14 +92,21 @@ fn run(cmd: &str, args: &[&str]) -> Result<(), ControlError> {
 }
 
 /// Restart the launchd job; if it is not loaded, bootstrap it from the user's LaunchAgents plist.
+/// Local dev only restarts `com.cfw.render.dev`: it never installs or loads a plist, and tells the
+/// owner how the local worker is started instead.
 pub fn start_worker() -> Result<(), ControlError> {
+    let p = profile::active();
+    let label = p.launchd_label();
     let uid = run_uid()?;
     let domain = format!("gui/{uid}");
-    if run(LAUNCHCTL, &["kickstart", "-k", &format!("{domain}/{LAUNCHD_LABEL}")]).is_ok() {
+    if run(LAUNCHCTL, &["kickstart", "-k", &format!("{domain}/{label}")]).is_ok() {
         return Ok(());
     }
+    if p.is_local_dev() {
+        return Err(ControlError::Command(profile::LOCAL_WORKER_HINT.into()));
+    }
     let home = dirs::home_dir().ok_or(ControlError::NoHome)?;
-    let plist = home.join("Library/LaunchAgents").join(format!("{LAUNCHD_LABEL}.plist"));
+    let plist = home.join("Library/LaunchAgents").join(format!("{label}.plist"));
     run(LAUNCHCTL, &["bootstrap", &domain, &plist.to_string_lossy()])
 }
 
@@ -116,9 +126,9 @@ fn parse_uid(ok: bool, stdout: &[u8]) -> Result<String, ControlError> {
     }
 }
 
-/// Opens `~/CFW Render/logs` in Finder. Creates nothing.
+/// Opens `~/CFW Render/logs` (Local dev: `~/.cfw-render-dev/render-home/logs`) in Finder. Creates nothing.
 pub fn open_logs() -> Result<(), ControlError> {
-    let dir = dirs::home_dir().ok_or(ControlError::NoHome)?.join("CFW Render").join("logs");
+    let dir = profile::logs_dir_for(profile::active(), &dirs::home_dir().ok_or(ControlError::NoHome)?);
     run(OPEN, &[&dir.to_string_lossy()])
 }
 

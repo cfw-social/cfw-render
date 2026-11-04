@@ -1,11 +1,17 @@
 //! Brand keys in the login Keychain (service `com.cfw.render`, account `brand:<slug>`).
+//! Local dev keeps its own brand keys under `com.cfw.render.dev` (see `profile`).
 //! The key never goes on argv: writes go through `security -i` on stdin.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+/// AI provider keys (`apikeys`) stay here in every profile: the worker reads them from this service.
 pub const SERVICE: &str = "com.cfw.render";
 pub const SECURITY_ENV: &str = "CFW_RENDER_SECURITY_CMD";
+
+fn service() -> &'static str {
+    crate::profile::active().brand_key_service()
+}
 
 fn security() -> Command {
     let exe = std::env::var_os(SECURITY_ENV).filter(|v| !v.is_empty()).unwrap_or_else(|| "/usr/bin/security".into());
@@ -35,7 +41,7 @@ pub fn put(slug: &str, key: &str) -> Result<(), String> {
     let mut child = security().arg("-i").stdin(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
     {
         let mut stdin = child.stdin.take().ok_or("no stdin")?;
-        let line = format!("add-generic-password -U -s {SERVICE} -a {} -w {key}\n", account(slug));
+        let line = format!("add-generic-password -U -s {} -a {} -w {key}\n", service(), account(slug));
         stdin.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
     }
     let st = child.wait().map_err(|e| e.to_string())?;
@@ -47,7 +53,7 @@ pub fn get(slug: &str) -> Result<String, String> {
         return Err("invalid brand".into());
     }
     let out = security()
-        .args(["find-generic-password", "-s", SERVICE, "-a", &account(slug), "-w"])
+        .args(["find-generic-password", "-s", service(), "-a", &account(slug), "-w"])
         .stdout(Stdio::piped())
         .output()
         .map_err(|e| e.to_string())?;
@@ -59,7 +65,7 @@ pub fn delete(slug: &str) -> Result<(), String> {
     if !super::valid_slug(slug) {
         return Err("invalid brand".into());
     }
-    let _ = security().args(["delete-generic-password", "-s", SERVICE, "-a", &account(slug)]).status();
+    let _ = security().args(["delete-generic-password", "-s", service(), "-a", &account(slug)]).status();
     Ok(())
 }
 

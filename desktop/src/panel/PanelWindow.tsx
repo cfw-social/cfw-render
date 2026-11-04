@@ -2,11 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
 import { actions } from "../main-window/tauri";
+import { useServer } from "../server";
 import type { StatusPayload } from "../status";
 import { Panel } from "./Panel";
 
 export default function PanelWindow() {
   const [payload, setPayload] = useState<StatusPayload | null>(null);
+  const server = useServer();
   useEffect(() => {
     invoke<StatusPayload>("get_status").then(setPayload).catch(() => {});
     const un = listen<StatusPayload>("status", (e) => setPayload(e.payload));
@@ -14,5 +16,5 @@ export default function PanelWindow() {
       un.then((f) => f());
     };
   }, []);
-  return <Panel payload={payload} actions={actions} />;
+  return <Panel payload={payload} actions={actions} server={server} />;
 }

@@ -1,0 +1,63 @@
+name: test
+
+# [WI27.6] The worker's own checks run on every change: lint (bash -n,
+# shellcheck, actionlint, manifests, step files), the skills bundle against
+# its pin, the fast node gate and the full suite. Before this, CI only built
+# the desktop app and the toolchain, so nothing ran test/run-tests.sh.
+#
+# The full suite starts and kills its own fixture processes, so it runs only
+# on a fresh CI machine, never against a live worker.
+
+on:
+  push:
+    branches: [develop, main]
+    paths-ignore: ["desktop/**", ".github/workflows/desktop.yml"]
+  pull_request:
+    paths-ignore: ["desktop/**", ".github/workflows/desktop.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint tools
+        run: brew install shellcheck actionlint
+
+      - name: Lint
+        run: bash scripts/lint.sh
+
+      - name: Skills bundle matches its pin
+        run: bash scripts/verify-skills-bundle.sh
+
+  suite:
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Tools the suite uses
+        run: brew install ffmpeg imagemagick jq
+
+      - name: Fast gate
+        run: >-
+          node --test test/gate-suite.test.mjs test/keys-scrub.test.mjs
+          test/playwright-pin.test.mjs test/delivery-deliverables.test.mjs
+          test/profile-dev.test.mjs
+
+      # node-suite.test.mjs runs bash test/run-tests.sh once, one subtest per case.
+      - name: Full suite
+        run: node --test test/node-suite.test.mjs

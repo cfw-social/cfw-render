@@ -60,6 +60,34 @@ When you tell the owner where something is, use these plain words: "your
 finished videos and images are in the CFW Render folder in your home folder,
 under outputs, one folder per brand."
 
+## Testing against a local CFW: the dev profile (WI27)
+
+`CFW_RENDER_PROFILE=dev` runs a second worker beside the installed one, for
+agents and developers testing against CFW Social on this computer:
+
+| | Installed (default) | Dev profile |
+|---|---|---|
+| Server | `CFW_API_BASE` (usually `https://app.cfw.social`) | `http://localhost:3005` by default; only localhost / 127.0.0.1 is accepted |
+| Settings | `~/.cfw-render/cfw-render.env` | `~/.cfw-render-dev/cfw-render.env` |
+| Folders | `~/.cfw-render`, `~/CFW Render` | all under the hidden `~/.cfw-render-dev` (`render-state/`, `render-home/`) |
+| launchd label | `com.cfw.render` | `com.cfw.render.dev` (not installed by `install.sh`) |
+
+The dev profile refuses a server that is not on this computer and every folder
+of the installed worker, and `install/install.sh` (install and uninstall)
+refuses to run under it. Do not set it up by hand: in cfw-social,
+`pnpm dev:stack --render-repo <this checkout>` seeds a test brand and its keys,
+starts Social on 3005 and runs this worker (`--loop`) in the dev profile;
+`pnpm smoke:local <recipe>` then sends one order to Reviews. The same local
+Social is also reachable through the Cloudflare tunnel `https://v2.cfw.social`.
+The desktop app has a matching **Settings → Server: Production / Local dev**
+switch. Never run the installed worker (`com.cfw.render`) against a local CFW.
+
+Two things the dev profile does **not** separate: the AI engine sign-ins and
+provider keys in this Mac's Keychain (service `com.cfw.render`), and the
+provider keys a brand carries. A local render therefore uses real plan
+credit and, for paid recipes, real provider money; see WI27.7 for the spend
+cap before running a paid recipe locally.
+
 ## Before rendering anything: preflight
 
 ```bash

@@ -10,7 +10,8 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::{signin, toolchain};
+use crate::profile::Profile;
+use crate::{profile, signin, toolchain};
 
 pub const INSTALLER_ENV: &str = "CFW_RENDER_INSTALLER";
 const ARGS: [&str; 5] = ["--mode", "byoa", "--non-interactive", "--from-app", ""];
@@ -65,20 +66,27 @@ fn setup_marker() -> Option<PathBuf> {
     toolchain::render_home().ok().map(|h| h.join("app/.setup-complete"))
 }
 
-pub fn status_at(home: &Path, marker: Option<&Path>) -> SetupStatus {
-    let env_has_key = std::fs::read_to_string(home.join(".cfw-render/cfw-render.env"))
+pub fn status_at(p: Profile, home: &Path, marker: Option<&Path>) -> SetupStatus {
+    let env_has_key = std::fs::read_to_string(home.join(p.env_file_rel()))
         .map(|s| s.lines().any(|l| l.trim_start().starts_with("CFW_RENDER_WORKER_KEY=")))
         .unwrap_or(false);
-    let plist = home.join("Library/LaunchAgents/com.cfw.render.plist").is_file();
+    let plist = home.join("Library/LaunchAgents").join(format!("{}.plist", p.launchd_label())).is_file();
     SetupStatus { installed: marker.is_some_and(|m| m.exists()), adoptable: env_has_key && plist }
 }
 
 pub fn setup_status() -> SetupStatus {
     match dirs::home_dir() {
-        Some(h) => status_at(&h, setup_marker().as_deref()),
+        Some(h) => status_at(profile::active(), &h, setup_marker().as_deref()),
         None => SetupStatus { installed: false, adoptable: false },
     }
 }
+
+/// Setup runs the production installer, so Local dev never offers or starts it.
+pub fn should_open_setup() -> bool {
+    !profile::active().is_local_dev() && !setup_status().installed
+}
+
+const SETUP: &str = "Setup";
 
 /// env override → bundled `<Resources>/worker/install/install.sh` → `~/CFW Render/app/install/install.sh`.
 pub fn installer_path(resource_dir: Option<&Path>) -> Option<PathBuf> {
@@ -236,6 +244,7 @@ pub fn get_setup_status() -> SetupStatus {
 
 #[tauri::command]
 pub fn setup_run(app: AppHandle, brand_key: String, install_tools: bool) -> Result<(), String> {
+    profile::production_only(SETUP)?;
     if !valid_key(brand_key.trim()) {
         return Err("That doesn't look like a brand key. It starts with cfw_.".into());
     }
@@ -270,6 +279,7 @@ pub fn setup_install_tools(app: AppHandle) {
 /// Run setup with a key the app made itself (account-wide), showing progress in the setup window.
 /// The key goes only to the installer's stdin, exactly like a pasted one.
 pub fn start_run_with_key(app: AppHandle, key: String, permit: SetupPermit) -> Result<(), String> {
+    profile::production_only(SETUP)?;
     if !valid_key(key.trim()) {
         return Err("CFW sent an unexpected reply".into());
     }
@@ -286,6 +296,7 @@ pub fn start_run_with_key(app: AppHandle, key: String, permit: SetupPermit) -> R
 
 #[tauri::command]
 pub fn setup_adopt(app: AppHandle) -> Result<(), String> {
+    profile::production_only(SETUP)?;
     let permit = reserve_setup()?;
     let installer = installer_path(app.path().resource_dir().ok().as_deref())
         .ok_or("The CFW Render installer wasn't found. Reinstall the app and try again.")?;
@@ -445,14 +456,20 @@ exit 0"#,
     #[test]
     fn status_adoptable_needs_key_and_plist() {
         let d = tempfile::tempdir().unwrap();
-        assert_eq!(status_at(d.path(), None), SetupStatus { installed: false, adoptable: false });
+        assert_eq!(status_at(Profile::Production, d.path(), None), SetupStatus { installed: false, adoptable: false });
         std::fs::create_dir_all(d.path().join(".cfw-render")).unwrap();
         std::fs::write(d.path().join(".cfw-render/cfw-render.env"), "CFW_RENDER_WORKER_KEY=x\n").unwrap();
         std::fs::create_dir_all(d.path().join("Library/LaunchAgents")).unwrap();
         std::fs::write(d.path().join("Library/LaunchAgents/com.cfw.render.plist"), "").unwrap();
-        let s = status_at(d.path(), None);
+        let s = status_at(Profile::Production, d.path(), None);
         assert!(s.adoptable && !s.installed);
         assert!(!serde_json::to_string(&s).unwrap().contains("=x"));
+        // [WI27] Local dev looks only at its own files: the production ones do not count.
+        assert_eq!(status_at(Profile::LocalDev, d.path(), None), SetupStatus { installed: false, adoptable: false });
+        std::fs::create_dir_all(d.path().join(".cfw-render-dev")).unwrap();
+        std::fs::write(d.path().join(".cfw-render-dev/cfw-render.env"), "CFW_RENDER_WORKER_KEY=y\n").unwrap();
+        std::fs::write(d.path().join("Library/LaunchAgents/com.cfw.render.dev.plist"), "").unwrap();
+        assert!(status_at(Profile::LocalDev, d.path(), None).adoptable);
     }
 
     #[test]
