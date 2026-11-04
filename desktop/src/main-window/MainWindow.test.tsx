@@ -46,6 +46,17 @@ afterEach(() => {
 const current = () => screen.getByRole("main").getAttribute("data-section");
 const location = (url: string) => act(async () => h.listeners["web-location"]({ payload: url }));
 
+// The owner's saved brand ("gone-brand") is no longer in the list; "atlas-bikes" is the current one.
+const ATLAS_CURRENT = { signedIn: true, brands: BRANDS.brands.map((b) => ({ ...b, isCurrent: b.slug === "atlas-bikes" })) };
+const shown = () => h.invoke.mock.calls.filter(([cmd]) => cmd === "web_show").map(([, args]) => args);
+/** Every other call answers as usual; `web_brands` waits until the returned function is called. */
+const holdBrands = () => {
+  let reply!: (w: unknown) => void;
+  const pending = new Promise((resolve) => { reply = resolve; });
+  h.invoke.mockImplementation((cmd: string) => (cmd === "web_brands" ? pending : Promise.resolve(cmd === "get_status" ? payload(workingStatus) : null)));
+  return (w: unknown) => act(async () => reply(w));
+};
+
 describe("main window", () => {
   it("copies only the selected attempt identity and uses the public guide with offline fallback", async () => {
     // Actual worker serialization after failed A and successful B reuse scratch.
@@ -180,5 +191,84 @@ describe("main window", () => {
     expect(await screen.findByText("Priya's Mac")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Pause this Mac" }));
     expect(h.invoke).toHaveBeenCalledWith("set_paused", { paused: true });
+  });
+
+  it("a saved brand that no longer exists: opens the page again for the current brand, once", async () => {
+    localStorage.setItem("cfw.brand", "gone-brand");
+    h.invoke.mockImplementation((cmd: string) => Promise.resolve(cmd === "get_status" ? payload(workingStatus) : cmd === "web_brands" ? ATLAS_CURRENT : null));
+    render(<MainWindow clock={() => NOW} />);
+    await act(async () => {});
+    expect(shown()).toEqual([{ section: "home", slug: "gone-brand" }, { section: "home", slug: "atlas-bikes" }]);
+    expect(localStorage.getItem("cfw.brand")).toBe("atlas-bikes");
+
+    // the reopened page reports its address: the brand is in the list, so nothing opens again
+    await location("https://app.cfw.social/atlas-bikes");
+    expect(h.invoke.mock.calls.filter(([cmd]) => cmd === "web_brands")).toHaveLength(2);
+    expect(shown()).toHaveLength(2);
+  });
+
+  it("reopens the section the owner is on, and only once when the dead page reports its address too", async () => {
+    localStorage.setItem("cfw.brand", "gone-brand");
+    const reply = holdBrands();
+    render(<MainWindow clock={() => NOW} />);
+    await location("https://app.cfw.social/gone-brand/reviews");
+    expect(current()).toBe("reviews");
+    // two brand-list requests are waiting (start-up and the page's address), both get the same answer
+    await reply(ATLAS_CURRENT);
+    expect(shown()).toEqual([{ section: "home", slug: "gone-brand" }, { section: "reviews", slug: "atlas-bikes" }]);
+    expect(current()).toBe("reviews");
+  });
+
+  it("a saved brand that is still in the list is left alone", async () => {
+    localStorage.setItem("cfw.brand", "atlas-bikes");
+    h.invoke.mockImplementation((cmd: string) => Promise.resolve(cmd === "get_status" ? payload(workingStatus) : cmd === "web_brands" ? ATLAS_CURRENT : null));
+    render(<MainWindow clock={() => NOW} />);
+    await act(async () => {});
+    expect(await screen.findByText("Atlas Bikes")).toBeTruthy();
+    expect(shown()).toEqual([{ section: "home", slug: "atlas-bikes" }]);
+    expect(localStorage.getItem("cfw.brand")).toBe("atlas-bikes");
+  });
+
+  it("a stale brand is replaced quietly while the owner is on a Mac page", async () => {
+    localStorage.setItem("cfw.brand", "gone-brand");
+    const reply = holdBrands();
+    render(<MainWindow clock={() => NOW} />);
+    fireEvent.click(screen.getByRole("button", { name: "Renders" }));
+    expect(current()).toBe("renders");
+    await reply(ATLAS_CURRENT);
+    expect(localStorage.getItem("cfw.brand")).toBe("atlas-bikes");
+    expect(shown()).toEqual([{ section: "home", slug: "gone-brand" }]);
+    expect(current()).toBe("renders");
+    // the website view was hidden once, by the click; the reply does not hide it again
+    expect(h.invoke.mock.calls.filter(([cmd]) => cmd === "web_hide")).toHaveLength(1);
+
+    // coming back to the website uses the real brand
+    fireEvent.click(screen.getByRole("button", { name: "Home" }));
+    expect(h.invoke).toHaveBeenLastCalledWith("web_show", { section: "home", slug: "atlas-bikes" });
+  });
+
+  it.each(["all", "login"])("a stale brand is replaced without moving the website off its /%s page", async (page) => {
+    localStorage.setItem("cfw.brand", "gone-brand");
+    const reply = holdBrands();
+    render(<MainWindow clock={() => NOW} />);
+    await location(`https://app.cfw.social/${page}`);
+    await reply(ATLAS_CURRENT);
+    expect(localStorage.getItem("cfw.brand")).toBe("atlas-bikes");
+    expect(shown()).toEqual([{ section: "home", slug: "gone-brand" }]);
+  });
+
+  it.each(["/runs", "/admin/brands", "/privacy", "/help", "/connect", "/c/atlas-bikes"])("a website page that is not a brand (%s) is not mistaken for one", async (path) => {
+    localStorage.setItem("cfw.brand", "atlas-bikes");
+    h.invoke.mockImplementation((cmd: string) => Promise.resolve(cmd === "get_status" ? payload(workingStatus) : cmd === "web_brands" ? ATLAS_CURRENT : null));
+    render(<MainWindow clock={() => NOW} />);
+    await location("https://app.cfw.social/atlas-bikes/reviews");
+    expect(current()).toBe("reviews");
+    // a full page load of one of the website's own pages (rail Refresh, a GET form), then the brand list
+    const reply = holdBrands();
+    await location(`https://app.cfw.social${path}`);
+    await reply(ATLAS_CURRENT);
+    expect(shown()).toEqual([{ section: "home", slug: "atlas-bikes" }]);
+    expect(localStorage.getItem("cfw.brand")).toBe("atlas-bikes");
+    expect(current()).toBe("reviews");
   });
 });

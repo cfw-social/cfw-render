@@ -26,8 +26,15 @@ export function sectionFromWebPath(path: string, slug: string | null): WebSectio
   return (WEB_SECTIONS as readonly string[]).includes(parts[1]) ? (parts[1] as WebSection) : null;
 }
 
+// Keep in step with RESERVED_SLUGS in cfw-social src/proxy.ts; the dotted and "_" names there can't pass the slug test below.
+const NOT_BRANDS = new Set([
+  "login", "register", "signup", "forgot-password", "reset-password", "logout", "invite", "auth", "oauth",
+  "icons", "images", "public", "compose", "compositions", "settings", "onboarding", "templates",
+  "posts", "agents", "workspaces", "recipes", "analytics", "repurpose", "inbox", "reviews",
+  "api", "admin", "a", "c", "s", "upload", "unauthorized", "all", "runs", "connect",
+  "account", "help", "pricing", "legal", "blog", "docs", "privacy", "terms",
+]);
 /** The brand slug a website path is under, if it looks like one (not /login, /all, /api, …). */
-const NOT_BRANDS = new Set(["login", "signup", "all", "api", "onboarding", "settings", "compose", "invite", "auth"]);
 export function slugFromWebPath(path: string): string | null {
   const first = path.split("/").filter(Boolean)[0];
   return first && !NOT_BRANDS.has(first) && /^[a-z0-9][a-z0-9-]{0,62}$/.test(first) ? first : null;
