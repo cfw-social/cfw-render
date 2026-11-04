@@ -7,11 +7,14 @@ that touches loudness.
 ## You receive
 
 - `prior/composite_video.mp4` — the assembled video (+ outro).
-- `prior/transcripts.json` — `words` and `srt` for captions.
-- `prior/broll_plan.json` — `pip_side` per row (captions must clear the PIP corner of each beat).
+- `prior/transcripts.json` — `words` (the script, aligned) and `spoken_words` (everything the
+  recogniser heard, with times) for captions.
+- `prior/broll_plan.json` — its last row (`gfx:cta`) is the end card: captions stop where it starts.
+  Captions never depend on the layout rows or on `pip_side`: the caption text sits in x 420–1500,
+  which is clear of the PIP card on both sides, on every beat.
 - `inputs/captions/captions.md` — the choice as raw text, `on` or `off` (the worker stages every
   typed answer as `<id>.md`; `captions.json` `{"choice": "on|off"}` and `captions.txt` are read
-  too); dir absent → `off`.
+  too). Captions are **on** unless the answer is `off`: a dir that is absent is not a refusal.
 - `brief.json` — `options.sfx` (on), `brand` accent colour.
 
 ## You must produce
@@ -25,15 +28,8 @@ that touches loudness.
 mkdir -p work saves
 SKILL_DIR="$CFW_RENDER_SKILLS_DIR/p-longform"
 IN=prior/composite_video.mp4
-CAPS=$(python3 - <<'PY'
-import glob, json, os
-j = "inputs/captions/captions.json"
-if os.path.exists(j): v = json.load(open(j, encoding="utf-8")).get("choice") or ""
-else: v = next((open(f, encoding="utf-8").read() for f in sorted(glob.glob("inputs/captions/*")) if f.endswith((".md", ".txt"))), "")
-v = v.strip().lower()
-print("on" if v in ("on", "yes", "true", "1") or v.startswith("yes") else "off")
-PY
-)
+CAPS=$(python3 "$SKILL_DIR/scripts/captions.py" choice --dir .)   # on | off; on unless the owner said off
+case "$CAPS" in on|off) ;; *) echo "captions choice unreadable"; exit 1 ;; esac
 SFX=$(python3 -c "import json;print((json.load(open('brief.json')).get('options') or {}).get('sfx','on'))")
 ```
 
@@ -67,21 +63,39 @@ ffmpeg -i work/loudnorm.mp4 -af loudnorm=I=-14:LRA=11:TP=-1.5:print_format=json 
 last thing in it; the parser takes the last `{...}` either way.) The verify line must read −14 ± 0.5. No clipping (`TP ≤ −1.0`), no silence gap > 2 s
 (`silencedetect=n=-45dB:d=2` reports nothing before the outro).
 
-### 3. Captions — when `captions = on`
+### 3. Captions — when `captions = on` (the default)
 
-Word-level captions from `prior/transcripts.json.words`: lower band (`CAP_TOP=820`), centred,
-Inter 56 px white with the **brand accent** on the active word, each caption ≤ 8 words, clear of
-both bottom corners (the PIP card alternates left/right: keep text inside x 420–1500). Build an
-ASS file in `work/captions.ass` with per-word `\k` karaoke timing and burn:
+Captions are made here and nowhere else (`composite` draws none), by one checked-in script, so every
+render has the same captions: `scripts/captions.py`. Do not write your own caption code, do not edit
+the file it writes, do not change the burn command and **never download a font**: the burn uses the
+Inter Bold file bundled in `fonts/` through an explicit font folder. `build` reads
+`prior/transcripts.json` (the aligned `words` plus the recognised words in `spoken_words` that fall in a
+real hole, so words the speaker added to the script are captioned too, and no word shows twice) and the end card start in `prior/broll_plan.json`, and it
+writes `work/captions.ass`: every spoken word, in the lower band (`CAP_TOP=820`), centred inside
+x 420–1500, Inter 56 px white on a dark box, one or two lines of at most 7 words, with the **brand
+accent** on the active word. Nothing starts at or after the end card. Every spoken word is captioned,
+including the ones spoken over a card, a slide, a diagram or a full-screen still. A caption is never
+skipped because of what is on screen. If the transcript has no `spoken_words` (a restored run), `build`
+transcribes the narration itself; if it cannot, it stops and says why.
 
 ```bash
-ffmpeg -y -i work/loudnorm.mp4 -vf "ass=work/captions.ass" -c:v libx264 -pix_fmt yuv420p -preset medium -crf 18 -g 25 -c:a copy -movflags +faststart saves/mastered_video.mp4
+if [ "$CAPS" = on ]; then
+  python3 "$SKILL_DIR/scripts/captions.py" build --dir . --out work/captions.ass \
+    && python3 "$SKILL_DIR/scripts/captions.py" verify --dir . --ass work/captions.ass \
+    && python3 "$SKILL_DIR/scripts/captions.py" burn --dir . --in work/loudnorm.mp4 --ass work/captions.ass --out saves/mastered_video.mp4
+else
+  ffmpeg -y -i work/loudnorm.mp4 -c copy -movflags +faststart saves/mastered_video.mp4
+fi
 ```
 
-`captions = off` → `ffmpeg -y -i work/loudnorm.mp4 -c copy -movflags +faststart saves/mastered_video.mp4`.
-Captions never render over the outro or the end card. Read the last row of `prior/broll_plan.json`
-(`gfx:cta`): no caption event starts at or after that row's `start`, and a caption that is on
-screen then ends at that `start`. The end card stays clean so the final check can match it.
+`verify` measures the speech from the narration audio (`prior/composite_video.mp4`), not from the
+transcript. It fails (and so does the run) when speech goes more than 3 s without a caption, when under
+97 % of the speech time is captioned, or when a caption is on screen over the end card. It prints the
+coverage and the worst gap. `burn` stops when no ffmpeg with the `ass` filter is found (it tries
+`CFW_FFMPEG` when set, else the ffmpeg on `PATH`, else the ffmpeg-full install). If either fails, fix the
+input it names (a missing narration or transcript); if you cannot, exit non-zero and say what it printed. A second
+`build` gives the same file. Do not loosen the check and do not burn a file it rejected. Only an
+explicit `off` burns nothing. The end card stays clean so the final check can match it.
 
 ### 4. Verify
 
@@ -92,11 +106,15 @@ ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_r
 
 ## If you cannot proceed
 
-This step has no `canAsk`. Never write `needs_input.json`. A missing `captions` choice means off;
-an undecodable composite is a failure of the previous step — exit non-zero and say so.
+This step has no `canAsk`. Never write `needs_input.json`. A missing `captions` choice means on, and
+only an explicit `off` skips them; an undecodable composite is a failure of the previous step — exit
+non-zero and say so.
 
 ## Checks the harness runs
 
 - `master_loudness` — integrated loudness of `saves/mastered_video.mp4` is −14 LUFS ± 1.5.
 - `master_has_speech` — `volumedetect` mean volume between −32 and −8 dB (speech present, not
-  crushed).
+  crushed). When captions are on it also runs `captions.py verify` on `work/captions.ass`: no stretch
+  of voiced narration over 3 s without a caption, at least 97 % of the voiced time captioned, nothing
+  over the end card. It fails when captions are off but the brief's intent asks for them. Keep
+  `work/captions.ass` in place until the step ends; the check reads it.

@@ -127,7 +127,11 @@ ask). When the owner answers, the harness reruns the step from scratch.
   (`'Poppins'`, `'Inter'`, `'Oswald'`, `'JetBrains Mono'`) — never a `var(--font-*)`.
 - **PIP card** is a rounded rectangle (~304×380, bottom corner alternating left/right across beats,
   ~72 px margin, thin gold `#D4A84C` border, soft shadow) — never a circle, never borderless.
-  Graphics and captions never enter the PIP zone of the current beat.
+  Graphics never enter the PIP zone of the current beat. Captions are different: they are made once,
+  by `scripts/captions.py` in `post_process`, from the transcript, in x 420–1500 (clear of both PIP
+  corners), and they cover every spoken word until the end card. They are never skipped, shortened
+  or moved because of a card, a slide or a full-screen still; a full-frame still is fitted above the
+  caption band instead (`scripts/caption-safe.py`, composite step 1b).
 - **Green-screen keying is two-pass `colorkey`** (`0x00FF00:0.25:0.05` then `0x00FF00:0.40:0.01`),
   never `chromakey`; detect the background type from edge pixels first — an opaque avatar is not
   keyed.

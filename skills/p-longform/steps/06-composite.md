@@ -13,6 +13,9 @@ the spine — each segment carries the exact audio of its window so the narratio
   (`supplied`, `avatar` or `voice`).
 - `inputs/broll/` — the footage the plan references.
 - `inputs/outro/` — one landscape clip (1–15 s) when supplied.
+- `inputs/captions/` — the owner's captions choice. Captions are **on** unless the answer is `off`
+  (a missing input is not a refusal). This step draws **no captions**: they are burned once, in
+  `post_process`, from the transcript. This step only leaves room for them (step 1b).
 - `brief.json` — `brand` palette, `options.pip_mode`.
 
 ## You must produce
@@ -61,11 +64,40 @@ ffmpeg -y -f lavfi -i "color=c=0x${BGHEX}:s=1920x1080:r=25" -i "$AV" -filter_com
 
 Use the brand `bg` hex. Inspect one frame at 50 % for a green fringe before building 60 segments.
 
+### 1b. Keep the caption band clear — when captions are on (the default)
+
+Captions are burned later over the bottom of the whole frame (y 820 and down). A still that fills the
+frame and has its own text near the bottom (a diagram with labels, a slide) would sit under them. So
+when captions are on, fit every such still above the band: one script does it, the same way every
+time. It scales each full-frame still to fit inside the top 800 px, centred, over a blurred, slightly
+darkened copy of itself that fills the rest of the frame (no bars), and writes a new plan that points at the fitted
+copies. Cards, video footage and the end card (`gfx:cta`) are left exactly as they were.
+
+```bash
+SKILL_DIR="$CFW_RENDER_SKILLS_DIR/p-longform"
+NOPIP_ARG=""; if [ "$NOPIP" = 1 ]; then NOPIP_ARG="--no-pip"; fi
+CAPS=$(python3 "$SKILL_DIR/scripts/captions.py" choice --dir .); case "$CAPS" in on|off) ;; *) echo "captions choice unreadable"; exit 1 ;; esac
+if [ "$CAPS" = on ]; then                       # on unless the owner said off
+  python3 "$SKILL_DIR/scripts/caption-safe.py" --plan prior/broll_plan.json --broll inputs/broll \
+    --visuals work/visuals --out-plan work/broll_plan.safe.json $NOPIP_ARG
+fi
+```
+
+Captions off → nothing to fit and no new plan. The script exits 2 and names the row when a still it
+must fit is missing or cannot be read; fix that row, never skip it. Running it again is safe.
+
 ### 2. Build one segment per row
 
 ```bash
+SKILL_DIR="$CFW_RENDER_SKILLS_DIR/p-longform"
 NOPIP_ARG=""; if [ "$NOPIP" = 1 ]; then NOPIP_ARG="--no-pip"; fi
-python3 "$SKILL_DIR/.hub/c-ffmpeg/scripts/build-segments.py" --plan prior/broll_plan.json \
+PLAN=prior/broll_plan.json                     # captions on: the plan step 1b wrote, never the original
+CAPS=$(python3 "$SKILL_DIR/scripts/captions.py" choice --dir .); case "$CAPS" in on|off) ;; *) echo "captions choice unreadable"; exit 1 ;; esac
+if [ "$CAPS" = on ]; then
+  PLAN=work/broll_plan.safe.json
+  [ -s "$PLAN" ] || { echo "captions are on but step 1b did not write $PLAN"; exit 1; }
+fi
+python3 "$SKILL_DIR/.hub/c-ffmpeg/scripts/build-segments.py" --plan "$PLAN" \
   --avatar work/avatar-on-bg.mp4 --avatar-raw "$AV" --key "${KEY%,}" --visuals work/visuals \
   --broll inputs/broll --out work/seg --pip-card rounded --pip-size 304x380 --pip-margin 72 --pip-border "#D4A84C" \
   --card-bg "#$BGHEX" $NOPIP_ARG
@@ -73,7 +105,8 @@ python3 "$SKILL_DIR/.hub/c-ffmpeg/scripts/build-segments.py" --plan prior/broll_
 
 Per layout: `AVATAR_FULL` → `work/avatar-on-bg.mp4` trimmed `[start,end)`; `PIP_CORNER` → asset
 scaled / blurred-fill to 1920×1080 (no bars) with the keyed avatar inside the rounded gold-rim
-card at the row's `pip_side`; `FULLSCREEN_BROLL` → the asset alone; `SIDE_BY_SIDE` → `hstack` of
+card at the row's `pip_side`; `FULLSCREEN_BROLL` → the asset alone (with captions on, a still has already been fitted above the
+caption band by step 1b; draw nothing on it yourself); `SIDE_BY_SIDE` → `hstack` of
 the recording and the avatar, each 960 wide; `PIP_SIDE` → avatar in a 640-wide column on the
 `pip_side`. Every segment takes its audio from `"$AV"` for the row's exact window (a row starts on
 the 25 fps frame nearest its `start`, so rows join with no gap), `-g 25`, 25 fps, yuv420p. The

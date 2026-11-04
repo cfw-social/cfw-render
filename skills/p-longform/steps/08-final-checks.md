@@ -93,7 +93,11 @@ Per frame, with the plan row for that time: (a) background never a bare black vo
 full-avatar beats the whole face is visible, not cropped or stretched, no green ghost fringe;
 (c) on PIP beats the rounded gold-rim card is fully on screen in the planned corner; (d) graphics
 and captions clear that corner; (e) the background fills 1920×1080 — no pillarbox / letterbox
-bands; (f) captions (when on) legible with the accent active word, inside the lower band;
+bands; (f) captions (when on) present on a sampled frame whenever a word is being spoken at that moment, cards,
+slides and full-screen stills included, legible with the accent active word, inside the lower band. A
+frame with no caption is a FAIL only when a word in `prior/transcripts.json` (`spoken_words`, else
+`words`) starts or ends within 0.3 s of that frame (the video time minus the 0.4 s cover freeze is the
+transcript time). A frame inside a pause between sentences has no caption by design and passes;
 (g) frame 0 is the money shot; (h) GFX / b-roll coverage is plausible against the plan; (i) the
 `qa_cta.png` frame shows the brand end card: the brand name, the offer line and the handle (when
 the brand has one) and no other words, no production labels, no sentence from the script; (j) lip movement plausibly matches speech on
