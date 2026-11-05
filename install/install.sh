@@ -103,6 +103,70 @@ print(json.dumps(o), flush=True)' "$@" >&3
 # app_fail <step> <exit> <message> [action]
 app_fail() { app_step "$1" failed "$3" "${4:-}"; exit "$2"; }
 
+# drop_env <key> <file> — remove every "<key>=" line from the settings file, with
+# leading blanks and an optional `export ` allowed: the worker SOURCES this file
+# (cr_load_config), so a hand-written `export KEY=value` is a pin too. Other keys
+# that merely start with <key> (CFW_RENDER_ENGINE_CMD, ...) and comments are kept.
+# Return codes: 0 a line was removed; 1 nothing to do (no file, or no such line);
+# 2 it failed (file not readable or not writable, no temp file, a write error), with
+# the reason in DROP_ENV_ERR. A failure leaves the file as it was except for a write
+# that breaks half way. Same portable write-back as upsert_env: sed to a temp file,
+# then `cat tmp > file`, so the file keeps its mode (0600) and owner; the temp file
+# never outlives the call.
+DROP_ENV_ERR=""
+drop_env() { # drop_env <key> <file>
+  local key="$1" file="$2" tmp g=0 pat
+  DROP_ENV_ERR=""
+  pat="^[[:space:]]*(export[[:space:]]+)?${key}="
+  [[ -f "$file" ]] || return 1
+  grep -qE "$pat" "$file" 2>/dev/null || g=$?
+  case "$g" in
+    0) ;;
+    1) return 1 ;;
+    *) DROP_ENV_ERR="the file cannot be read"; return 2 ;;
+  esac
+  [[ -w "$file" ]] || { DROP_ENV_ERR="the file is read-only"; return 2; }
+  tmp="$(mktemp 2>/dev/null)" || { DROP_ENV_ERR="no temp file could be made"; return 2; }
+  if ! sed -E "/${pat}/d" "$file" > "$tmp" 2>/dev/null; then
+    DROP_ENV_ERR="the file could not be rewritten"; rm -f "$tmp"; return 2
+  fi
+  if ! cat "$tmp" > "$file" 2>/dev/null; then
+    DROP_ENV_ERR="the file could not be written"; rm -f "$tmp"; return 2
+  fi
+  rm -f "$tmp"
+  return 0
+}
+
+# unpin_engine — clear a CFW_RENDER_ENGINE line from the settings file. An older
+# installer wrote one: the worker takes it to mean "use only this engine", which
+# hides the owner's AI Providers order (engines.json) and any engine that is
+# signed in. Used by the full install, --update and the --from-app adopt path, so
+# a computer that already has the pin loses it however the app runs the installer.
+# The worker reads its settings once, when it starts (bin/cfw-render.sh calls
+# cr_load_config before its loop and never again), and this does not restart it: a
+# running worker keeps the pin until its next start. Prints one line when it
+# removes one (naming the value, if it is a plain engine name — never any other
+# line of the file) and one line to stderr when it cannot; it never fails the
+# install or update. In --from-app mode both lines go to stderr like every other
+# human-readable line (fd 1 is fd 2 there); the app's JSON channel is fd 3.
+# Always returns 0, and every command in it is guarded, so `set -e` cannot abort.
+unpin_engine() {
+  local rc=0 val=""
+  if [[ -f "$ENV_FILE" ]]; then
+    val="$(grep -E "^[[:space:]]*(export[[:space:]]+)?CFW_RENDER_ENGINE=" "$ENV_FILE" 2>/dev/null \
+      | tail -n 1 | cut -d= -f2- | tr -d "\"'" | awk '{ print $1 }')" || val=""
+  fi
+  case "$val" in *[!A-Za-z0-9._-]*) val="" ;; esac
+  (( ${#val} <= 32 )) || val=""
+  drop_env CFW_RENDER_ENGINE "$ENV_FILE" || rc=$?
+  case "$rc" in
+    0) echo "install.sh: removed CFW_RENDER_ENGINE${val:+=$val} from $ENV_FILE; the app's AI Providers order picks the engine now" ;;
+    1) : ;;
+    *) echo "install.sh: could not remove CFW_RENDER_ENGINE from $ENV_FILE (${DROP_ENV_ERR:-unknown error}); remove that line by hand so the app's provider order is used" >&2 ;;
+  esac
+  return 0
+}
+
 # The service user's home. When the installer runs as that user, $HOME is it
 # (and stays correct under a test harness that points HOME at a temp dir).
 if [[ "$RUN_USER" == "$(id -un)" ]]; then
@@ -184,6 +248,9 @@ if (( UPDATE )); then
     echo "  Nothing was changed. Run: $(cr_preflight_hint npx)   then: $(cr_preflight_hint chromium)" >&2
     app_fail checking 4 "CFW Render needs Node.js to install its browser" "Install Node.js, then reopen CFW Render"
   }
+  # An older installer pinned CFW_RENDER_ENGINE in the settings file. Clear it before
+  # fa_update reloads the worker, so the reloaded worker follows the AI Providers order.
+  unpin_engine || true
   fa_update
   exit 0
 fi
@@ -205,6 +272,12 @@ if (( FROM_APP )); then
       app_step checking started "Checking this computer"
       if fa_tools_list_ok "$(fa_api_base)" "$ADOPT_KEY"; then
         ADOPT_KEY=""
+        # The app's hidden set-up window runs adopt at every launch on a computer
+        # with a worker key and a LaunchAgent (SetupScreen -> setup_adopt), so this
+        # clears an old engine pin even on a build that gets no --update. The
+        # worker is not restarted from here; it re-reads its settings at its next
+        # start.
+        unpin_engine || true
         app_step ready "done" "Already set up"
         exit 0
       fi
@@ -266,7 +339,12 @@ echo ""
 WORKER_PATH="$(cr_resolve_worker_path)"
 echo "install.sh: resolved worker PATH: $WORKER_PATH"
 # M1-10a: either engine is acceptable — probe codex then claude (honouring a
-# preset CFW_RENDER_ENGINE when it passes) and record the one that runs.
+# preset CFW_RENDER_ENGINE from this shell when it passes). This is a check
+# only: it proves the box can run a step, and the install aborts when neither
+# engine runs. The result is NOT written to the settings file. A
+# CFW_RENDER_ENGINE line there means "use only this engine" to the worker
+# (cr_engine_order), so recording the probe winner would override the owner's
+# provider order (engines.json, set in the app's AI Providers screen).
 # CFW_RENDER_TEST_NO_ENGINE — test-only seam: a dev
 # box always has a real engine somewhere on the resolved PATH.
 if [[ "${CFW_RENDER_TEST_NO_ENGINE:-0}" == "1" ]] || ! ENGINE="$(cr_install_select_engine "$WORKER_PATH")"; then
@@ -348,12 +426,9 @@ if [[ -f "$ENV_FILE" ]]; then
   if upsert_env CFW_RENDER_MODE "$MODE" "$ENV_FILE"; then
     echo "install.sh: set CFW_RENDER_MODE=$MODE in $ENV_FILE"
   fi
-  if upsert_env CFW_RENDER_ENGINE "$ENGINE" "$ENV_FILE"; then
-    echo "install.sh: set CFW_RENDER_ENGINE=$ENGINE in $ENV_FILE"
-  fi
+  unpin_engine || true
 else
   echo "install.sh: NOTE — add 'CFW_RENDER_MODE=$MODE' to $ENV_FILE when you create it." >&2
-  echo "install.sh: NOTE — also add 'CFW_RENDER_ENGINE=$ENGINE' to $ENV_FILE." >&2
 fi
 echo "install.sh: skills come from this repo's in-repo bundle (skills/). To update:" >&2
 echo "  'git pull' this repo and re-run install.sh (it re-copies skills/). See install/byoa-installer-notes.md." >&2
