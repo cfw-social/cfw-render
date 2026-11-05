@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { looksLikeBrandKey, setupModel, toolsModel } from "./model";
+import { connectModel, looksLikeBrandKey, setupModel, toolsModel } from "./model";
 
 describe("setupModel", () => {
   it("starts idle with all steps pending", () => {
@@ -22,7 +22,7 @@ describe("setupModel", () => {
     expect(setupModel([{ step: "bogus", state: "done" }]).steps.every((s) => s.state === "pending")).toBe(true);
   });
 
-  it("brand key shape matches the app's own check", () => {
+  it("brand key shape matches the app's own check (fallback path only)", () => {
     expect(looksLikeBrandKey(" cfw_abcdefgh ")).toBe(true);
     expect(looksLikeBrandKey("cfw_short")).toBe(false);
     // Real CFW keys are base64url, so '-' is accepted (it was wrongly refused).
@@ -31,6 +31,15 @@ describe("setupModel", () => {
     expect(looksLikeBrandKey("cfw_abc def gh")).toBe(false);
     expect(looksLikeBrandKey("cfw_abc+defgh/ij")).toBe(false);
     expect(looksLikeBrandKey("sk-abcdefghijkl")).toBe(false);
+  });
+
+  it("connectModel carries the short code and poll phase", () => {
+    expect(connectModel({ phase: "idle" }).phase).toBe("idle");
+    expect(connectModel({ phase: "waiting", userCode: "ABCD-EFGH", verifyUrl: "https://app.cfw.social/connect?code=ABCD-EFGH" })).toMatchObject({
+      phase: "waiting",
+      userCode: "ABCD-EFGH",
+    });
+    expect(connectModel({ phase: "approved", brandSlug: "acme" }).brandSlug).toBe("acme");
   });
 });
 

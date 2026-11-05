@@ -19,11 +19,32 @@ un_env_value() {
   grep -E "^[[:space:]]*$1=" "$2" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' || true
 }
 
-# un_revoke <env-file> — revoke_this_computer with the render key. The key
-# travels in a header read from stdin (-H @-), never argv. 0 = revoked.
+# un_keychain_worker_key — same contract as cr_keychain_render_worker_key
+# (service com.cfw.render, account render-worker). Empty on miss / non-macOS.
+# CFW_RENDER_SECURITY_CMD overrides `security` for tests.
+un_keychain_worker_key() {
+  local sec out
+  [[ "$(uname -s 2>/dev/null)" == "Darwin" ]] || return 0
+  sec="${CFW_RENDER_SECURITY_CMD:-/usr/bin/security}"
+  out="$("$sec" find-generic-password -s com.cfw.render -a render-worker -w 2>/dev/null)" || return 0
+  out="$(printf '%s' "$out" | tr -d '\r\n')"
+  [[ "$out" =~ ^cfw_render_[A-Za-z0-9_-]+$ ]] && printf '%s' "$out"
+}
+
+# un_resolve_render_key <env-file> — env file first, then Keychain.
+un_resolve_render_key() {
+  local key
+  key="$(un_env_value CFW_RENDER_WORKER_KEY "$1")"
+  [[ -z "$key" ]] && key="$(un_keychain_worker_key)"
+  printf '%s' "$key"
+}
+
+# un_revoke <env-file> — revoke_this_computer with the render key (env or
+# Keychain). The key travels in a header read from stdin (-H @-), never argv.
+# 0 = revoked.
 un_revoke() {
   local key base resp
-  key="$(un_env_value CFW_RENDER_WORKER_KEY "$1")"
+  key="$(un_resolve_render_key "$1")"
   [[ -n "$key" ]] || return 1
   base="${CFW_RENDER_API_BASE:-$(un_env_value CFW_API_BASE "$1")}"
   base="${base:-https://app.cfw.social}"
@@ -112,6 +133,9 @@ un_main() {
   rmdir "$cfw_home" 2>/dev/null || true
 
   un_say progress "Removing saved sign-ins"
+  # Drop the browser-connect render key first (account render-worker), then
+  # any remaining com.cfw.render items (brand keys, engine keys).
+  "$security" delete-generic-password -s com.cfw.render -a render-worker >/dev/null 2>&1 || true
   local n=0
   while (( n < 100 )) && "$security" delete-generic-password -s com.cfw.render >/dev/null 2>&1; do
     n=$((n + 1))

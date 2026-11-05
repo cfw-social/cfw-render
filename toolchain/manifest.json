@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "version": "2026.10.1",
+  "version": "2026.11.1",
   "minAppVersion": "1.0.0",
-  "_note": "archives.*.sha256 and archives.*.sizeBytes are null until the CI build (later M3-07 slice) produces the tarballs and fills them in; verify.sh checks the unpacked bundle's SHA256SUMS, not these. Versions marked pinNote must be confirmed by that build.",
+  "_note": "archives.*.sha256 and archives.*.sizeBytes are null until the CI build (later M3-07 slice) produces the tarballs and fills them in; verify.sh checks the unpacked bundle's SHA256SUMS, not these. Versions marked pinNote must be confirmed by that build. tools[].sha256 stays the TODO placeholder until that same build.",
   "tools": [
     {
       "name": "node",
@@ -32,24 +32,83 @@
       "pbsTag": "20250818"
     },
     {
-      "name": "ffmpeg",
-      "version": "7.1.1",
-      "license": "LGPL-2.1-or-later",
-      "source": "https://ffmpeg.org/releases/",
+      "name": "libpng",
+      "version": "1.6.44",
+      "license": "libpng-2.0",
+      "source": "https://github.com/pnggroup/libpng",
       "relocatable": true,
-      "provides": [
-        "ffmpeg",
-        "ffprobe"
-      ],
-      "buildFlags": [
-        "--disable-gpl",
-        "--disable-nonfree",
-        "--disable-libx264",
-        "--disable-libx265",
-        "--enable-shared",
-        "--disable-static"
-      ],
-      "pinNote": "verify in CI build; LGPL build \u2014 no x264/x265",
+      "provides": [],
+      "pinNote": "verify in CI build; ImageMagick jpeg/png delegate",
+      "sha256": "TODO-fill-from-first-build"
+    },
+    {
+      "name": "libjpeg",
+      "version": "3.0.4",
+      "license": "BSD-3-Clause",
+      "source": "https://github.com/libjpeg-turbo/libjpeg-turbo",
+      "relocatable": true,
+      "provides": [],
+      "pinNote": "verify in CI build; libjpeg-turbo, the ImageMagick jpeg delegate",
+      "sha256": "TODO-fill-from-first-build"
+    },
+    {
+      "name": "freetype",
+      "version": "2.13.3",
+      "license": "FTL",
+      "source": "https://freetype.org/download.html",
+      "relocatable": true,
+      "provides": [],
+      "pinNote": "verify in CI build; library dependency of imagemagick, fontconfig, libass and the GPL ffmpeg build",
+      "sha256": "TODO-fill-from-first-build"
+    },
+    {
+      "name": "harfbuzz",
+      "version": "10.0.1",
+      "license": "MIT",
+      "source": "https://github.com/harfbuzz/harfbuzz",
+      "relocatable": true,
+      "provides": [],
+      "pinNote": "verify in CI build; library dependency of libass",
+      "sha256": "TODO-fill-from-first-build"
+    },
+    {
+      "name": "fribidi",
+      "version": "1.0.16",
+      "license": "LGPL-2.1-or-later",
+      "source": "https://github.com/fribidi/fribidi",
+      "relocatable": true,
+      "provides": [],
+      "pinNote": "verify in CI build; library dependency of libass",
+      "sha256": "TODO-fill-from-first-build"
+    },
+    {
+      "name": "fontconfig",
+      "version": "2.16.0",
+      "license": "MIT",
+      "source": "https://gitlab.freedesktop.org/fontconfig/fontconfig",
+      "relocatable": true,
+      "provides": [],
+      "pinNote": "verify in CI build; library dependency of imagemagick",
+      "sha256": "TODO-fill-from-first-build"
+    },
+    {
+      "name": "libass",
+      "version": "0.17.3",
+      "license": "ISC",
+      "source": "https://github.com/libass/libass",
+      "relocatable": true,
+      "provides": [],
+      "pinNote": "verify in CI build; ffmpeg ass filter. Needs fribidi, harfbuzz and freetype",
+      "sha256": "TODO-fill-from-first-build"
+    },
+    {
+      "name": "libx264",
+      "version": "0.164.3108",
+      "license": "GPL-2.0-or-later",
+      "source": "https://code.videolan.org/videolan/x264",
+      "relocatable": true,
+      "provides": [],
+      "pinNote": "verify in CI build; GPL H.264 encoder linked into ffmpeg",
       "sha256": "TODO-fill-from-first-build"
     },
     {
@@ -65,23 +124,68 @@
       "sha256": "TODO-fill-from-first-build"
     },
     {
-      "name": "fontconfig",
-      "version": "2.16.0",
-      "license": "MIT",
-      "source": "https://gitlab.freedesktop.org/fontconfig/fontconfig",
+      "name": "ffmpeg",
+      "version": "7.1.1",
+      "license": "GPL-2.0-or-later",
+      "source": "https://ffmpeg.org/releases/",
       "relocatable": true,
-      "provides": [],
-      "pinNote": "verify in CI build; library dependency of imagemagick",
+      "provides": [
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "buildFlags": [
+        "--enable-gpl",
+        "--enable-libx264",
+        "--enable-libass",
+        "--enable-libfreetype",
+        "--disable-nonfree",
+        "--disable-libx265",
+        "--enable-shared",
+        "--disable-static"
+      ],
+      "pinNote": "verify in CI build; GPL build with libx264, libass and freetype. No x265, no nonfree",
       "sha256": "TODO-fill-from-first-build"
     },
     {
-      "name": "freetype",
-      "version": "2.13.3",
-      "license": "FTL",
-      "source": "https://freetype.org/download.html",
+      "name": "whisper",
+      "version": "0.4.2",
+      "license": "MIT",
+      "source": "https://github.com/ml-explore/mlx-examples",
       "relocatable": true,
-      "provides": [],
-      "pinNote": "verify in CI build; library dependency of imagemagick/fontconfig",
+      "arch": "arm64",
+      "provides": [
+        "mlx_whisper"
+      ],
+      "pinNote": "verify in CI build; mlx-whisper CLI (mlx_whisper) for Apple silicon only. Recipes use model mlx-community/whisper-small-mlx. That Hugging Face model downloads on first use into the Hugging Face cache and is not in this archive.",
+      "sha256": "TODO-fill-from-first-build"
+    },
+    {
+      "name": "openai-whisper",
+      "version": "20240930",
+      "license": "MIT",
+      "source": "https://github.com/openai/whisper",
+      "relocatable": true,
+      "arch": "x86_64",
+      "provides": [
+        "whisper"
+      ],
+      "cli": "openai-whisper",
+      "pinNote": "verify in CI build; openai-whisper 20240930 (GitHub tag v20240930) for Intel Macs. The bundled command is whisper. Recipes call whisper <file> --model small --output_dir D --output_format F. The speech model downloads on first use into ~/.cache/whisper and is not in this archive.",
+      "sha256": "TODO-fill-from-first-build"
+    },
+    {
+      "name": "chromium",
+      "version": "1.64.1",
+      "license": "BSD-3-Clause",
+      "source": "https://github.com/microsoft/playwright",
+      "relocatable": true,
+      "provides": [
+        "chromium"
+      ],
+      "playwright": "1.64.1",
+      "chromiumRevision": "1248",
+      "chromiumHeadlessShellRevision": "1248",
+      "pinNote": "verify in CI build; pinned to config/playwright-pin.json (Playwright 1.64.1, chromium-1248 and chromium_headless_shell-1248)",
       "sha256": "TODO-fill-from-first-build"
     },
     {
@@ -112,12 +216,12 @@
   ],
   "archives": {
     "arm64": {
-      "file": "cfw-toolchain-2026.10.1-arm64.tar.zst",
+      "file": "cfw-toolchain-2026.11.1-arm64.tar.zst",
       "sha256": null,
       "sizeBytes": null
     },
     "x86_64": {
-      "file": "cfw-toolchain-2026.10.1-x86_64.tar.zst",
+      "file": "cfw-toolchain-2026.11.1-x86_64.tar.zst",
       "sha256": null,
       "sizeBytes": null
     }

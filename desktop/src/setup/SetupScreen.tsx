@@ -1,12 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { copy } from "../copy";
 import type { SigninEvent } from "../providers/ProvidersScreen";
 import { PROVIDERS } from "../providers/registry";
 import { Icon } from "../ui/Icon";
 import { Button, MARK_URL, ProgressBar } from "../ui/kit";
-import { looksLikeBrandKey, setupModel, toolsModel, type SetupEvent, type StepState } from "./model";
+import { requestConnectCode, waitForConnectApproval, type ConnectCodeResponse } from "./connect";
+import { connectModel, setupModel, toolsModel, type ConnectView, type SetupEvent, type StepState } from "./model";
 
 const S = copy.setup;
 type Stage = "brand" | "ai" | "finish";
@@ -81,12 +82,12 @@ function CheckRow({ state, title, sub, pct }: { state: StepState; title: string;
   );
 }
 
-/** First-run setup: brand key, then an AI sign-in (tools download meanwhile), then install + test render. */
+/** First-run setup: browser-approval connect, then AI sign-in, then install + test render. */
 export function SetupScreen() {
   const [stage, setStage] = useState<Stage>("brand");
   const [setupSource, setSetupSource] = useState<"manual" | "account" | "adopt">("manual");
-  const [key, setKey] = useState("");
-  const [keyError, setKeyError] = useState(false);
+  const [connect, setConnect] = useState<ConnectView>(connectModel({ phase: "idle" }));
+  const [workerKey, setWorkerKey] = useState("");
   const [signedIn, setSignedIn] = useState<Record<string, boolean>>({});
   const [signingIn, setSigningIn] = useState<string | null>(null);
   const [aiNotice, setAiNotice] = useState<string | null>(null);
@@ -96,11 +97,14 @@ export function SetupScreen() {
   const [sizeMb, setSizeMb] = useState<number | null>(null);
   const phase = useRef<"tools" | "run" | null>(null);
   const toolsStarted = useRef(false);
+  const pollSignal = useRef({ cancelled: false });
+  const connectStarted = useRef(false);
 
   const tools = toolsModel(toolEvents);
   const run = setupModel(runEvents);
-  // setup_run resolves when the process starts, not when setup succeeds.
-  useEffect(() => { if (run.phase === "ready") setKey(""); }, [run.phase]);
+  useEffect(() => {
+    if (run.phase === "ready") setWorkerKey("");
+  }, [run.phase]);
 
   const checkSignedIn = () => {
     for (const engine of PLAN_ENGINES) {
@@ -109,6 +113,51 @@ export function SetupScreen() {
         .catch(() => {});
     }
   };
+
+  const openVerify = (url: string) => {
+    invoke("open_url", { url }).catch(() => {});
+  };
+
+  const beginConnect = useCallback(async () => {
+    pollSignal.current.cancelled = true;
+    pollSignal.current = { cancelled: false };
+    const signal = pollSignal.current;
+    setConnect(connectModel({ phase: "requesting" }));
+    setWorkerKey("");
+    try {
+      const apiBase = await invoke<string>("connect_api_base").catch(() => "https://app.cfw.social");
+      const code: ConnectCodeResponse = await requestConnectCode(apiBase);
+      if (signal.cancelled) return;
+      setConnect(connectModel({ phase: "waiting", userCode: code.userCode, verifyUrl: code.verifyUrl }));
+      openVerify(code.verifyUrl);
+      // Let the short code paint before the first poll (React 18 batches across awaits).
+      await new Promise<void>((r) => setTimeout(r, 0));
+      if (signal.cancelled) return;
+      const result = await waitForConnectApproval(apiBase, code.deviceCode, {
+        intervalSec: code.interval,
+        expiresInSec: code.expiresIn,
+        signal,
+      });
+      if (signal.cancelled) return;
+      if (result.status === "approved") {
+        await invoke("connect_store_worker_key", { key: result.key, brandSlug: result.brandSlug });
+        setWorkerKey(result.key);
+        setConnect(connectModel({ phase: "approved", userCode: code.userCode, brandSlug: result.brandSlug }));
+        setStage("ai");
+        if (!toolsStarted.current) {
+          toolsStarted.current = true;
+          phase.current = "tools";
+          invoke("setup_install_tools").catch(() => setToolEvents((p) => [...p, { step: "tools_result", state: "failed" }]));
+        }
+      } else if (result.status === "denied") {
+        setConnect(connectModel({ phase: "denied", userCode: code.userCode, error: S.brand.denied }));
+      } else {
+        setConnect(connectModel({ phase: "expired", userCode: code.userCode, error: S.brand.expired }));
+      }
+    } catch {
+      if (!signal.cancelled) setConnect(connectModel({ phase: "failed", error: S.brand.failed }));
+    }
+  }, []);
 
   useEffect(() => {
     checkSignedIn();
@@ -119,7 +168,6 @@ export function SetupScreen() {
       listen<SetupEvent>("setup-step", (e) => {
         const ev = e.payload;
         if (phase.current === "tools") {
-          // The tools step reports its own end; a "result" here is only the tools failing.
           if (ev.step === "result") return;
           setToolEvents((p) => [...p, ev]);
           if (ev.step === "tools_result") {
@@ -128,7 +176,6 @@ export function SetupScreen() {
           }
         } else setRunEvents((p) => [...p, ev]);
       }),
-      // "Use all my brands" starts the installer from the main window: show its progress here.
       listen("setup-external-run", () => {
         setSetupSource("account");
         setError(null);
@@ -152,42 +199,34 @@ export function SetupScreen() {
           phase.current = "run";
           setStage("finish");
           invoke("setup_adopt").catch((e: unknown) => setError(String(e)));
+        } else if (!connectStarted.current) {
+          connectStarted.current = true;
+          void beginConnect();
         }
       })
-      .catch(() => {});
-    return () => subs.forEach((p) => p.then((f) => f()));
-  }, []);
-
-  const startTools = () => {
-    if (toolsStarted.current) return;
-    toolsStarted.current = true;
-    phase.current = "tools";
-    invoke("setup_install_tools").catch(() => setToolEvents((p) => [...p, { step: "tools_result", state: "failed" }]));
-  };
-
-  const toBrandNext = () => {
-    if (!looksLikeBrandKey(key)) return setKeyError(true);
-    setKeyError(false);
-    setStage("ai");
-    startTools();
-  };
-  const paste = () =>
-    navigator.clipboard
-      ?.readText()
-      .then((t) => {
-        setKey(t.trim());
-        setKeyError(false);
-      })
-      .catch(() => {});
+      .catch(() => {
+        if (!connectStarted.current) {
+          connectStarted.current = true;
+          void beginConnect();
+        }
+      });
+    return () => {
+      pollSignal.current.cancelled = true;
+      subs.forEach((p) => p.then((f) => f()));
+    };
+  }, [beginConnect]);
 
   const runSetup = () => {
     setError(null);
     setRunEvents([]);
     phase.current = "run";
     setStage("finish");
-    const request = setupSource === "account" ? invoke("setup_with_account")
-      : setupSource === "adopt" ? invoke("setup_adopt")
-      : invoke("setup_run", { brandKey: key.trim(), installTools: false });
+    const request =
+      setupSource === "account"
+        ? invoke("setup_with_account")
+        : setupSource === "adopt"
+          ? invoke("setup_adopt")
+          : invoke("setup_run", { brandKey: workerKey.trim(), installTools: false });
     request.catch((e: unknown) => setError(String(e)));
   };
   const signIn = (engine: string) => {
@@ -205,7 +244,9 @@ export function SetupScreen() {
       <Shell
         step={null}
         footer={
-          <Button size="lg" variant="primary" onClick={() => invoke("open_main", { section: "home" }).catch(() => {})}>{S.done.open}</Button>
+          <Button size="lg" variant="primary" onClick={() => invoke("open_main", { section: "home" }).catch(() => {})}>
+            {S.done.open}
+          </Button>
         }
       >
         <div className="flex flex-col items-center pt-8 text-center">
@@ -242,13 +283,31 @@ export function SetupScreen() {
         footer={
           failed ? (
             <>
-              <Button size="lg" variant="ghost" onClick={() => setupSource === "account"
-                ? void invoke("open_main", { section: "renders" }).catch((e: unknown) => setError(String(e)))
-                : setStage(key ? "ai" : "brand")}>{S.back}</Button>
-              <Button size="lg" variant="primary" icon="refresh-cw" onClick={runSetup} disabled={setupSource === "manual" && !key.trim()}>{S.tryAgain}</Button>
+              <Button
+                size="lg"
+                variant="ghost"
+                onClick={() =>
+                  setupSource === "account"
+                    ? void invoke("open_main", { section: "renders" }).catch((e: unknown) => setError(String(e)))
+                    : setStage(workerKey ? "ai" : "brand")
+                }
+              >
+                {S.back}
+              </Button>
+              <Button
+                size="lg"
+                variant="primary"
+                icon="refresh-cw"
+                onClick={runSetup}
+                disabled={setupSource === "manual" && !workerKey.trim()}
+              >
+                {S.tryAgain}
+              </Button>
             </>
           ) : (
-            <Button size="lg" variant="ghost" onClick={() => invoke("setup_cancel").catch(() => {})}>{S.cancel}</Button>
+            <Button size="lg" variant="ghost" onClick={() => invoke("setup_cancel").catch(() => {})}>
+              {S.cancel}
+            </Button>
           )
         }
       >
@@ -284,8 +343,30 @@ export function SetupScreen() {
         step={2}
         footer={
           <>
-            <Button size="lg" variant="ghost" onClick={() => setStage("brand")}>{S.back}</Button>
-            <Button size="lg" variant="primary" disabled={!anySignedIn} onClick={runSetup}>{S.continue}</Button>
+            <Button
+              size="lg"
+              variant="ghost"
+              onClick={() => {
+                const previous = workerKey;
+                setWorkerKey("");
+                setStage("brand");
+                // Revoke (or clear) the Keychain key this Back replaces so
+                // beginConnect does not mint a second live key on this Mac.
+                const restart = () => {
+                  void beginConnect();
+                };
+                if (previous.trim()) {
+                  void invoke("connect_revoke_worker_key").finally(restart);
+                } else {
+                  restart();
+                }
+              }}
+            >
+              {S.back}
+            </Button>
+            <Button size="lg" variant="primary" disabled={!anySignedIn || !workerKey.trim()} onClick={runSetup}>
+              {S.continue}
+            </Button>
           </>
         }
       >
@@ -295,7 +376,6 @@ export function SetupScreen() {
             const p = PROVIDERS.find((d) => d.engine === engine);
             if (!p) return null;
             const on = !!signedIn[engine];
-            // ChatGPT's sign-in tool arrives with the video tools; Claude's is the owner's own install.
             const waitForTools = engine === "codex" && preparing;
             return (
               <div key={engine} className={`flex flex-col gap-2.5 rounded-[10px] border p-3.5 ${on ? "border-primary ring-1 ring-primary" : "border-border"}`}>
@@ -325,51 +405,67 @@ export function SetupScreen() {
           })}
         </div>
         {aiNotice && <p role="status" className="mt-3 text-[13px] text-warn-strong">{aiNotice}</p>}
-        <p className="mt-4 text-xs text-subtle">
-          {tools.state === "failed" ? S.toolsFallback : sizeMb ? S.toolsNote(sizeMb) : null}
-        </p>
+        <p className="mt-4 text-xs text-subtle">{tools.state === "failed" ? S.toolsFallback : sizeMb ? S.toolsNote(sizeMb) : null}</p>
       </Shell>
     );
   }
 
-  // ---------- Step 1: brand key ----------
+  // ---------- Step 1: browser-approval connect (short code, no key paste) ----------
+  const connectBusy = connect.phase === "requesting" || connect.phase === "waiting";
+  const connectFailed = connect.phase === "denied" || connect.phase === "expired" || connect.phase === "failed";
   return (
-    <Shell step={1} footer={<Button size="lg" variant="primary" onClick={toBrandNext} disabled={!key.trim()}>{S.continue}</Button>}>
+    <Shell
+      step={1}
+      footer={
+        connectFailed ? (
+          <Button size="lg" variant="primary" icon="refresh-cw" onClick={() => void beginConnect()}>
+            {S.tryAgain}
+          </Button>
+        ) : connect.phase === "waiting" && connect.verifyUrl ? (
+          <Button size="lg" variant="ghost" onClick={() => openVerify(connect.verifyUrl!)}>
+            {S.brand.openBrowser}
+          </Button>
+        ) : connect.phase === "idle" ? (
+          <Button size="lg" variant="primary" onClick={() => void beginConnect()}>
+            {S.brand.start}
+          </Button>
+        ) : null
+      }
+    >
       <Heading kicker={S.stepOf(1)} title={S.brand.title} body={S.brand.body} />
-      <form
-        className="mt-6"
-        onSubmit={(e) => {
-          e.preventDefault();
-          toBrandNext();
-        }}
-      >
-        <label htmlFor="brand-key" className="block text-[13px] font-semibold">{S.brand.keyLabel}</label>
-        <div className="mt-1.5 flex gap-2">
-          <input
-            id="brand-key"
-            type="password"
-            autoComplete="off"
-            spellCheck={false}
-            autoFocus
-            placeholder={S.brand.placeholder}
-            aria-invalid={keyError || undefined}
-            aria-describedby={keyError ? "brand-key-error" : undefined}
-            value={key}
-            onChange={(e) => {
-              setKey(e.target.value);
-              setKeyError(false);
-            }}
-            className={`h-[38px] min-w-0 flex-1 rounded-[8px] border bg-white px-3 font-mono text-[13px] ${keyError ? "border-destructive" : "border-input focus:border-primary"}`}
-          />
-          <Button size="lg" icon="clipboard-paste" onClick={paste}>{S.brand.paste}</Button>
+      {connect.userCode && (
+        <div className="mt-6 rounded-[10px] border border-border bg-background px-4 py-5 text-center">
+          <p className="text-[13px] font-semibold text-subtle">{S.brand.codeLabel}</p>
+          <p className="mt-2 font-mono text-[28px] font-bold tracking-[0.2em]" aria-live="polite">
+            {connect.userCode}
+          </p>
+          {connect.phase === "waiting" && <p className="mt-3 text-sm text-subtle">{S.brand.waiting}</p>}
+          {connectBusy && connect.phase === "requesting" && (
+            <p className="mt-3 inline-flex items-center gap-2 text-sm text-subtle">
+              <Icon name="loader-circle" size={16} className="animate-spin" />
+              {S.brand.waiting}
+            </p>
+          )}
         </div>
-        {keyError && (
-          <p id="brand-key-error" role="alert" className="mt-2 text-xs text-destructive">{S.brand.bad}</p>
-        )}
-      </form>
+      )}
+      {!connect.userCode && connect.phase === "requesting" && (
+        <p className="mt-6 inline-flex items-center gap-2 text-sm text-subtle">
+          <Icon name="loader-circle" size={16} className="animate-spin" />
+          {S.brand.waiting}
+        </p>
+      )}
+      {connect.error && (
+        <p role="alert" className="mt-4 text-sm text-destructive">
+          {connect.error}
+        </p>
+      )}
       <p className="mt-4 text-xs text-subtle">
         {S.brand.where}{" "}
-        <button type="button" className="inline-flex items-center gap-1 rounded font-medium text-accent-foreground hover:underline" onClick={() => invoke("open_url", { url: "https://app.cfw.social" }).catch(() => {})}>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1 rounded font-medium text-accent-foreground hover:underline"
+          onClick={() => openVerify(connect.verifyUrl ?? "https://app.cfw.social/connect")}
+        >
           {S.brand.whereLink}
           <Icon name="external-link" size={12} />
         </button>

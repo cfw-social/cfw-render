@@ -2,6 +2,7 @@
 
 pub mod apikeys;
 pub mod chat;
+pub mod connect;
 pub mod control;
 pub mod profile;
 pub mod setup;
@@ -363,6 +364,9 @@ pub fn run() {
             setup::setup_tools_size,
             setup::open_setup,
             setup::setup_install_tools,
+            connect::connect_api_base,
+            connect::connect_store_worker_key,
+            connect::connect_revoke_worker_key,
             web::web_show,
             web::web_hide,
             web::web_reload,

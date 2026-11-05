@@ -15,6 +15,9 @@ import sys
 import tempfile
 import unittest
 
+# One scale for this file's load wait. 15s expired while the bound suite shared the machine.
+LOAD_WAIT_SCALE = 8
+
 
 class HarnessConditions(unittest.TestCase):
     def setUp(self) -> None:
@@ -99,7 +102,7 @@ exit "$rc"
         result = subprocess.run(
             [str(self.commands / "bash"), "-c", script, "fixture",
              str(self.harness), str(directory), "corrupt" if corrupt else "normal", "ask" if ask else "no"],
-            env=self.env, capture_output=True, text=True, timeout=15,
+            env=self.env, capture_output=True, text=True, timeout=15 * LOAD_WAIT_SCALE,
         )
         events_path = directory / "events"
         events = [json.loads(line) for line in events_path.read_text().splitlines()] if events_path.exists() else []

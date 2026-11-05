@@ -33,6 +33,23 @@ with os.fdopen(fd, "w") as f:
 os.chmod(path, 0o600)' "$1" "$2"
 }
 
+# fa_env_unset <key> <file> — drop KEY= lines from the env file (0600). No-op
+# when the file is missing. Used on browser-connect so a leftover env key
+# cannot shadow the Keychain key after reconnect.
+fa_env_unset() {
+  python3 -c '
+import os, re, sys
+key, path = sys.argv[1], sys.argv[2]
+if not os.path.exists(path):
+    raise SystemExit(0)
+lines = open(path).read().splitlines()
+out = [ln for ln in lines if not re.match(r"\s*" + re.escape(key) + "=", ln)]
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as f:
+    f.write(("\n".join(out) + "\n") if out else "")
+os.chmod(path, 0o600)' "$1" "$2"
+}
+
 # fa_tools_list_ok <base> <render-key> — claim-free key check (same tools/list
 # the --dry path runs). Header goes over stdin (-H @-), not argv.
 fa_tools_list_ok() {
@@ -195,10 +212,21 @@ fa_pending_fail() {
   app_fail connecting 6 "Could not preserve pending key revocations" "Keep the private state folder and retry; contact support if this continues"
 }
 
+# fa_keychain_worker_key — read the browser-connect key from the login Keychain
+# (service com.cfw.render, account render-worker). Empty on failure / non-macOS.
+# Override the `security` binary with CFW_RENDER_SECURITY_CMD (tests).
+fa_keychain_worker_key() {
+  local sec out
+  sec="${CFW_RENDER_SECURITY_CMD:-/usr/bin/security}"
+  out="$("$sec" find-generic-password -s com.cfw.render -a render-worker -w 2>/dev/null)" || return 0
+  out="$(printf '%s' "$out" | tr -d '\r\n')"
+  [[ "$out" =~ ^cfw_render_[A-Za-z0-9_-]+$ ]] && printf '%s' "$out"
+}
+
 fa_connect_and_probe() {
   app_step installing "done" "CFW Render is installed"
   app_step connecting started "Connecting to CFW"
-  local base code resp render_key
+  local base code resp render_key connect_path=0
   base="$(fa_api_base)"
   FA_WORKER_ID="$(tr -d '[:space:]' < "$WORKER_ID_FILE")"
   local device old_key
@@ -212,29 +240,57 @@ fa_connect_and_probe() {
     fa_pending_keys add < /dev/null || fa_pending_fail
   fi
   old_key=""
-  # Exchange: the brand key goes in a header read from stdin (-H @-).
-  resp="$(printf 'x-api-key: %s\n' "$BRAND_KEY" | curl -sS --max-time 30 -w '\n%{http_code}' -X POST \
-    "${base%/}/api/v1/render-worker-keys/exchange" -H @- -H "content-type: application/json" \
-    --data "$(python3 -c 'import json,sys;print(json.dumps({"deviceName": sys.argv[1]}))' "$device")" 2>/dev/null)" || resp=""
-  BRAND_KEY=""; unset BRAND_KEY
-  code="${resp##*$'\n'}"; resp="${resp%$'\n'*}"
-  case "$code" in
-    201|200) ;;
-    401|403) app_fail connecting 5 "CFW did not accept that key" "Copy a fresh key from CFW Settings" ;;
-    400) app_fail connecting 5 "CFW could not use that key" "Copy a fresh key from CFW Settings" ;;
-    *) app_fail connecting 6 "Could not reach CFW" "Check your internet connection and try again" ;;
-  esac
-  render_key="$(python3 -c '
+
+  # Browser-approval connect (WI17.2.2): the app already minted a cfw_render_
+  # key and stored it in the Keychain. Stdin may carry that same key so
+  # install.sh accepts it; we must NOT exchange it or write it to the env file.
+  # A pasted brand key (fallback) always takes the exchange path — never let a
+  # stale Keychain entry override it.
+  if [[ "$BRAND_KEY" =~ ^cfw_render_[A-Za-z0-9_-]+$ ]]; then
+    render_key="$BRAND_KEY"
+    connect_path=1
+    BRAND_KEY=""; unset BRAND_KEY
+  elif [[ -z "$BRAND_KEY" ]]; then
+    render_key="$(fa_keychain_worker_key)"
+    if [[ -n "$render_key" ]]; then
+      connect_path=1
+    fi
+  fi
+
+  if (( connect_path )); then
+    [[ "$render_key" =~ ^cfw_render_[A-Za-z0-9_-]+$ ]] || app_fail connecting 6 "CFW sent an unexpected reply" "Try again in a minute"
+    printf '%s\n' "$render_key" | fa_pending_keys add || fa_pending_fail
+    # Connect path: API base only — never the plain render key in cfw-render.env.
+    # Drop any leftover CFW_RENDER_WORKER_KEY so reconnect uses the Keychain
+    # key and the old env key can be revoked from the pending outbox.
+    printf '%s\n' "$base" | fa_env_set CFW_API_BASE "$ENV_FILE"
+    fa_env_unset CFW_RENDER_WORKER_KEY "$ENV_FILE"
+    export CFW_API_BASE="$base" CFW_RENDER_WORKER_KEY="$render_key"
+    render_key=""
+  else
+    # Fallback (off the main path): exchange a pasted brand key for a render key.
+    resp="$(printf 'x-api-key: %s\n' "$BRAND_KEY" | curl -sS --max-time 30 -w '\n%{http_code}' -X POST \
+      "${base%/}/api/v1/render-worker-keys/exchange" -H @- -H "content-type: application/json" \
+      --data "$(python3 -c 'import json,sys;print(json.dumps({"deviceName": sys.argv[1]}))' "$device")" 2>/dev/null)" || resp=""
+    BRAND_KEY=""; unset BRAND_KEY
+    code="${resp##*$'\n'}"; resp="${resp%$'\n'*}"
+    case "$code" in
+      201|200) ;;
+      401|403) app_fail connecting 5 "CFW did not accept that key" "Copy a fresh key from CFW Settings" ;;
+      400) app_fail connecting 5 "CFW could not use that key" "Copy a fresh key from CFW Settings" ;;
+      *) app_fail connecting 6 "Could not reach CFW" "Check your internet connection and try again" ;;
+    esac
+    render_key="$(python3 -c '
 import json, sys
 try:
     print(json.loads(sys.stdin.read())["key"]["plain"])
 except Exception:
     pass' <<< "$resp")"
-  [[ "$render_key" =~ ^cfw_render_[A-Za-z0-9_-]+$ ]] || app_fail connecting 6 "CFW sent an unexpected reply" "Try again in a minute"
-  # Which key this is, for the app ("Connected for all your brands"): scope, name and a short
-  # prefix only — never the key. Kept in the private state dir beside worker-id.
-  ( umask 077
-    python3 -c '
+    [[ "$render_key" =~ ^cfw_render_[A-Za-z0-9_-]+$ ]] || app_fail connecting 6 "CFW sent an unexpected reply" "Try again in a minute"
+    # Which key this is, for the app ("Connected for all your brands"): scope, name and a short
+    # prefix only — never the key. Kept in the private state dir beside worker-id.
+    ( umask 077
+      python3 -c '
 import json, sys, os, datetime
 try:
     k = json.loads(sys.stdin.read()).get("key") or {}
@@ -247,15 +303,16 @@ c = {"scope": k.get("scope") if k.get("scope") in ("brand", "user", "subset") el
      "connectedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
 p = sys.argv[1]; tmp = p + ".tmp"
 json.dump(c, open(tmp, "w")); os.replace(tmp, p)' "$(dirname "$WORKER_ID_FILE")/connection.json" <<< "$resp"
-  ) 2>/dev/null || true
-  resp=""
-  # Also journal the issued key before writing env: an interrupted/failed env
-  # write must not orphan it. The current key is never revoked when draining.
-  printf '%s\n' "$render_key" | fa_pending_keys add || fa_pending_fail
-  printf '%s\n' "$render_key" | fa_env_set CFW_RENDER_WORKER_KEY "$ENV_FILE"
-  printf '%s\n' "$base" | fa_env_set CFW_API_BASE "$ENV_FILE"
-  export CFW_API_BASE="$base" CFW_RENDER_WORKER_KEY="$render_key"
-  render_key=""
+    ) 2>/dev/null || true
+    resp=""
+    # Also journal the issued key before writing env: an interrupted/failed env
+    # write must not orphan it. The current key is never revoked when draining.
+    printf '%s\n' "$render_key" | fa_pending_keys add || fa_pending_fail
+    printf '%s\n' "$render_key" | fa_env_set CFW_RENDER_WORKER_KEY "$ENV_FILE"
+    printf '%s\n' "$base" | fa_env_set CFW_API_BASE "$ENV_FILE"
+    export CFW_API_BASE="$base" CFW_RENDER_WORKER_KEY="$render_key"
+    render_key=""
+  fi
 
   local step out probe_brand=""
   # Open (or resume) this computer's setup session first: CFW keeps progress per

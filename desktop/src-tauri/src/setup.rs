@@ -67,11 +67,33 @@ fn setup_marker() -> Option<PathBuf> {
 }
 
 pub fn status_at(p: Profile, home: &Path, marker: Option<&Path>) -> SetupStatus {
+    if p.is_local_dev() {
+        // Local dev looks only at its own files. The production Keychain worker
+        // key must not make a dev install look adoptable.
+        status_from_files(home, p, marker, false)
+    } else {
+        status_at_with(home, marker, || crate::chat::keychain::get_worker().is_ok())
+    }
+}
+
+/// Like `status_at` for Production, with an injected Keychain probe so unit tests never
+/// touch the real login Keychain. Production uses `status_at`.
+pub fn status_at_with(home: &Path, marker: Option<&Path>, keychain_has_key: impl FnOnce() -> bool) -> SetupStatus {
+    // Only probe Keychain when `home` is this process's real home. Tempdir
+    // status_at tests pass a disposable home and must not call security(1).
+    let keychain_has_key = dirs::home_dir().as_deref() == Some(home) && keychain_has_key();
+    status_from_files(home, Profile::Production, marker, keychain_has_key)
+}
+
+fn status_from_files(home: &Path, p: Profile, marker: Option<&Path>, keychain_has_key: bool) -> SetupStatus {
     let env_has_key = std::fs::read_to_string(home.join(p.env_file_rel()))
         .map(|s| s.lines().any(|l| l.trim_start().starts_with("CFW_RENDER_WORKER_KEY=")))
         .unwrap_or(false);
     let plist = home.join("Library/LaunchAgents").join(format!("{}.plist", p.launchd_label())).is_file();
-    SetupStatus { installed: marker.is_some_and(|m| m.exists()), adoptable: env_has_key && plist }
+    SetupStatus {
+        installed: marker.is_some_and(|m| m.exists()),
+        adoptable: (env_has_key || keychain_has_key) && plist,
+    }
 }
 
 pub fn setup_status() -> SetupStatus {
@@ -196,6 +218,8 @@ fn install_tools_step(emit: &dyn Fn(SetupEvent)) -> Result<(), String> {
         emit(SetupEvent::new("tools", "done", "Tools are up to date"));
         return Ok(());
     }
+    // A too-new minAppVersion stops here, before any download, and leaves the current tools.
+    toolchain::refuse_if_app_too_old(&m).map_err(fail)?;
     emit(SetupEvent::new("tools", "started", "Installing tools"));
     toolchain::install(&m, &|pct, msg| emit(SetupEvent { pct: Some(pct), ..SetupEvent::new("tools", "started", msg) }))
         .map_err(fail)?;
@@ -470,6 +494,23 @@ exit 0"#,
         std::fs::write(d.path().join(".cfw-render-dev/cfw-render.env"), "CFW_RENDER_WORKER_KEY=y\n").unwrap();
         std::fs::write(d.path().join("Library/LaunchAgents/com.cfw.render.dev.plist"), "").unwrap();
         assert!(status_at(Profile::LocalDev, d.path(), None).adoptable);
+    }
+
+    #[test]
+    fn status_at_temp_home_never_calls_keychain_reader() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("Library/LaunchAgents")).unwrap();
+        std::fs::write(d.path().join("Library/LaunchAgents/com.cfw.render.plist"), "").unwrap();
+        // Injected reader panics if called — temp homes must skip Keychain.
+        let s = status_at_with(d.path(), None, || panic!("keychain must not be probed for temp home"));
+        assert!(!s.adoptable);
+        // Same home path as dirs::home_dir with an injected "has key" → adoptable.
+        if let Some(real) = dirs::home_dir() {
+            let s2 = status_at_with(&real, None, || true);
+            // Without a plist under the real home this may still be false; the
+            // probe itself must have run (no panic above). Just exercise it.
+            let _ = s2.adoptable;
+        }
     }
 
     #[test]

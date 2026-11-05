@@ -11,6 +11,11 @@ on:
         default: both
         type: choice
         options: [arm64, x86_64, both]
+      capture_pins:
+        description: "Pin-capture mode: run build.sh with CFW_TOOLCHAIN_ALLOW_UNPINNED=1 and upload the PIN lines. Does not publish."
+        required: false
+        default: false
+        type: boolean
   push:
     tags: ["toolchain-v*"]
 
@@ -56,14 +61,41 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      # Build-time only. The bundle must not link brew libs — verify.sh
-      # (run inside build.sh) fails the job if any Mach-O does.
+      # Host build tools only. Not part of user setup, and not shipped in
+      # the bundle. verify.sh (run inside build.sh) fails the job if any
+      # Mach-O links to or rpaths into Homebrew.
       - name: Install build tools
-        run: brew install zstd pkg-config autoconf automake libtool nasm
+        run: brew install zstd pkg-config autoconf automake libtool nasm cmake meson ninja gperf
       - name: Build bundle
         env:
-          CFW_TOOLCHAIN_ALLOW_UNPINNED: ${{ vars.CFW_TOOLCHAIN_ALLOW_UNPINNED || '0' }}
-        run: toolchain/scripts/build.sh "${{ matrix.arch }}" dist/
+          # Pin-capture mode (workflow_dispatch capture_pins) prints PIN lines.
+          # A tag push keeps the repo variable, which defaults to pinned.
+          CFW_TOOLCHAIN_ALLOW_UNPINNED: ${{ github.event.inputs.capture_pins == 'true' && '1' || vars.CFW_TOOLCHAIN_ALLOW_UNPINNED || '0' }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # pipefail: a failing build.sh fails this step even though tee succeeds.
+          build_rc=0
+          toolchain/scripts/build.sh "${{ matrix.arch }}" dist/ | tee "dist/build-${{ matrix.arch }}.log" || build_rc=$?
+          grep '^PIN ' "dist/build-${{ matrix.arch }}.log" > "dist/PIN-${{ matrix.arch }}.txt" || true
+          exit "$build_rc"
+      - name: Upload PIN lines
+        if: ${{ github.event.inputs.capture_pins == 'true' && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: toolchain-pins-${{ matrix.arch }}
+          if-no-files-found: error
+          path: dist/PIN-${{ matrix.arch }}.txt
+      - name: Preflight the built bundle
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          bundles=(dist/cfw-toolchain-*/)
+          test "${#bundles[@]}" -eq 1
+          bundle="${bundles[0]%/}"
+          test -f "$bundle/bin/cfw-render-preflight.sh"
+          test -f "$bundle/bin/cfw-render-lib.sh"
+          PATH="$bundle/bin:$PATH" "$bundle/bin/cfw-render-preflight.sh" --bundle
       - uses: actions/upload-artifact@v4
         with:
           name: cfw-toolchain-${{ matrix.arch }}

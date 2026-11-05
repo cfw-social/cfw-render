@@ -197,14 +197,21 @@ if (( FROM_APP )); then
   if [[ -z "$BRAND_KEY" ]]; then
     # ── Adopt (M3-04 item 4): already set up → verify the key with a
     # claim-free tools/list (the --dry check) and report ready.
-    if [[ -n "$(env_value CFW_RENDER_WORKER_KEY)" && -f "$APP_PLIST" ]]; then
+    # Keychain-only installs (WI17.2.2) have no CFW_RENDER_WORKER_KEY in the
+    # env file; fa_keychain_worker_key covers that path.
+    ADOPT_KEY="$(env_value CFW_RENDER_WORKER_KEY)"
+    [[ -z "$ADOPT_KEY" ]] && ADOPT_KEY="$(fa_keychain_worker_key)"
+    if [[ -n "$ADOPT_KEY" && -f "$APP_PLIST" ]]; then
       app_step checking started "Checking this computer"
-      if fa_tools_list_ok "$(fa_api_base)" "$(env_value CFW_RENDER_WORKER_KEY)"; then
+      if fa_tools_list_ok "$(fa_api_base)" "$ADOPT_KEY"; then
+        ADOPT_KEY=""
         app_step ready "done" "Already set up"
         exit 0
       fi
+      ADOPT_KEY=""
       app_fail checking 5 "The saved connection did not work" "Paste a fresh key from CFW Settings"
     fi
+    ADOPT_KEY=""
     app_fail connecting 5 "No key was given" "Paste the key from CFW Settings"
   fi
   # CFW keys are base64url: `-` is a normal key character.

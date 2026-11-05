@@ -120,6 +120,14 @@ fn env_value(file: &Path, key: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
+/// Render worker key: env file first, then login Keychain (com.cfw.render /
+/// render-worker). Shared read path for crash reports and other callers.
+fn render_worker_key(env_file: &Path) -> Option<String> {
+    env_value(env_file, "CFW_RENDER_WORKER_KEY")
+        .filter(|k| crate::chat::keychain::valid_render_key(k))
+        .or_else(|| crate::chat::keychain::get_worker().ok())
+}
+
 // ── crash reports ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -243,8 +251,9 @@ pub(crate) fn curl_cmd() -> String {
 /// POST one crash report. The key goes in a 0600 header file (`-H @file`) and
 /// the body in a temp file; both are removed when this returns.
 /// `env_file` is the worker's settings file (`profile::env_file`), which holds the render key.
+/// That file is tried first, then the login Keychain account `render-worker`.
 pub fn post_crash(env_file: &Path, report: &CrashReport, occurred_at: Option<&str>) -> Result<(), String> {
-    let key = env_value(env_file, "CFW_RENDER_WORKER_KEY").ok_or("this computer has no render key")?;
+    let key = render_worker_key(env_file).ok_or("this computer has no render key")?;
     let dir = tempfile_dir()?;
     let hdr = dir.join("h");
     write_private(&hdr, format!("cfw-render-key: {key}\ncontent-type: application/json\n").as_bytes())?;
@@ -398,9 +407,6 @@ pub async fn uninstall(app: tauri::AppHandle, delete_outputs: bool) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn fixture(name: &str) -> String {
         fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)).unwrap()
@@ -466,7 +472,18 @@ mod tests {
 
     #[test]
     fn share_off_posts_nothing_share_on_posts_without_key_on_argv() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Share control::ENV_LOCK with chat/connect Keychain tests: any
+        // set_var/remove_var must not race process-wide env reads of
+        // CFW_RENDER_SECURITY_CMD on parallel test threads.
+        let _g = crate::control::tests::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        struct Clear;
+        impl Drop for Clear {
+            fn drop(&mut self) {
+                std::env::remove_var("CFW_RENDER_CURL");
+                std::env::remove_var("CFW_RENDER_API_BASE");
+            }
+        }
+        let _clear = Clear;
         let reports = tempfile::tempdir().unwrap();
         let st = tempfile::tempdir().unwrap();
         let tools = tempfile::tempdir().unwrap();
@@ -489,8 +506,46 @@ mod tests {
         let bodies = fs::read_to_string(tools.path().join("bodies.log")).unwrap();
         assert!(bodies.contains("cfw-render-key: cfw_render_supersecret1"));
         assert!(bodies.contains("\"exceptionType\":\"EXC_BAD_ACCESS (SIGSEGV)\""));
-        std::env::remove_var("CFW_RENDER_CURL");
-        std::env::remove_var("CFW_RENDER_API_BASE");
+    }
+
+    #[test]
+    fn crash_post_reads_keychain_when_env_has_no_key() {
+        // Share control::ENV_LOCK with chat/connect Keychain tests.
+        let _g = crate::control::tests::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        struct Clear;
+        impl Drop for Clear {
+            fn drop(&mut self) {
+                std::env::remove_var("CFW_RENDER_SECURITY_CMD");
+                std::env::remove_var("CFW_RENDER_CURL");
+                std::env::remove_var("CFW_RENDER_API_BASE");
+            }
+        }
+        let _clear = Clear;
+        let reports = tempfile::tempdir().unwrap();
+        let st = tempfile::tempdir().unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        let kc_key = "cfw_render_keychainonly01";
+        let sec = tools.path().join("security");
+        fs::write(
+            &sec,
+            format!(
+                "#!/bin/bash\n[[ \"$1\" == find-generic-password ]] || exit 44\n[[ \"$*\" == *render-worker* ]] || exit 44\nprintf '{}\\n'\n",
+                kc_key
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&sec, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        std::env::set_var("CFW_RENDER_SECURITY_CMD", &sec);
+        std::env::set_var("CFW_RENDER_CURL", stub_curl(tools.path()));
+        std::env::set_var("CFW_RENDER_API_BASE", "http://127.0.0.1:9");
+        // Env file present but no worker key (Keychain-only install).
+        fs::write(st.path().join("cfw-render.env"), "CFW_API_BASE=http://127.0.0.1:9\n").unwrap();
+        write_settings(st.path(), &SupportSettings { share_crash_reports: true }).unwrap();
+        put(reports.path(), "CFW Render-a.ips", &fixture("crash-sample.ips"), now_secs() - 10);
+        let env_file = st.path().join("cfw-render.env");
+        assert_eq!(crash_scan_in(reports.path(), st.path(), &env_file, now_secs()), 1);
+        let bodies = fs::read_to_string(tools.path().join("bodies.log")).unwrap();
+        assert!(bodies.contains(&format!("cfw-render-key: {kc_key}")), "{bodies}");
     }
 
     #[test]

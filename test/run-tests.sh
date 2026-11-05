@@ -153,12 +153,25 @@ if [[ "${1:-}" == --wake-short-tick ]]; then short_tick_wake_case; exit $?; fi
 TEST_SUITE_BASH="$BASH"
 export TEST_SUITE_BASH
 
+# One ceiling for the bash waits `run-tests.sh --recent-identity` reaches that
+# stall under load. StageRangeTests.harness was a fixed 30s and raised
+# TimeoutExpired at load 7-10 (test_resume_clamp_and_final; that group took
+# 164s). 30 * 8 is the same load scale as the identity execFileSync ceiling.
+# A call that finishes still returns immediately. This is a ceiling, not a sleep.
+STAGE_RANGE_HARNESS_TIMEOUT_S=$((30 * 8))
+export STAGE_RANGE_HARNESS_TIMEOUT_S
+
+# Save the suite-start PATH and TMPDIR. Later cases replace both, and
+# app-key-retry.py needs this TMPDIR so bash here-docs stay in the sandbox.
+# The full suite runs the check at the end. At the start it overlaps the
+# parallel desktop cargo build, and two of its shells then sit until the
+# script's own 120s ceiling (bound suite attempt 1).
+KEY_RETRY_PATH="$PATH"
+KEY_RETRY_TMPDIR="${TMPDIR-}"
+
 if [[ "${1:-}" == --app-key-retry ]]; then
   python3 "$TEST_DIR/app-key-retry.py"
   exit $?
-fi
-if [[ -z "${1:-}" ]]; then
-  if python3 "$TEST_DIR/app-key-retry.py"; then pass "durable setup key replacement retries"; else fail "key replacement retry" "regression failed"; fi
 fi
 
 # Negotiated checkpoint fixtures only: no production manifest/version changes.
@@ -563,6 +576,7 @@ fi
 if python3 - "$REPO_DIR" <<'PY'
 import json, os, pathlib, subprocess, sys, tempfile
 repo = pathlib.Path(sys.argv[1])
+STAGE_RANGE_HARNESS_TIMEOUT_S = int(os.environ["STAGE_RANGE_HARNESS_TIMEOUT_S"])
 source = (repo/'bin/cfw-render.sh').read_text()
 assert source.count('LAST_PAUSE_STATE="__unset__"') == 1
 gate = source.split('LAST_PAUSE_STATE="__unset__"', 1)[1].split('\nif (( ! LOOP ));', 1)[0]
@@ -613,7 +627,7 @@ for reason in ('owner', 'battery'):
                    'FIRST_REPLY': reply, 'SUCCESS_REPLY': success, 'HTTP_CODE': http,
                    'FAIL_CALLS': str(failures), 'PAUSE_REASON': reason}
             result = subprocess.run(['bash', '-s'], input=harness, env=env,
-                                    capture_output=True, text=True, timeout=20)
+                                    capture_output=True, text=True, timeout=STAGE_RANGE_HARNESS_TIMEOUT_S)
             assert result.returncode == 0, (name, reason, result.stderr)
             rows = result.stdout.splitlines()
             assert len(rows) == 3, (name, rows)
@@ -708,6 +722,7 @@ repo = Path(sys.argv[1])
 # The suite's own bash (see TEST_SUITE_BASH): the scripts below use here-docs
 # and here-strings, which /bin/bash 3.2 would park in the system temp dir.
 suite_bash = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else "bash"
+STAGE_RANGE_HARNESS_TIMEOUT_S = int(os.environ["STAGE_RANGE_HARNESS_TIMEOUT_S"])
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("stage", repo / "bin/cfw-render-stage.py")
 stage = importlib.util.module_from_spec(spec)
@@ -802,7 +817,7 @@ fi
                    "CFW_RENDER_LOG_DIR": directory, "CFW_RENDER_SCRATCH": str(root / "scratch"),
                    "CFW_RENDER_SKILLS_DIR": str(root / "skills")}
             result = subprocess.run([suite_bash, "--noprofile", "--norc", "-c", script],
-                                    env=env, text=True, capture_output=True, timeout=30)
+                                    env=env, text=True, capture_output=True, timeout=STAGE_RANGE_HARNESS_TIMEOUT_S)
             events = [json.loads(line) for line in (root / "reports").read_text().splitlines()]
             completed = (root / "final-calls").read_text() if (root / "final-calls").exists() else ""
             return result, events, completed
@@ -1040,6 +1055,7 @@ recent_identity_cases() {
   python3 - "$REPO_DIR" <<'PY'
 import datetime, json, os, pathlib, signal, subprocess, sys, tempfile
 repo = pathlib.Path(sys.argv[1])
+STAGE_RANGE_HARNESS_TIMEOUT_S = int(os.environ["STAGE_RANGE_HARNESS_TIMEOUT_S"])
 source = (repo/'bin/cfw-render.sh').read_text()
 functions = source[source.index('sanitize_slug() {'):source.index('# [M2-04] Claims with capacity')]
 with tempfile.TemporaryDirectory(prefix='cfw-recent-') as tmp:
@@ -1088,7 +1104,7 @@ date() { if [[ "${1:-}" == +%s ]]; then echo 1234567890; else command date "$@";
         p = subprocess.Popen(['bash', '-c', setup + script], env={**env, **extra},
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
         try:
-            out, err = p.communicate(timeout=30)
+            out, err = p.communicate(timeout=STAGE_RANGE_HARNESS_TIMEOUT_S)
             return p.returncode, out, err
         finally:
             # Only this test session, never a name-based kill of real workers.
@@ -1350,6 +1366,52 @@ if [[ -e "${FAKE_PMSET_BATTERY:-/nonexistent}" ]]; then echo "Now drawing from '
 EOF2
 chmod +x "$FAKE_BIN/pmset"
 export CFW_RENDER_PMSET_CMD="$FAKE_BIN/pmset"
+
+# WI17.3.1: preflight requires cfw-transcribe, mlx_whisper or whisper. Cases
+# that prepend FAKE_BIN (the drainer, --dry, Case P, install.sh) must not
+# depend on a host install. This stub is not a transcriber; it only resolves.
+cat > "$FAKE_BIN/whisper" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod +x "$FAKE_BIN/whisper"
+
+# The host ffmpeg can have libx264 and still lack the ass filter. Existing
+# cases treat that host as fully provisioned, so a wrapper in front of PATH
+# answers the two preflight queries and delegates every other call. It does
+# not hide claude or the other fakes in FAKE_BIN.
+PREFLIGHT_BIN="$(mktemp -d)"
+cat > "$PREFLIGHT_BIN/ffmpeg" <<'EOF'
+#!/bin/sh
+case " $* " in
+  *" -filters "*)
+    printf '%s\n' " ... ass               V->V       Render ASS subtitles"
+    exit 0
+    ;;
+  *" -encoders "*)
+    printf '%s\n' " V..... libx264              libx264 H.264"
+    exit 0
+    ;;
+esac
+selfdir=$(cd "$(dirname "$0")" && pwd -P) || exit 127
+oldifs=$IFS
+IFS=:
+for d in $PATH; do
+  [ -n "$d" ] || continue
+  other=$(cd "$d" 2>/dev/null && pwd -P) || continue
+  [ "$other" = "$selfdir" ] && continue
+  if [ -x "$other/ffmpeg" ]; then
+    IFS=$oldifs
+    exec "$other/ffmpeg" "$@"
+  fi
+done
+IFS=$oldifs
+echo "cfw-render test ffmpeg: no real ffmpeg on PATH" >&2
+exit 127
+EOF
+chmod +x "$PREFLIGHT_BIN/ffmpeg"
+cp "$FAKE_BIN/whisper" "$PREFLIGHT_BIN/whisper"
+export PATH="$PREFLIGHT_BIN:$PATH"
 
 # cr_preflight_chromium looks for a Playwright browser under $HOME (or under
 # PLAYWRIGHT_BROWSERS_PATH). The runner sandbox hides the host's cache, so every
@@ -2115,6 +2177,67 @@ else
 fi
 rm -rf "$c8_legacy_home"
 
+echo "=== Case 8k: cr_load_config reads the render-worker Keychain when the env key is empty (WI17.2.2) ==="
+# Fake `security` returns a cfw_render_ key for account render-worker. The env
+# file has CFW_API_BASE only — no CFW_RENDER_WORKER_KEY — so the lib must fill
+# it from the Keychain on Darwin. The key must never appear in the pass line.
+c8k_home="$(mktemp -d)"
+c8k_key="cfw_render_keychain$(python3 -c 'import secrets;print(secrets.token_hex(8))')"
+mkdir -p "$c8k_home/.cfw-render"
+printf 'CFW_API_BASE=http://keychain.example\n' > "$c8k_home/.cfw-render/cfw-render.env"
+cat > "$c8k_home/security" <<SEC
+#!/bin/bash
+# argv: find-generic-password -s com.cfw.render -a render-worker -w
+acct=""
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    -a) acct="\$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ "\$acct" == "render-worker" ]] || exit 44
+printf '%s\n' '$c8k_key'
+SEC
+chmod +x "$c8k_home/security"
+c8k_out="$(
+  env -i HOME="$c8k_home" PATH="$PATH" CFW_RENDER_SECURITY_CMD="$c8k_home/security" bash -c '
+    set -u
+    # Force Darwin branch even if this host is not macOS (CI / Linux runners).
+    uname() { printf "Darwin\n"; }
+    export -f uname
+    source "'"$REPO_DIR"'/bin/cfw-render-lib.sh"
+    CFW_WORKER_ID=test-worker cr_load_config >/dev/null 2>&1 || { echo LOAD_FAILED; exit 0; }
+    if [[ "$CFW_RENDER_WORKER_KEY" == cfw_render_keychain* && "$CFW_API_BASE" == "http://keychain.example" ]]; then
+      echo OK
+    else
+      echo "bad shape_or_base"
+    fi
+  ' 2>&1
+)"
+if [[ "$c8k_out" == "OK" ]]; then
+  pass "cr_load_config: macOS Keychain fill when CFW_RENDER_WORKER_KEY is empty (account render-worker)"
+else
+  fail "cr_load_config: Keychain fallback" "got: $c8k_out"
+fi
+# Process env still wins over Keychain when already set.
+c8k_preset="$(
+  env -i HOME="$c8k_home" PATH="$PATH" CFW_RENDER_SECURITY_CMD="$c8k_home/security" \
+    CFW_RENDER_WORKER_KEY="cfw_render_presetkey00000000001" bash -c '
+    set -u
+    uname() { printf "Darwin\n"; }
+    export -f uname
+    source "'"$REPO_DIR"'/bin/cfw-render-lib.sh"
+    CFW_WORKER_ID=test-worker cr_load_config >/dev/null 2>&1 || { echo LOAD_FAILED; exit 0; }
+    echo "$CFW_RENDER_WORKER_KEY"
+  ' 2>&1
+)"
+if [[ "$c8k_preset" == "cfw_render_presetkey00000000001" ]]; then
+  pass "cr_load_config: process env CFW_RENDER_WORKER_KEY wins over Keychain"
+else
+  fail "cr_load_config: process env beats Keychain" "got: $c8k_preset"
+fi
+rm -rf "$c8k_home"
+
 # 3. cr_load_config's ollama-keys default, surfaced via `cfw-render.sh --dry`'s
 #    health table (against a mock server, not a live CFW_API_BASE).
 c289_seed="$(mktemp)"; empty_queue > "$c289_seed"
@@ -2505,7 +2628,9 @@ if echo "$pf_out" | grep -q "magick"; then
 else
   fail "preflight: message" "failure output does not name 'magick': $pf_out"
 fi
-if echo "$pf_out" | grep -qiE "brew install imagemagick|apt-get install -y imagemagick"; then
+# Darwin names the CFW Render toolchain. Linux keeps the apt-get command.
+# A Homebrew install line is no longer a valid hint (WI17.3.1).
+if echo "$pf_out" | grep -q "apt-get install -y imagemagick" || echo "$pf_out" | grep -q "update the CFW Render app (it ships this tool)"; then
   pass "preflight: names how to install it"
 else
   fail "preflight: install hint" "no install command in the failure output"
@@ -2534,6 +2659,132 @@ fi
 
 kill "$pf_pid" 2>/dev/null; wait "$pf_pid" 2>/dev/null
 rm -rf "$pf_shim"
+
+echo "=== Case P2: preflight names a missing ass filter, libx264, or whisper tool (WI17.3.1) ==="
+# Fake binaries only. No network. PATH is the fake dir plus /usr/bin:/bin so
+# find, head and uname still resolve, and a host whisper or ffmpeg cannot
+# satisfy the row under test.
+
+wi1731_write_ffmpeg() { # <path> <with_ass 0|1> <with_x264 0|1>
+  local dest="$1" with_ass="$2" with_x264="$3"
+  {
+    printf '%s\n' '#!/bin/sh'
+    printf '%s\n' 'case " $* " in'
+    printf '%s\n' '  *" -filters "*)'
+    if [[ "$with_ass" == 1 ]]; then
+      printf '%s\n' '    printf "%s\n" " ... ass               V->V       Render ASS subtitles"'
+    fi
+    printf '%s\n' '    ;;'
+    printf '%s\n' '  *" -encoders "*)'
+    if [[ "$with_x264" == 1 ]]; then
+      printf '%s\n' '    printf "%s\n" " V..... libx264              libx264 H.264"'
+    fi
+    printf '%s\n' '    ;;'
+    printf '%s\n' 'esac'
+    printf '%s\n' 'exit 0'
+  } > "$dest"
+  chmod +x "$dest"
+}
+
+wi1731_host() { # <dir> <with_ass> <with_x264> <with_whisper>
+  local dir="$1" b py
+  mkdir -p "$dir"
+  wi1731_write_ffmpeg "$dir/ffmpeg" "$2" "$3"
+  printf '%s\n' '#!/bin/sh' 'exit 0' > "$dir/ffprobe"
+  printf '%s\n' '#!/bin/sh' 'echo "ImageMagick 7 fake"' 'exit 0' > "$dir/magick"
+  for b in curl node npx; do
+    printf '%s\n' '#!/bin/sh' 'exit 0' > "$dir/$b"
+  done
+  chmod +x "$dir/ffprobe" "$dir/magick" "$dir/curl" "$dir/node" "$dir/npx"
+  py="$(command -v python3)"
+  ln -s "$py" "$dir/python3"
+  if [[ "$4" == 1 ]]; then
+    printf '%s\n' '#!/bin/sh' 'exit 0' > "$dir/whisper"
+    chmod +x "$dir/whisper"
+  fi
+}
+
+wi1731_preflight() { # <dir> — sets wi1731_out and wi1731_rc
+  wi1731_out="$(
+    export PATH="$1:/usr/bin:/bin"
+    export CFW_RENDER_DIRECTOR_CMD="$TEST_DIR/fake-director.sh"
+    # shellcheck source=/dev/null
+    source "$REPO_DIR/bin/cfw-render-lib.sh"
+    cr_preflight 2>&1
+  )"
+  wi1731_rc=$?
+}
+
+wi1731_dir="$(mktemp -d)"
+wi1731_host "$wi1731_dir" 1 1 1
+wi1731_preflight "$wi1731_dir"
+if [[ "$wi1731_rc" == 0 ]]; then
+  pass "preflight: a full fake host passes the ass, libx264 and whisper rows"
+else
+  fail "preflight: full fake host" "expected 0, got $wi1731_rc: $wi1731_out"
+fi
+if echo "$wi1731_out" | grep -q "ffmpeg:ass" && echo "$wi1731_out" | grep -q "ffmpeg:libx264" && echo "$wi1731_out" | grep -q "whisper"; then
+  pass "preflight: full fake host reports the ass filter, libx264 and a whisper tool"
+else
+  fail "preflight: full fake host rows" "missing a passing row in: $wi1731_out"
+fi
+rm -rf "$wi1731_dir"
+
+wi1731_dir="$(mktemp -d)"
+wi1731_host "$wi1731_dir" 0 1 1
+wi1731_preflight "$wi1731_dir"
+if [[ "$wi1731_rc" != 0 ]]; then
+  pass "preflight: ffmpeg without the ass filter exits non-zero"
+else
+  fail "preflight: missing ass filter" "expected non-zero, got 0"
+fi
+if echo "$wi1731_out" | grep -q "ffmpeg:ass"; then
+  pass "preflight: names the missing ass filter"
+else
+  fail "preflight: missing ass name" "failure output does not name ffmpeg:ass: $wi1731_out"
+fi
+rm -rf "$wi1731_dir"
+
+wi1731_dir="$(mktemp -d)"
+wi1731_host "$wi1731_dir" 1 0 1
+wi1731_preflight "$wi1731_dir"
+if [[ "$wi1731_rc" != 0 ]]; then
+  pass "preflight: ffmpeg without libx264 exits non-zero"
+else
+  fail "preflight: missing libx264" "expected non-zero, got 0"
+fi
+if echo "$wi1731_out" | grep -q "libx264"; then
+  pass "preflight: names the missing libx264 encoder"
+else
+  fail "preflight: missing libx264 name" "failure output does not name libx264: $wi1731_out"
+fi
+rm -rf "$wi1731_dir"
+
+wi1731_dir="$(mktemp -d)"
+wi1731_host "$wi1731_dir" 1 1 0
+wi1731_preflight "$wi1731_dir"
+if [[ "$wi1731_rc" != 0 ]]; then
+  pass "preflight: a host with no whisper tool exits non-zero"
+else
+  fail "preflight: missing whisper" "expected non-zero, got 0"
+fi
+if echo "$wi1731_out" | grep -q "whisper"; then
+  pass "preflight: names the missing whisper tool"
+else
+  fail "preflight: missing whisper name" "failure output does not name whisper: $wi1731_out"
+fi
+rm -rf "$wi1731_dir"
+
+wi1731_hint_body="$(awk '
+  /^cr_preflight_hint\(\)/ { show=1 }
+  show { print }
+  show && /^}/ { exit }
+' "$REPO_DIR/bin/cfw-render-lib.sh")"
+if [[ -n "$wi1731_hint_body" ]] && ! printf '%s\n' "$wi1731_hint_body" | grep -q 'brew install'; then
+  pass "preflight: no brew install hint left in cr_preflight_hint"
+else
+  fail "preflight: brew install hint" "cr_preflight_hint still contains brew install, or the function was not found"
+fi
 
 # ===========================================================================
 # CFW-291: resolved-binary worker PATH + headless claude probe + Linux
@@ -4062,14 +4313,15 @@ rm -rf "$c23"
 # Round 1's claims are "0/2 1/2 2/2". The next round starts when that work
 # winds down. A fixed sleep 3 stopped the worker first on a busy Mac, so the
 # log never showed "normal claims skipped, urgent only" and no later ask was
-# recorded. Poll every 0.5s for up to 60s. The skip line is written just
-# before the full ask, so the line alone is not a reason to stop. Stop once
-# that later ask is on disk and the line is too, or once a later ask is not
-# a full one (the strict check below then fails). Time running out still
-# falls through to that same check.
+# recorded. Poll every 0.5s until STAGE_RANGE_HARNESS_TIMEOUT_S. The skip
+# line is written just before the full ask, so the line alone is not a reason
+# to stop. Stop once that later ask is on disk and the line is too, or once a
+# later ask is not a full one (the strict check below then fails). Time running
+# out still falls through to that same check. 60s expired under bound-suite
+# load before a scratch job freed a slot, so the tail stayed 2/2.
 c23b_wait_past_round1() {
   local dir="$1" deadline now tail uniq
-  deadline=$((SECONDS + 60))
+  deadline=$((SECONDS + STAGE_RANGE_HARNESS_TIMEOUT_S))
   while (( SECONDS < deadline )); do
     now="$(c21_claims "$dir")"
     if [[ "$now" == 0/2\ 1/2\ 2/2\ * ]]; then
@@ -4118,8 +4370,11 @@ rm -rf "$c23b"
 # continue after floor=1000. The same check must still fail. The broken copy
 # lives only in this temp dir.
 c23s_bin="$(mktemp -d)"
-mkdir -p "$c23s_bin/bin"
+mkdir -p "$c23s_bin/bin" "$c23s_bin/config"
 cp -R "$REPO_DIR/bin/." "$c23s_bin/bin/"
+# The copy's lib resolves the repo root from its own path. Preflight still
+# requires the pinned Chromium file, which lives next to bin/ in a real tree.
+cp "$REPO_DIR/config/playwright-pin.json" "$c23s_bin/config/playwright-pin.json"
 if ! python3 - "$c23s_bin/bin/cfw-render-lib.sh" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
@@ -4788,7 +5043,16 @@ rm -rf "$p13"
 echo "=== Case M3-07a-1: cr_resolve_worker_path prepends tools/current/bin when present ==="
 m7_tmp="$(mktemp -d)"
 mkdir -p "$m7_tmp/current/bin"
-printf '#!/bin/sh\nexit 0\n' >"$m7_tmp/current/bin/ffmpeg"
+# Answers -filters and -encoders so a preflight that resolves this ffmpeg
+# still sees the ass filter and libx264 (WI17.3.1). Anything else exits 0.
+cat > "$m7_tmp/current/bin/ffmpeg" <<'EOF'
+#!/bin/sh
+case " $* " in
+  *" -filters "*) printf '%s\n' " ... ass               V->V       Render ASS subtitles" ;;
+  *" -encoders "*) printf '%s\n' " V..... libx264              libx264 H.264" ;;
+esac
+exit 0
+EOF
 chmod +x "$m7_tmp/current/bin/ffmpeg"
 m7_out="$(
   export CFW_RENDER_TOOLS_DIR="$m7_tmp"
@@ -5057,6 +5321,773 @@ else
   fail "M3-07b-3" "triples=$m7b_tr"
 fi
 
+echo "=== Case WI17.3.2: toolchain manifest lists every tool preflight requires ==="
+# Offline. The required names come from cr_preflight_manifest_rows, the list
+# cr_preflight itself reads. A check in that list with no manifest entry fails.
+# An in-memory copy of the manifest with one of those tools removed must fail
+# the same check. curl, claude and fonts are host checks, not bundled tools.
+# libass needs fribidi, harfbuzz and freetype; ImageMagick's png and jpeg
+# delegates are libpng and libjpeg. Those libraries stay in the manifest and
+# are shape-checked with every other tool.
+wi1732_out="$(python3 - "$REPO_DIR" <<'PY'
+import json, re, sys
+from pathlib import Path
+repo = Path(sys.argv[1])
+errors = []
+try:
+    manifest = json.loads((repo / "toolchain" / "manifest.json").read_text())
+except Exception as exc:
+    print("manifest is not JSON: %s" % exc)
+    raise SystemExit(0)
+if manifest.get("schemaVersion") != 1:
+    errors.append("schemaVersion")
+version = manifest.get("version")
+if not isinstance(version, str) or not re.fullmatch(r"[0-9]{4}\.[0-9]{2}\.[0-9]+", version):
+    errors.append("version")
+if version == "2026.10.1":
+    errors.append("version not bumped")
+if not isinstance(manifest.get("minAppVersion"), str) or not manifest.get("minAppVersion"):
+    errors.append("minAppVersion")
+tools = manifest.get("tools")
+if not isinstance(tools, list) or not tools:
+    errors.append("tools")
+    tools = []
+required = ("name", "version", "license", "source", "relocatable", "provides", "sha256")
+by_name = {}
+for tool in tools:
+    if not isinstance(tool, dict):
+        errors.append("tool not an object")
+        continue
+    name = tool.get("name")
+    if not isinstance(name, str) or not name:
+        errors.append("tool missing name")
+        continue
+    if name in by_name:
+        errors.append("duplicate %s" % name)
+    by_name[name] = tool
+    for key in required:
+        if key not in tool:
+            errors.append("%s missing %s" % (name, key))
+    if not isinstance(tool.get("version"), str) or not tool.get("version"):
+        errors.append("%s version" % name)
+    if not isinstance(tool.get("license"), str) or not tool.get("license"):
+        errors.append("%s license" % name)
+    source = tool.get("source")
+    if not isinstance(source, str) or not source.startswith("https://"):
+        errors.append("%s source" % name)
+    if not isinstance(tool.get("relocatable"), bool):
+        errors.append("%s relocatable" % name)
+    provides = tool.get("provides")
+    if not isinstance(provides, list) or not all(isinstance(item, str) and item for item in provides):
+        errors.append("%s provides" % name)
+    sha = tool.get("sha256")
+    if not isinstance(sha, str) or not (sha.startswith("TODO-") or re.fullmatch(r"[0-9a-f]{64}", sha)):
+        errors.append("%s sha256" % name)
+    if "buildFlags" in tool:
+        flags = tool["buildFlags"]
+        if not isinstance(flags, list) or not all(isinstance(flag, str) and flag for flag in flags):
+            errors.append("%s buildFlags" % name)
+    if "pinNote" in tool and not isinstance(tool["pinNote"], str):
+        errors.append("%s pinNote" % name)
+    if "arch" in tool and tool.get("arch") not in ("arm64", "x86_64"):
+        errors.append("%s arch" % name)
+archives = manifest.get("archives")
+if not isinstance(archives, dict):
+    errors.append("archives")
+    archives = {}
+for arch in ("arm64", "x86_64"):
+    entry = archives.get(arch)
+    if not isinstance(entry, dict):
+        errors.append("archives.%s" % arch)
+        continue
+    for key in ("file", "sha256", "sizeBytes"):
+        if key not in entry:
+            errors.append("archives.%s missing %s" % (arch, key))
+    filename = entry.get("file")
+    if not isinstance(filename, str) or not filename.endswith(".tar.zst") or (isinstance(version, str) and version not in filename):
+        errors.append("archives.%s file" % arch)
+    if entry.get("sha256") is not None and not (isinstance(entry.get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", entry["sha256"])):
+        errors.append("archives.%s sha256" % arch)
+    if entry.get("sizeBytes") is not None and not isinstance(entry.get("sizeBytes"), int):
+        errors.append("archives.%s sizeBytes" % arch)
+def provides_of(name):
+    return set(by_name.get(name, {}).get("provides") or [])
+if not {"node", "npx"} <= provides_of("node"):
+    errors.append("node does not provide node and npx")
+if "python3" not in provides_of("python"):
+    errors.append("python does not provide python3")
+if not {"ffmpeg", "ffprobe"} <= provides_of("ffmpeg"):
+    errors.append("ffmpeg does not provide ffmpeg and ffprobe")
+if "magick" not in provides_of("imagemagick"):
+    errors.append("imagemagick does not provide magick")
+flags = by_name.get("ffmpeg", {}).get("buildFlags") or []
+for flag in ("--enable-gpl", "--enable-libx264", "--enable-libass", "--enable-libfreetype"):
+    if flag not in flags:
+        errors.append("ffmpeg missing %s" % flag)
+for flag in ("--disable-gpl", "--disable-libx264"):
+    if flag in flags:
+        errors.append("ffmpeg still has %s" % flag)
+
+def top_function(src, name):
+    needle = "\n" + name + "() {"
+    idx = src.find(needle)
+    if idx < 0:
+        return ""
+    lines = src[idx + 1:].splitlines()
+    body = [lines[0]]
+    for line in lines[1:]:
+        body.append(line)
+        if line == "}":
+            break
+    return "\n".join(body)
+
+lib_text = (repo / "bin" / "cfw-render-lib.sh").read_text()
+preflight_body = top_function(lib_text, "cr_preflight")
+if "_cr_preflight_rows_agree" not in preflight_body:
+    errors.append("cr_preflight does not read cr_preflight_manifest_rows")
+bins_match = re.search(r"^_CR_REQUIRED_BINS=\(([^)]*)\)", lib_text, re.M)
+bins = bins_match.group(1).split() if bins_match else []
+if not bins:
+    errors.append("cr_preflight required binaries were not found")
+missing_literals = re.findall(r'missing\+=\("([^"$]+)"\)', preflight_body)
+whisper_loop = re.search(r"for wtool in ([^;\n]+)", preflight_body)
+whisper_bins = whisper_loop.group(1).split() if whisper_loop else []
+if not whisper_bins:
+    errors.append("cr_preflight has no whisper tool loop")
+checks = set(bins) | set(missing_literals)
+import subprocess
+rows_text = ""
+proc = subprocess.run(
+    ["bash", "-c", 'source "$1" && cr_preflight_manifest_rows', "bash", str(repo / "bin" / "cfw-render-lib.sh")],
+    text=True,
+    capture_output=True,
+)
+if proc.returncode != 0:
+    errors.append("cr_preflight_manifest_rows failed: %s" % (proc.stderr or proc.stdout))
+else:
+    rows_text = proc.stdout
+rows = []
+for line in rows_text.splitlines():
+    parts = line.split()
+    if len(parts) != 2:
+        errors.append("bad preflight row %r" % line)
+        continue
+    rows.append((parts[0], parts[1]))
+row_checks = {check for check, _manifest_name in rows}
+if rows and checks != row_checks:
+    errors.append("preflight checks %s do not match the shared rows %s" % (sorted(checks), sorted(row_checks)))
+# Only these checks are the machine's own tools. A new preflight check cannot
+# be marked host to skip the manifest; it needs a manifest entry.
+host_ok = {"curl", "claude", "fonts"}
+
+def arch_provides(tool_list, arch):
+    got = set()
+    for tool in tool_list:
+        tool_arch = tool.get("arch")
+        if tool_arch not in (None, arch):
+            continue
+        got.update(tool.get("provides") or [])
+    return got
+
+def coverage_errors(tool_list):
+    found = []
+    covered = set()
+    for tool in tool_list:
+        if not isinstance(tool, dict):
+            continue
+        if isinstance(tool.get("name"), str):
+            covered.add(tool["name"])
+        covered.update(item for item in (tool.get("provides") or []) if isinstance(item, str))
+    for check, manifest_name in rows:
+        if manifest_name == "host":
+            if check not in host_ok:
+                found.append("preflight check %s is marked host but has no manifest entry" % check)
+            continue
+        if manifest_name not in covered:
+            found.append("preflight check %s has no manifest entry for %s" % (check, manifest_name))
+    if "mlx_whisper" not in whisper_bins:
+        found.append("preflight whisper loop has no Apple-silicon mlx_whisper")
+    intel_bins = [name for name in whisper_bins if name != "mlx_whisper"]
+    if not intel_bins:
+        found.append("preflight whisper loop has no Intel binary")
+    for tool in tool_list:
+        if isinstance(tool, dict) and "mlx_whisper" in (tool.get("provides") or []) and tool.get("arch") != "arm64":
+            found.append("mlx_whisper entry must be arch arm64")
+    if whisper_bins and not (arch_provides(tool_list, "arm64") & set(whisper_bins)):
+        found.append("arm64 archive provides no whisper binary preflight accepts")
+    if intel_bins and not (arch_provides(tool_list, "x86_64") & set(intel_bins)):
+        found.append("x86_64 archive has no whisper that runs on Intel")
+    intel_entries = [
+        tool for tool in tool_list
+        if isinstance(tool, dict) and tool.get("arch") == "x86_64" and set(tool.get("provides") or []) & set(intel_bins)
+    ]
+    if not intel_entries:
+        found.append("x86_64 archive has no whisper entry of its own")
+    for tool in intel_entries:
+        source = tool.get("source") if isinstance(tool.get("source"), str) else ""
+        version = tool.get("version") if isinstance(tool.get("version"), str) else ""
+        blob = json.dumps(tool)
+        if (
+            tool.get("cli") != "openai-whisper"
+            or tool.get("license") != "MIT"
+            or source.rstrip("/") != "https://github.com/openai/whisper"
+            or not re.fullmatch(r"20[0-9]{6}", version)
+            or "whisper.cpp" in blob
+            or "ggml-org" in blob
+            or "whisper-cli" in (tool.get("provides") or [])
+        ):
+            found.append("x86_64 whisper provider is not the openai-whisper CLI")
+    return found
+
+errors.extend(coverage_errors(tools))
+# Proof: the same check fails on a copy of the manifest with one tool removed.
+removed_chromium = [tool for tool in tools if tool.get("name") != "chromium"]
+if len(removed_chromium) != len(tools) - 1:
+    errors.append("could not copy the manifest and remove chromium")
+else:
+    chromium_errors = coverage_errors(removed_chromium)
+    if not any("chromium" in item for item in chromium_errors):
+        errors.append("removing chromium still passed the preflight manifest check")
+removed_intel = [tool for tool in tools if tool.get("arch") != "x86_64"]
+if len(removed_intel) == len(tools):
+    errors.append("could not copy the manifest and remove the x86_64 whisper entry")
+else:
+    intel_errors = coverage_errors(removed_intel)
+    if not any("x86_64" in item for item in intel_errors):
+        errors.append("removing the x86_64 whisper entry still passed")
+# Proof: the same check fails when the Intel whisper command is not openai-whisper.
+wrong_cli = json.loads(json.dumps(tools))
+flipped = False
+for tool in wrong_cli:
+    if tool.get("arch") == "x86_64" and "whisper" in (tool.get("provides") or []):
+        tool["cli"] = "whisper.cpp"
+        flipped = True
+if not flipped:
+    errors.append("could not copy the manifest and retarget the x86_64 whisper CLI")
+else:
+    cli_errors = coverage_errors(wrong_cli)
+    if not any("openai-whisper CLI" in item for item in cli_errors):
+        errors.append("an x86_64 whisper entry with a whisper.cpp CLI still passed")
+try:
+    pin = json.loads((repo / "config" / "playwright-pin.json").read_text())
+except Exception as exc:
+    errors.append("playwright pin: %s" % exc)
+    pin = {}
+chromium = by_name.get("chromium", {})
+for field in ("playwright", "chromiumRevision", "chromiumHeadlessShellRevision"):
+    if pin.get(field) and chromium.get(field) != pin.get(field):
+        errors.append("chromium %s is not the pinned %s" % (field, pin.get(field)))
+readme = (repo / "toolchain" / "README.md").read_text()
+if "macos-13" in readme:
+    errors.append("README still names macos-13")
+if "downloads on first use" not in readme and "downloads on first use" not in json.dumps(manifest):
+    errors.append("speech model first-use download is not noted")
+licenses = (repo / "toolchain" / "LICENSES.md").read_text()
+if "GPL-2.0-or-later" not in licenses or "https://ffmpeg.org/releases/ffmpeg-7.1.1.tar.xz" not in licenses:
+    errors.append("LICENSES.md does not state the GPL terms and ffmpeg source")
+chromium_row = next((line for line in licenses.splitlines() if line.startswith("| chromium")), "")
+if "BSD-3-Clause" not in chromium_row or "Apache-2.0" not in chromium_row:
+    errors.append("LICENSES.md chromium row must name Chromium BSD-3-Clause and Playwright Apache-2.0")
+intel_notes = [
+    tool.get("pinNote") or ""
+    for tool in tools
+    if isinstance(tool, dict) and tool.get("arch") == "x86_64" and "whisper" in (tool.get("provides") or [])
+]
+if not intel_notes or any("~/.cache/whisper" not in note for note in intel_notes):
+    errors.append("Intel whisper pinNote does not say the model downloads into ~/.cache/whisper")
+if any("whisper.cpp" in note for note in intel_notes):
+    errors.append("Intel whisper pinNote still describes whisper.cpp")
+mlx_notes = [
+    tool.get("pinNote") or ""
+    for tool in tools
+    if isinstance(tool, dict) and "mlx_whisper" in (tool.get("provides") or [])
+]
+if not mlx_notes or any("Hugging Face" not in note for note in mlx_notes):
+    errors.append("mlx_whisper pinNote does not say its model comes from Hugging Face")
+if "openai-whisper" not in readme or "~/.cache/whisper" not in readme or "Hugging Face" not in readme:
+    errors.append("README does not separate the Intel openai-whisper cache from the Apple-silicon Hugging Face model")
+if "whisper-cli" not in readme:
+    errors.append("README known limits do not name whisper-cli")
+if "https://github.com/openai/whisper" not in licenses or "~/.cache/whisper" not in licenses:
+    errors.append("LICENSES.md does not say openai-whisper downloads into ~/.cache/whisper")
+if "ggml-org/whisper.cpp" in licenses:
+    errors.append("LICENSES.md still lists whisper.cpp as a bundled component")
+if "Hugging Face" not in licenses:
+    errors.append("LICENSES.md does not say the Apple-silicon model comes from Hugging Face")
+print("ok" if not errors else "; ".join(errors))
+PY
+)" || wi1732_out="${wi1732_out:-python-failed}"
+if [[ "$wi1732_out" == "ok" ]]; then
+  pass "WI17.3.2: manifest shape names ffmpeg with libx264 and libass, whisper and pinned Chromium"
+else
+  fail "WI17.3.2 manifest" "$wi1732_out"
+fi
+
+echo "=== Case WI17.3.3: build.sh has a step for every manifest tool on that arch ==="
+# Offline. No compile and no download. CFW_TOOLCHAIN_PLAN prints the steps
+# after the pin gate. A copy of the manifest with one extra tool must fail
+# that same recipe check. The pin gate must name each TODO-pinned tool.
+wi1733_out="$(python3 - "$REPO_DIR" <<'PY'
+import json, os, subprocess, tempfile, traceback
+from pathlib import Path
+repo = Path(__import__("sys").argv[1])
+errors = []
+try:
+    script = (repo / "toolchain" / "scripts" / "build.sh").read_text()
+    manifest = json.loads((repo / "toolchain" / "manifest.json").read_text())
+    tools = manifest["tools"]
+    build = repo / "toolchain" / "scripts" / "build.sh"
+    for flag in ("--enable-gpl", "--enable-libx264", "--enable-libass", "--enable-libfreetype"):
+        if flag not in script:
+            errors.append("build.sh does not name %s" % flag)
+    if "--disable-gpl" in script or "--disable-libx264" in script:
+        errors.append("build.sh still disables gpl or libx264")
+    if "--with-png=yes" not in script or "--with-jpeg=yes" not in script:
+        errors.append("ImageMagick is not configured with png and jpeg")
+    if "config/playwright-pin.json" not in script:
+        errors.append("chromium step does not read config/playwright-pin.json")
+    if "1.64.1" in script or "chromium-1248" in script:
+        errors.append("build.sh hard-codes a Playwright version or Chromium revision")
+
+    def for_arch(tool_list, arch):
+        return [tool for tool in tool_list if tool.get("arch") in (None, "", arch)]
+
+    def unpinned_names(text):
+        marker = "tool(s): "
+        for line in text.splitlines():
+            start = line.find(marker)
+            if start < 0:
+                continue
+            rest = line[start + len(marker):]
+            cut = rest.find(" \u2014 ")
+            if cut >= 0:
+                rest = rest[:cut]
+            return rest.split()
+        return None
+
+    def run_build(manifest_path, arch, plan, out_dir):
+        env = os.environ.copy()
+        env.pop("CFW_TOOLCHAIN_ALLOW_UNPINNED", None)
+        env["CFW_TOOLCHAIN_MANIFEST"] = str(manifest_path)
+        if plan:
+            env["CFW_TOOLCHAIN_PLAN"] = "1"
+        else:
+            env.pop("CFW_TOOLCHAIN_PLAN", None)
+        proc = subprocess.run(
+            ["bash", str(build), arch, str(out_dir)],
+            cwd=str(repo),
+            env=env,
+            text=True,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+        )
+        return proc.returncode, proc.stdout + proc.stderr
+
+    def steps(text):
+        rows = []
+        for line in text.splitlines():
+            if not line.startswith("step "):
+                continue
+            parts = line.split()
+            if len(parts) != 4 or not parts[2].startswith("recipe=") or not parts[3].startswith("provides="):
+                rows.append(line)
+                continue
+            rows.append((parts[1], parts[2][len("recipe="):], parts[3][len("provides="):]))
+        return rows
+
+    def check_plan(text, rc, arch):
+        if rc != 0:
+            errors.append("%s plan exited %s: %s" % (arch, rc, text[-400:]))
+            return
+        if "fetch:" in text or "https://" in text:
+            errors.append("%s plan downloaded or printed a URL" % arch)
+        if "plan-ok arch=%s" % arch not in text:
+            errors.append("%s plan did not finish plan-ok" % arch)
+        got = steps(text)
+        if any(isinstance(row, str) for row in got):
+            errors.append("%s plan has a bad step line" % arch)
+            return
+        expected = for_arch(tools, arch)
+        got_names = [name for name, _recipe, _provides in got]
+        want_names = [tool["name"] for tool in expected]
+        if got_names != want_names:
+            errors.append("%s plan tools %s != %s" % (arch, got_names, want_names))
+        by_name = {tool["name"]: tool for tool in expected}
+        for name, recipe, provides in got:
+            if not isinstance(recipe, str) or ("\n%s() {" % recipe) not in ("\n" + script):
+                errors.append("%s plan recipe %s is not a function" % (arch, recipe))
+            want_provides = ",".join(by_name[name].get("provides") or [])
+            if provides != want_provides:
+                errors.append("%s plan %s provides %s != %s" % (arch, name, provides, want_provides))
+
+    pinned = json.loads(json.dumps(manifest))
+    for tool in pinned["tools"]:
+        tool["sha256"] = "0" * 64
+    extra = json.loads(json.dumps(pinned))
+    extra["tools"].append({
+        "name": "zzz-extra-tool",
+        "version": "0",
+        "license": "MIT",
+        "source": "https://example.invalid/zzz-extra-tool",
+        "relocatable": True,
+        "provides": ["zzz-extra-tool"],
+        "sha256": "0" * 64,
+    })
+    mixed = {
+        "version": "0.0.0-test",
+        "minAppVersion": "1.0.0",
+        "tools": [
+            {"name": "pinned-alpha", "version": "1", "sha256": "0" * 64},
+            {"name": "todo-beta", "version": "1", "sha256": "TODO-fill-from-first-build"},
+            {"name": "todo-gamma", "version": "1", "sha256": "TODO-another"},
+        ],
+    }
+    with tempfile.TemporaryDirectory(prefix="wi1733-") as tmp:
+        root = Path(tmp)
+        unpinned_path = root / "unpinned.json"
+        pinned_path = root / "pinned.json"
+        extra_path = root / "extra.json"
+        mixed_path = root / "mixed.json"
+        unpinned_path.write_text(json.dumps(manifest))
+        pinned_path.write_text(json.dumps(pinned))
+        extra_path.write_text(json.dumps(extra))
+        mixed_path.write_text(json.dumps(mixed))
+        pin_rc, pin_text = run_build(unpinned_path, "arm64", False, root / "pin-out")
+        mix_rc, mix_text = run_build(mixed_path, "x86_64", False, root / "mix-out")
+        arm_rc, arm_text = run_build(pinned_path, "arm64", True, root / "plan-arm")
+        x86_rc, x86_text = run_build(pinned_path, "x86_64", True, root / "plan-x86")
+        extra_rc, extra_text = run_build(extra_path, "arm64", True, root / "plan-extra")
+    if pin_rc == 0 or "unpinned" not in pin_text or "fetch:" in pin_text:
+        errors.append("real manifest pin gate rc=%s text=%s" % (pin_rc, pin_text[-400:]))
+    else:
+        named = unpinned_names(pin_text)
+        want = [tool["name"] for tool in tools]
+        if named != want:
+            errors.append("pin gate named %s, manifest tools are %s" % (named, want))
+        if "openai-whisper" not in (named or []) or "whisper" not in (named or []):
+            errors.append("arm64 pin gate did not name both whisper tools")
+    if mix_rc == 0 or "fetch:" in mix_text:
+        errors.append("mixed pin gate rc=%s text=%s" % (mix_rc, mix_text[-400:]))
+    else:
+        named = unpinned_names(mix_text)
+        if named != ["todo-beta", "todo-gamma"]:
+            errors.append("mixed pin gate named %s" % named)
+        if named and "pinned-alpha" in named:
+            errors.append("mixed pin gate named the pinned tool")
+    check_plan(arm_text, arm_rc, "arm64")
+    check_plan(x86_text, x86_rc, "x86_64")
+    if "openai-whisper" in arm_text:
+        errors.append("arm64 plan includes openai-whisper")
+    if "mlx_whisper" not in arm_text:
+        errors.append("arm64 plan has no mlx_whisper step")
+    if "mlx_whisper" in x86_text:
+        errors.append("x86_64 plan includes mlx_whisper")
+    if "openai-whisper" not in x86_text:
+        errors.append("x86_64 plan has no openai-whisper step")
+    if extra_rc == 0 or "no build recipe" not in extra_text or "zzz-extra-tool" not in extra_text:
+        errors.append("extra tool plan rc=%s text=%s" % (extra_rc, extra_text[-400:]))
+    if "fetch:" in extra_text or "plan-ok" in extra_text:
+        errors.append("extra tool plan fetched or reported success")
+except Exception:
+    errors.append(traceback.format_exc())
+print("ok" if not errors else "; ".join(errors))
+PY
+)" || wi1733_out="${wi1733_out:-python-failed}"
+if [[ "$wi1733_out" == "ok" ]]; then
+  pass "WI17.3.3: each manifest tool has a per-arch build step, and the pin gate names every TODO pin"
+else
+  fail "WI17.3.3 build steps" "$wi1733_out"
+fi
+
+echo "=== Case WI17.3.4: toolchain-build installs CI brew tools, captures pins, and preflights the bundle ==="
+# Offline grep case. No network, no compile, no CI run.
+# (1) The workflow brew-installs gperf and every host tool build.sh's steps
+#     call (require_cmd), in CI only. User setup (install/install.sh) does not.
+# (2) Pin-capture mode runs build.sh with CFW_TOOLCHAIN_ALLOW_UNPINNED=1 and
+#     uploads the PIN lines as an artifact.
+# (3) After the build, a step runs the unpacked bundle's preflight.
+# build.sh copies both preflight scripts into the bundle bin/ before sums.
+wi1734_wf="$REPO_DIR/.github/workflows/toolchain-build.yml"
+wi1734_build="$REPO_DIR/toolchain/scripts/build.sh"
+wi1734_lib="$REPO_DIR/toolchain/scripts/lib.sh"
+wi1734_readme="$REPO_DIR/toolchain/README.md"
+wi1734_why=""
+wi1734_brew="$(grep -E '^[[:space:]]*run: brew install ' "$wi1734_wf" || true)"
+wi1734_pkgs="${wi1734_brew#*brew install }"
+wi1734_check_pkg() {
+  case " $wi1734_pkgs " in
+    *" $1 "*) ;;
+    *) wi1734_why+=" brew-missing-$1" ;;
+  esac
+}
+wi1734_saw_require=0
+while IFS= read -r wi1734_tool; do
+  [[ -n "$wi1734_tool" ]] || continue
+  wi1734_saw_require=1
+  wi1734_check_pkg "$wi1734_tool"
+done < <(grep -oE 'require_cmd[[:space:]]+[A-Za-z0-9_+-]+' "$wi1734_build" | awk '{print $2}' | sort -u)
+if [[ "$wi1734_saw_require" != "1" ]]; then
+  wi1734_why+=" no-require-cmd"
+fi
+for wi1734_tool in gperf zstd pkg-config autoconf automake libtool nasm cmake meson ninja; do
+  wi1734_check_pkg "$wi1734_tool"
+done
+if [[ "$(grep -c 'brew install ' "$wi1734_wf" || true)" != "1" ]]; then
+  wi1734_why+=" brew-install-count"
+fi
+if grep -q 'brew install' "$REPO_DIR/install/install.sh"; then
+  wi1734_why+=" user-setup-brew-install"
+fi
+if grep -q 'gperf' "$REPO_DIR/install/install.sh"; then
+  wi1734_why+=" user-setup-gperf"
+fi
+if ! grep -q 'not part of user setup' "$wi1734_readme"; then
+  wi1734_why+=" readme-not-ci-only"
+fi
+if grep -q 'not in `.github/workflows/toolchain-build.yml` yet' "$wi1734_readme"; then
+  wi1734_why+=" readme-stale-brew"
+fi
+if ! grep -q '^      capture_pins:' "$wi1734_wf"; then
+  wi1734_why+=" no-capture-input"
+fi
+if ! grep -q 'Pin-capture mode' "$wi1734_wf"; then
+  wi1734_why+=" no-pin-capture-mode"
+fi
+if ! grep -F "github.event.inputs.capture_pins == 'true' && '1'" "$wi1734_wf" >/dev/null; then
+  wi1734_why+=" capture-does-not-set-unpinned-1"
+fi
+if ! grep -F -q "grep '^PIN '" "$wi1734_wf"; then
+  wi1734_why+=" pin-lines-not-saved"
+fi
+if ! grep -q 'name: Upload PIN lines' "$wi1734_wf"; then
+  wi1734_why+=" no-pin-upload-step"
+fi
+if ! grep -q 'name: toolchain-pins-' "$wi1734_wf"; then
+  wi1734_why+=" no-pin-artifact-name"
+fi
+if ! grep -q 'path: dist/PIN-' "$wi1734_wf"; then
+  wi1734_why+=" no-pin-artifact-path"
+fi
+if ! grep -F "capture_pins == 'true'" "$wi1734_wf" >/dev/null; then
+  wi1734_why+=" pin-upload-not-gated"
+fi
+wi1734_build_at="$(grep -n 'toolchain/scripts/build.sh' "$wi1734_wf" | head -1 | cut -d: -f1 || true)"
+wi1734_pre_at="$(grep -n 'cfw-render-preflight.sh' "$wi1734_wf" | head -1 | cut -d: -f1 || true)"
+if [[ -z "$wi1734_build_at" || -z "$wi1734_pre_at" || "$wi1734_pre_at" -le "$wi1734_build_at" ]]; then
+  wi1734_why+=" preflight-not-after-build"
+fi
+if ! grep -q 'name: Preflight the built bundle' "$wi1734_wf"; then
+  wi1734_why+=" no-preflight-step"
+fi
+if ! grep -F -q 'PATH="$bundle/bin:$PATH" "$bundle/bin/cfw-render-preflight.sh"' "$wi1734_wf"; then
+  wi1734_why+=" preflight-not-bundle-script"
+fi
+if ! grep -qF 'TODO(G0): Developer ID signing + notarisation of the archives happens' "$wi1734_wf"; then
+  wi1734_why+=" todo-g0-changed"
+fi
+wi1734_copy_at="$(grep -n 'tc_install_bundle_scripts "$bundle"' "$wi1734_build" | head -1 | cut -d: -f1 || true)"
+wi1734_sums_at="$(grep -n '"$SELF_DIR/make-sums.sh"' "$wi1734_build" | head -1 | cut -d: -f1 || true)"
+if [[ -z "$wi1734_copy_at" || -z "$wi1734_sums_at" || "$wi1734_copy_at" -ge "$wi1734_sums_at" ]]; then
+  wi1734_why+=" copy-not-before-sums"
+fi
+if ! grep -q 'cfw-render-preflight.sh' "$wi1734_lib" || ! grep -q 'cfw-render-lib.sh' "$wi1734_lib"; then
+  wi1734_why+=" lib-missing-copy"
+fi
+wi1734_copy="$(
+  # shellcheck source=/dev/null
+  source "$wi1734_lib"
+  d="$(mktemp -d)"
+  mkdir -p "$d/bin"
+  if ! tc_install_bundle_scripts "$d" "$REPO_DIR/bin"; then
+    echo "copy-failed"
+    rm -rf "$d"
+    exit 0
+  fi
+  if [[ ! -x "$d/bin/cfw-render-preflight.sh" || ! -f "$d/bin/cfw-render-lib.sh" ]]; then
+    echo "copy-missing"
+    rm -rf "$d"
+    exit 0
+  fi
+  if ! cmp -s "$REPO_DIR/bin/cfw-render-preflight.sh" "$d/bin/cfw-render-preflight.sh" \
+    || ! cmp -s "$REPO_DIR/bin/cfw-render-lib.sh" "$d/bin/cfw-render-lib.sh"; then
+    echo "copy-bytes"
+    rm -rf "$d"
+    exit 0
+  fi
+  if ! grep -F -q 'source "$SELF_DIR/cfw-render-lib.sh"' "$d/bin/cfw-render-preflight.sh"; then
+    echo "copy-does-not-source-lib"
+    rm -rf "$d"
+    exit 0
+  fi
+  if [[ ! -f "$d/config/playwright-pin.json" ]]; then
+    echo "pin-not-copied"
+    rm -rf "$d"
+    exit 0
+  fi
+  if ! cmp -s "$REPO_DIR/config/playwright-pin.json" "$d/config/playwright-pin.json"; then
+    echo "pin-bytes"
+    rm -rf "$d"
+    exit 0
+  fi
+  rm -rf "$d"
+  empty="$(mktemp -d)"
+  mkdir -p "$empty/bin" "$empty/src"
+  # tc_die exits the shell. Keep that inside a nested subshell.
+  if ( tc_install_bundle_scripts "$empty" "$empty/src" ) 2>/dev/null; then
+    echo "missing-src-did-not-fail"
+  elif [[ -e "$empty/bin/cfw-render-preflight.sh" || -e "$empty/bin/cfw-render-lib.sh" ]]; then
+    echo "partial-copy"
+  else
+    echo ok
+  fi
+  rm -rf "$empty"
+)" || wi1734_copy="${wi1734_copy:-copy-runner-failed}"
+if [[ "$wi1734_copy" != "ok" ]]; then
+  wi1734_why+=" ${wi1734_copy:-copy-empty}"
+fi
+if [[ -z "$wi1734_why" ]]; then
+  pass "WI17.3.4: CI brew tools, pin-capture artifact, and bundle preflight"
+else
+  fail "WI17.3.4 workflow" "$wi1734_why"
+fi
+
+echo "=== Case WI17.3.4b: bundle preflight passes on a stub bundle with no claude and no HOME cache ==="
+# Offline. No network and no compile. The stub has the preflight, the lib,
+# fake bundled tools, config/playwright-pin.json and the pinned browser
+# folders. PATH is that bin/ plus /usr/bin and /bin (dirname, not claude).
+# HOME is empty. claude is not on PATH.
+# --bundle must pass, must ignore a Playwright cache planted only in HOME,
+# and must fail naming the tool when one fake is removed. Full mode (no
+# --bundle) must still fail on this stub.
+wi1734b_why=""
+if ! grep -F -q 'cfw-render-preflight.sh" --bundle' "$REPO_DIR/.github/workflows/toolchain-build.yml"; then
+  wi1734b_why+=" workflow-missing-bundle-flag"
+fi
+if ! grep -F -q '.arg("--bundle")' "$REPO_DIR/desktop/src-tauri/src/toolchain.rs"; then
+  wi1734b_why+=" desktop-missing-bundle-flag"
+fi
+wi1734b_root="$(mktemp -d)"
+wi1734b_home="$(mktemp -d)"
+wi1734b_py="$(command -v python3 || true)"
+if [[ -z "$wi1734b_root" || -z "$wi1734b_home" || -z "$wi1734b_py" ]]; then
+  wi1734b_why+=" stub-setup"
+else
+  mkdir -p "$wi1734b_root/bin" "$wi1734b_root/config"
+  cp "$REPO_DIR/bin/cfw-render-preflight.sh" "$wi1734b_root/bin/cfw-render-preflight.sh"
+  cp "$REPO_DIR/bin/cfw-render-lib.sh" "$wi1734b_root/bin/cfw-render-lib.sh"
+  chmod +x "$wi1734b_root/bin/cfw-render-preflight.sh"
+  cp "$REPO_DIR/config/playwright-pin.json" "$wi1734b_root/config/playwright-pin.json"
+  wi1734b_crev="$(python3 -c 'import json,sys; sys.stdout.write(json.load(open(sys.argv[1]))["chromiumRevision"])' "$wi1734b_root/config/playwright-pin.json")"
+  wi1734b_hrev="$(python3 -c 'import json,sys; sys.stdout.write(json.load(open(sys.argv[1]))["chromiumHeadlessShellRevision"])' "$wi1734b_root/config/playwright-pin.json")"
+  wi1734b_browsers="$wi1734b_root/share/ms-playwright"
+  mkdir -p "$wi1734b_browsers/chromium-$wi1734b_crev" "$wi1734b_browsers/chromium_headless_shell-$wi1734b_hrev"
+  : > "$wi1734b_browsers/chromium-$wi1734b_crev/INSTALLATION_COMPLETE"
+  : > "$wi1734b_browsers/chromium_headless_shell-$wi1734b_hrev/INSTALLATION_COMPLETE"
+  printf '#!/bin/sh\nexec %q "$@"\n' "$wi1734b_py" > "$wi1734b_root/bin/python3"
+  chmod +x "$wi1734b_root/bin/python3"
+  wi1734b_tool=""
+  for wi1734b_tool in node npx ffprobe whisper; do
+    printf '#!/bin/sh\nexit 0\n' > "$wi1734b_root/bin/$wi1734b_tool"
+    chmod +x "$wi1734b_root/bin/$wi1734b_tool"
+  done
+  cat > "$wi1734b_root/bin/ffmpeg" <<'EOF'
+#!/bin/sh
+if [ "$1" = "-hide_banner" ] && [ "$2" = "-filters" ]; then
+  printf '%s\n' ' .. ass               libass'
+  exit 0
+fi
+if [ "$1" = "-hide_banner" ] && [ "$2" = "-encoders" ]; then
+  printf '%s\n' ' .. libx264           H.264'
+  exit 0
+fi
+exit 0
+EOF
+  cat > "$wi1734b_root/bin/magick" <<'EOF'
+#!/bin/sh
+echo "Version: ImageMagick 7.1.1-47"
+exit 0
+EOF
+  chmod +x "$wi1734b_root/bin/ffmpeg" "$wi1734b_root/bin/magick"
+  # /usr/bin and /bin supply dirname and head. They do not supply claude.
+  # The stub bin is first, so the fakes win over any system tool of the same name.
+  # macOS bash 3.2 writes here-string temp files in the current directory.
+  # The suite's cwd is not writable here, so run from the stub (the desktop
+  # install also runs the preflight with the bundle as its cwd).
+  wi1734b_run() {
+    (
+      cd "$wi1734b_root" && \
+      env -u CFW_RENDER_DIRECTOR_CMD -u PLAYWRIGHT_BROWSERS_PATH \
+        HOME="$wi1734b_home" \
+        PATH="$wi1734b_root/bin:/usr/bin:/bin" \
+        TMPDIR="$wi1734b_root" \
+        /bin/bash ./bin/cfw-render-preflight.sh "$@"
+    )
+  }
+  wi1734b_rc=0
+  wi1734b_out="$(wi1734b_run --bundle 2>&1)" || wi1734b_rc=$?
+  if [[ "$wi1734b_rc" != "0" ]]; then
+    wi1734b_why+=" bundle-rc-$wi1734b_rc $(printf '%s' "$wi1734b_out" | tr '\n' ' ')"
+  fi
+  case "$wi1734b_out" in
+    *share/ms-playwright*) ;;
+    *) wi1734b_why+=" bundle-pass-did-not-name-browsers" ;;
+  esac
+  case "$wi1734b_out" in
+    *FAIL*) wi1734b_why+=" bundle-pass-printed-fail" ;;
+  esac
+  wi1734b_rc=0
+  wi1734b_out="$(wi1734b_run --bundle --quiet 2>&1)" || wi1734b_rc=$?
+  if [[ "$wi1734b_rc" != "0" ]]; then
+    wi1734b_why+=" quiet-bundle-rc-$wi1734b_rc"
+  fi
+  case "$wi1734b_out" in
+    *PASS*) wi1734b_why+=" quiet-printed-pass" ;;
+  esac
+  wi1734b_rc=0
+  wi1734b_out="$(wi1734b_run --quiet --bundle 2>&1)" || wi1734b_rc=$?
+  if [[ "$wi1734b_rc" != "0" ]]; then
+    wi1734b_why+=" bundle-quiet-rc-$wi1734b_rc"
+  fi
+  mkdir -p "$wi1734b_home/Library/Caches/ms-playwright"
+  mv "$wi1734b_browsers/chromium-$wi1734b_crev" "$wi1734b_home/Library/Caches/ms-playwright/"
+  mv "$wi1734b_browsers/chromium_headless_shell-$wi1734b_hrev" "$wi1734b_home/Library/Caches/ms-playwright/"
+  rmdir "$wi1734b_browsers"
+  wi1734b_rc=0
+  wi1734b_out="$(wi1734b_run --bundle 2>&1)" || wi1734b_rc=$?
+  if [[ "$wi1734b_rc" == "0" ]]; then
+    wi1734b_why+=" home-cache-satisfied-bundle"
+  fi
+  mkdir -p "$wi1734b_browsers"
+  mv "$wi1734b_home/Library/Caches/ms-playwright/chromium-$wi1734b_crev" "$wi1734b_browsers/"
+  mv "$wi1734b_home/Library/Caches/ms-playwright/chromium_headless_shell-$wi1734b_hrev" "$wi1734b_browsers/"
+  wi1734b_rc=0
+  wi1734b_out="$(wi1734b_run 2>&1)" || wi1734b_rc=$?
+  if [[ "$wi1734b_rc" == "0" ]]; then
+    wi1734b_why+=" full-mode-passed-on-stub"
+  fi
+  case "$wi1734b_out" in
+    *claude*) ;;
+    *) wi1734b_why+=" full-mode-did-not-name-claude" ;;
+  esac
+  rm "$wi1734b_root/bin/magick"
+  wi1734b_rc=0
+  wi1734b_out="$(wi1734b_run --bundle 2>&1)" || wi1734b_rc=$?
+  if [[ "$wi1734b_rc" == "0" ]]; then
+    wi1734b_why+=" missing-magick-passed"
+  fi
+  case "$wi1734b_out" in
+    *magick*) ;;
+    *) wi1734b_why+=" missing-magick-not-named" ;;
+  esac
+fi
+if [[ -z "$wi1734b_why" ]]; then
+  pass "WI17.3.4b: --bundle passes on a stub bundle and names a removed tool"
+else
+  fail "WI17.3.4b bundle preflight" "$wi1734b_why"
+fi
+rm -rf "$wi1734b_root" "$wi1734b_home"
+
 echo "=== Case M3-01c-1: status.json has exactly the contract keys; engines labelled; activeEngine null for none ==="
 mc1="$(mktemp -d)"
 c21_setup "$mc1" $((MOCK_PORT_BASE + 960)) harness-3step '[]'
@@ -5233,6 +6264,39 @@ else
 fi
 rm -rf "$m4a"
 
+echo "=== Case M3-04a-2b: browser-connect path — cfw_render_ on stdin skips exchange and never writes the key to env (WI17.2.2) ==="
+m4c="$(mktemp -d)"
+m4c_key="cfw_render_connect$(python3 -c 'import secrets;print(secrets.token_hex(8))')"
+printf '%s\n' "$m4c_key" > "$m4c/stdin"
+m4_setup "$m4c" $((MOCK_PORT_BASE + 971))
+m4_run "$m4c" $((MOCK_PORT_BASE + 971)) "$m4c/stdin"
+kill "$m4_pid" 2>/dev/null; wait "$m4_pid" 2>/dev/null || true
+rm -f "$m4c/stdin"
+m4c_steps="$(m4_steps "$m4c")"
+m4c_envf="$m4c/home/.cfw-render/cfw-render.env"
+m4c_xchg="$(grep -c 'render-worker-keys/exchange' "$m4c/mockstate/calls.jsonl" 2>/dev/null || true)"
+m4c_xchg="${m4c_xchg:-0}"
+# Mock may log path differently; also count exchange tool if present.
+if [[ "$m4c_xchg" == "0" ]]; then
+  m4c_xchg="$(python3 -c 'import json,sys
+n=0
+try:
+  for l in open(sys.argv[1]):
+    o=json.loads(l)
+    if "exchange" in str(o).lower(): n+=1
+except Exception: pass
+print(n)' "$m4c/mockstate/calls.jsonl" 2>/dev/null || echo 0)"
+fi
+if [[ "$m4_rc" == "0" && "$m4c_steps" == "$m4a_want" && "$m4c_xchg" == "0" ]] \
+   && grep -q '^CFW_API_BASE=' "$m4c_envf" 2>/dev/null \
+   && ! grep -q '^CFW_RENDER_WORKER_KEY=' "$m4c_envf" 2>/dev/null \
+   && ! grep -rqF "$m4c_key" "$m4c/out.jsonl" "$m4c/err.log" "$m4c/home" "$m4c/prefix" 2>/dev/null; then
+  pass "from-app connect path: no exchange (0 calls), no key in env/logs, steps complete"
+else
+  fail "from-app connect path" "rc=$m4_rc steps=$m4c_steps xchg=$m4c_xchg env=$(cat "$m4c_envf" 2>/dev/null) err=$(tail -10 "$m4c/err.log" 2>/dev/null)"
+fi
+rm -rf "$m4c"
+
 echo "=== Case M3-04a-2c: a fresh computer opens its setup session first; the probe report names the tested brand ==="
 m4f="$(mktemp -d)"
 printf '%s\n' "cfw_m4-fresh$(python3 -c 'import secrets;print(secrets.token_hex(8))')" > "$m4f/stdin"
@@ -5321,6 +6385,56 @@ else
 fi
 rm -rf "$m4d"
 
+echo "=== Case M3-04a-5b: adopt — Keychain-only install (no env key) → Already set up (WI17.2.2) ==="
+m4dk="$(mktemp -d)"
+m4dk_key="cfw_render_adoptkc$(python3 -c 'import secrets;print(secrets.token_hex(6))')"
+m4_setup "$m4dk" $((MOCK_PORT_BASE + 978))
+mkdir -p "$m4dk/home/.cfw-render" "$m4dk/home/Library/LaunchAgents"
+printf 'CFW_API_BASE=http://127.0.0.1:%s\n' $((MOCK_PORT_BASE + 978)) > "$m4dk/home/.cfw-render/cfw-render.env"
+: > "$m4dk/home/Library/LaunchAgents/com.cfw.render.plist"
+: > "$m4dk/stdin"
+cat > "$m4dk/security" <<SEC
+#!/usr/bin/env bash
+[[ "\$*" == *find-generic-password* && "\$*" == *render-worker* && "\$*" == *-w* ]] || exit 44
+printf '%s\n' '$m4dk_key'
+SEC
+chmod +x "$m4dk/security"
+m4_run "$m4dk" $((MOCK_PORT_BASE + 978)) "$m4dk/stdin" CFW_RENDER_SECURITY_CMD="$m4dk/security"
+kill "$m4_pid" 2>/dev/null; wait "$m4_pid" 2>/dev/null || true
+m4dk_ready="$(grep -c '"step": "ready", "state": "done", "message": "Already set up"' "$m4dk/out.jsonl" 2>/dev/null || true)"
+if [[ "$m4_rc" == "0" && "$m4dk_ready" == "1" ]] \
+   && ! grep -q '^CFW_RENDER_WORKER_KEY=' "$m4dk/home/.cfw-render/cfw-render.env" \
+   && ! grep -qF "$m4dk_key" "$m4dk/out.jsonl" "$m4dk/err.log"; then
+  pass "from-app adopt Keychain-only: Already set up without env key"
+else
+  fail "from-app adopt Keychain-only" "rc=$m4_rc ready=$m4dk_ready out=$(cat "$m4dk/out.jsonl") err=$(tail -5 "$m4dk/err.log")"
+fi
+rm -rf "$m4dk"
+
+echo "=== Case M3-04a-2d: connect-path reconnect drops old env key and revokes it (WI17.2.2) ==="
+m4r="$(mktemp -d)"
+m4r_old="cfw_render_oldenv_$(python3 -c 'import secrets;print(secrets.token_hex(4))')"
+m4r_new="cfw_render_newkc$(python3 -c 'import secrets;print(secrets.token_hex(6))')"
+printf '%s\n' "$m4r_new" > "$m4r/stdin"
+m4_setup "$m4r" $((MOCK_PORT_BASE + 979))
+mkdir -p "$m4r/home/.cfw-render"
+( umask 077; printf 'CFW_API_BASE=http://127.0.0.1:%s\nCFW_RENDER_WORKER_KEY=%s\n' $((MOCK_PORT_BASE + 979)) "$m4r_old" > "$m4r/home/.cfw-render/cfw-render.env" )
+m4_run "$m4r" $((MOCK_PORT_BASE + 979)) "$m4r/stdin"
+kill "$m4_pid" 2>/dev/null; wait "$m4_pid" 2>/dev/null || true
+m4r_revoked="$(python3 -c '
+import json, sys
+print([json.loads(l)["args"]["keyTail"] for l in open(sys.argv[1]) if "revoke_key_used" in l])' "$m4r/mockstate/calls.jsonl" 2>/dev/null)"
+m4r_xchg="$(grep -c 'render-worker-keys/exchange' "$m4r/mockstate/calls.jsonl" 2>/dev/null || true)"; m4r_xchg="${m4r_xchg:-0}"
+if [[ "$m4_rc" == "0" && "$m4r_xchg" == "0" && "$m4r_revoked" == "['${m4r_old: -6}']" ]] \
+   && ! grep -q '^CFW_RENDER_WORKER_KEY=' "$m4r/home/.cfw-render/cfw-render.env" \
+   && ! grep -qF "$m4r_old" "$m4r/home/.cfw-render/cfw-render.env" \
+   && ! grep -rqF "$m4r_new" "$m4r/out.jsonl" "$m4r/err.log" "$m4r/home/.cfw-render/cfw-render.env" 2>/dev/null; then
+  pass "from-app connect reconnect: env key cleared, old key revoked, exchange=0"
+else
+  fail "from-app connect reconnect" "rc=$m4_rc xchg=$m4r_xchg revoked=$m4r_revoked env=$(cat "$m4r/home/.cfw-render/cfw-render.env" 2>/dev/null) err=$(tail -8 "$m4r/err.log")"
+fi
+rm -rf "$m4r"
+
 echo "=== Case M3-04a-6: probe never finishes → test_render failed, exit 7 ==="
 m4e="$(mktemp -d)"
 printf 'cfw_goodkey\n' > "$m4e/stdin"
@@ -5384,6 +6498,46 @@ else
   fail "uninstall happy path" "rc=$m6_rc revokes=$m6a_revokes kc=$(cat "$m6a/keychain") out=$(cat "$m6a/out.log")"
 fi
 rm -rf "$m6a"
+
+echo "=== Case M3-06a-1b: uninstall Keychain-only install (no env key) revokes + deletes render-worker (WI17.2.2) ==="
+m6k="$(mktemp -d)"
+m6k_key="cfw_render_m6konly0001"
+m6_setup "$m6k" "$m6k_key"
+# Strip the env key so revoke must read the Keychain stub.
+printf 'CFW_RENDER_MODE=byoa\nCFW_API_BASE=http://127.0.0.1:1\n' > "$m6k/home/.cfw-render/cfw-render.env"
+chmod 600 "$m6k/home/.cfw-render/cfw-render.env"
+printf '%s\n' "$m6k_key" > "$m6k/worker.key"
+echo 1 > "$m6k/keychain"
+cat > "$m6k/security" <<'SEC'
+#!/usr/bin/env bash
+dir="$(cd "$(dirname "$0")" && pwd)"
+if [[ "$1" == find-generic-password && "$*" == *render-worker* && "$*" == *-w* ]]; then
+  [[ -f "$dir/worker.key" ]] || exit 44
+  cat "$dir/worker.key"
+  exit 0
+fi
+if [[ "$1" == delete-generic-password && "$*" == *render-worker* ]]; then
+  rm -f "$dir/worker.key"
+  n=$(cat "$dir/keychain" 2>/dev/null || echo 0)
+  (( n > 0 )) && echo $((n - 1)) > "$dir/keychain"
+  exit 0
+fi
+n=$(cat "$dir/keychain"); (( n > 0 )) || exit 44
+echo $((n - 1)) > "$dir/keychain"
+SEC
+chmod +x "$m6k/security"
+m6k_port=$((MOCK_PORT_BASE + 986))
+m6k_pid="$(start_mock "$m6k/queue.json" "$m6k/mockstate" "$m6k_port")"
+m6_uninstall "$m6k" "$m6k_port" --yes
+kill "$m6k_pid" 2>/dev/null; wait "$m6k_pid" 2>/dev/null || true
+m6k_revokes="$(grep -c '"tool": "revoke_this_computer"' "$m6k/mockstate/calls.jsonl" 2>/dev/null || true)"
+if [[ "$m6_rc" == "0" && "$m6k_revokes" == "1" && ! -f "$m6k/worker.key" && "$(cat "$m6k/keychain")" == "0" \
+      && ! -e "$m6k/home/.cfw-render" ]] && ! grep -q "offline" "$m6k/out.log"; then
+  pass "uninstall Keychain-only: revoke once, render-worker deleted, paths gone"
+else
+  fail "uninstall Keychain-only" "rc=$m6_rc revokes=$m6k_revokes kc=$(cat "$m6k/keychain" 2>/dev/null) worker=$([[ -f $m6k/worker.key ]] && echo yes || echo no) out=$(cat "$m6k/out.log")"
+fi
+rm -rf "$m6k"
 
 echo "=== Case M3-06a-2: uninstall --delete-outputs (+ --from-app JSON lines) ==="
 m6b="$(mktemp -d)"; m6_setup "$m6b" cfw_render_m6bkey000
@@ -5858,7 +7012,10 @@ wi240_worker_id="w-wi240-file"
 wi240_link_bin() {
   local dest="$1"
   rm -rf "$dest"
-  mkdir -p "$dest"
+  mkdir -p "$dest" "$(dirname "$dest")/config"
+  # Same root rule as the capacity scratch copy: pinned Chromium is
+  # config/playwright-pin.json beside bin/, not inside the bin directory.
+  cp "$REPO_DIR/config/playwright-pin.json" "$(dirname "$dest")/config/playwright-pin.json"
   local f base
   for f in "$REPO_DIR/bin/"*; do
     [[ -f "$f" ]] || continue
@@ -7992,8 +9149,26 @@ echo "=== Case 44: WI2.63 — reel complete uploads final_video then cover, neve
 # Run the real harness, selector and complete path for both reel recipes.
 # Fixture bytes make a renamed intermediate obvious. Step progress uploads are
 # not the Reviews list; only the complete upload log is.
+# The directory of a real ffmpeg. The suite puts a preflight wrapper first on
+# PATH: it answers "ffmpeg -filters" and "ffmpeg -encoders", then exits 0.
+# end-card.py reads pictures with ffmpeg, so that wrapper is not a decoder.
+wi263_real_bindir() {
+  local self d other
+  self="$(cd "$PREFLIGHT_BIN" && pwd -P)" || return 1
+  local IFS=:
+  for d in $PATH; do
+    [ -n "$d" ] || continue
+    other="$(cd "$d" 2>/dev/null && pwd -P)" || continue
+    [ "$other" = "$self" ] && continue
+    if [ -x "$other/ffmpeg" ]; then
+      printf '%s\n' "$other"
+      return 0
+    fi
+  done
+  return 1
+}
 wi263_delivery() {
-  local slug="$1" root recipe h_rc=0 complete_rc=0 captions="" f role
+  local slug="$1" root recipe h_rc=0 complete_rc=0 captions="" f role gen="" wi263_ffdir=""
   local -a files=()
   root="$(mktemp -d)"
   recipe="$REPO_DIR/skills/$slug"
@@ -8004,6 +9179,172 @@ wi263_delivery() {
   printf 'background-fixture\n' > "$root/fixtures/background.mp4"
   printf 'final-video-fixture\n' > "$root/fixtures/final_video.mp4"
   printf 'cover-fixture\n' > "$root/fixtures/cover.png"
+  # p-longform check scripts are cta_card_present, plan_covers_runtime,
+  # cta_visible_end and master_has_speech. The first three call end-card.py.
+  # Placeholder text fails them. master_has_speech measures the soundtrack
+  # and, when captions are on, requires work/captions.ass. This stub engine
+  # does not write an ASS file, so the order answers captions off and the
+  # mastered_video fixture carries speech-level audio. The recipe on disk
+  # is not copied and nothing is deleted.
+  if [[ "$slug" == "p-longform" ]]; then
+    wi263_ffdir="$(wi263_real_bindir 2>/dev/null || true)"
+    if [[ -z "$wi263_ffdir" ]]; then
+      printf 'p-longform end-card checks need a real ffmpeg behind the preflight wrapper\n'
+      rm -rf "$root"
+      return 0
+    fi
+    gen="$(python3 - "$root/fixtures" "$wi263_ffdir/ffmpeg" "$REPO_DIR/skills/p-longform/scripts/end-card.py" <<'PY'
+import base64, json, math, os, pathlib, re, shutil, struct, subprocess, sys, wave, zlib
+dest = pathlib.Path(sys.argv[1])
+ffmpeg = sys.argv[2]
+script = sys.argv[3]
+w, h = 1920, 1080
+
+def chunk(tag, data):
+    crc = zlib.crc32(tag + data) & 0xFFFFFFFF
+    return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
+
+rows = {}
+raw = bytearray()
+for y in range(h):
+    key = (y >= 160 and y < 920, y // 80, y // 36)
+    row = rows.get(key)
+    if row is None:
+        pix = bytearray()
+        for x in range(w):
+            if 200 <= x < 1720 and key[0] and ((x // 80) + key[1]) % 2 == 0:
+                pix += b"\xff\xff\xff"
+            elif x < 480:
+                pix += b"\x0f\x17\x2a"
+            elif key[2] % 2 == 0:
+                pix += b"\xf9\x73\x16"
+            else:
+                pix += b"\xf1\xf5\xf9"
+        row = bytes(pix)
+        rows[key] = row
+    raw.append(0)
+    raw += row
+ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(bytes(raw), 6)) + chunk(b"IEND", b"")
+card = dest / "end-card.png"
+card.write_bytes(png)
+# master_has_speech: mean volume between -32 and -8 dB. A 440 Hz tone at
+# 0.1 full scale is about -23 dB. AAC must keep it inside that band.
+tone = dest / "speech-tone.wav"
+rate = 16000
+amp = int(32767 * 0.1)
+frames = bytearray()
+for i in range(rate):
+    frames += struct.pack("<h", int(amp * math.sin(2 * math.pi * 440 * i / rate)))
+with wave.open(str(tone), "w") as handle:
+    handle.setnchannels(1)
+    handle.setsampwidth(2)
+    handle.setframerate(rate)
+    handle.writeframes(bytes(frames))
+master = dest / "mastered_video.mp4"
+mproc = subprocess.run(
+    [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", str(tone), "-c:a", "aac", "-b:a", "64k", str(master)],
+    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60,
+)
+if tone.exists():
+    tone.unlink()
+if mproc.returncode != 0 or not master.is_file() or master.stat().st_size == 0:
+    sys.stdout.write("mastered_video: " + mproc.stderr.decode("utf-8", "replace")[-400:])
+    sys.exit(1)
+vproc = subprocess.run(
+    [ffmpeg, "-hide_banner", "-nostats", "-i", str(master), "-vn", "-af", "volumedetect", "-f", "null", "-"],
+    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
+)
+vtext = (vproc.stderr or b"").decode("utf-8", "replace")
+vm = re.search(r"mean_volume:\s*(-?[0-9.]+) dB", vtext)
+if not vm:
+    sys.stdout.write("mastered_video has no mean volume: " + vtext[-400:])
+    sys.exit(1)
+mean = float(vm.group(1))
+if mean < -32 or mean > -8:
+    sys.stdout.write("mastered_video mean volume %.1f dB is outside -32 to -8" % mean)
+    sys.exit(1)
+manifest = {
+    "assets": [{
+        "id": "cta", "section": "cta", "kind": "gfx", "is_cta": True, "seconds": 6,
+        "html": "<p>Acme</p><p>Follow for more</p>",
+        "ref_png_b64": base64.b64encode(png).decode("ascii"),
+    }],
+    "end_card": {
+        "source": "brand_name", "kicker": "Acme", "hero": "Follow for more",
+        "handle": "", "outro": False,
+    },
+}
+plan = {"duration": 6.0, "rows": [{
+    "start": 0.0, "end": 6.0, "asset": "gfx:cta",
+    "layout": "FULLSCREEN_BROLL", "zoom": "none",
+}]}
+(dest / "visuals_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+(dest / "broll_plan.json").write_text(json.dumps(plan), encoding="utf-8")
+video = dest / "final_video.mp4"
+probe = dest.parent / "end-card-probe"
+env = os.environ.copy()
+env["PATH"] = str(pathlib.Path(ffmpeg).resolve().parent) + os.pathsep + env.get("PATH", "")
+
+def check_video():
+    if probe.exists():
+        shutil.rmtree(probe)
+    (probe / "saves").mkdir(parents=True)
+    (probe / "brief.json").write_text(json.dumps({"brand": {"name": "Acme"}}), encoding="utf-8")
+    (probe / "saves" / "visuals_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (probe / "saves" / "broll_plan.json").write_text(json.dumps(plan), encoding="utf-8")
+    (probe / "saves" / "final_video.mp4").write_bytes(video.read_bytes())
+    notes = []
+    for mode in ("verify-manifest", "verify-plan", "verify-final"):
+        proc = subprocess.run(
+            [sys.executable, script, mode, "--dir", str(probe)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=120,
+        )
+        if proc.returncode != 0:
+            notes.append("%s: %s" % (mode, (proc.stderr or proc.stdout).decode("utf-8", "replace")[-400:]))
+    shutil.rmtree(probe, ignore_errors=True)
+    return "; ".join(notes)
+
+commands = [
+    [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-loop", "1", "-framerate", "5",
+     "-t", "6", "-i", str(card), "-an", "-c:v", "png", "-f", "matroska", str(video)],
+    [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-loop", "1", "-framerate", "5",
+     "-t", "6", "-i", str(card), "-an", "-c:v", "ffv1", "-f", "matroska", str(video)],
+    [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-loop", "1", "-framerate", "5",
+     "-t", "6", "-i", str(card), "-an", "-c:v", "libx264", "-crf", "0", "-pix_fmt", "yuv444p",
+     "-f", "mp4", str(video)],
+]
+errors = []
+built = False
+for cmd in commands:
+    if video.exists():
+        video.unlink()
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    except subprocess.TimeoutExpired:
+        errors.append("timed out: " + " ".join(cmd[1:8]))
+        continue
+    if proc.returncode != 0 or not video.is_file() or video.stat().st_size == 0:
+        errors.append(proc.stderr.decode("utf-8", "replace")[-300:])
+        continue
+    got = check_video()
+    if got:
+        errors.append(got)
+        continue
+    built = True
+    break
+if card.exists():
+    card.unlink()
+if not built:
+    sys.stdout.write("p-longform end-card fixtures: " + " | ".join(errors)[-800:])
+    sys.exit(1)
+PY
+)" || {
+      printf 'p-longform end-card fixtures failed: %s\n' "$gen"
+      rm -rf "$root"
+      return 0
+    }
+  fi
   python3 - "$root/engine.sh" <<'PY'
 import pathlib, sys
 pathlib.Path(sys.argv[1]).write_text("""#!/usr/bin/env bash
@@ -8030,7 +9371,7 @@ PY
 import json, sys
 dest, man_path, slug = sys.argv[1:]
 man = json.load(open(man_path))
-json.dump({
+order = {
     "id": "order-wi263-" + slug,
     "attempt": {"id": "att-wi263"},
     "recipe": slug,
@@ -8038,7 +9379,14 @@ json.dump({
     "taskOrder": {},
     "inputs": {},
     "manifest": man,
-}, open(dest, "w"))
+}
+# end-card.py resolve() reads brief.json brand.name. Without it the three
+# p-longform checks cannot run. captions off: master_has_speech then skips
+# the ASS file this stub does not write. The typed answer is not a path.
+if slug == "p-longform":
+    order["brand"] = {"name": "Acme"}
+    order["answers"] = {"captions": "off"}
+json.dump(order, open(dest, "w"))
 PY
   (
     export CFW_RENDER_LOG_DIR="$root/logs"
@@ -8064,6 +9412,11 @@ PY
     cr_report_step() { printf '%s' '{"ok":true,"directive":"continue"}'; }
     cr_h_upload_with_retry() { printf 'https://media.cfw.social/step-%s' "$(basename "$1")"; }
     cr_engine_limit_detect() { return 1; }
+    # Picture checks call ffmpeg. The preflight wrapper is first on PATH and
+    # is not a decoder. wi263_ffdir is empty for every recipe except p-longform.
+    if [[ -n "$wi263_ffdir" ]]; then
+      export PATH="$wi263_ffdir:$PATH"
+    fi
     cr_harness_run "$root/order.json" "$root" "$recipe" >"$root/harness.out" 2>"$root/harness.err"
   )
   h_rc=$?
@@ -8096,9 +9449,8 @@ EOF
 import pathlib, sys
 pathlib.Path(sys.argv[1]).write_text("""#!/usr/bin/env bash
 set -eu
-line=""
-IFS= read -r line < "$1" || true
-printf '%s\\t%s\\n' "$(basename "$1")" "$line" >> "$WI263_UPLOADS"
+sum="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1")"
+printf '%s\\t%s\\n' "$(basename "$1")" "$sum" >> "$WI263_UPLOADS"
 printf 'https://media.cfw.social/%s\\n' "$(basename "$1")"
 """)
 PY
@@ -8121,7 +9473,7 @@ PY
   fi
   printf '%s\n' "$complete_rc" > "$root/complete.rc"
   python3 - "$root" <<'PY'
-import json, pathlib, sys
+import hashlib, json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 bad = []
 harness_err = ""
@@ -8142,22 +9494,27 @@ if isinstance(items, list):
     if ids != ["final_video", "cover", "captions"]:
         bad.append("ids=%r err=%s" % (ids, harness_err))
     by_id = {i.get("id"): i for i in items if isinstance(i, dict)}
-    for sid, needle in (("final_video", "final-video-fixture"), ("cover", "cover-fixture")):
+    for sid, filename in (("final_video", "final_video.mp4"), ("cover", "cover.png")):
         item = by_id.get(sid) or {}
         path = item.get("path") or ""
         if "/steps/final_checks/saves/" not in path:
             bad.append("%s path=%r" % (sid, path))
         else:
-            lines = pathlib.Path(path).read_text(errors="replace").splitlines()
-            got = lines[0] if lines else ""
-            if got != needle:
-                bad.append("%s bytes=%r" % (sid, got))
+            saved = pathlib.Path(path).read_bytes()
+            fixture = (root / "fixtures" / filename).read_bytes()
+            if saved != fixture:
+                bad.append("%s bytes are not the %s fixture" % (sid, filename))
     blob = json.dumps(items)
     for name in ("voice_track", "assembled_video", "rendered_scenes", "background"):
         if name in blob:
             bad.append("harness leaked %s" % name)
+def sha256(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 uploads = (root / "uploads.txt").read_text(errors="replace") if (root / "uploads.txt").is_file() else ""
-want_lines = ["final_video.mp4\tfinal-video-fixture", "cover.png\tcover-fixture"]
+want_lines = [
+    "final_video.mp4\t" + sha256(root / "fixtures" / "final_video.mp4"),
+    "cover.png\t" + sha256(root / "fixtures" / "cover.png"),
+]
 if uploads.splitlines() != want_lines:
     bad.append("uploads=%r complete=%s" % (uploads.splitlines(), complete_err))
 for banned in ("voice_track", "assembled_video", "rendered_scenes", "background", "captions.json"):
@@ -13779,6 +15136,140 @@ for wi109_engine in claude-code codex; do
   rm -f "/tmp/cfw-wi2109-$$-$wi109_engine"
 done
 rm -rf "$wi109_root"
+
+echo "=== Case WI17.3.13: preflight functions with a read-only TMPDIR ==="
+# Bash stores a here-string, a heredoc, or a process substitution in a file
+# under $TMPDIR. The confined gate refuses that write. WI17's preflight helpers
+# must still succeed when they cannot create a file there. This case does not
+# run the engine path: that code needs a writable TMPDIR, and gate-suite covers
+# it. Fixtures are written under the suite temp first. The read-only directory
+# is never the suite's own TMPDIR.
+wi17313_root="$(mktemp -d)"
+wi17313_ro="$wi17313_root/ro"
+wi17313_bin="$wi17313_root/bin"
+mkdir -p "$wi17313_ro"
+wi1731_host "$wi17313_bin" 1 1 1
+chmod 555 "$wi17313_ro"
+wi17313_ro_ok=1
+if touch "$wi17313_ro/nope" 2>/dev/null; then
+  rm -f "$wi17313_ro/nope"
+  wi17313_ro_ok=0
+fi
+
+# Read one helper from the file: its "name()" line through the column-0 "}".
+# No repository diff. The bound suite's tree has no history to diff against.
+wi17313_fn_body() {
+  local fn="$1" line on=0
+  wi17313_body=""
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$on" == 0 ]]; then
+      [[ "$line" == "$fn()"* ]] || continue
+      on=1
+    fi
+    wi17313_body+="$line"$'\n'
+    [[ "$line" == "}" ]] && return 0
+  done < "$REPO_DIR/bin/cfw-render-lib.sh"
+  return 1
+}
+wi17313_hit=""
+for wi17313_fn in _cr_ffmpeg_has_row _cr_preflight_rows_agree _cr_preflight_is_host; do
+  if ! wi17313_fn_body "$wi17313_fn"; then
+    wi17313_hit="${wi17313_hit}missing ${wi17313_fn}; "
+    continue
+  fi
+  wi17313_line="$(printf '%s\n' "$wi17313_body" | grep -n -e '<<<' -e '<<' -e '< <(' || true)"
+  if [[ -n "$wi17313_line" ]]; then
+    wi17313_line="$(printf '%s' "$wi17313_line" | tr '\n' ' ')"
+    wi17313_hit="${wi17313_hit}${wi17313_fn}: ${wi17313_line}; "
+  fi
+done
+if [[ -n "$wi17313_hit" ]]; then
+  fail "WI17.3.13 here-string scan" "helper still has << or a process substitution: ${wi17313_hit:0:300}"
+else
+  pass "WI17.3.13: preflight helpers have no here-string, heredoc, or process substitution"
+fi
+
+if [[ "$wi17313_ro_ok" != 1 ]]; then
+  fail "WI17.3.13 preflight with a read-only TMPDIR" "the TMPDIR directory accepted a new file"
+else
+  # Keep 2>&1 inside the substitution. Placed after the closing paren, and
+  # still inside the surrounding quotes, it is captured as literal text.
+  wi17313_pf="$(
+    {
+    export TMPDIR="$wi17313_ro"
+    export PATH="$wi17313_bin:/usr/bin:/bin"
+    export CFW_RENDER_DIRECTOR_CMD="$TEST_DIR/fake-director.sh"
+    # shellcheck disable=SC1091
+    source "$REPO_DIR/bin/cfw-render-lib.sh"
+    _err=""
+    _cr_ffmpeg_has_row filters ass || _err="${_err}ass "
+    _cr_ffmpeg_has_row encoders libx264 || _err="${_err}x264 "
+    if _cr_ffmpeg_has_row filters not-a-real-filter; then _err="${_err}false-filter "; fi
+    if _cr_ffmpeg_has_row filters libass; then _err="${_err}libass-as-name "; fi
+    _cr_preflight_rows_agree || _err="${_err}rows "
+    _cr_preflight_is_host curl || _err="${_err}host-curl "
+    if _cr_preflight_is_host ffmpeg; then _err="${_err}host-ffmpeg "; fi
+    _rows="$(cr_preflight_manifest_rows)" || _err="${_err}manifest-rc "
+    case "${_rows:-}" in
+      *"whisper whisper"*) ;;
+      *) _err="${_err}manifest " ;;
+    esac
+    _bundle="$(_cr_bundle_browsers_dir 2>&1)" || true
+    case "$_bundle" in
+      *"cannot create temp file"*) _err="${_err}bundle-temp " ;;
+    esac
+    _pf="$(cr_preflight 2>&1)" || _err="${_err}preflight-rc "
+    case "$_pf" in
+      *"ffmpeg:ass"*) ;;
+      *) _err="${_err}pf-ass " ;;
+    esac
+    case "$_pf" in
+      *"ffmpeg:libx264"*) ;;
+      *) _err="${_err}pf-x264 " ;;
+    esac
+    case "$_pf" in
+      *"whisper"*) ;;
+      *) _err="${_err}pf-whisper " ;;
+    esac
+    case "$_pf$_err$_bundle" in
+      *"cannot create temp file"*) _err="${_err}tempfile " ;;
+    esac
+    if [[ -n "$_err" ]]; then
+      printf '%s\n' "$_err"
+      printf '%s\n' "$_pf"
+      exit 1
+    fi
+    printf '%s\n' ok
+    } 2>&1
+  )"
+  wi17313_pf_rc=$?
+  if [[ "$wi17313_pf_rc" == 0 && "$wi17313_pf" == "ok" ]]; then
+    pass "WI17.3.13: preflight functions pass with a read-only TMPDIR"
+  else
+    wi17313_pf_one="$(printf '%s' "$wi17313_pf" | tr '\n' ' ')"
+    fail "WI17.3.13 preflight with a read-only TMPDIR" "rc=$wi17313_pf_rc ${wi17313_pf_one:0:400}"
+  fi
+fi
+chmod 755 "$wi17313_ro" || true
+rm -rf "$wi17313_root"
+
+# See KEY_RETRY_PATH. Full suite only; flagged modes exit before this.
+if [[ -z "${1:-}" ]]; then
+  if [[ -n "$KEY_RETRY_TMPDIR" ]]; then
+    key_retry_log="$(mktemp "$KEY_RETRY_TMPDIR/cfw-key-retry.XXXXXX")"
+    if PATH="$KEY_RETRY_PATH" TMPDIR="$KEY_RETRY_TMPDIR" python3 "$TEST_DIR/app-key-retry.py" >"$key_retry_log" 2>&1; then
+      pass "durable setup key replacement retries"
+    else
+      cat "$key_retry_log" >&2
+      fail "key replacement retry" "regression failed"
+    fi
+    rm "$key_retry_log"
+  elif PATH="$KEY_RETRY_PATH" python3 "$TEST_DIR/app-key-retry.py"; then
+    pass "durable setup key replacement retries"
+  else
+    fail "key replacement retry" "regression failed"
+  fi
+fi
 
 echo "-------------------------------------"
 echo "PASS: $PASS_COUNT   FAIL: $FAILURES"

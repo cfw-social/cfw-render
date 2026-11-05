@@ -47,8 +47,31 @@ export function setupModel(events: SetupEvent[]): SetupModel {
 }
 
 /** Same shape check as the app's Rust side (`setup::valid_key`); CFW does the real check.
- *  CFW keys are base64url, so `-` is a normal key character. */
+ *  CFW keys are base64url, so `-` is a normal key character.
+ *  Kept for the off-path brand-key fallback and shared shape tests; the main
+ *  setup path uses browser-approval connect (see connect.ts). */
 export const looksLikeBrandKey = (k: string) => /^cfw_[A-Za-z0-9_-]{8,200}$/.test(k.trim());
+
+export type ConnectPhase = "idle" | "requesting" | "waiting" | "approved" | "denied" | "expired" | "failed";
+
+export interface ConnectView {
+  phase: ConnectPhase;
+  userCode?: string;
+  verifyUrl?: string;
+  brandSlug?: string;
+  error?: string;
+}
+
+/** Pure fold for the browser-approval connect step (code → poll → Keychain). */
+export function connectModel(partial: Partial<ConnectView> & { phase: ConnectPhase }): ConnectView {
+  return {
+    phase: partial.phase,
+    userCode: partial.userCode,
+    verifyUrl: partial.verifyUrl,
+    brandSlug: partial.brandSlug,
+    error: partial.error,
+  };
+}
 
 export interface ToolsModel { state: "idle" | StepState; pct: number | null; message?: string }
 

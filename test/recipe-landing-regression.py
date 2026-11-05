@@ -20,6 +20,9 @@ import sys
 import tempfile
 from types import ModuleType
 
+# One scale for this file's load wait. 30s expired while the bound suite shared the machine.
+LOAD_WAIT_SCALE = 8
+
 
 def load_sync(repo: Path) -> ModuleType:
     spec = importlib.util.spec_from_file_location("sync_skills", repo / "scripts/sync-skills.py")
@@ -42,7 +45,7 @@ def put(root: Path, rel: str, text: str) -> None:
 
 
 def command(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=30,
+    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=30 * LOAD_WAIT_SCALE,
                           env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "CTA_WINDOW": "work/cta-window.json"})
 
 

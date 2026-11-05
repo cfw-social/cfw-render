@@ -1,6 +1,8 @@
-//! Toolchain install (M3-07 contract): download → verify archive sha → unpack next to the
-//! destination → verify SHA256SUMS → rename into `tools/<version>` → atomically repoint `current`.
+//! Toolchain install (M3-07 contract): refuse a too-new minAppVersion → download → verify
+//! archive sha → unpack next to the destination → verify SHA256SUMS → run the bundle
+//! preflight → rename into `tools/<version>` → atomically repoint `current`.
 //! Only system tools by absolute path: /usr/bin/curl, /usr/bin/shasum, /usr/bin/tar.
+//! The bundle preflight is `bin/cfw-render-preflight.sh` (WI17.3.1's script name).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,6 +17,8 @@ pub const MANIFEST_URL: &str = "https://app.cfw.social/api/v1/desktop/toolchain/
 const CURL: &str = "/usr/bin/curl";
 const SHASUM: &str = "/usr/bin/shasum";
 const TAR: &str = "/usr/bin/tar";
+/// Unpacked bundle path. Same script name as `bin/cfw-render-preflight.sh` (WI17.3.1).
+const BUNDLE_PREFLIGHT: &str = "bin/cfw-render-preflight.sh";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -109,6 +113,23 @@ pub fn needed(m: &Manifest) -> bool {
     tools_dir().map(|t| needed_in(&t, m)).unwrap_or(true)
 }
 
+/// This build's version. A bundle `minAppVersion` newer than this is refused.
+pub fn app_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+/// `Err` when the bundle requires a newer CFW Render than this build.
+/// An absent minimum is allowed. This does not touch `tools/current`.
+pub fn refuse_if_app_too_old(m: &Manifest) -> Result<(), String> {
+    let Some(min) = m.min_app_version.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(());
+    };
+    if version_key(app_version()) < version_key(min) {
+        return Err(format!("This toolchain needs CFW Render {min} or newer. Update the app first."));
+    }
+    Ok(())
+}
+
 pub fn sha256(path: &Path) -> Result<String, String> {
     let out = Command::new(SHASUM).args(["-a", "256"]).arg(path).stdin(Stdio::null()).output().map_err(|e| e.to_string())?;
     if !out.status.success() {
@@ -159,6 +180,37 @@ pub fn verify_bundle(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Run the unpacked bundle's preflight. A missing script or any non-zero exit refuses it.
+/// `root` is the temp unpack, so a failure never moves `current`.
+/// `--bundle` checks bundled binaries and the bundle's pinned Chromium. It does not
+/// need the claude CLI, a Director command, or the HOME Playwright cache.
+fn run_bundle_preflight(root: &Path) -> Result<(), String> {
+    let script = root.join(BUNDLE_PREFLIGHT);
+    if !script.is_file() {
+        return Err("The tools bundle has no preflight.".into());
+    }
+    let bin = root.join("bin");
+    let mut path = bin.into_os_string();
+    if let Some(rest) = std::env::var_os("PATH").filter(|p| !p.is_empty()) {
+        path.push(":");
+        path.push(rest);
+    }
+    let out = Command::new(&script)
+        .current_dir(root)
+        .arg("--bundle")
+        .env("PATH", &path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|_| "The tools bundle preflight could not run. The current tools were kept.".to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err("These tools failed their preflight. The current tools were kept.".into())
+    }
+}
+
 /// Wait until no request runs: status.json `now` empty and `computer.running == 0`.
 fn wait_idle(state_dir: Option<&Path>) {
     let Some(dir) = state_dir else { return };
@@ -200,6 +252,8 @@ pub fn install_into(
     if !safe_rel(&m.version) || m.version.starts_with('.') || m.version == "current" {
         return Err("The tools list has a bad version.".into());
     }
+    // Before any download or temp dir: a too-new bundle must leave current alone.
+    refuse_if_app_too_old(m)?;
     let archive = m.archive().ok_or("No tools are published for this Mac.")?;
     fs::create_dir_all(tools).map_err(|e| e.to_string())?;
     clean_tmp(tools);
@@ -266,6 +320,8 @@ fn install_steps(
     }
     progress(90, "Checking tools");
     verify_bundle(&x)?;
+    // After the checksums, before the version dir is replaced or `current` moves.
+    run_bundle_preflight(&x)?;
     if dest.exists() {
         fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
     }
@@ -298,11 +354,21 @@ mod tests {
     use super::*;
 
     fn bundle(root: &Path, version: &str, tamper: bool) -> (Manifest, PathBuf) {
+        bundle_with(root, version, tamper, "#!/bin/sh\nexit 0\n", None)
+    }
+
+    /// `preflight` is the body of `bin/cfw-render-preflight.sh`. `min_app` is the manifest minimum.
+    fn bundle_with(root: &Path, version: &str, tamper: bool, preflight: &str, min_app: Option<&str>) -> (Manifest, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
         let src = root.join(format!("src-{version}"));
         fs::create_dir_all(src.join("bin")).unwrap();
         fs::write(src.join("bin/hello"), format!("#!/bin/sh\necho {version}\n")).unwrap();
+        let pre = src.join(BUNDLE_PREFLIGHT);
+        fs::write(&pre, preflight).unwrap();
+        fs::set_permissions(&pre, fs::Permissions::from_mode(0o755)).unwrap();
         let h = sha256(&src.join("bin/hello")).unwrap();
-        fs::write(src.join("SHA256SUMS"), format!("{h}  bin/hello\n")).unwrap();
+        let ph = sha256(&pre).unwrap();
+        fs::write(src.join("SHA256SUMS"), format!("{h}  bin/hello\n{ph}  {BUNDLE_PREFLIGHT}\n")).unwrap();
         if tamper {
             fs::write(src.join("bin/hello"), "tampered").unwrap();
         }
@@ -317,7 +383,7 @@ mod tests {
                 size_bytes: fs::metadata(&tarball).unwrap().len(),
             },
         );
-        (Manifest { version: version.into(), min_app_version: None, archives, published_at: None }, tarball)
+        (Manifest { version: version.into(), min_app_version: min_app.map(str::to_string), archives, published_at: None }, tarball)
     }
 
     fn no_tmp(tools: &Path) -> bool {
@@ -390,5 +456,57 @@ mod tests {
         let got = fetch_manifest();
         std::env::remove_var(MANIFEST_URL_ENV);
         assert_eq!(got.unwrap(), m1);
+    }
+
+    #[test]
+    fn good_bundle_preflight_installs() {
+        let d = tempfile::tempdir().unwrap();
+        let tools = d.path().join("tools");
+        let mark = d.path().join("preflight-ran");
+        let body = format!("#!/bin/sh\necho ran > '{}'\nexit 0\n", mark.display());
+        let (m, _) = bundle_with(d.path(), "1.2.0", false, &body, Some(app_version()));
+        install_into(&tools, &m, true, None, &|_, _| {}).unwrap();
+        assert_eq!(current_version(&tools).as_deref(), Some("1.2.0"));
+        assert_eq!(fs::read_to_string(&mark).unwrap().trim(), "ran");
+        assert!(tools.join("1.2.0").join(BUNDLE_PREFLIGHT).is_file());
+        assert!(no_tmp(&tools));
+    }
+
+    #[test]
+    fn failing_preflight_keeps_current_and_cleans_tmp() {
+        let d = tempfile::tempdir().unwrap();
+        let tools = d.path().join("tools");
+        let (m1, _) = bundle(d.path(), "1.0.0", false);
+        install_into(&tools, &m1, true, None, &|_, _| {}).unwrap();
+        let mark = d.path().join("bad-preflight-ran");
+        let body = format!("#!/bin/sh\necho ran > '{}'\nexit 1\n", mark.display());
+        let (m2, _) = bundle_with(d.path(), "2.0.0", false, &body, None);
+        let e = install_into(&tools, &m2, true, None, &|_, _| {}).unwrap_err();
+        assert!(e.contains("failed their preflight"), "{e}");
+        assert_eq!(fs::read_to_string(&mark).unwrap().trim(), "ran");
+        assert_eq!(current_version(&tools).as_deref(), Some("1.0.0"));
+        assert!(!tools.join("2.0.0").exists());
+        assert!(no_tmp(&tools));
+    }
+
+    #[test]
+    fn too_new_min_app_version_refused_before_install() {
+        let d = tempfile::tempdir().unwrap();
+        let tools = d.path().join("tools");
+        let (m1, _) = bundle(d.path(), "1.0.0", false);
+        install_into(&tools, &m1, true, None, &|_, _| {}).unwrap();
+        let mark = d.path().join("should-not-run");
+        let body = format!("#!/bin/sh\necho ran > '{}'\nexit 0\n", mark.display());
+        let (mut m2, _) = bundle_with(d.path(), "2.0.0", false, &body, Some("99.0.0"));
+        // A missing archive must not be the failure: the version check is before download.
+        let archive = m2.archives.get_mut(arch()).unwrap();
+        archive.url = "file:///no/such/cfw-toolchain.tar".into();
+        archive.sha256 = "0".repeat(64);
+        let e = install_into(&tools, &m2, true, None, &|_, _| {}).unwrap_err();
+        assert_eq!(e, "This toolchain needs CFW Render 99.0.0 or newer. Update the app first.");
+        assert!(!mark.exists());
+        assert_eq!(current_version(&tools).as_deref(), Some("1.0.0"));
+        assert!(!tools.join("2.0.0").exists());
+        assert!(no_tmp(&tools));
     }
 }

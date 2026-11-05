@@ -1,2 +1,9 @@
 export { SetupScreen } from "./SetupScreen";
-export { setupModel, STEPS } from "./model";
+export {
+  looksLikeRenderKey,
+  looksLikeUserCode,
+  pollConnectOnce,
+  requestConnectCode,
+  waitForConnectApproval,
+} from "./connect";
+export { connectModel, setupModel, STEPS } from "./model";

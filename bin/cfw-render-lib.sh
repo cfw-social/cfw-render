@@ -508,6 +508,34 @@ PY
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+# Shared render-key readers (WI17.2.2). Env first, then macOS Keychain
+# (service com.cfw.render, account render-worker). CFW_RENDER_SECURITY_CMD
+# overrides `security` for tests. Never print the key from a caller log line.
+# ---------------------------------------------------------------------------
+# cr_keychain_render_worker_key — Keychain only; empty on non-macOS / miss.
+cr_keychain_render_worker_key() {
+  [[ "$(uname -s 2>/dev/null)" == "Darwin" ]] || return 0
+  local _sec _kc
+  _sec="${CFW_RENDER_SECURITY_CMD:-/usr/bin/security}"
+  _kc="$("$_sec" find-generic-password -s com.cfw.render -a render-worker -w 2>/dev/null)" || _kc=""
+  _kc="$(printf '%s' "$_kc" | tr -d '\r\n')"
+  if [[ "$_kc" =~ ^cfw_render_[A-Za-z0-9_-]+$ ]]; then
+    printf '%s' "$_kc"
+  fi
+}
+
+# cr_resolve_render_worker_key [env-file] — process env, then env-file, then
+# Keychain. Prints the key or empty; never exits non-zero.
+cr_resolve_render_worker_key() {
+  local k="${CFW_RENDER_WORKER_KEY:-}" envf="${1:-}"
+  if [[ -z "$k" && -n "$envf" && -f "$envf" ]]; then
+    k="$(grep -E '^[[:space:]]*CFW_RENDER_WORKER_KEY=' "$envf" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' || true)"
+  fi
+  [[ -z "$k" ]] && k="$(cr_keychain_render_worker_key)"
+  printf '%s' "$k"
+}
+
+# ---------------------------------------------------------------------------
 # cr_load_config — env cascade: $CFW_RENDER_ENV (default
 # ~/.cfw-render/cfw-render.env, see cr_default_env_file) → process env wins
 # over the file (the file only fills vars that are still unset). Fails
@@ -655,6 +683,16 @@ cr_load_config() {
     CFW_RENDER_FINISH_GRACE_SECS CFW_RENDER_PROVIDER_BUDGET_HEYGEN CFW_RENDER_PROVIDER_WAIT_CAP \
     CFW_RENDER_MEDIA_BASE_URL CFW_RENDER_TEST_MEDIA_BASE_URL CFW_RENDER_LOCAL_CHECKPOINTS \
     CFW_PLAYWRIGHT_PIN
+
+  # Browser-approval connect (WI17.2.2): process env wins; otherwise macOS
+  # Keychain (service com.cfw.render, account render-worker). Linux / old
+  # installs keep the env-file path. Shared helper: cr_keychain_render_worker_key.
+  if [[ -z "${CFW_RENDER_WORKER_KEY:-}" ]]; then
+    local _kc
+    _kc="$(cr_keychain_render_worker_key)"
+    [[ -n "$_kc" ]] && CFW_RENDER_WORKER_KEY="$_kc"
+    _kc=""
+  fi
 
   local missing=()
   [[ -z "${CFW_API_BASE:-}" ]] && missing+=("CFW_API_BASE")
@@ -1666,16 +1704,23 @@ cr_install_select_engine() {
 }
 
 # Install hint for one missing tool on this OS. Never a silent fallback — the
-# operator gets the exact command.
+# operator gets the exact command. On macOS the CFW Render app ships these
+# tools (a non-technical install does not use Homebrew). Linux keeps apt-get.
+# The Debian package named whisper is a Graphite database, not speech-to-text.
 cr_preflight_hint() { # cr_preflight_hint <tool>
   local tool="$1" os pv
+  # One sentence for every Darwin toolchain tool, including the recipe rows
+  # (ass filter, libx264, whisper). Do not put a Homebrew command in here.
+  local darwin_hint="update the CFW Render app (it ships this tool), or re-run install/install.sh"
   os="$(uname -s 2>/dev/null || echo unknown)"
   case "$tool" in
-    curl)            [[ "$os" == Darwin ]] && echo "brew install curl" || echo "apt-get install -y curl" ;;
-    python3)         [[ "$os" == Darwin ]] && echo "brew install python@3" || echo "apt-get install -y python3" ;;
-    node|npx)        [[ "$os" == Darwin ]] && echo "brew install node" || echo "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs" ;;
-    ffmpeg|ffprobe)  [[ "$os" == Darwin ]] && echo "brew install ffmpeg" || echo "apt-get install -y ffmpeg" ;;
-    magick)          [[ "$os" == Darwin ]] && echo "brew install imagemagick" || echo "apt-get install -y imagemagick   (IM6 ships only 'convert' — then add the IM7 verb shim: printf '#!/bin/sh\\nexec convert \"\$@\"\\n' >/usr/local/bin/magick && chmod +x /usr/local/bin/magick)" ;;
+    curl)            [[ "$os" == Darwin ]] && echo "$darwin_hint" || echo "apt-get install -y curl" ;;
+    python3)         [[ "$os" == Darwin ]] && echo "$darwin_hint" || echo "apt-get install -y python3" ;;
+    node|npx)        [[ "$os" == Darwin ]] && echo "$darwin_hint" || echo "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs" ;;
+    ffmpeg|ffprobe|ffmpeg:ass|ffmpeg:libx264)
+                     [[ "$os" == Darwin ]] && echo "$darwin_hint" || echo "apt-get install -y ffmpeg" ;;
+    magick)          [[ "$os" == Darwin ]] && echo "$darwin_hint" || echo "apt-get install -y imagemagick   (IM6 ships only 'convert' — then add the IM7 verb shim: printf '#!/bin/sh\\nexec convert \"\$@\"\\n' >/usr/local/bin/magick && chmod +x /usr/local/bin/magick)" ;;
+    whisper)         [[ "$os" == Darwin ]] && echo "$darwin_hint" || echo "pip install openai-whisper, or install cfw-transcribe and put it on PATH" ;;
     claude)          echo "npm i -g @anthropic-ai/claude-code   then sign in to Claude from the CFW Renderer app (Providers → Claude → Sign in; it saves a long-lived token in this Mac's Keychain, service com.cfw.render)   (verify: the app's Providers screen shows Claude connected)" ;;
     chromium)
       # The exact pinned version, never a bare `playwright` (that is the newest release,
@@ -1685,7 +1730,7 @@ cr_preflight_hint() { # cr_preflight_hint <tool>
       else
         echo "restore config/playwright-pin.json (re-run install.sh or update the CFW Render app), then re-run this check"
       fi ;;
-    fonts)           [[ "$os" == Darwin ]] && echo "brew install fontconfig" || echo "apt-get install -y fontconfig fonts-dejavu-core fonts-liberation2 fonts-noto-core" ;;
+    fonts)           [[ "$os" == Darwin ]] && echo "$darwin_hint" || echo "apt-get install -y fontconfig fonts-dejavu-core fonts-liberation2 fonts-noto-core" ;;
     *)               echo "install $tool and put it on PATH" ;;
   esac
 }
@@ -1807,16 +1852,179 @@ cr_preflight_fonts() {
   return 1
 }
 
+# _cr_ffmpeg_has_row <filters|encoders> <name>
+# rc 0 when `ffmpeg -hide_banner -<filters|encoders>` has a row whose name
+# column is exactly <name>. ffmpeg prints "FLAGS name ..."; the name is the
+# second field. Matching that column ignores a description that only mentions
+# the word (the ass filter's own text says "ASS" and "libass").
+# set -e safe: install.sh sources this file with -e, so failures stay inside ifs.
+# No here-string: bash stores one in a file under $TMPDIR, and this check must
+# still run when that directory is read-only (the confined gate, a locked Mac).
+_cr_ffmpeg_has_row() {
+  local mode="$1" name="$2" line rest tok listing
+  listing="$(ffmpeg -hide_banner "-$mode" 2>&1)" || listing=""
+  while [[ -n "$listing" ]]; do
+    line="${listing%%$'\n'*}"
+    if [[ "$listing" == *$'\n'* ]]; then
+      listing="${listing#*$'\n'}"
+    else
+      listing=""
+    fi
+    line="${line#"${line%%[![:space:]]*}"}"
+    if [[ -z "$line" ]]; then
+      continue
+    fi
+    rest="${line#* }"
+    if [[ "$rest" == "$line" ]]; then
+      continue
+    fi
+    tok="${rest%% *}"
+    if [[ "$tok" == "$name" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# cr_preflight_manifest_rows — one "<check> <manifestName>" pair per line.
+# manifestName is a toolchain tools[].name or a provides[] string, or "host"
+# when that check is not a bundled tool (system curl, Claude Code from
+# Anthropic, the machine's own fonts). cr_preflight reads this list.
+# The manifest test reads the same list and fails when a preflight check has
+# no manifest entry. Binary rows must match _CR_REQUIRED_BINS, same order.
+# ---------------------------------------------------------------------------
+cr_preflight_manifest_rows() {
+  printf '%s\n' \
+    "curl host" \
+    "python3 python3" \
+    "node node" \
+    "npx npx" \
+    "ffmpeg ffmpeg" \
+    "ffprobe ffprobe" \
+    "magick magick" \
+    "claude host" \
+    "chromium chromium" \
+    "fonts host" \
+    "ffmpeg:ass libass" \
+    "ffmpeg:libx264 libx264" \
+    "whisper whisper"
+}
+
+# rc 0 when every shared row is a check this function's caller performs.
+# A new row whose label cr_preflight does not mention fails closed.
+_cr_preflight_rows_agree() {
+  local cname mname src rows line
+  local -a row_bins=()
+  src="$(declare -f cr_preflight)"
+  # Same shell as the caller: a pipe would drop row_bins. No process
+  # substitution either — that can need a temp file when TMPDIR is read-only.
+  rows="$(cr_preflight_manifest_rows)" || return 1
+  while [[ -n "$rows" ]]; do
+    line="${rows%%$'\n'*}"
+    if [[ "$rows" == *$'\n'* ]]; then
+      rows="${rows#*$'\n'}"
+    else
+      rows=""
+    fi
+    cname="${line%% *}"
+    if [[ "$line" == *" "* ]]; then
+      mname="${line#* }"
+    else
+      mname=""
+    fi
+    [[ -n "${cname:-}" ]] || continue
+    if [[ -z "${mname:-}" ]]; then
+      printf 'cr_preflight: shared row "%s" has no manifest name\n' "$cname" >&2
+      return 1
+    fi
+    case "$cname" in
+      curl|python3|node|npx|ffmpeg|ffprobe|magick)
+        row_bins+=("$cname")
+        ;;
+      *)
+        case "$src" in
+          *"$cname"*) ;;
+          *)
+            printf 'cr_preflight: shared row "%s" is not checked\n' "$cname" >&2
+            return 1
+            ;;
+        esac
+        ;;
+    esac
+  done
+  if [[ ${#row_bins[@]} -eq 0 ]]; then
+    printf 'cr_preflight: shared manifest rows listed no binaries\n' >&2
+    return 1
+  fi
+  if [[ "$(printf '%s ' "${row_bins[@]}")" != "$(printf '%s ' "${_CR_REQUIRED_BINS[@]}")" ]]; then
+    printf 'cr_preflight: manifest rows do not match _CR_REQUIRED_BINS\n' >&2
+    return 1
+  fi
+}
+
+# rc 0 when <check> is a host row in cr_preflight_manifest_rows (not a file
+# this bundle ships). curl, claude and fonts are host. A bundled name is not.
+_cr_preflight_is_host() {
+  local want="$1" cname mname rows line
+  rows="$(cr_preflight_manifest_rows)" || return 1
+  while [[ -n "$rows" ]]; do
+    line="${rows%%$'\n'*}"
+    if [[ "$rows" == *$'\n'* ]]; then
+      rows="${rows#*$'\n'}"
+    else
+      rows=""
+    fi
+    cname="${line%% *}"
+    if [[ "$line" == *" "* ]]; then
+      mname="${line#* }"
+    else
+      mname=""
+    fi
+    [[ "$cname" == "$want" && "$mname" == "host" ]] && return 0
+  done
+  return 1
+}
+
+# Playwright browsers shipped in this tree. build.sh fills share/ms-playwright.
+# browsers/ is accepted when that is the directory present instead.
+# Prints the directory. rc 1 when neither exists (no HOME fallback here).
+_cr_bundle_browsers_dir() {
+  if [[ -d "$_CR_REPO_ROOT/share/ms-playwright" ]]; then
+    printf '%s' "$_CR_REPO_ROOT/share/ms-playwright"
+    return 0
+  fi
+  if [[ -d "$_CR_REPO_ROOT/browsers" ]]; then
+    printf '%s' "$_CR_REPO_ROOT/browsers"
+    return 0
+  fi
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # cr_preflight — the gate. Prints one row per check; returns 0 iff every
 # required check PASSes. Callers MUST treat a non-zero return as fatal.
 #
 # `--quiet` prints only failures (used on the drainer's hot path, so a healthy
 # 15-minute tick stays silent).
+#
+# `--bundle` checks the unpacked tree this script lives in (the copy in
+# bundle/bin, whose parent is the bundle). It checks bundled binaries and the
+# pinned Chromium under that tree's browsers directory, read from that tree's
+# config/playwright-pin.json. It skips host-only rows: the claude CLI, a stub
+# Director (CFW_RENDER_DIRECTOR_CMD), system curl, system fonts, and the HOME
+# Playwright cache. It may be combined with `--quiet` in either order.
+# Without `--bundle` the full host check is unchanged.
 # ---------------------------------------------------------------------------
 cr_preflight() {
-  local quiet=0
-  [[ "${1:-}" == "--quiet" ]] && quiet=1
+  local quiet=0 bundle=0 arg
+  for arg in "$@"; do
+    case "$arg" in
+      --quiet) quiet=1 ;;
+      --bundle) bundle=1 ;;
+    esac
+  done
+  _cr_preflight_rows_agree || return 1
 
   local ok=1
   local -a missing=()
@@ -1829,11 +2037,39 @@ cr_preflight() {
     fi
   }
 
+  # Bundle mode points Chromium at this tree and never at the HOME cache.
+  # Save and restore so a later full preflight in the same shell is unchanged.
+  local pw_changed=0 pw_set=0 pw_old=""
+  _cr_pf_restore_browsers() {
+    if (( pw_changed )); then
+      if (( pw_set )); then
+        PLAYWRIGHT_BROWSERS_PATH="$pw_old"
+        export PLAYWRIGHT_BROWSERS_PATH
+      else
+        unset PLAYWRIGHT_BROWSERS_PATH
+      fi
+    fi
+  }
+  if (( bundle )); then
+    if [[ -n "${PLAYWRIGHT_BROWSERS_PATH+x}" ]]; then
+      pw_set=1
+      pw_old="$PLAYWRIGHT_BROWSERS_PATH"
+    fi
+    if ! PLAYWRIGHT_BROWSERS_PATH="$(_cr_bundle_browsers_dir)"; then
+      PLAYWRIGHT_BROWSERS_PATH="$_CR_REPO_ROOT/share/ms-playwright"
+    fi
+    export PLAYWRIGHT_BROWSERS_PATH
+    pw_changed=1
+  fi
+
   (( quiet )) || { echo "cfw-render preflight — toolchain"; echo "-------------------------------------"; }
 
   local b path tools_bin
   tools_bin="$(_cr_tools_bin)"
   for b in "${_CR_REQUIRED_BINS[@]}"; do
+    if (( bundle )) && _cr_preflight_is_host "$b"; then
+      continue
+    fi
     if path="$(command -v "$b" 2>/dev/null)"; then
       _cr_pf_row 0 "binary:$b" "$path"
     else
@@ -1857,20 +2093,24 @@ cr_preflight() {
   fi
 
   # The Director. Skipped when a stub Director is configured (tests / dev).
-  if [[ -n "${CFW_RENDER_DIRECTOR_CMD:-}" ]]; then
-    (( quiet )) || printf '  SKIP  %-22s %s\n' "cli:claude" "CFW_RENDER_DIRECTOR_CMD is set — stub Director"
-  elif command -v claude >/dev/null 2>&1; then
-    local cv
-    cv="$(claude --version 2>/dev/null | head -1)"
-    if [[ -n "$cv" ]]; then
-      _cr_pf_row 0 "cli:claude" "$cv"
+  # --bundle skips this host row: the bundle does not ship claude, and a
+  # stub Director command is not part of the bundle either.
+  if (( ! bundle )); then
+    if [[ -n "${CFW_RENDER_DIRECTOR_CMD:-}" ]]; then
+      (( quiet )) || printf '  SKIP  %-22s %s\n' "cli:claude" "CFW_RENDER_DIRECTOR_CMD is set — stub Director"
+    elif command -v claude >/dev/null 2>&1; then
+      local cv
+      cv="$(claude --version 2>/dev/null | head -1)"
+      if [[ -n "$cv" ]]; then
+        _cr_pf_row 0 "cli:claude" "$cv"
+      else
+        _cr_pf_row 1 "cli:claude" "found at $(command -v claude) but 'claude --version' produced nothing"
+        missing+=("claude")
+      fi
     else
-      _cr_pf_row 1 "cli:claude" "found at $(command -v claude) but 'claude --version' produced nothing"
+      _cr_pf_row 1 "cli:claude" "not on PATH — the render Director cannot run"
       missing+=("claude")
     fi
-  else
-    _cr_pf_row 1 "cli:claude" "not on PATH — the render Director cannot run"
-    missing+=("claude")
   fi
 
   if path="$(cr_preflight_chromium)"; then
@@ -1880,15 +2120,51 @@ cr_preflight() {
     missing+=("chromium")
   fi
 
-  if path="$(cr_preflight_fonts)"; then
-    _cr_pf_row 0 "fonts" "$path"
-  else
-    _cr_pf_row 1 "fonts" "no usable system font — text renders blank/tofu and every QA gate fails"
-    missing+=("fonts")
+  # Fonts are the machine's own, not a bundled file. Full mode still checks them.
+  if (( ! bundle )); then
+    if path="$(cr_preflight_fonts)"; then
+      _cr_pf_row 0 "fonts" "$path"
+    else
+      _cr_pf_row 1 "fonts" "no usable system font — text renders blank/tofu and every QA gate fails"
+      missing+=("fonts")
+    fi
+  fi
+
+  # Recipes call `ffmpeg -vf ass=` and `-c:v libx264`. A ffmpeg binary can
+  # exist and still be built without libass or libx264, so the name check
+  # above is not enough. Skip when ffmpeg itself is missing: that row already
+  # names it, and there is no binary to ask.
+  if command -v ffmpeg >/dev/null 2>&1; then
+    if _cr_ffmpeg_has_row filters ass; then
+      _cr_pf_row 0 "ffmpeg:ass" "ass filter (libass)"
+    else
+      _cr_pf_row 1 "ffmpeg:ass" "no ass filter (libass) — captions that use -vf ass= cannot render"
+      missing+=("ffmpeg:ass")
+    fi
+    if _cr_ffmpeg_has_row encoders libx264; then
+      _cr_pf_row 0 "ffmpeg:libx264" "libx264 encoder"
+    else
+      _cr_pf_row 1 "ffmpeg:libx264" "no libx264 encoder — recipes that use -c:v libx264 cannot encode"
+      missing+=("ffmpeg:libx264")
+    fi
+  fi
+
+  # p-reels-faceless and p-longform transcribe with any one of these.
+  local wtool="" wpath=""
+  for wtool in cfw-transcribe mlx_whisper whisper; do
+    if wpath="$(command -v "$wtool" 2>/dev/null)"; then
+      _cr_pf_row 0 "whisper" "$wtool ($wpath)"
+      break
+    fi
+  done
+  if [[ -z "$wpath" ]]; then
+    _cr_pf_row 1 "whisper" "not on PATH — need cfw-transcribe, mlx_whisper or whisper"
+    missing+=("whisper")
   fi
 
   if (( ok )); then
     (( quiet )) || { echo "-------------------------------------"; echo "PREFLIGHT: PASS"; }
+    _cr_pf_restore_browsers
     return 0
   fi
 
@@ -1904,6 +2180,7 @@ cr_preflight() {
     echo ""
     echo "Re-run 'bin/cfw-render-preflight.sh' until it prints PASS, then start the timer."
   } >&2
+  _cr_pf_restore_browsers
   return 1
 }
 

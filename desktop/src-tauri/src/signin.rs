@@ -1056,7 +1056,8 @@ if [ -t 0 ] && [ -t 1 ]; then
   echo "$TERM" > '@D@/TERMV'
   stty size > '@D@/SIZE'
   (: < /dev/tty) 2>/dev/null && touch '@D@/CTTY'
-  ps -o pid=,pgid=,tty= -p $$ > '@D@/PSLINE'
+  /usr/bin/perl -e 'print getppid()," ",getpgrp()," "' > '@D@/PSLINE'
+  /usr/bin/tty >> '@D@/PSLINE'
 else
   exec sleep 600
 fi
@@ -1432,11 +1433,11 @@ esac
         assert_eq!(fx.file("TERMV").trim(), "xterm-256color");
         assert!(fx.exists("CTTY"), "setup-token has no controlling terminal");
         // It leads its own process group (its pid is the group id), which is what makes stopping the group safe,
-        // and that group has a terminal.
+        // and that group has a terminal. PSLINE is shell pid, pgid and `tty` (/dev/ttysNNN); no setuid `ps`.
         let ps = fx.file("PSLINE");
         let cols: Vec<&str> = ps.split_whitespace().collect();
         assert!(cols.len() == 3 && cols[0] == cols[1], "not the leader of its own process group: {ps:?}");
-        assert!(cols[2].starts_with("tty"), "no terminal: {ps:?}");
+        assert!(cols[2].starts_with("/dev/tty"), "no terminal: {ps:?}");
     }
 
     #[test]

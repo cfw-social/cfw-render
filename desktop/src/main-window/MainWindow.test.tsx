@@ -46,6 +46,8 @@ afterEach(() => {
 const current = () => screen.getByRole("main").getAttribute("data-section");
 const location = (url: string) => act(async () => h.listeners["web-location"]({ payload: url }));
 
+// One scale for this file's load wait. 90s expired while the bound suite shared the machine.
+const LOAD_WAIT_SCALE = 8;
 // The owner's saved brand ("gone-brand") is no longer in the list; "atlas-bikes" is the current one.
 const ATLAS_CURRENT = { signedIn: true, brands: BRANDS.brands.map((b) => ({ ...b, isCurrent: b.slug === "atlas-bikes" })) };
 const shown = () => h.invoke.mock.calls.filter(([cmd]) => cmd === "web_show").map(([, args]) => args);
@@ -64,7 +66,7 @@ describe("main window", () => {
     const { execFileSync } = await vi.importActual<{
       execFileSync(file: string, args: string[], options: { encoding: "utf8"; timeout: number }): string;
     }>("node:child_process");
-    const output = execFileSync("bash", ["../test/run-tests.sh", "--recent-identity"], { encoding: "utf8", timeout: 90_000 });
+    const output = execFileSync("bash", ["../test/run-tests.sh", "--recent-identity"], { encoding: "utf8", timeout: 90_000 * LOAD_WAIT_SCALE });
     const fixture = output.split("\n").find((line) => line.startsWith("STATUS_FIXTURE="));
     expect(fixture).toBeDefined();
     const status: StatusFile = JSON.parse(fixture!.slice("STATUS_FIXTURE=".length));
@@ -99,7 +101,9 @@ describe("main window", () => {
     expect(screen.getByRole("status").textContent).toBe("Copied");
     expect(actions.runNow).not.toHaveBeenCalled();
     expect(actions.startWorker).not.toHaveBeenCalled();
-  }, 100_000);
+    // Stage-range alone took 164s under load. Stay above the execFileSync ceiling
+    // (90s * scale) so this test is not cut while that script is still allowed to run.
+  }, 90_000 * LOAD_WAIT_SCALE + 60_000);
 
   it("offers selectable instructions when clipboard access fails and leaves unknown identity null", async () => {
     vi.stubGlobal("navigator", { clipboard: { writeText: vi.fn().mockRejectedValue(new Error("denied")) } });

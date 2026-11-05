@@ -8,6 +8,10 @@
 #                                      unless CFW_TOOLCHAIN_ALLOW_UNPINNED=1,
 #                                      in which case the real hash is printed
 #                                      as "PIN <url> <sha256>" to paste back.
+#   tc_install_bundle_scripts <bundle> <repo-bin>
+#                                   -> copy the worker preflight, its lib and
+#                                      config/playwright-pin.json into the
+#                                      bundle (before make-sums.sh).
 #   tc_rpath_fix <stage-dir>        -> make every Mach-O under <stage> relocatable.
 
 tc_die() { echo "toolchain: ERROR: $*" >&2; exit 1; }
@@ -48,6 +52,29 @@ tc_fetch() {
     rm -f "$dest"
     tc_die "sha256 mismatch for $url: want $want got $got"
   fi
+}
+
+# tc_install_bundle_scripts <bundle-dir> <repo-bin-dir>
+# The desktop app runs bin/cfw-render-preflight.sh from the unpacked bundle
+# and refuses the bundle when that file is missing ("no preflight"). The
+# script sources cfw-render-lib.sh beside it, so both files are required.
+# config/playwright-pin.json is copied to <bundle>/config so --bundle can
+# read the pin without the repo checkout. Call this before make-sums.sh so
+# the copies are in SHA256SUMS.
+tc_install_bundle_scripts() {
+  local bundle="$1" bin_src="$2" repo_root pin
+  [[ -n "$bundle" && -n "$bin_src" ]] || tc_die "usage: tc_install_bundle_scripts <bundle-dir> <repo-bin-dir>"
+  [[ -d "$bundle/bin" ]] || tc_die "bundle bin missing: $bundle/bin"
+  [[ -f "$bin_src/cfw-render-preflight.sh" ]] || tc_die "missing $bin_src/cfw-render-preflight.sh"
+  [[ -f "$bin_src/cfw-render-lib.sh" ]] || tc_die "missing $bin_src/cfw-render-lib.sh"
+  repo_root="$(cd "$bin_src/.." && pwd)" || tc_die "cannot resolve $bin_src"
+  pin="$repo_root/config/playwright-pin.json"
+  [[ -f "$pin" ]] || tc_die "missing $pin"
+  cp "$bin_src/cfw-render-preflight.sh" "$bundle/bin/cfw-render-preflight.sh"
+  cp "$bin_src/cfw-render-lib.sh" "$bundle/bin/cfw-render-lib.sh"
+  chmod +x "$bundle/bin/cfw-render-preflight.sh"
+  mkdir -p "$bundle/config"
+  cp "$pin" "$bundle/config/playwright-pin.json"
 }
 
 # tc_rpath_fix <stage>: for every Mach-O file under <stage>:
