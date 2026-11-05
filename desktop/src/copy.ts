@@ -154,7 +154,9 @@ export const copy = {
     production: "Production",
     productionNote: "CFW at app.cfw.social. The normal choice.",
     localDev: "Local dev",
-    localDevNote: "A CFW Social running on this Mac at localhost:3005. It has its own settings and folders, so your production setup stays as it is.",
+    // [WI31.1] AI sign-ins live in the shared Keychain service com.cfw.render (chat/keychain.rs).
+    localDevNote:
+      "A CFW Social running on this Mac at localhost:3005. It has its own settings, folders and brand keys. Your AI sign-ins and provider keys are shared with production: signing out or removing a key here changes production too.",
     badge: (server: string | null) => `Local dev — ${server ?? "no server"}`,
     restartNote: (name: string) => `Restart CFW Render to switch to ${name}. Nothing changes until then.`,
     restart: "Restart now",

@@ -95,7 +95,15 @@ describe("Settings", () => {
     expect(await screen.findByRole("radiogroup", { name: "Server" })).toBeTruthy();
     expect((screen.getByRole("radio", { name: "Local dev" }) as HTMLInputElement).checked).toBe(true);
   });
-  const radio = (name: string) => screen.getByRole("radio", { name }) as HTMLInputElement;
+
+  it("server switch: the Local dev note says AI sign-ins and provider keys are shared with production", async () => {
+    invoke.mockImplementation((cmd: string) => Promise.resolve(cmd === "get_server_profile" ? LOCAL : null));
+    render(<Settings workerVersion={null} />);
+    await screen.findByRole("radiogroup", { name: "Server" });
+    expect(screen.getByText(/AI sign-ins and provider keys are shared with production/)).toBeTruthy();
+    expect(screen.queryByText(/production setup stays as it is/)).toBeNull();
+  });
+  const radio =(name: string) => screen.getByRole("radio", { name }) as HTMLInputElement;
 
   it("server switch: Production by default; Local dev is saved for the next start and offers Restart now", async () => {
     invoke.mockImplementation((cmd: string, args?: { server?: string }) =>
