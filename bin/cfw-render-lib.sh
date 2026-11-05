@@ -2001,6 +2001,16 @@ _cr_bundle_browsers_dir() {
   return 1
 }
 
+# rc 0 when <path> is <root> or a file inside it. Both sides go through
+# cd/pwd so a /var -> /private/var symlink is not a false mismatch.
+_cr_path_under_root() {
+  local target="$1" root="$2" target_dir root_dir
+  [[ -n "$target" && -n "$root" ]] || return 1
+  target_dir="$(cd "$(dirname "$target")" 2>/dev/null && pwd)" || return 1
+  root_dir="$(cd "$root" 2>/dev/null && pwd)" || return 1
+  [[ "$target_dir" == "$root_dir" || "$target_dir" == "$root_dir/"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # cr_preflight — the gate. Prints one row per check; returns 0 iff every
 # required check PASSes. Callers MUST treat a non-zero return as fatal.
@@ -2071,7 +2081,14 @@ cr_preflight() {
       continue
     fi
     if path="$(command -v "$b" 2>/dev/null)"; then
-      _cr_pf_row 0 "binary:$b" "$path"
+      # A host copy of node, python3 or npx must not pass for a file the
+      # bundle did not ship. /usr/bin/python3 is on the limited PATH too.
+      if (( bundle )) && ! _cr_path_under_root "$path" "$_CR_REPO_ROOT"; then
+        _cr_pf_row 1 "binary:$b" "resolved outside the bundle ($path)"
+        missing+=("$b")
+      else
+        _cr_pf_row 0 "binary:$b" "$path"
+      fi
     else
       if [[ -d "$tools_bin" ]]; then
         _cr_pf_row 1 "binary:$b" "not on PATH (not in $tools_bin either)"
@@ -2153,6 +2170,10 @@ cr_preflight() {
   local wtool="" wpath=""
   for wtool in cfw-transcribe mlx_whisper whisper; do
     if wpath="$(command -v "$wtool" 2>/dev/null)"; then
+      if (( bundle )) && ! _cr_path_under_root "$wpath" "$_CR_REPO_ROOT"; then
+        wpath=""
+        continue
+      fi
       _cr_pf_row 0 "whisper" "$wtool ($wpath)"
       break
     fi

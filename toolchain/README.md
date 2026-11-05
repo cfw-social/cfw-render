@@ -34,12 +34,13 @@ Otherwise the app downloads the archive for the host arch, checks `sha256`
 against the manifest, and unpacks into a temp dir beside
 `~/CFW Render/app/tools/<version>/`. It then runs the equivalent of `verify.sh`
 and, still before the swap, runs `bin/cfw-render-preflight.sh --bundle` from
-that unpacked tree with `bin/` first on `PATH`. `--bundle` checks the bundled
+that unpacked tree. The PATH for that check is the bundle `bin` directory,
+then `/usr/bin` and `/bin` only, so a host node, python3 or npx cannot stand
+in for a tool the bundle did not ship. `--bundle` checks the bundled
 binaries and the pinned Chromium under `share/ms-playwright` (or `browsers/`
 when that directory is the one present). It reads the bundle's
 `config/playwright-pin.json`. It does not need the claude CLI,
-`CFW_RENDER_DIRECTOR_CMD`, or the HOME Playwright cache. A missing script or a
-non-zero exit
+`CFW_RENDER_DIRECTOR_CMD`, or the HOME Playwright cache. A missing script or a non-zero exit
 refuses the bundle, deletes the temp dir, and does not move `current`. Only a
 passing preflight renames the tree into `tools/<version>/` and repoints the
 `tools/current` symlink — atomically (`ln -sfn` to a temp name + `mv`), as the
@@ -67,11 +68,12 @@ Signing/notarisation (G0) and the R2 upload are owner release steps, not CI.
    builds `arm64` on `macos-14` and `x86_64` on `macos-15-intel` via
    `scripts/build.sh <arch> dist/` (`workflow_dispatch` with `arch` also works
    for a build-only run). Pin-capture mode is the `capture_pins` input on
-   `workflow_dispatch`: that run sets `CFW_TOOLCHAIN_ALLOW_UNPINNED=1` and
-   uploads the printed `PIN` lines as the `toolchain-pins-<arch>` artifact.
-   It does not publish. After the build, the job runs the unpacked bundle's
-   `bin/cfw-render-preflight.sh --bundle` with that bundle's `bin/` first on
-   `PATH`. That check uses the bundle's own pin and browsers, not the runner's
+   `workflow_dispatch`: that run sets `CFW_TOOLCHAIN_ALLOW_UNPINNED=1`, fetches
+   every manifest tool, and uploads the printed `PIN <url> <sha256>` lines as
+   the `toolchain-pins-<arch>` artifact. It does not configure, compile, or
+   publish. A build that is not capture mode runs the unpacked bundle's
+   `bin/cfw-render-preflight.sh --bundle` with `PATH` set to that bundle's
+   `bin` directory, then `/usr/bin` and `/bin` only. That check uses the bundle's own pin and browsers, not the runner's
    claude CLI or HOME Playwright cache.
    Brew packages are build-time only and are installed in CI only. They are
    not part of user setup: zstd, pkg-config, autoconf, automake, libtool,
@@ -136,7 +138,9 @@ fontconfig needs the macOS SDK `libexpat` (`expat.h` and `-lexpat`). There is no
 
 libjpeg-turbo is built with CMake. harfbuzz and fribidi are built with Meson and Ninja. `build.sh` calls `cmake`, `meson` and `ninja` (`require_cmd`). The CI workflow installs those, plus `gperf`, on the runner only. That `brew install` is CI only. It is not part of user setup, and those host tools are not files in the bundle.
 
-libx264's manifest version `0.164.3108` is an x264 point version, not a git tag, and the entry has no `commit` field. `build.sh` refuses to guess a snapshot. Distributors record this version as git commit `31e19f92f00c7003fa115047ce50978bc98c3a0d`. Add `tools[].commit` with that commit (or the commit you actually pin) before a real x264 fetch can run. The fetch URL is `<source>/-/archive/<commit>/x264-<commit>.tar.gz`, and `sha256` pins that archive.
+libx264's manifest version `0.164.3108` is an x264 point version, not a git tag, and the entry has no `commit` field. A real build refuses to guess a snapshot. Distributors record this version as git commit `31e19f92f00c7003fa115047ce50978bc98c3a0d`. Pin capture (`CFW_TOOLCHAIN_ALLOW_UNPINNED=1`) fetches that commit when `tools[].commit` is empty and prints `PIN <url> <sha256>` for the archive. Add `tools[].commit` with that commit (or the commit you actually pin) before a real x264 fetch can run. The fetch URL is `<source>/-/archive/<commit>/x264-<commit>.tar.gz`, and `sha256` pins that archive.
+
+Pin capture walks every tool in `manifest.json`, including `ffmpeg`, `whisper` and `openai-whisper`, in that order. One run prints one `PIN <url> <sha256>` line per tool and then exits. It does not configure or compile. ffmpeg's `./configure` is skipped after the ffmpeg archive is fetched, because configure needs libx264 installed in the prefix. `whisper`'s line is the PyPI sdist for `mlx-whisper`. `chromium`, `codex` and `gemini` have no single build archive; capture pins the npm tarball (`playwright` at the version in `config/playwright-pin.json`, `@openai/codex`, and the gemini `npmPackage`). Paste each hash into that tool's `sha256`, unset the variable, and rebuild. `CFW_TOOLCHAIN_PIN_DRY` is removed: a line with no hash is not a pin.
 
 `openai-whisper` is installed from the pinned GitHub tag archive (`v` plus the manifest version) into a venv under `lib/openai-whisper-venv`. `pip wheel` builds that pin, then `pip install --no-index` installs it. Python dependencies of that package come from PyPI and are not separate manifest pins. The `bin/whisper` wrapper uses the bundled python and the venv's site-packages, so the archive can move. The speech model still downloads on first use into `~/.cache/whisper`.
 

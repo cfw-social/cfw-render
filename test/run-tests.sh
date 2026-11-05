@@ -161,6 +161,27 @@ export TEST_SUITE_BASH
 STAGE_RANGE_HARNESS_TIMEOUT_S=$((30 * 8))
 export STAGE_RANGE_HARNESS_TIMEOUT_S
 
+# HARNESS_LOAD_WAIT_S — one load-scaled wait, in seconds, for the two cases a
+# fixed clock loses while this suite shares the machine.
+#   orphan-just-in-time: a fixed 3s grace expired before the near-miss report.
+#   capacity: floor: the scratch tail stayed 2/2 because the slot never freed.
+# Floor is the old 3s grace times the suite load scale (8), the same scale as
+# STAGE_RANGE_HARNESS_TIMEOUT_S. The 1-minute load raises it when it is hotter
+# than that scale. Cap 90. Callers poll and return as soon as the condition
+# is true, so a quiet success does not sleep the whole window.
+HARNESS_LOAD_WAIT_SCALE=8
+harness_load_wait_s() {
+  local load scale secs
+  load="$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | awk '{printf "%d", ($1 + 0)}')"
+  [[ "$load" =~ ^[0-9]+$ ]] || load=1
+  scale=$HARNESS_LOAD_WAIT_SCALE
+  (( load > scale )) && scale=$load
+  secs=$(( 3 * scale ))
+  (( secs < 24 )) && secs=24
+  (( secs > 90 )) && secs=90
+  printf '%s\n' "$secs"
+}
+
 # Save the suite-start PATH and TMPDIR. Later cases replace both, and
 # app-key-retry.py needs this TMPDIR so bash here-docs stay in the sandbox.
 # The full suite runs the check at the end. At the start it overlaps the
@@ -1949,8 +1970,13 @@ echo "=== Case 4a: orphaned background — grace window absorbs a near-miss (CFW
 # A background step that finishes WELL inside CFW_RENDER_ORPHAN_GRACE_SECS,
 # after the Director itself has already exited 0 — the grace-poll must catch
 # it and still land outcome=complete, not a false orphaned/crashed.
+# The sleep stays 1s (the near-miss). The grace is HARNESS_LOAD_WAIT_S, not a
+# fixed 3s: under load the report after that sleep missed the old window, the
+# order was orphaned, and complete_render_order was never called. The worker
+# polls every 0.5s and stops when the outcome file appears.
+HARNESS_LOAD_WAIT_S="$(harness_load_wait_s)"
 run_case "orphan-just-in-time" "orphan-just-in-time" "order_fixture order-orphan-jit-1 brand-1 video" \
-  export CFW_RENDER_ORPHAN_GRACE_SECS=3 FAKE_DIRECTOR_ORPHAN_SLEEP=1
+  export CFW_RENDER_ORPHAN_GRACE_SECS="$HARNESS_LOAD_WAIT_S" FAKE_DIRECTOR_ORPHAN_SLEEP=1
 if grep -q "order-orphan-jit-1.*complete" "$CASE_STATE/journal.tsv" 2>/dev/null; then
   pass "orphan-just-in-time: journal row outcome=complete"
 else
@@ -4310,15 +4336,16 @@ rm -rf "$c23"
 # make only the full ask (2/2) and o2 stays queued.
 #
 # c23b_wait_past_round1 <dir>
-# Round 1's claims are "0/2 1/2 2/2". The next round starts when that work
-# winds down. A fixed sleep 3 stopped the worker first on a busy Mac, so the
-# log never showed "normal claims skipped, urgent only" and no later ask was
-# recorded. Poll every 0.5s until STAGE_RANGE_HARNESS_TIMEOUT_S. The skip
-# line is written just before the full ask, so the line alone is not a reason
-# to stop. Stop once that later ask is on disk and the line is too, or once a
-# later ask is not a full one (the strict check below then fails). Time running
-# out still falls through to that same check. 60s expired under bound-suite
-# load before a scratch job freed a slot, so the tail stayed 2/2.
+# Round 1's claims are "0/2 1/2 2/2". Poll every 0.5s until the condition,
+# with a ceiling of STAGE_RANGE_HARNESS_TIMEOUT_S. The skip line is written
+# just before the full ask, so the line alone is not a reason to stop. Stop
+# once that later ask is on disk and the line is too (floor held), or once a
+# later ask is not a full one (scratch kept a normal claim). Time running out
+# still falls through to the same check.
+# A fixed sleep 3, then a 60s ceiling, then this ceiling, all lost on a busy
+# Mac: the scratch tail stayed 2/2 because the claim loop at unit 0.05s never
+# let the job exit. The workers below sleep 1s between rounds and bound each
+# step with HARNESS_LOAD_WAIT_S, so a slot frees inside this poll.
 c23b_wait_past_round1() {
   local dir="$1" deadline now tail uniq
   deadline=$((SECONDS + STAGE_RANGE_HARNESS_TIMEOUT_S))
@@ -4347,12 +4374,24 @@ c23b_floor_held() {
   uniq="$(tr ' ' '\n' <<< "$tail" | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//')"
   [[ "$claims" == 0/2\ 1/2\ 2/2* && "$uniq" == "2/2" ]] && grep -q "normal claims skipped, urgent only" "$dir/cr-state/cfw-render.log"
 }
+# c23_wait_first_claim <dir> — arm the floor file only after a claim exists.
+# A fixed 10s (100 x 0.1s) wrote 1000 before a loaded worker had asked.
+c23_wait_first_claim() {
+  local dir="$1" deadline
+  deadline=$((SECONDS + HARNESS_LOAD_WAIT_S))
+  while (( SECONDS < deadline )); do
+    grep -q '"tool": "claim_render_order"' "$dir/mockstate/calls.jsonl" 2>/dev/null && return 0
+    sleep 0.2
+  done
+  return 0
+}
 c23b="$(mktemp -d)"
 c21_setup "$c23b" $((MOCK_PORT_BASE + 923)) harness-3step '[{"id":"o1"},{"id":"o2"}]' CFW_MOCK_ORDERS_ARRAY=1 CFW_MOCK_MAX_PER_CLAIM=1
 c23b_floor="$c23b/floor"; : > "$c23b_floor"
-c21_worker "$c23b" $((MOCK_PORT_BASE + 923)) --loop CFW_RENDER_CONCURRENCY=2 CFW_RENDER_CAPACITY_UNIT_SECS=0.05 CFW_RENDER_CAPACITY_FREE_MB_FILE="$c23b_floor" &
+HARNESS_LOAD_WAIT_S="$(harness_load_wait_s)"
+c21_worker "$c23b" $((MOCK_PORT_BASE + 923)) --loop CFW_RENDER_CONCURRENCY=2 CFW_RENDER_CAPACITY_UNIT_SECS=1 CFW_RENDER_STEP_TIMEOUT_SEC="$HARNESS_LOAD_WAIT_S" CFW_RENDER_CAPACITY_FREE_MB_FILE="$c23b_floor" &
 c23b_w=$!
-for _ in $(seq 1 100); do grep -q '"tool": "claim_render_order"' "$c23b/mockstate/calls.jsonl" 2>/dev/null && break; sleep 0.1; done
+c23_wait_first_claim "$c23b"
 printf '1000' > "$c23b_floor"
 c23b_wait_past_round1 "$c23b"
 stop_test_tree "$c23b_w" || { fail "loop cleanup" "could not stop owned tree"; exit 1; }
@@ -4401,9 +4440,9 @@ else
   c23s="$(mktemp -d)"
   c21_setup "$c23s" $((MOCK_PORT_BASE + 1100)) harness-3step '[{"id":"o1"},{"id":"o2"}]' CFW_MOCK_ORDERS_ARRAY=1 CFW_MOCK_MAX_PER_CLAIM=1
   c23s_floor="$c23s/floor"; : > "$c23s_floor"
-  c21_worker "$c23s" $((MOCK_PORT_BASE + 1100)) --loop CFW_RENDER_CONCURRENCY=2 CFW_RENDER_CAPACITY_UNIT_SECS=0.05 CFW_RENDER_CAPACITY_FREE_MB_FILE="$c23s_floor" CFW_RENDER_WORKER_BIN="$c23s_bin/bin/cfw-render.sh" &
+  c21_worker "$c23s" $((MOCK_PORT_BASE + 1100)) --loop CFW_RENDER_CONCURRENCY=2 CFW_RENDER_CAPACITY_UNIT_SECS=1 CFW_RENDER_STEP_TIMEOUT_SEC="$HARNESS_LOAD_WAIT_S" CFW_RENDER_CAPACITY_FREE_MB_FILE="$c23s_floor" CFW_RENDER_WORKER_BIN="$c23s_bin/bin/cfw-render.sh" &
   c23s_w=$!
-  for _ in $(seq 1 100); do grep -q '"tool": "claim_render_order"' "$c23s/mockstate/calls.jsonl" 2>/dev/null && break; sleep 0.1; done
+  c23_wait_first_claim "$c23s"
   printf '1000' > "$c23s_floor"
   c23b_wait_past_round1 "$c23s"
   stop_test_tree "$c23s_w" || { fail "loop cleanup" "could not stop owned tree"; exit 1; }
@@ -5880,7 +5919,7 @@ fi
 if ! grep -q 'name: Preflight the built bundle' "$wi1734_wf"; then
   wi1734_why+=" no-preflight-step"
 fi
-if ! grep -F -q 'PATH="$bundle/bin:$PATH" "$bundle/bin/cfw-render-preflight.sh"' "$wi1734_wf"; then
+if ! grep -F -q 'PATH="$bundle/bin:/usr/bin:/bin" "$bundle/bin/cfw-render-preflight.sh" --bundle' "$wi1734_wf"; then
   wi1734_why+=" preflight-not-bundle-script"
 fi
 if ! grep -qF 'TODO(G0): Developer ID signing + notarisation of the archives happens' "$wi1734_wf"; then
@@ -6087,6 +6126,290 @@ else
   fail "WI17.3.4b bundle preflight" "$wi1734b_why"
 fi
 rm -rf "$wi1734b_root" "$wi1734b_home"
+
+echo "=== Case WI17.3.12: bundle mode rejects a host tool, release is push-only, pins continue past libx264 ==="
+# Offline. No network and no compile.
+# (a) --bundle fails when node is missing from the bundle and a working node
+#     is on the host PATH ahead of the bundle.
+# (b) The release job if: requires github.event_name == 'push'.
+# (c) A pinned libx264 entry with no commit still refuses before any download.
+wi17312_why=""
+wi17312_wf="$REPO_DIR/.github/workflows/toolchain-build.yml"
+wi17312_rs="$REPO_DIR/desktop/src-tauri/src/toolchain.rs"
+wi17312_build="$REPO_DIR/toolchain/scripts/build.sh"
+wi17312_readme="$REPO_DIR/toolchain/README.md"
+if ! grep -F -q 'PATH="$bundle/bin:/usr/bin:/bin" "$bundle/bin/cfw-render-preflight.sh" --bundle' "$wi17312_wf"; then
+  wi17312_why+=" workflow-path"
+fi
+if grep -F -q 'PATH="$bundle/bin:$PATH"' "$wi17312_wf"; then
+  wi17312_why+=" workflow-keeps-host-path"
+fi
+if ! grep -F -q "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/toolchain-v')" "$wi17312_wf"; then
+  wi17312_why+=" release-if"
+fi
+wi17312_fn="$(awk '/^fn run_bundle_preflight/,/^fn wait_idle/' "$wi17312_rs")"
+if ! printf '%s\n' "$wi17312_fn" | grep -F -q ':/usr/bin:/bin'; then
+  wi17312_why+=" rust-path"
+fi
+if printf '%s\n' "$wi17312_fn" | grep -F -q 'var_os("PATH")'; then
+  wi17312_why+=" rust-appends-host-path"
+fi
+if grep -qx 'non-zero exit' "$wi17312_readme"; then
+  wi17312_why+=" readme-line-break"
+fi
+wi17312_root="$(mktemp -d)"
+wi17312_home="$(mktemp -d)"
+wi17312_host="$(mktemp -d)"
+wi17312_py="$(command -v python3 || true)"
+if [[ -z "$wi17312_root" || -z "$wi17312_home" || -z "$wi17312_host" || -z "$wi17312_py" ]]; then
+  wi17312_why+=" stub-setup"
+else
+  mkdir -p "$wi17312_root/bin" "$wi17312_root/config"
+  cp "$REPO_DIR/bin/cfw-render-preflight.sh" "$wi17312_root/bin/cfw-render-preflight.sh"
+  cp "$REPO_DIR/bin/cfw-render-lib.sh" "$wi17312_root/bin/cfw-render-lib.sh"
+  chmod +x "$wi17312_root/bin/cfw-render-preflight.sh"
+  cp "$REPO_DIR/config/playwright-pin.json" "$wi17312_root/config/playwright-pin.json"
+  wi17312_crev="$(python3 -c 'import json,sys; sys.stdout.write(json.load(open(sys.argv[1]))["chromiumRevision"])' "$wi17312_root/config/playwright-pin.json")"
+  wi17312_hrev="$(python3 -c 'import json,sys; sys.stdout.write(json.load(open(sys.argv[1]))["chromiumHeadlessShellRevision"])' "$wi17312_root/config/playwright-pin.json")"
+  wi17312_browsers="$wi17312_root/share/ms-playwright"
+  mkdir -p "$wi17312_browsers/chromium-$wi17312_crev" "$wi17312_browsers/chromium_headless_shell-$wi17312_hrev"
+  : > "$wi17312_browsers/chromium-$wi17312_crev/INSTALLATION_COMPLETE"
+  : > "$wi17312_browsers/chromium_headless_shell-$wi17312_hrev/INSTALLATION_COMPLETE"
+  printf '#!/bin/sh\nexec %q "$@"\n' "$wi17312_py" > "$wi17312_root/bin/python3"
+  chmod +x "$wi17312_root/bin/python3"
+  for wi17312_tool in npx ffprobe whisper; do
+    printf '#!/bin/sh\nexit 0\n' > "$wi17312_root/bin/$wi17312_tool"
+    chmod +x "$wi17312_root/bin/$wi17312_tool"
+  done
+  cat > "$wi17312_root/bin/ffmpeg" <<'EOF'
+#!/bin/sh
+if [ "$1" = "-hide_banner" ] && [ "$2" = "-filters" ]; then
+  printf '%s\n' ' .. ass               libass'
+  exit 0
+fi
+if [ "$1" = "-hide_banner" ] && [ "$2" = "-encoders" ]; then
+  printf '%s\n' ' .. libx264           H.264'
+  exit 0
+fi
+exit 0
+EOF
+  cat > "$wi17312_root/bin/magick" <<'EOF'
+#!/bin/sh
+echo "Version: ImageMagick 7.1.1-47"
+exit 0
+EOF
+  chmod +x "$wi17312_root/bin/ffmpeg" "$wi17312_root/bin/magick"
+  # The bundle has no node. The host copy is a real executable on PATH.
+  printf '#!/bin/sh\nexit 0\n' > "$wi17312_host/node"
+  chmod +x "$wi17312_host/node"
+  if ! "$wi17312_host/node"; then
+    wi17312_why+=" host-node-does-not-run"
+  fi
+  wi17312_seen="$(PATH="$wi17312_host:$wi17312_root/bin:/usr/bin:/bin" command -v node || true)"
+  if [[ "$wi17312_seen" != "$wi17312_host/node" ]]; then
+    wi17312_why+=" host-node-not-first-on-path"
+  fi
+  wi17312_run() {
+    (
+      cd "$wi17312_root" && \
+      env -u CFW_RENDER_DIRECTOR_CMD -u PLAYWRIGHT_BROWSERS_PATH \
+        HOME="$wi17312_home" \
+        PATH="$1" \
+        TMPDIR="$wi17312_root" \
+        /bin/bash ./bin/cfw-render-preflight.sh --bundle
+    )
+  }
+  wi17312_rc=0
+  wi17312_out="$(wi17312_run "$wi17312_host:$wi17312_root/bin:/usr/bin:/bin" 2>&1)" || wi17312_rc=$?
+  if [[ "$wi17312_rc" == "0" ]]; then
+    wi17312_why+=" host-node-masked-missing-bundle-node"
+  fi
+  case "$wi17312_out" in
+    *node*) ;;
+    *) wi17312_why+=" host-node-failure-did-not-name-node" ;;
+  esac
+  wi17312_rc=0
+  wi17312_out="$(wi17312_run "$wi17312_root/bin:/usr/bin:/bin" 2>&1)" || wi17312_rc=$?
+  if [[ "$wi17312_rc" == "0" ]]; then
+    wi17312_why+=" limited-path-passed-without-node"
+  fi
+  case "$wi17312_out" in
+    *node*) ;;
+    *) wi17312_why+=" limited-path-did-not-name-node" ;;
+  esac
+  wi17312_curl_log="$wi17312_root/curl.log"
+  printf '#!/bin/sh\necho called >> %q\nexit 99\n' "$wi17312_curl_log" > "$wi17312_host/curl"
+  chmod +x "$wi17312_host/curl"
+  cat > "$wi17312_root/pinned.json" <<'EOF'
+{
+  "version": "0.0.0-pinned",
+  "tools": [
+    {
+      "name": "libx264",
+      "version": "0.164.3108",
+      "source": "https://code.videolan.org/videolan/x264",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  ]
+}
+EOF
+  : > "$wi17312_curl_log"
+  wi17312_real_rc=0
+  wi17312_real="$(
+    PATH="$wi17312_host:$PATH" \
+    env -u CFW_TOOLCHAIN_ALLOW_UNPINNED -u CFW_TOOLCHAIN_PIN_DRY \
+    CFW_TOOLCHAIN_MANIFEST="$wi17312_root/pinned.json" \
+    bash "$wi17312_build" arm64 "$wi17312_root/real-out" \
+    2>"$wi17312_root/real.err"
+  )" || wi17312_real_rc=$?
+  if [[ "$wi17312_real_rc" == "0" ]]; then
+    wi17312_why+=" real-build-accepted-missing-commit"
+  fi
+  if ! grep -F -q 'no commit field' "$wi17312_root/real.err"; then
+    wi17312_why+=" real-build-did-not-refuse"
+  fi
+  case "$wi17312_real" in
+    *"PIN "*) wi17312_why+=" real-build-printed-pin" ;;
+  esac
+  if [[ -s "$wi17312_curl_log" ]]; then
+    wi17312_why+=" real-build-called-curl"
+  fi
+fi
+if [[ -z "$wi17312_why" ]]; then
+  pass "WI17.3.12: host PATH cannot hide a missing bundled tool, release is push-only, uncommitted libx264 is refused"
+else
+  fail "WI17.3.12 bundle path and pins" "$wi17312_why"
+fi
+rm -rf "$wi17312_root" "$wi17312_home" "$wi17312_host"
+
+echo "=== Case WI17.3.16: one capture run pins every manifest tool ==="
+# Offline. Fixture curl only: no network and no compile.
+# Uses toolchain/manifest.json order. A non-zero build.sh exit fails the case.
+# ffmpeg and every later tool must print "PIN <url> <64-hex>".
+wi17316_why=""
+wi17316_root="$(mktemp -d)"
+wi17316_stub="$(mktemp -d)"
+if [[ -z "$wi17316_root" || -z "$wi17316_stub" ]]; then
+  wi17316_why+=" stub-setup"
+else
+  cat > "$wi17316_stub/curl" <<'EOF'
+#!/bin/sh
+dest=""
+prev=""
+url=""
+for a in "$@"; do
+  if [ "$prev" = "-o" ]; then
+    dest="$a"
+  fi
+  case "$a" in
+    http://*|https://*) url="$a" ;;
+  esac
+  prev="$a"
+done
+if [ -z "$dest" ]; then
+  echo "stub curl: no -o" >&2
+  exit 1
+fi
+case "$url" in
+  *pypi.org/pypi/mlx-whisper/*)
+    printf '%s\n' '{"urls":[{"packagetype":"sdist","url":"https://files.pythonhosted.org/packages/source/m/mlx-whisper/mlx_whisper-0.4.2.tar.gz"}]}' > "$dest"
+    ;;
+  *)
+    printf 'dry\n' > "$dest"
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$wi17316_stub/curl"
+  wi17316_rc=0
+  wi17316_out="$(
+    PATH="$wi17316_stub:$PATH" \
+    CFW_TOOLCHAIN_ALLOW_UNPINNED=1 \
+    bash "$REPO_DIR/toolchain/scripts/build.sh" arm64 "$wi17316_root/out" \
+    2>"$wi17316_root/err"
+  )" || wi17316_rc=$?
+  if [[ "$wi17316_rc" != "0" ]]; then
+    wi17316_why+=" capture-rc-$wi17316_rc $(printf '%s' "$wi17316_out" | tr '\n' ' ') $(tr '\n' ' ' < "$wi17316_root/err")"
+  fi
+  printf '%s\n' "$wi17316_out" > "$wi17316_root/out.txt"
+  wi17316_chk="$(python3 - "$REPO_DIR/toolchain/manifest.json" "$wi17316_root/out.txt" <<'PY'
+import json, re, sys
+manifest = json.load(open(sys.argv[1]))
+text = open(sys.argv[2]).read().splitlines()
+names = [tool["name"] for tool in manifest["tools"]]
+needles = {
+    "node": "https://nodejs.org/dist/v",
+    "python": "python-build-standalone/releases/download/",
+    "libpng": "github.com/pnggroup/libpng/archive/refs/tags/v",
+    "libjpeg": "libjpeg-turbo-",
+    "freetype": "https://download.savannah.gnu.org/releases/freetype/freetype-",
+    "harfbuzz": "harfbuzz/releases/download/",
+    "fribidi": "fribidi/releases/download/v",
+    "fontconfig": "fontconfig/release/fontconfig-",
+    "libass": "libass/releases/download/",
+    "libx264": "31e19f92",
+    "imagemagick": "ImageMagick/archive/refs/tags/",
+    "ffmpeg": "https://ffmpeg.org/releases/ffmpeg-",
+    "whisper": "mlx_whisper-",
+    "openai-whisper": "https://github.com/openai/whisper/archive/refs/tags/v",
+    "chromium": "https://registry.npmjs.org/playwright/-/playwright-",
+    "codex": "https://registry.npmjs.org/@openai/codex/-/codex-",
+    "gemini": "https://registry.npmjs.org/@google/gemini-cli/-/gemini-cli-",
+}
+pat = re.compile(r"^PIN (\S+) ([0-9a-f]{64})$")
+pins = []
+for line in text:
+    if not line.startswith("PIN "):
+        continue
+    match = pat.match(line)
+    if not match:
+        print("bad-pin-line")
+        raise SystemExit(0)
+    pins.append(match.group(1))
+if len(pins) != len(names):
+    print("pin-count %d want %d" % (len(pins), len(names)))
+    raise SystemExit(0)
+found = []
+for url in pins:
+    hit = None
+    for name in names:
+        if name in found:
+            continue
+        if needles[name] in url:
+            hit = name
+            break
+    if hit is None:
+        print("unmatched-pin")
+        raise SystemExit(0)
+    found.append(hit)
+if found != names:
+    print("order got %s" % ",".join(found))
+    raise SystemExit(0)
+start = names.index("ffmpeg")
+later = names[start:]
+for name in later:
+    if name not in found:
+        print("missing-later %s" % name)
+        raise SystemExit(0)
+if "31e19f92f00c7003fa115047ce50978bc98c3a0d" not in pins[names.index("libx264")]:
+    print("libx264-commit")
+    raise SystemExit(0)
+print("ok")
+PY
+)" || wi17316_chk="${wi17316_chk:-pin-check-failed}"
+  if [[ "$wi17316_chk" != "ok" ]]; then
+    wi17316_why+=" ${wi17316_chk:-pin-check-empty}"
+  fi
+  if grep -E -q 'PIN [^ ]+ dry$' "$wi17316_root/out.txt"; then
+    wi17316_why+=" hashless-pin"
+  fi
+fi
+if [[ -z "$wi17316_why" ]]; then
+  pass "WI17.3.16: capture prints a hash pin for ffmpeg and every later tool"
+else
+  fail "WI17.3.16 capture pins" "$wi17316_why"
+fi
+rm -rf "$wi17316_root" "$wi17316_stub"
 
 echo "=== Case M3-01c-1: status.json has exactly the contract keys; engines labelled; activeEngine null for none ==="
 mc1="$(mktemp -d)"

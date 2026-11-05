@@ -189,12 +189,10 @@ fn run_bundle_preflight(root: &Path) -> Result<(), String> {
     if !script.is_file() {
         return Err("The tools bundle has no preflight.".into());
     }
-    let bin = root.join("bin");
-    let mut path = bin.into_os_string();
-    if let Some(rest) = std::env::var_os("PATH").filter(|p| !p.is_empty()) {
-        path.push(":");
-        path.push(rest);
-    }
+    // Bundle mode must not see a host node, python3 or npx. dirname and the
+    // shell live in /usr/bin and /bin. Do not append the caller's PATH.
+    let mut path = root.join("bin").into_os_string();
+    path.push(":/usr/bin:/bin");
     let out = Command::new(&script)
         .current_dir(root)
         .arg("--bundle")
@@ -507,6 +505,45 @@ mod tests {
         assert!(!mark.exists());
         assert_eq!(current_version(&tools).as_deref(), Some("1.0.0"));
         assert!(!tools.join("2.0.0").exists());
+        assert!(no_tmp(&tools));
+    }
+
+    /// A tool that exists only on the host PATH must not make bundle preflight pass.
+    #[test]
+    fn bundle_preflight_ignores_host_path_tool() {
+        let _g = crate::control::tests::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let d = tempfile::tempdir().unwrap();
+        let host = d.path().join("host-bin");
+        fs::create_dir(&host).unwrap();
+        let tool = host.join("cfw-host-only-tool");
+        fs::write(&tool, "#!/bin/sh\nexit 0\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+        let old = std::env::var_os("PATH");
+        let mut wide = host.as_os_str().to_os_string();
+        wide.push(":");
+        if let Some(rest) = &old {
+            wide.push(rest);
+        }
+        std::env::set_var("PATH", &wide);
+        let mark = d.path().join("preflight-path");
+        let body = format!(
+            "#!/bin/sh\nprintf '%s' \"$PATH\" > '{}'\nif command -v cfw-host-only-tool >/dev/null 2>&1; then exit 0; fi\nexit 1\n",
+            mark.display()
+        );
+        let tools = d.path().join("tools");
+        let (m, _) = bundle_with(d.path(), "1.4.0", false, &body, None);
+        let result = install_into(&tools, &m, true, None, &|_, _| {});
+        match old {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+        let e = result.expect_err("a host-only tool must not satisfy bundle preflight");
+        assert!(e.contains("failed their preflight"), "{e}");
+        let seen = fs::read_to_string(&mark).expect("preflight did not record PATH");
+        assert!(!seen.contains("host-bin"), "preflight PATH still sees the host dir: {seen}");
+        assert!(seen.contains(":/usr/bin:/bin"), "{seen}");
+        assert!(current_version(&tools).is_none());
         assert!(no_tmp(&tools));
     }
 }

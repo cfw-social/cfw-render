@@ -87,6 +87,8 @@ jobs:
           if-no-files-found: error
           path: dist/PIN-${{ matrix.arch }}.txt
       - name: Preflight the built bundle
+        # Capture prints PIN lines and does not build a bundle.
+        if: ${{ github.event.inputs.capture_pins != 'true' }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -95,8 +97,10 @@ jobs:
           bundle="${bundles[0]%/}"
           test -f "$bundle/bin/cfw-render-preflight.sh"
           test -f "$bundle/bin/cfw-render-lib.sh"
-          PATH="$bundle/bin:$PATH" "$bundle/bin/cfw-render-preflight.sh" --bundle
+          # Host node, python3 and npx must not satisfy a tool this bundle did not ship.
+          PATH="$bundle/bin:/usr/bin:/bin" "$bundle/bin/cfw-render-preflight.sh" --bundle
       - uses: actions/upload-artifact@v4
+        if: ${{ github.event.inputs.capture_pins != 'true' }}
         with:
           name: cfw-toolchain-${{ matrix.arch }}
           if-no-files-found: error
@@ -105,8 +109,10 @@ jobs:
             dist/*.tar.zst.sha256
             dist/*.SHA256SUMS
 
+  # Tag push only. A workflow_dispatch capture run, even on a toolchain-v tag,
+  # must not publish an unpinned bundle.
   release:
-    if: ${{ startsWith(github.ref, 'refs/tags/toolchain-v') }}
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/toolchain-v') }}
     needs: build
     runs-on: ubuntu-latest
     environment: toolchain-release   # owner approval gate

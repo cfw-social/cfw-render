@@ -10,6 +10,9 @@
 # Env: CFW_TOOLCHAIN_MANIFEST (override manifest path, tests), CFW_TOOLCHAIN_WORK
 # (scratch dir, default <out-dir>/.work), CFW_TOOLCHAIN_JOBS (make -j),
 # CFW_TOOLCHAIN_PLAN=1 (print the selected steps and exit; no download, no compile).
+# CFW_TOOLCHAIN_ALLOW_UNPINNED=1 is capture mode: every manifest tool prints
+# "PIN <url> <sha256>" and the script exits before configure or compile.
+# libx264 with no commit is fetched at the README commit 31e19f92.
 # Needs: Xcode CLT, curl, tar with --zstd (brew zstd), pkg-config, nasm,
 # cmake (libjpeg-turbo), meson and ninja (harfbuzz, fribidi). The macOS SDK
 # supplies libexpat for fontconfig. See toolchain/README.md known limits.
@@ -268,8 +271,9 @@ build_libx264() {
   origin="$(tool_field libx264 source)"
   origin="${origin%/}"
   commit="$(tool_field libx264 commit)"
-  # 0.164.3108 is an x264 point version, not a git tag, and the manifest has
-  # no commit field. Do not guess a snapshot. See README known limits.
+  # 0.164.3108 is an x264 point version, not a git tag. A real build does not
+  # guess a snapshot. Capture mode fetches LIBX264_KNOWN_COMMIT before this
+  # function runs. See toolchain/README.md known limits.
   if [[ -z "$commit" ]]; then
     tc_die "libx264: manifest version ${ver} has no commit field, and ${ver} is not a git tag on ${origin}. Add tools[].commit (see toolchain/README.md known limits). Refusing to guess a snapshot."
   fi
@@ -306,6 +310,12 @@ build_ffmpeg() {
   ver="$(tool_field ffmpeg version)"
   tgz="ffmpeg-${ver}.tar.xz"
   tc_fetch "https://ffmpeg.org/releases/${tgz}" "$(tool_field ffmpeg sha256)" "$dl/$tgz"
+  # Capture mode already hashed this archive and must not configure. configure
+  # needs libx264 in the prefix, and a missing prefix stops the run before
+  # whisper and openai-whisper print PIN lines.
+  if [[ "${CFW_TOOLCHAIN_ALLOW_UNPINNED:-0}" == "1" ]]; then
+    return 0
+  fi
   rm -rf "$src/ffmpeg"; untar "$dl/$tgz" "$src/ffmpeg"
   # WI17.3.2: pass manifest buildFlags through. They must include
   # --enable-gpl --enable-libx264 --enable-libass --enable-libfreetype.
@@ -476,6 +486,146 @@ WRAP
   chmod +x "$bundle/bin/gemini"
 }
 
+# x264 0.164.3108 is a point version, not a git tag. toolchain/README.md
+# records the distributors' commit. Capture fetches that archive when
+# tools[].commit is empty. build_libx264 still refuses a real build that
+# has no commit, so a pinned build cannot guess a snapshot.
+LIBX264_KNOWN_COMMIT="31e19f92f00c7003fa115047ce50978bc98c3a0d"
+
+tools_in_manifest_order() {
+  python3 -c 'import json,sys
+m=json.load(open(sys.argv[1]))
+print(" ".join(t["name"] for t in m["tools"]))' "$MANIFEST"
+}
+
+# PyPI sdist URL for mlx-whisper. curl (not urllib) so a fixture can answer
+# with no network. The JSON body is not a pin; tc_fetch pins the sdist.
+whisper_sdist_url() {
+  local ver="$1" json url
+  json="$dl/whisper-pypi.json"
+  curl -fsSL --retry 3 -o "$json" "https://pypi.org/pypi/mlx-whisper/${ver}/json"
+  url="$(python3 -c 'import json,sys
+data=json.load(open(sys.argv[1]))
+sdists=[item["url"] for item in data.get("urls") or [] if item.get("packagetype")=="sdist"]
+if not sdists:
+    sys.exit("no sdist on PyPI for mlx-whisper")
+sys.stdout.write(sdists[0])' "$json")"
+  [[ -n "$url" ]] || return 1
+  printf '%s\n' "$url"
+}
+
+# Archive URL for one manifest tool. Same URL the real recipe downloads.
+# chromium, codex and gemini have no tc_fetch archive in the build; capture
+# pins the npm tarball those steps install. One URL, nothing else, on stdout.
+capture_pin_url() {
+  local t="$1" ver origin commit tag nodearch pkg pw pin_file
+  case "$t" in
+    node)
+      ver="$(tool_field node version)"
+      [[ -n "$ver" ]] || return 1
+      nodearch=x64; [[ "$arch" == arm64 ]] && nodearch=arm64
+      printf '%s\n' "https://nodejs.org/dist/v${ver}/node-v${ver}-darwin-${nodearch}.tar.gz"
+      ;;
+    python)
+      ver="$(tool_field python version)"
+      tag="$(tool_field python pbsTag)"
+      [[ -n "$ver" && -n "$tag" ]] || return 1
+      printf '%s\n' "https://github.com/astral-sh/python-build-standalone/releases/download/${tag}/cpython-${ver}+${tag}-${triple}-install_only.tar.gz"
+      ;;
+    libpng)
+      ver="$(tool_field libpng version)"
+      origin="$(tool_field libpng source)"; origin="${origin%/}"
+      [[ -n "$ver" && -n "$origin" ]] || return 1
+      printf '%s\n' "${origin}/archive/refs/tags/v${ver}.tar.gz"
+      ;;
+    libjpeg)
+      ver="$(tool_field libjpeg version)"
+      origin="$(tool_field libjpeg source)"; origin="${origin%/}"
+      [[ -n "$ver" && -n "$origin" ]] || return 1
+      printf '%s\n' "${origin}/releases/download/${ver}/libjpeg-turbo-${ver}.tar.gz"
+      ;;
+    freetype)
+      ver="$(tool_field freetype version)"
+      [[ -n "$ver" ]] || return 1
+      printf '%s\n' "https://download.savannah.gnu.org/releases/freetype/freetype-${ver}.tar.xz"
+      ;;
+    harfbuzz)
+      ver="$(tool_field harfbuzz version)"
+      origin="$(tool_field harfbuzz source)"; origin="${origin%/}"
+      [[ -n "$ver" && -n "$origin" ]] || return 1
+      printf '%s\n' "${origin}/releases/download/${ver}/harfbuzz-${ver}.tar.xz"
+      ;;
+    fribidi)
+      ver="$(tool_field fribidi version)"
+      origin="$(tool_field fribidi source)"; origin="${origin%/}"
+      [[ -n "$ver" && -n "$origin" ]] || return 1
+      printf '%s\n' "${origin}/releases/download/v${ver}/fribidi-${ver}.tar.xz"
+      ;;
+    fontconfig)
+      ver="$(tool_field fontconfig version)"
+      [[ -n "$ver" ]] || return 1
+      printf '%s\n' "https://www.freedesktop.org/software/fontconfig/release/fontconfig-${ver}.tar.xz"
+      ;;
+    libass)
+      ver="$(tool_field libass version)"
+      origin="$(tool_field libass source)"; origin="${origin%/}"
+      [[ -n "$ver" && -n "$origin" ]] || return 1
+      printf '%s\n' "${origin}/releases/download/${ver}/libass-${ver}.tar.xz"
+      ;;
+    libx264)
+      origin="$(tool_field libx264 source)"; origin="${origin%/}"
+      [[ -n "$origin" ]] || return 1
+      commit="$(tool_field libx264 commit)"
+      if [[ -z "$commit" ]]; then
+        commit="$LIBX264_KNOWN_COMMIT"
+      fi
+      printf '%s\n' "${origin}/-/archive/${commit}/x264-${commit}.tar.gz"
+      ;;
+    imagemagick)
+      ver="$(tool_field imagemagick version)"
+      [[ -n "$ver" ]] || return 1
+      printf '%s\n' "https://github.com/ImageMagick/ImageMagick/archive/refs/tags/${ver}.tar.gz"
+      ;;
+    ffmpeg)
+      ver="$(tool_field ffmpeg version)"
+      [[ -n "$ver" ]] || return 1
+      printf '%s\n' "https://ffmpeg.org/releases/ffmpeg-${ver}.tar.xz"
+      ;;
+    whisper)
+      ver="$(tool_field whisper version)"
+      [[ -n "$ver" ]] || return 1
+      whisper_sdist_url "$ver"
+      ;;
+    openai-whisper)
+      ver="$(tool_field openai-whisper version)"
+      origin="$(tool_field openai-whisper source)"; origin="${origin%/}"
+      [[ -n "$ver" && -n "$origin" ]] || return 1
+      printf '%s\n' "${origin}/archive/refs/tags/v${ver}.tar.gz"
+      ;;
+    chromium)
+      pin_file="$SELF_DIR/../../config/playwright-pin.json"
+      [[ -f "$pin_file" ]] || return 1
+      pw="$(python3 -c 'import json,sys; sys.stdout.write(json.load(open(sys.argv[1]))["playwright"])' "$pin_file")"
+      [[ -n "$pw" ]] || return 1
+      printf '%s\n' "https://registry.npmjs.org/playwright/-/playwright-${pw}.tgz"
+      ;;
+    codex)
+      ver="$(tool_field codex version)"
+      [[ -n "$ver" ]] || return 1
+      printf '%s\n' "https://registry.npmjs.org/@openai/codex/-/codex-${ver}.tgz"
+      ;;
+    gemini)
+      ver="$(tool_field gemini version)"
+      pkg="$(tool_field gemini npmPackage)"
+      [[ -n "$ver" && -n "$pkg" ]] || return 1
+      printf '%s\n' "https://registry.npmjs.org/${pkg}/-/${pkg##*/}-${ver}.tgz"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 # One case list for the plan and the real build. An unknown tool dies here,
 # before any download, when CFW_TOOLCHAIN_PLAN=1.
 recipe_for() {
@@ -512,6 +662,28 @@ if [[ "${CFW_TOOLCHAIN_PLAN:-0}" == "1" ]]; then
     echo "step $t recipe=$fn provides=$(tool_provides "$t")"
   done
   echo "plan-ok arch=$arch"
+  exit 0
+fi
+
+# Capture mode: one run, every manifest tool, in manifest order (both arches'
+# speech tools included). tc_fetch prints "PIN <url> <sha256>". No configure
+# and no compile, so ffmpeg does not require libx264 in the prefix and later
+# tools still print. A pinned build (this variable unset) is unchanged.
+if [[ "${CFW_TOOLCHAIN_ALLOW_UNPINNED:-0}" == "1" ]]; then
+  work="${CFW_TOOLCHAIN_WORK:-$out/.work}"
+  dl="$work/dl"
+  mkdir -p "$dl"
+  capture_names="$(tools_in_manifest_order)"
+  [[ -n "$capture_names" ]] || tc_die "no manifest tools to capture"
+  for t in $capture_names; do
+    if ! url="$(capture_pin_url "$t")"; then
+      tc_die "no pin url for tool '$t'"
+    fi
+    [[ -n "$url" ]] || tc_die "no pin url for tool '$t'"
+    base="${url##*/}"
+    tc_fetch "$url" "$(tool_field "$t" sha256)" "$dl/${t}--${base}"
+  done
+  echo "capture-ok arch=$arch"
   exit 0
 fi
 
