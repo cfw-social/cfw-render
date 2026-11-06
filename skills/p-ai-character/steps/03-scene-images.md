@@ -26,8 +26,8 @@ divergence before moving to the next; a diverged scene is regenerated, never car
 mkdir -p work saves
 RECIPE=$(python3 -c "import json;print(json.load(open('brief.json'))['recipe'])")
 SKILL_DIR="$CFW_RENDER_SKILLS_DIR/$RECIPE"
+GEN="$SKILL_DIR/.hub/c-ai-media/scripts/generate.py"
 [ -n "${KIE_AI_API_KEY:-}" ] || { echo "kie.ai provider key is not set for this brand"; exit 1; }
-REF_B64=$(python3 -c "import base64;print('data:image/png;base64,'+base64.b64encode(open('prior/char_ref.png','rb').read()).decode())")
 N=$(python3 -c "import json;print(json.load(open('prior/story_arc.json'))['num_scenes'])")
 ```
 
@@ -36,15 +36,34 @@ N=$(python3 -c "import json;print(json.load(open('prior/story_arc.json'))['num_s
 Prompt = `"<brand imageStyle base, if any>. <lock_prompt, verbatim>. <scene.visual>.
 <scene.camera>. Mood: <scene.emotion>. <scene.motion>. Same character as the reference image,
 identical face, outfit and <attribute 5>. No text."` — `plush` adds the toy-photography
-phrase. Body: `{"model": "gpt-image/1.5-image-to-image", "input": {"prompt": "...",
-"input_urls": ["<REF_B64>"], "aspect_ratio": "9:16"}}`. Poll per the protocol in
-`$SKILL_DIR/.hub/c-ai-media/SKILL.md`; record `task_id` in `work/tasks.json`.
+phrase. Keep it under 4000 characters.
+
+Generate with the vendored `generate.py` (one call = one paid image, about 10 Kie credits at
+`2K`). It uploads `prior/char_ref.png` to Kie's free File Upload API and sends the hosted URL
+in `input_urls` of `gpt-image-2-image-to-image` with `aspect_ratio: "9:16"` and
+`resolution: "2K"`. Never put the reference in the request as a base64 `data:` URI: Kie's
+image-to-image models take a hosted file URL, not file content (the data-URI request failed
+with createTask code 500 in order TSW3). Do not hand-write the API calls; the script holds
+the spend rules.
 
 ```bash
-curl -sL --max-time 60 "$URL" -o "work/raw-$i"
-ffmpeg -y -v error -i "work/raw-$i" -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920" -frames:v 1 "work/scene-$i.png"
+python3 "$GEN" --provider kie --model gpt-image-2-image-to-image --aspect 9:16 --resolution 2K \
+  --ref prior/char_ref.png --prompt "$PROMPT" --out "work/raw-$i.png" --timeout 240 --poll 5 \
+  > "work/gen-$i.log" 2>&1
+RC=$?; tail -1 "work/gen-$i.log"
+[ "$RC" -eq 0 ] || exit 1      # IMAGE_FAILED: the reason is on the last line; never repeat the call
+TASK=$(sed -n 's/^KIE_TASK: //p' "work/gen-$i.log" | tail -1)   # record it in work/tasks.json
+ffmpeg -y -v error -i "work/raw-$i.png" -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920" -frames:v 1 "work/scene-$i.png"
 ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "work/scene-$i.png"
 ```
+
+Fail-fast rules (enforced by the script; do not work around them): the create call is made once
+and never retried; status is polled every 5 s for at most 240 s (48 polls), then the step fails
+naming the task id. Kie code `402` ("not enough Kie credits") stops the step at once — no
+further scene is attempted. A refused reference upload stops it before anything is spent. If
+Kie's recorded task input lost the reference (`input_urls`), the image is refused rather than
+used, because it would not be anchored on the character. A divergence regeneration (below) is
+a new, deliberate call, not a retry.
 
 ### 2. Divergence check (after EVERY scene, before the next)
 
@@ -77,8 +96,9 @@ PY
 ## If you cannot proceed
 
 This step has no `canAsk`. Never write `needs_input.json`. A missing provider key, exhausted
-credits, or a scene that still diverges after 3 attempts is a failure: exit non-zero with one
-plain line naming the scene and the drifting attribute.
+credits, a refused upload or generation (`IMAGE_FAILED`), or a scene that still diverges after
+3 attempts is a failure: exit non-zero with one plain line naming the scene and the drifting
+attribute or the Kie reason.
 
 ## Checks the harness runs
 

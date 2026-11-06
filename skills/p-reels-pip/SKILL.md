@@ -21,7 +21,7 @@ metadata:
 > ## ⚡ Frame integrity + integrated CTA (MANDATORY — 2026-06-16)
 > - **Frame 0 is NEVER black.** The first frame must be a bright money-shot — the cover-freeze of the strongest illustrative beat (Step 10 cover rule). Verify `ffmpeg ... signalstats` → `YAVG > 30`. No black / hook-blank / fade-in opener.
 > - **The LAST frame is NEVER black.** The reel must end on content, not a fade-to-black or trailing blank. Verify the final frame `YAVG > 30`.
-> - **CTA is integrated by DEFAULT, not optional.** Every reel/VSL ends on a branded **CTA beat baked into the timeline** (offer line + handle/URL), as the final illustrative HyperFrames card. Do not ship a reel whose last beat is filler or black. (In p-reels-split this is the Step 9 CTA takeover; other recipes must add an equivalent closing CTA card.)
+> - **CTA is integrated by DEFAULT, not optional.** Every reel/VSL ends on a branded **CTA beat baked into the timeline** (offer line + handle/URL), as the final illustrative HyperFrames card. Do not ship a reel whose last beat is filler or black. (In p-reels-pip this is the planned CTA beat when the beat list ends on one, otherwise the Step 8 CTA takeover — never both, and never invented copy; other recipes must add an equivalent closing CTA card.)
 
 > ## ⚡ HyperFrames = illustrative, NOT just titles (MANDATORY — 2026-06-16)
 > Every HyperFrames graphics scene MUST pair its title with an **illustrative animation that depicts the point** — never a bare kinetic title card. Examples: a 45-post feed grid staggering in (`back.out`), a count-up stat with day-dots, an animated waveform for "voice", platform chips popping in. Match the premium reference in `cfw-marketing/creatives/productions/restaurants-vsl/hyperframes` (`DIAG-calendar` feed-grid, `HF-*` motion) **and** `cfw-marketing/creatives/productions/fnb-split-screen-short/gen-rich-cards.py`: grid + glow + vignette background, GSAP eased + staggered elements, brand palette, depth (shadows/shine). **Make it as rich and premium as possible — a title-only card is a defect.**
@@ -740,37 +740,16 @@ PIP_SHADOW="${PIP_SHADOW:-22}"     # soft-shadow blur pad in px (set 0 to disabl
 PIP_PAD=$(( PIP_RING + PIP_SHADOW ))
 
 # Generate rounded-corner mask (card-sized) AND the ring+shadow frame (card+2*PAD)
-# at the SCALED dimensions. If PIL is unavailable both are skipped → sharp-corner
-# fallback (no ring) so the recipe never hard-fails on the cosmetic layer.
-MASK_PATH=""; FRAME_PATH=""
-if python3 - "$W" "$CARD_W" "$CARD_H" "$PIP_RING" "$PIP_SHADOW" "$PIP_RING_COLOR" 2>/dev/null <<'PIPPY'
-import sys
-from PIL import Image, ImageDraw, ImageFilter
-W, CW, CH = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-RING, SH, HEX = int(sys.argv[4]), int(sys.argv[5]), sys.argv[6]
-R = 40
-# 1) rounded mask at card size (alpha plane for the talking head)
-m = Image.new('RGBA', (CW, CH), (0, 0, 0, 0))
-ImageDraw.Draw(m).rounded_rectangle([0, 0, CW-1, CH-1], radius=R, fill=(255, 255, 255, 255))
-m.save(f"{W}/pip-mask-{CW}x{CH}.png")
-# 2) ring + soft-shadow frame (transparent center; avatar overlays on top → ring shows)
-if RING > 0:
-    acc = tuple(int(HEX[i:i+2], 16) for i in (0, 2, 4)) if len(HEX) >= 6 else (249, 115, 22)
-    P = RING + SH
-    FW, FH = CW + 2*P, CH + 2*P
-    fr = Image.new('RGBA', (FW, FH), (0, 0, 0, 0))
-    rr = [P - RING, P - RING, FW - (P - RING) - 1, FH - (P - RING) - 1]   # ring outer rect
-    if SH > 0:
-        sh = Image.new('RGBA', (FW, FH), (0, 0, 0, 0))
-        ImageDraw.Draw(sh).rounded_rectangle([rr[0], rr[1]+6, rr[2], rr[3]+6], radius=R+RING, fill=(0, 0, 0, 150))
-        fr = Image.alpha_composite(fr, sh.filter(ImageFilter.GaussianBlur(max(1, int(SH*0.6)))))
-    ImageDraw.Draw(fr).rounded_rectangle(rr, radius=R+RING, fill=acc + (255,))
-    fr.save(f"{W}/pip-frame-{CW}x{CH}.png")
-PIPPY
-then
-  MASK_PATH="$W/pip-mask-${CARD_W}x${CARD_H}.png"
-  [ "${PIP_RING:-0}" -gt 0 ] && [ -f "$W/pip-frame-${CARD_W}x${CARD_H}.png" ] && FRAME_PATH="$W/pip-frame-${CARD_W}x${CARD_H}.png"
-fi
+# at the SCALED dimensions with scripts/pip_card.py — Python standard library only
+# (zlib + struct PNG writer), so a missing Pillow can never ship a square, ringless
+# card (WI31.10). There is NO sharp-corner fallback: a card that cannot be built
+# stops the run with a line naming what failed. PIP_RING=0 → rounded mask, no frame.
+MASK_PATH="$W/pip-mask-${CARD_W}x${CARD_H}.png"; FRAME_PATH=""
+[ "${PIP_RING:-0}" -gt 0 ] && FRAME_PATH="$W/pip-frame-${CARD_W}x${CARD_H}.png"
+python3 "$SKILL_DIR/scripts/pip_card.py" --card "${CARD_W}x${CARD_H}" --radius 40 \
+  --ring "$PIP_RING" --shadow "$PIP_SHADOW" --accent "$PIP_RING_COLOR" \
+  --mask "$MASK_PATH" --frame "$FRAME_PATH" \
+  || { echo "[p-reels-pip] FATAL: PIP card mask/ring could not be built (scripts/pip_card.py) — not shipping a square card"; exit 1; }
 
 # Build filter_complex — one line, no comments, no embedded newlines
 #
@@ -779,7 +758,7 @@ fi
 # The talking-head clip is yuv420p (no alpha channel). Passing it directly to
 # alphamerge fails with "Invalid argument" / "Filtering has failed".
 # Fix: convert the scaled TH to yuva444p BEFORE alphamerge. The mask PNG
-# (RGBA from PIL) feeds as the alpha plane source; alphamerge copies that plane
+# (RGBA from scripts/pip_card.py) feeds as the alpha plane source; alphamerge copies that plane
 # onto the converted TH, yielding an YUVA stream that overlay can handle.
 # Filter chain (mask path):
 #   [TH] scale→FILL + top-biased crop → format=yuva444p → [thfit]
@@ -788,9 +767,9 @@ fi
 #   [bg][avpip]    overlay → [v]
 #
 # Note: alphamerge preserves luma/chroma from [thfit] and replaces the alpha
-# channel with the luma of [MASK]. The PIL mask has 255 inside the rounded rect
+# channel with the luma of [MASK]. The mask has 255 inside the rounded rect
 # and 0 outside, so the talking-head appears only inside the rounded corners.
-if [ -n "$MASK_PATH" ] && [ -n "$FRAME_PATH" ]; then
+if [ -n "$FRAME_PATH" ]; then
   # PREMIUM (default): rounded card + brand-accent ring + soft shadow baked in.
   # Layer order: bg → ring/shadow frame (input 3) → masked talking head (rounded).
   # The frame PNG is card+2*PIP_PAD; it sits PIP_PAD lower than the card so the
@@ -806,22 +785,14 @@ if [ -n "$MASK_PATH" ] && [ -n "$FRAME_PATH" ]; then
     -c:v libx264 -preset medium -crf 19 -pix_fmt yuv420p -r 30 \
     -c:a aac -b:a 192k -ar 48000 -ac 2 -movflags +faststart \
     "$W/composed.mp4"
-elif [ -n "$MASK_PATH" ]; then
-  # Rounded card, no ring (PIP_RING=0 or frame gen skipped).
+else
+  # Rounded card, no ring (PIP_RING=0).
   # BUG FIX (bake-off #2 2026-06-12 — alphamerge AVERROR(EINVAL) dim mismatch):
   # alphamerge requires both inputs (scaled TH and the mask) to have IDENTICAL
   # dimensions. WI2.71: scale-to-FILL then crop=${CARD_W}:${CARD_H}:(iw-ow)/2:0
   # gives exactly the card dims with no pad bars; y=0 keeps the head.
   FC="[1:v]scale=${CARD_W}:${CARD_H}:force_original_aspect_ratio=increase,crop=${CARD_W}:${CARD_H}:(iw-ow)/2:0,setsar=1,format=yuva444p[thfit];[thfit][2:v]alphamerge[avpip];[0:v]format=yuv420p[bg];[bg][avpip]overlay=${XPOS}:(H-h-${MARGIN}):format=auto:shortest=1[v];[1:a]anull[a]"
   $FF -y -i "$W/bg-all.mp4" -i "$W/bed.mp4" -i "$MASK_PATH" \
-    -filter_complex "$FC" \
-    -map "[v]" -map "[a]" \
-    -c:v libx264 -preset medium -crf 19 -pix_fmt yuv420p -r 30 \
-    -c:a aac -b:a 192k -ar 48000 -ac 2 -movflags +faststart \
-    "$W/composed.mp4"
-else
-  FC="[1:v]scale=${CARD_W}:${CARD_H}:force_original_aspect_ratio=increase,crop=${CARD_W}:${CARD_H}:(iw-ow)/2:0,setsar=1[thfit];[0:v]format=yuv420p[bg];[bg][thfit]overlay=${XPOS}:(H-h-${MARGIN}):format=auto:shortest=1[v];[1:a]anull[a]"
-  $FF -y -i "$W/bg-all.mp4" -i "$W/bed.mp4" \
     -filter_complex "$FC" \
     -map "[v]" -map "[a]" \
     -c:v libx264 -preset medium -crf 19 -pix_fmt yuv420p -r 30 \
@@ -842,13 +813,23 @@ Render a 2.5–3s brand CTA card (HyperFrames, silent), overlay on the FINAL sec
 using a time-gated `enable=` window. The reel ENDS when the speaker ends — nothing appended.
 Total reel duration = `BED_DUR`.
 
+The reel ends on ONE call to action (WI31.10). `scripts/cta_takeover.py` decides: no takeover
+when `CTA_CARD` is not `on`; **no takeover and no scrim when the beat list already ends on a CTA
+beat** (last beat `kind: "graphics"`, `scene.type: "cta"` — that beat IS the end card, at full
+brightness); copy is `CTA_TEXT`, else the brand's `cta`; **no copy → no card** (never a generic
+"follow for more" line).
+
 ```bash
 CTA_DURATION="${CTA_DURATION:-3.0}"
-CTA_TEXT="${CTA_TEXT:-FOLLOW FOR MORE}"
 # Per-brand (CFW-354 / M1-00): resolve CTA_HANDLE from the ACTIVE brand (brand-overrides `cta.handle`
 # or the brand's primary account). Empty = the card ships with NO handle line — never a placeholder,
-# never another brand's handle.
-CTA_HANDLE="${CTA_HANDLE:-}"
+# never another brand's handle. CTA_TEXT is the brand's CTA copy; empty = the brand's `cta`, else no card.
+CTA_VARS=$(python3 "$SKILL_DIR/scripts/cta_takeover.py" --beats "$W/beat_list.json" --brand "$W/brand.json" \
+  --cta "" --cta-card "${CTA_CARD:-on}" --text "${CTA_TEXT:-}" --handle "${CTA_HANDLE:-}" \
+  --decision "$W/cta-decision.json") || exit 1
+eval "$CTA_VARS"
+echo "[p-reels-pip] $CTA_REASON"
+if [ "$CTA_TAKEOVER" = "on" ]; then
 CTA_HANDLE_HTML=""
 if [[ -n "$CTA_HANDLE" ]]; then
   CTA_HANDLE_HTML="<p id=\"cta-handle\">${CTA_HANDLE}</p>"
@@ -945,6 +926,10 @@ dur, final = float('$COMPOSED_DUR'), float('$FINAL_DUR')
 assert abs(dur - final) < 0.1, f'CTA extended the reel: {dur:.2f}s → {final:.2f}s'
 print(f'CTA OK: {final:.2f}s (was {dur:.2f}s)')
 "
+else
+  # No takeover (CTA_REASON says why): the composite goes on unchanged — no scrim, no second CTA.
+  cp "$W/composed.mp4" "$W/with-cta.mp4"
+fi
 
 # Optional outro append (if provided)
 if [ -n "${OUTRO_PATH:-}" ] && [ -f "$OUTRO_PATH" ]; then

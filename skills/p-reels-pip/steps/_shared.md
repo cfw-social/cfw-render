@@ -40,9 +40,9 @@ HyperFrames motion graphics, or b-roll scaled-to-COVER where the transcript matc
 a rounded, brand-ringed **PIP card** (364×504, bottom-centre, 110 px bottom margin, face whole —
 the card is filled with a top-biased crop, no bars), and a **caption band** that must never enter the PIP zone (`VARIANT=pip-safe`
 everywhere; graphics content stays above y≈1040). SFX sit UNDER the voice (`amix=normalize=0`).
-The deliverable carries a 0.4 s money-shot cover frame at position 0 and ends on a branded CTA
-end card that overlays the last seconds of the bed (nothing is appended unless an `outro` was
-supplied).
+The deliverable carries a 0.4 s money-shot cover frame at position 0 and ends on ONE branded CTA:
+the background's own CTA beat when the beat plan ends on one, otherwise an end card that overlays
+the last seconds of the bed (nothing is appended unless an `outro` was supplied).
 
 ## The step workdir (fixed layout)
 
@@ -82,8 +82,9 @@ ask). When the owner answers, the harness reruns the step from scratch.
   dark-premium default `bg #0F172A`, `accent #F97316`, `fg #F1F5F9`. Hexes are 6-digit. Never
   hard-code a brand's colours into a template. The PIP ring colour is the brand accent.
 - **End-card copy is per-brand**: hero line, kicker and handle come from `inputs/cta/cta.json`
-  (`text`, `brandName`, `handle`), never from a template default. A brand with no handle gets a
-  card with **no handle line** — never invent one.
+  (`text`, `brandName`, `handle`), else the brand's `cta` / `handle`, never from a template default.
+  No copy at all → no end card is drawn (never "Follow <brand> for more"). A brand with no handle
+  gets a card with **no handle line** — never invent one.
 - **Latin script only** in captions and cards: transliterate phonetically, never translate.
 - **Fonts:** Oswald / Inter / JetBrains Mono only.
 - **PIP-safe:** graphics content stays in the top ~55 % of the frame (above y≈1040); captions sit
@@ -98,7 +99,7 @@ ask). When the owner answers, the harness reruns the step from scratch.
 | `sfx` | `on` | Whoosh / impact / riser from the CC0 pack under `c-reel-premium`. |
 | `grade` | planner picks | `warm-amber` or `clean-bright`. |
 | `broll_coverage_pct` / `broll_clip_seconds` / `broll_min_seconds` / `broll_max_seconds` / `broll_order` / `broll_reuse` | `30` / `4` / `2` / `6` / `transcript-match` / `false` | `c-broll-sync` knobs (b-roll only when supplied; `0` coverage = 100 % graphics). |
-| `cta_card` / `cta_duration` | `on` / `3` | End-card takeover over the final seconds of the bed. |
+| `cta_card` / `cta_duration` | `on` / `3` | End-card takeover over the final seconds of the bed; skipped when the background already ends on its CTA beat or there is no CTA copy. |
 | `overlay_beats` | `[]` | Optional `c-overlay-fx` stickers (pip-safe); empty = none. |
 | `pip_ring` / `pip_shadow` | `8` / `22` | PIP ring thickness / shadow pad in px (`0` disables). |
 

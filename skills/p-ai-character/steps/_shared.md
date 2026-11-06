@@ -108,8 +108,13 @@ outfit or distinctive feature = regenerate immediately; a diverged image never m
 Every image is `1080×1920` portrait: request kie.ai with `aspect_ratio: "9:16"` and normalise
 with ffmpeg (`scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920`). The
 reference is text-to-image (`google/imagen4-fast` by default — the consistency-grade model);
-scenes are image-to-image (`gpt-image/1.5-image-to-image`) with the reference as a base64 data
-URI in `input_urls`. Protocol (create task → poll → download) is in
+scenes (and a reference made from the owner's own image) are image-to-image
+(`gpt-image-2-image-to-image`, `aspect_ratio: "9:16"`, `resolution: "2K"`). Kie's
+image-to-image models read `input_urls` as hosted file URLs, not file content: the reference
+is uploaded to Kie's File Upload API first and its `downloadUrl` is what goes in
+`input_urls`. A base64 `data:` URI there failed with createTask code 500 (order TSW3).
+Every Kie call goes through `$SKILL_DIR/.hub/c-ai-media/scripts/generate.py` (upload →
+create once → poll → download, with the 402 and poll-limit rules); its usage is in
 `$SKILL_DIR/.hub/c-ai-media/SKILL.md`.
 
 ## Tool notes

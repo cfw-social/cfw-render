@@ -47,11 +47,20 @@ For beat `i` with `kind`, `start`, `end` (`dur = end - start`):
   hook template has no `VARIANT`). Copy `$GSAP` in as `gsap.min.js`; then
   `( cd work/gfx_$i && npx hyperframes@0.7.5 lint && npx hyperframes@0.7.5 render --output ../bg_beats/bg_beat$i.mp4 --quality high --fps 30 )`.
 - **`graphics`, motion card** — write `work/gfx_$i/index.html` from the brand motion-card
-  template: `<div class="mc-root" data-composition-id="root" data-start="0" data-duration="$DUR"
+  template (`$SKILL_DIR/templates/motion-card.html`, `<template>` wrapper stripped):
+  `<div class="mc-root" data-composition-id="root" data-start="0" data-duration="$DUR"
   data-width="1080" data-height="1920">` with the headline / eyebrow / ghost text from the scene,
   brand palette from `work/brand.json`, `--pip-band: 680px` reserved at the bottom; copy `$GSAP` in
   as `gsap.min.js`; strip HTML comments; then
   `( cd work/gfx_$i && npx hyperframes@0.7.5 lint && npx hyperframes@0.7.5 render --output ../bg_beats/bg_beat$i.mp4 --quality high --fps 30 )`.
+
+**What a graphics beat shows** (step 06 checks exactly this as its visual item (d)): scene `type`
+`typing-ui` is the `c-typing-ui` typing scene and `hook` is its hook scene; every other type
+(`standard`, `stat`, `chips`, `flow`, `chart` and the rest) is the brand motion card — the
+headline restating what is said in that window (with its eyebrow when the scene has one) and the
+accent rule, on the brand background; the template's ghost mark, grid and glow are faint by design.
+These are text cards by design: this step draws no illustration, icon, chart or image. A card is
+never blank, and all of its content stays above the PIP band (pip-safe).
 
 ```bash
 for i in $(seq 0 $((N_BEATS-1))); do

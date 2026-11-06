@@ -1,8 +1,9 @@
 # Composite the PIP reel
 
 Put the speaker on the background as a rounded, brand-ringed bottom-centre PIP card, mux the sealed
-voice bed back in, add the CTA end card as a **tail takeover**, optionally append the `outro`, then
-burn pip-safe kinetic captions with `c-reel-premium` (grade + SFX under the voice, ONE pass).
+voice bed back in, add the CTA end card as a **tail takeover** (only when the background does not
+already end on its CTA beat), optionally append the `outro`, then burn pip-safe kinetic captions
+with `c-reel-premium` (grade + SFX under the voice, ONE pass).
 
 ## You receive
 
@@ -10,9 +11,10 @@ burn pip-safe kinetic captions with `c-reel-premium` (grade + SFX under the voic
   voice source). Never cut, re-time or loudnorm it.
 - `prior/background.mp4` — silent 1080×1920 background track at bed length.
 - `prior/transcripts.json` — `.words` for the caption pass.
-- `prior/beat_list.json` — `cover_at` and the beats (the caption planner avoids b-roll windows' text).
+- `prior/beat_list.json` — `cover_at` and the beats (the caption planner avoids b-roll windows' text;
+  a last beat with `scene.type: "cta"` means the background already ends on its CTA card).
 - `inputs/cta/cta.json` — `{"text","brandName","handle"}` when supplied; dir absent → use
-  `brief.json.brand` (`name`, `handle`, `cta` if present).
+  `brief.json.brand` (`handle`, `cta` if present). No `text` and no `brand.cta` → no takeover.
 - `inputs/outro/` — one optional clip; dir absent → no outro.
 - `brief.json` — `brand` (palette), `options.captions` (on), `options.sfx` (on), `options.grade`,
   `options.cta_card` (on), `options.cta_duration` (3), `options.overlay_beats` ([]),
@@ -21,8 +23,9 @@ burn pip-safe kinetic captions with `c-reel-premium` (grade + SFX under the voic
 ## You must produce
 
 - `saves/assembled_video.mp4` — 1080×1920 30 fps, H.264 yuv420p + AAC 48 kHz stereo: background
-  + ringed PIP card + end card over the last `cta_duration` seconds + captions, duration = bed
-  duration (+ outro length when an outro was supplied). No cover frame yet — that is the final step.
+  + rounded, ringed PIP card + ONE end card (the planned CTA beat, or the takeover over the last
+  `cta_duration` seconds) + captions, duration = bed duration (+ outro length when an outro was
+  supplied). No cover frame yet — that is the final step.
 
 ## How
 
@@ -40,31 +43,20 @@ python3 -c "import json; json.dump(json.load(open('brief.json')).get('brand') or
 ACCENT_HEX=$(python3 -c "import json;print((json.load(open('work/brand.json')).get('accent') or '#F97316').lstrip('#'))")
 ```
 
-### 1. PIP mask + ring frame (PIL; sharp-corner fallback if PIL is missing)
+### 1. PIP mask + ring frame (standard-library Python; never a square card)
 
 Card 364×504, 110 px bottom margin, radius 40. The ring colour is the brand accent — never a
-hard-coded hex.
+hard-coded hex. `scripts/pip_card.py` writes both PNGs with the Python standard library only (no
+Pillow), so a missing image library cannot ship a square, ringless card. There is no square-card
+fallback: if the card cannot be built, the step stops and names what failed. `pip_ring` `0` gives a
+rounded card with no ring (no frame PNG).
 
 ```bash
 CARD_W=364; CARD_H=504; MARGIN=110; PIP_PAD=$(( PIP_RING + PIP_SHADOW ))
-MASK=""; FRAME=""
-if python3 - "$CARD_W" "$CARD_H" "$PIP_RING" "$PIP_SHADOW" "$ACCENT_HEX" 2>/dev/null <<'PY'
-import sys
-from PIL import Image, ImageDraw, ImageFilter
-CW, CH, RING, SH, HEX = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
-R = 40
-m = Image.new('RGBA', (CW, CH), (0, 0, 0, 0))
-ImageDraw.Draw(m).rounded_rectangle([0, 0, CW-1, CH-1], radius=R, fill=(255, 255, 255, 255)); m.save("work/pip-mask.png")
-if RING > 0:
-    acc = tuple(int(HEX[i:i+2], 16) for i in (0, 2, 4)); P = RING + SH; FW, FH = CW + 2*P, CH + 2*P
-    fr = Image.new('RGBA', (FW, FH), (0, 0, 0, 0)); rr = [P-RING, P-RING, FW-(P-RING)-1, FH-(P-RING)-1]
-    if SH > 0:
-        sh = Image.new('RGBA', (FW, FH), (0, 0, 0, 0))
-        ImageDraw.Draw(sh).rounded_rectangle([rr[0], rr[1]+6, rr[2], rr[3]+6], radius=R+RING, fill=(0, 0, 0, 150))
-        fr = Image.alpha_composite(fr, sh.filter(ImageFilter.GaussianBlur(max(1, int(SH*0.6)))))
-    ImageDraw.Draw(fr).rounded_rectangle(rr, radius=R+RING, fill=acc + (255,)); fr.save("work/pip-frame.png")
-PY
-then MASK=work/pip-mask.png; [ "$PIP_RING" -gt 0 ] && [ -f work/pip-frame.png ] && FRAME=work/pip-frame.png; fi
+MASK=work/pip-mask.png; FRAME=""; [ "$PIP_RING" -gt 0 ] && FRAME=work/pip-frame.png
+python3 "$SKILL_DIR/scripts/pip_card.py" --card "${CARD_W}x${CARD_H}" --radius 40 --ring "$PIP_RING" \
+  --shadow "$PIP_SHADOW" --accent "$ACCENT_HEX" --mask "$MASK" --frame "$FRAME" \
+  || { echo "PIP card failed: scripts/pip_card.py could not build the rounded mask / ring frame"; exit 1; }
 ```
 
 ### 2. Composite — scale-to-FILL (top-biased crop, no bars), bottom-centre, audio = the bed
@@ -78,17 +70,14 @@ the same if it is not trimmed — the overlay cap below stops at the bed.
 
 ```bash
 PFROM=$(( MARGIN - PIP_PAD ))
-if [ -n "$MASK" ] && [ -n "$FRAME" ]; then
+if [ -n "$FRAME" ]; then
   FC="[1:v]scale=${CARD_W}:${CARD_H}:force_original_aspect_ratio=increase,crop=${CARD_W}:${CARD_H}:(iw-ow)/2:0,setsar=1,format=yuva444p[thfit];[thfit][2:v]alphamerge[avpip];[0:v]format=yuv420p[bg];[bg][3:v]overlay=(W-w)/2:(H-h-${PFROM}):format=auto[bgf];[bgf][avpip]overlay=(W-w)/2:(H-h-${MARGIN}):format=auto:shortest=1[v];[1:a]anull[a]"
   ffmpeg -y -i prior/background.mp4 -i prior/voice_track.mp4 -i "$MASK" -i "$FRAME" -filter_complex "$FC" -map "[v]" -map "[a]" \
     -c:v libx264 -preset medium -crf 19 -pix_fmt yuv420p -r 30 -c:a aac -b:a 192k -ar 48000 -ac 2 -movflags +faststart work/composed.mp4
-elif [ -n "$MASK" ]; then
+else
+  # pip_ring 0: the rounded card with no ring.
   FC="[1:v]scale=${CARD_W}:${CARD_H}:force_original_aspect_ratio=increase,crop=${CARD_W}:${CARD_H}:(iw-ow)/2:0,setsar=1,format=yuva444p[thfit];[thfit][2:v]alphamerge[avpip];[0:v]format=yuv420p[bg];[bg][avpip]overlay=(W-w)/2:(H-h-${MARGIN}):format=auto:shortest=1[v];[1:a]anull[a]"
   ffmpeg -y -i prior/background.mp4 -i prior/voice_track.mp4 -i "$MASK" -filter_complex "$FC" -map "[v]" -map "[a]" \
-    -c:v libx264 -preset medium -crf 19 -pix_fmt yuv420p -r 30 -c:a aac -b:a 192k -ar 48000 -ac 2 -movflags +faststart work/composed.mp4
-else
-  FC="[1:v]scale=${CARD_W}:${CARD_H}:force_original_aspect_ratio=increase,crop=${CARD_W}:${CARD_H}:(iw-ow)/2:0,setsar=1[thfit];[0:v]format=yuv420p[bg];[bg][thfit]overlay=(W-w)/2:(H-h-${MARGIN}):format=auto:shortest=1[v];[1:a]anull[a]"
-  ffmpeg -y -i prior/background.mp4 -i prior/voice_track.mp4 -filter_complex "$FC" -map "[v]" -map "[a]" \
     -c:v libx264 -preset medium -crf 19 -pix_fmt yuv420p -r 30 -c:a aac -b:a 192k -ar 48000 -ac 2 -movflags +faststart work/composed.mp4
 fi
 # WI2.64: hold the last real frame out to the bed, and stop captions at the CTA window.
@@ -385,23 +374,28 @@ PY
 python3 work/hold_tail.py work/composed.mp4 "$BED_DUR" || exit 1
 ```
 
-### 3. CTA end card — tail takeover with ALPHA, per-brand copy
+### 3. CTA end card — ONE call to action, per-brand copy, never invented
 
-Resolve the copy: `inputs/cta/cta.json` wins; otherwise `brief.json.brand`. **No handle → no
-handle line.** The card is rendered with `--format mov` (ProRes 4444) so the scrim stays
-translucent — an mp4 card ships opaque. Scrim + copy live on INNER absolute layers (the alpha
-capture forces the root transparent).
+The reel ends on one CTA. `scripts/cta_takeover.py` decides, in this order, and says why in
+`CTA_REASON`:
+
+- `options.cta_card` is not `on` → no card.
+- **The background already ends on a CTA beat** — the last beat in `prior/beat_list.json` (largest
+  `end`) has `kind: "graphics"` and `scene.type: "cta"`, built by steps 03/04 → **no takeover and no
+  scrim.** That beat is the end card; it plays at full brightness with the PIP undimmed.
+- Copy: `inputs/cta/cta.json` `text` wins; otherwise `brief.json.brand.cta`. **No copy → no card.**
+  Never invent copy (no "Follow <brand> for more"). **No handle → no handle line.**
+- Otherwise the takeover below covers the last `cta_duration` seconds.
+
+Say the `CTA_REASON` line in your final message. The takeover card is rendered with
+`--format mov` (ProRes 4444) so the scrim stays translucent — an mp4 card ships opaque. Scrim +
+copy live on INNER absolute layers (the alpha capture forces the root transparent).
 
 ```bash
-eval "$(python3 - <<'PY'
-import json, os, shlex
-cta = json.load(open('inputs/cta/cta.json')) if os.path.exists('inputs/cta/cta.json') else {}
-brand = json.load(open('brief.json')).get('brand', {})
-text = cta.get('text') or brand.get('cta') or f"Follow {brand.get('name','')} for more".strip()
-print(f"CTA_TEXT={shlex.quote(text)}; CTA_HANDLE={shlex.quote(cta.get('handle') or brand.get('handle') or '')}")
-PY
-)"
-if [ "$CTA_CARD" = "on" ]; then
+CTA_VARS=$(python3 "$SKILL_DIR/scripts/cta_takeover.py" --brief brief.json --beats prior/beat_list.json \
+  --cta inputs/cta/cta.json --cta-card "$CTA_CARD" --decision work/cta-decision.json) || exit 1
+eval "$CTA_VARS"
+if [ "$CTA_TAKEOVER" = "on" ]; then
   mkdir -p work/cta && cp "$GSAP" work/cta/gsap.min.js
   HANDLE_HTML=""; [ -n "$CTA_HANDLE" ] && HANDLE_HTML="<p id=\"cta-handle\">${CTA_HANDLE}</p>"
   cat > work/cta/index.html <<HTML
@@ -809,8 +803,10 @@ PY
 
 ## If you cannot proceed
 
-This step has no `canAsk` (`cta` defaults to the brand, `outro` is optional). Never write `needs_input.json`. A failed card render, an opaque scrim or a premium pass that did not run is a
-failure: exit non-zero with one plain line.
+This step has no `canAsk` (`cta` defaults to the brand's `cta`; no copy means no takeover, not an
+ask; `outro` is optional). Never write `needs_input.json`. A PIP card that cannot be built, a failed
+card render, an opaque scrim or a premium pass that did not run is a failure: exit non-zero with one
+plain line.
 
 ## Checks the harness runs
 

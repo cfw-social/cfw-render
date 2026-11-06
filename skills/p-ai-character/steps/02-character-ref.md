@@ -39,14 +39,31 @@ sentence is included verbatim — never paraphrased.
 
 ### 2. Create, poll, download
 
-Follow `$SKILL_DIR/.hub/c-ai-media/SKILL.md`: text-to-image with `google/imagen4-fast` and
-`aspect_ratio: "9:16"` (or, with `$REF`, `gpt-image/1.5-image-to-image` with the reference as
-a base64 data URI in `input_urls`). Poll `recordInfo` every 5 s, max 30 polls; `402` → fail
-with "insufficient kie.ai credits". Then:
+Use the vendored `$SKILL_DIR/.hub/c-ai-media/scripts/generate.py` (one call = one paid image;
+it makes the create call once, polls every 5 s up to `--timeout`, and stops on Kie code `402`
+with "not enough Kie credits"). Without `$REF`: text-to-image, `google/imagen4-fast`,
+`aspect_ratio: "9:16"`, 150 s (30 polls). With `$REF`: image-to-image,
+`gpt-image-2-image-to-image`, `aspect_ratio: "9:16"`, `resolution: "2K"` (about 10 Kie
+credits); the script uploads the reference to Kie's free File Upload API and sends the hosted
+URL in `input_urls`. Never send the reference as a base64 `data:` URI — Kie's image-to-image
+models read `input_urls` as a hosted file URL, not file content (the data-URI request failed
+with createTask code 500 in order TSW3). First copy the owner's file to a JPEG of at most
+2048 px a side (well under Kie's 10 MB limit, any input format).
 
 ```bash
-curl -sL --max-time 60 "$URL" -o work/raw-ref
-ffmpeg -y -v error -i work/raw-ref -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920" -frames:v 1 work/char-ref.png
+GEN="$SKILL_DIR/.hub/c-ai-media/scripts/generate.py"
+if [ -n "$REF" ]; then
+  ffmpeg -y -v error -i "$REF" -vf "scale='min(2048,iw)':'min(2048,ih)':force_original_aspect_ratio=decrease" -frames:v 1 -q:v 2 work/ref-in.jpg
+  python3 "$GEN" --provider kie --model gpt-image-2-image-to-image --aspect 9:16 --resolution 2K \
+    --ref work/ref-in.jpg --prompt "$PROMPT" --out work/raw-ref.png --timeout 240 --poll 5 > work/gen.log 2>&1
+else
+  python3 "$GEN" --provider kie --model google/imagen4-fast --aspect 9:16 \
+    --prompt "$PROMPT" --out work/raw-ref.png --timeout 150 --poll 5 > work/gen.log 2>&1
+fi
+RC=$?; tail -1 work/gen.log
+[ "$RC" -eq 0 ] || exit 1      # IMAGE_FAILED: the reason is on the last line; never repeat the call
+TASK=$(sed -n 's/^KIE_TASK: //p' work/gen.log | tail -1)   # the task_id for ref_audit.json
+ffmpeg -y -v error -i work/raw-ref.png -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920" -frames:v 1 work/char-ref.png
 ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 work/char-ref.png
 ```
 
@@ -74,8 +91,9 @@ PY
 ## If you cannot proceed
 
 This step has no `canAsk` (`reference_image` is optional). Never write `needs_input.json`. A
-missing provider key, exhausted credits, or a reference that fails the audit three times is a
-failure: exit non-zero with one plain line naming the failing attribute.
+missing provider key, exhausted credits, a refused upload or generation (`IMAGE_FAILED`), or a
+reference that fails the audit three times is a failure: exit non-zero with one plain line
+naming the failing attribute or the Kie reason.
 
 ## Checks the harness runs
 

@@ -310,6 +310,22 @@ curl -s "https://api.kie.ai/api/v1/veo/record-info?taskId=$TASK_ID" \
 
 ---
 
+## Finding an undocumented web endpoint (fetch interceptor)
+
+When a web UI calls an internal API that has no docs, patch `window.fetch` before you
+trigger the action. Use the claude-in-chrome `javascript_tool`. This is how the real
+kie.ai video `createTask` endpoint was found after six wrong URL guesses returned 404.
+
+1. Install the hook. Keep calls for your target domain only:
+   `window._apiCalls=[]; const o=window.fetch; window.fetch=function(...a){const u=typeof a[0]==='string'?a[0]:a[0]?.url||''; if(u.includes('<domain>')) window._apiCalls.push({url:u, body:a[1]?.body?.toString?.()?.substring(0,500)}); return o.apply(this,a)}`
+2. Click the button or submit the form in the page.
+3. In a separate call, a few seconds later, read `JSON.stringify(window._apiCalls)`.
+
+Gotchas: top-level `await` is not allowed in `javascript_tool`, so use `.then()` or split
+the calls. Apps that use XHR need `XMLHttpRequest.prototype.open/send` patched instead.
+The hook is lost on every page navigation, so install it again. A `FormData` body prints
+as `[object FormData]`, so loop over its entries.
+
 ## Zoom Presets
 
 | Asset type | Zoom |

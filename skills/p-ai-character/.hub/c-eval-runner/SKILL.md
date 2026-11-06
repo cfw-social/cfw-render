@@ -74,7 +74,7 @@ fallback). Shape:
 
 | type | HARD by default | params | what it does |
 |---|:--:|---|---|
-| `qa_gate` | yes | `format` | delegates to `c-shorts-qa-gate` (loudness/res/fps/frame0/audio) |
+| `qa_gate` | yes | `format`; optional `expect_fps` (default 30) | delegates to `c-shorts-qa-gate` (loudness/res/fps/frame0/audio); `expect_fps` is passed as `--expect-fps` |
 | `dims` | yes | `w`, `h` | exact resolution |
 | `duration_window` | yes | `min_s`, `max_s` | duration band |
 | `luma_floor` | yes | `crop` (`W:H:X:Y`), `floor`, `samples[]` | a region is not black/dark on any sample (mean luma) |

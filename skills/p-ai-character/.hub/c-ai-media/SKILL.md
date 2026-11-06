@@ -160,6 +160,41 @@ echo "IMAGE_URL: $R2_URL"
 
 ---
 
+## Script: `scripts/generate.py` (one still to a PNG file)
+
+Used by `p-longform` step 04 and `p-ai-character` steps 02–03. Python standard library only; one
+call = one image = about 0.8 credits on `z-image`.
+
+```bash
+python3 "$SKILL_DIR/.hub/c-ai-media/scripts/generate.py" --provider kie --aspect 16:9 \
+  --prompt "<prompt>" --out work/visuals/img_01.png [--model z-image] [--timeout 150] [--dry-run]
+# image-to-image: the reference is uploaded to Kie and sent as a hosted URL in input_urls
+python3 "$SKILL_DIR/.hub/c-ai-media/scripts/generate.py" --provider kie \
+  --model gpt-image-2-image-to-image --aspect 9:16 --resolution 2K --ref prior/char_ref.png \
+  --prompt "<prompt>" --out work/raw-1.png [--timeout 240]
+```
+
+- Key: the brand's `KIE_AI_API_KEY`, exported by the CFW render worker. It reads no other name and
+  no file (a worker-local key is never used). With no key it sends nothing and exits 3
+  (`IMAGE_FAILED: no Kie key …`): the step then renders GFX cards instead. It never prints the
+  key, an uploaded reference URL or the result URL, sends the key only to `api.kie.ai` and Kie's
+  upload host `kieai.redpandaai.co`, and never follows a redirect on a keyed call.
+- Spend safety: the create call is made once and never retried (a retry could be charged twice);
+  status checks are retried. Waits up to `--timeout` seconds (default 150) and, on a timeout,
+  names the task id and does not start another. Kie code 402 is reported as "not enough Kie
+  credits" and stops the call.
+- `--ref FILE` (PNG, JPEG or WEBP, at most 10 MB, repeatable): uploads the file to Kie's File
+  Upload API (free) and sends the returned `downloadUrl` in `input.input_urls`. Only for models
+  listed in the script's `REF_MODELS` (today `gpt-image-2-image-to-image`, which also needs
+  `--resolution 1K|2K|4K`); any other model with `--ref` is a usage error, so a reference is never
+  sent where Kie would silently ignore it. If the task Kie records has lost `input_urls`, the
+  image is refused.
+- Output: `KIE_TASK: <task id>` once Kie accepts the create call; last stdout line
+  `IMAGE_FILE: <path>` (exit 0) or `IMAGE_FAILED: <reason>` (exit 1 Kie or network failure, 3 no
+  key); a bad command line exits 2. A JPEG or WEBP result is converted to PNG with ffmpeg.
+  `--dry-run` checks the arguments, the reference files and the key and sends nothing.
+- This is the local-file variant of the return contract above (no R2 upload, no `IMAGE_URL:`).
+
 ## Model Reference (kie.ai text-to-image)
 
 | Model key | Quality | Speed | Credits | Best for |
@@ -173,16 +208,21 @@ echo "IMAGE_URL: $R2_URL"
 
 ### Image-to-image (editing an existing image)
 
-For i2i, the image URL MUST be a base64 data URI — kie.ai cannot fetch external URLs:
+Kie's image-to-image models take the reference as a **hosted file URL** in `input_urls` — "File
+URL after upload, not file content" (docs.kie.ai/market/gpt-image/1-5-image-to-image). Do NOT
+send a base64 `data:` URI: that request failed with createTask code 500 (cfw order TSW3, 2026-11-05). Upload a
+local file first with Kie's File Upload API — `POST https://kieai.redpandaai.co/api/file-stream-upload`,
+`Authorization: Bearer $KIE_AI_API_KEY`, multipart fields `file`, `uploadPath`, optional
+`fileName`; the hosted URL is `data.downloadUrl`; free; deleted after 24 hours
+(docs.kie.ai/file-upload-api/quickstart, docs.kie.ai/file-upload-api/upload-file-stream). Errors
+come back as HTTP 200 with a non-200 `code` in the body.
 
-```bash
-IMG_B64=$(python3 -c "import base64; print('data:image/png;base64,' + base64.b64encode(open('$IMG_PATH','rb').read()).decode())")
-
-RESULT=$(curl -s -X POST "https://api.kie.ai/api/v1/jobs/createTask" \
-  -H "Authorization: Bearer $KIE_AI_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d "{\"model\": \"gpt-image/1.5-image-to-image\", \"input\": {\"prompt\": \"$PROMPT\", \"input_urls\": [\"$IMG_B64\"], \"aspect_ratio\": \"$ASPECT\"}}")
-```
+Use `scripts/generate.py --ref FILE` above: it does the upload, sends the URL in `input_urls`, and
+checks the task kept it. Model: `gpt-image-2-image-to-image` (docs.kie.ai/market/gpt/gpt-image-2-image-to-image):
+`input_urls` up to 16, `aspect_ratio` includes `9:16`, `resolution` `1K`/`2K`/`4K` (set it
+explicitly; 2K excludes 5:4, 4:5, 3:1, 1:3, 9:21). Price on kie.ai/gpt-image-2: 6 / 10 / 16
+credits at 1K / 2K / 4K. `gpt-image/1.5-image-to-image` only allows `aspect_ratio` `1:1`, `2:3`,
+`3:2` and needs `quality` (`medium`/`high`), so it cannot make a 9:16 frame.
 
 ---
 
