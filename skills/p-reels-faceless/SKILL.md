@@ -22,7 +22,7 @@ metadata:
 > ## ⚡ Frame integrity + integrated CTA (MANDATORY — 2026-06-16)
 > - **Frame 0 is NEVER black.** The first frame must be a money-shot — the cover-freeze of the strongest illustrative beat (Step 13 cover rule). Gate rule (perceptual, CFW-131): bright frame (`YAVG > 48`) OR a dark brand card with a bright headline (mean ≥ 8, luma range ≥ 128, ≥ 2 % bright pixels). No black / flat-dark / hook-blank / fade-in opener.
 > - **The LAST frame is NEVER black.** The reel must end on content, not a fade-to-black or trailing blank. Verify the final frame `YAVG > 30`.
-> - **CTA is integrated by DEFAULT, not optional.** Every reel/VSL ends on a branded **CTA beat baked into the timeline** (offer line + handle/URL), as the final illustrative HyperFrames card. Do not ship a reel whose last beat is filler or black. (In p-reels-split this is the Step 9 CTA takeover; other recipes must add an equivalent closing CTA card.)
+> - **CTA is integrated by DEFAULT, not optional.** Every reel/VSL ends on a branded **CTA beat baked into the timeline** (offer line + handle/URL), as the final illustrative HyperFrames card. Do not ship a reel whose last beat is filler or black. (In p-reels-pip this is the Step 8 CTA takeover; other recipes must add an equivalent closing CTA card.)
 
 > ## ⚡ HyperFrames = illustrative, NOT just titles (MANDATORY — 2026-06-16)
 > Every HyperFrames graphics scene MUST pair its title with an **illustrative animation that depicts the point** — never a bare kinetic title card. Examples: a 45-post feed grid staggering in (`back.out`), a count-up stat with day-dots, an animated waveform for "voice", platform chips popping in. Match the premium reference in `cfw-marketing/creatives/productions/restaurants-vsl/hyperframes` (`DIAG-calendar` feed-grid, `HF-*` motion) **and** `cfw-marketing/creatives/productions/fnb-split-screen-short/gen-rich-cards.py`: grid + glow + vignette background, GSAP eased + staggered elements, brand palette, depth (shadows/shine). **Make it as rich and premium as possible — a title-only card is a defect.**
@@ -221,9 +221,9 @@ if command -v cfw-transcribe >/dev/null 2>&1; then
   cfw-transcribe --input "$W/vo.mp3" --out "$W/vo-words.json" --format words
 elif command -v mlx_whisper >/dev/null 2>&1; then
   echo "[faceless] cfw-transcribe not found — falling back to mlx_whisper"
-  mlx_whisper "$W/vo.mp3" --model mlx-community/whisper-small --output-dir "$W" --output-format srt
+  mlx_whisper "$W/vo.mp3" --model mlx-community/whisper-small-mlx --output-dir "$W" --output-format srt
   mv "$W/vo.srt" "$W/vo.srt" 2>/dev/null || true
-  mlx_whisper "$W/vo.mp3" --model mlx-community/whisper-small --output-dir "$W" --output-format json
+  mlx_whisper "$W/vo.mp3" --model mlx-community/whisper-small-mlx --output-dir "$W" --output-format json
   python3 -c "import json; d=json.load(open('$W/vo.json')); words=[{'text':s['text'],'start':s['start'],'end':s['end']} for s in d.get('segments',[])] ; json.dump(words,open('$W/vo-words.json','w'))"
 elif command -v whisper >/dev/null 2>&1; then
   echo "[faceless] cfw-transcribe not found — falling back to whisper CLI"
@@ -299,7 +299,7 @@ for clip in clips:
             cues = json.load(open(cue_json))
         elif _shutil.which("mlx_whisper"):
             td = os.path.dirname(cue_json)
-            subprocess.run(["mlx_whisper", clip, "--model", "mlx-community/whisper-small",
+            subprocess.run(["mlx_whisper", clip, "--model", "mlx-community/whisper-small-mlx",
                             "--output-dir", td, "--output-format", "json"],
                            capture_output=True)
             base_json = os.path.join(td, os.path.splitext(os.path.basename(clip))[0] + ".json")

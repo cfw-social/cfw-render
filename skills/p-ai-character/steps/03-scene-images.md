@@ -77,7 +77,11 @@ the character tiny in the frame. Record `divergence` and `attempts` per scene in
 
 ```bash
 cp work/scene-1.png saves/scene_1.png
-montage $(ls -v work/scene-*.png) -tile "${N}x1" -geometry "1080x1920+0+0" -background black saves/scene_sheet.png
+# One row, scene 1..N in order, with plain appends that need no font. (`montage` always loads a
+# font and exits 1, "unable to read font `'", where ImageMagick has no default font.)
+SHEET=()
+for ((i = 1; i <= N; i++)); do SHEET+=( "work/scene-$i.png" ); done
+convert "${SHEET[@]}" +append saves/scene_sheet.png
 python3 - <<'PY'
 import glob, hashlib, json, os, re
 arc = json.load(open('prior/story_arc.json')); tasks = json.load(open('work/tasks.json'))

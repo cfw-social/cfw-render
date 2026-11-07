@@ -45,6 +45,9 @@ colorkey=0x00FF00:0.25:0.05,colorkey=0x00FF00:0.40:0.01
 **3. Audio-per-segment architecture.** Never separate audio from video in composites.
 - WRONG: cut video-only segments → concatenate → add one audio strip (drift accumulates 5+ min)
 - RIGHT: every segment (AVATAR, PIP, FULLSCREEN) carries its own synced audio → concatenate preserves sync
+- Segment audio must NOT be AAC: each AAC segment ends with up to 21 ms of padding that the concat
+  keeps, so a long video drifts. `scripts/build-segments.py` writes PCM segments and the concat
+  encodes AAC once.
 - AVATAR segments: cut from `avatar-on-bg.mp4` WITH audio using output-level seeking (`-i file -ss $START`)
 - PIP/FULLSCREEN segments: take audio from `$BASE` at `-ss $START` (`-map "1:a"`)
 
@@ -116,6 +119,35 @@ FFmpeg 8.1 `loudnorm` applies dynamic compression even with `linear=true`. Use t
 **Pass 2 — apply as simple volume:** `ffmpeg -i input.mp3 -af "volume=+4.5dB" -y output.mp3`
 
 Target: -14 LUFS (YouTube), -1.5 dBFS true peak.
+## Scripts
+
+### `scripts/build-segments.py` — one 1920×1080 segment per b-roll plan row
+
+Used by `p-longform` step 06 (composite). Pure ffmpeg + Python standard library, no network,
+deterministic. It builds the audio-per-segment architecture of rule 3 from a `broll_plan.json`:
+
+```bash
+python3 "$SKILL_DIR/.hub/c-ffmpeg/scripts/build-segments.py" --plan prior/broll_plan.json \
+  --avatar work/avatar-on-bg.mp4 --avatar-raw prior/avatar_video.mp4 --key "<colorkey chain or empty>" \
+  --visuals work/visuals --broll inputs/broll --out work/seg \
+  --pip-card rounded --pip-size 304x380 --pip-margin 72 --pip-border "#D4A84C" [--no-pip] [--dry-run]
+```
+
+- Rows: `{start, end, layout, asset, zoom, pip_side}`. Layouts `AVATAR_FULL`, `PIP_CORNER` (rounded
+  card, gold border, outside-only shadow, alternating corner), `PIP_SIDE` (640-wide avatar column),
+  `FULLSCREEN_BROLL`, `SIDE_BY_SIDE` (960 + 960). Assets: `broll/<file>` in `--broll` (looped),
+  `gfx:`/`hf:`/`still:<id>` as `<id>.mp4` or `<id>.png` in `--visuals` (last frame held). A picture
+  that is not 16:9 gets a blurred fill, never bars. `zoom: slow-in` is a 1.0 → 1.08 push-in.
+- Output `seg-0001-<layout>.mp4`, … (25 fps, `-g 25`, yuv420p) plus `segments.json`. Rows are cut on
+  the 25 fps grid so they join with no gap. The audio of each row is the exact window of
+  `--avatar-raw`, stored as **PCM** (QuickTime container named `.mp4`): AAC per segment adds up to
+  21 ms of silence at each cut and drifts a long video by seconds; the concat's single AAC encode
+  is the only AAC pass. Measured: 106 segments / 600 s, audio markers 0.0 ms off after the concat.
+- `--no-pip` (voice-only / `pip_mode: none`): PIP and side rows are built as `FULLSCREEN_BROLL`.
+- A finished segment is reused on a rerun; stale `seg-*.mp4` files are removed.
+- Exit 0 ok; 1 ffmpeg failed or an output did not verify; 2 bad input (nothing encoded), with the
+  row number in the message. Needs only ffmpeg/ffprobe (PATH, then `/opt/homebrew/bin`).
+
 ## References (loaded on demand)
 
 - **[Portrait layouts](references/portrait-layouts.md)** — bottom-avatar, split-broll, pip-broll, split-equal, popout. Read for any 9:16 composite.

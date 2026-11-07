@@ -122,8 +122,17 @@ def ck_qa_gate(f, c, ctx):
     gate = ctx["qa_gate"]
     if not gate:
         return "SKIP", "", "c-shorts-qa-gate not found"
-    rc, _, _ = sh(["bash", gate, f, "--format", c.get("format","reel"),
-                   "--outdir", os.path.join(ctx["outdir"], "qa")])
+    argv = ["bash", gate, f, "--format", c.get("format","reel"),
+            "--outdir", os.path.join(ctx["outdir"], "qa")]
+    # Optional "expect_fps" in the acceptance check: the gate's default is 30 (shorts).
+    # A recipe that renders at another rate (p-longform: 25) names it; absent = unchanged.
+    if "expect_fps" in c:
+        fps = c["expect_fps"]
+        # a real number only: true/false and strings are refused, not read as 1 or 0
+        if isinstance(fps, bool) or not isinstance(fps, (int, float)) or not (1 <= fps <= 240):
+            return "FAIL", str(fps), "expect_fps must be a number from 1 to 240"
+        argv += ["--expect-fps", f"{fps:g}"]
+    rc, _, _ = sh(argv)
     return ("PASS","exit 0","all HARD checks") if rc == 0 else \
            ("FAIL","exit!=0", f"see {ctx['outdir']}/qa/qa-report.txt")
 

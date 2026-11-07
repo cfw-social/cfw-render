@@ -78,7 +78,8 @@ ask). When the owner answers, the harness reruns the step from scratch.
 - **Palette / typography come from the brand**: brand brief → palette/typography in
   `brief.json.brand` → a named style the brief asks for → the dark-premium default `bg #0F172A`,
   `accent #F97316`, `fg #F1F5F9`. Hexes are 6-digit. Never ship generic stock colours
-  (`#3b82f6`, `#333`, default greys) — off-brand colour is a QA failure.
+  (`#3b82f6`, `#333`, default greys) — off-brand colour is a QA failure. A colour that is in
+  `brief.json.brand.palette` is the brand's own, never stock (a blue brand keeps its `#3B82F6`).
 - **Closing-slide copy is per-brand**: the CTA line, brand name and handle come from
   `inputs/cta/cta.json` (`text`, `brandName`, `handle`), never from a template default. A brand
   with no handle gets a closing slide with **no handle line** — never invent one.

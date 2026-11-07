@@ -22,12 +22,25 @@ metadata:
 > ## ⚡ Frame integrity + integrated CTA (MANDATORY — 2026-06-16)
 > - **Frame 0 is NEVER black.** The first frame must be a bright money-shot — the cover-freeze of the strongest illustrative beat (Step 10 cover rule). Verify `ffmpeg ... signalstats` → `YAVG > 30`. No black / hook-blank / fade-in opener.
 > - **The LAST frame is NEVER black.** The reel must end on content, not a fade-to-black or trailing blank. Verify the final frame `YAVG > 30`.
-> - **CTA is integrated by DEFAULT, not optional.** Every reel/VSL ends on a branded **CTA beat baked into the timeline** (offer line + handle/URL), as the final illustrative HyperFrames card. Do not ship a reel whose last beat is filler or black. (In p-reels-split this is the Step 9 CTA takeover; other recipes must add an equivalent closing CTA card.)
+> - **CTA is integrated by DEFAULT, not optional.** Every reel/VSL ends on a branded **CTA beat baked into the timeline** (offer line + handle/URL), as the final illustrative HyperFrames card. Do not ship a reel whose last beat is filler or black. (In p-reels-pip this is the Step 8 CTA takeover; other recipes must add an equivalent closing CTA card.)
 
 > ## ⚡ HyperFrames = illustrative, NOT just titles (MANDATORY — 2026-06-16)
 > Every HyperFrames graphics scene MUST pair its title with an **illustrative animation that depicts the point** — never a bare kinetic title card. Examples: a 45-post feed grid staggering in (`back.out`), a count-up stat with day-dots, an animated waveform for "voice", platform chips popping in. Match the premium reference in `cfw-marketing/creatives/productions/restaurants-vsl/hyperframes` (`DIAG-calendar` feed-grid, `HF-*` motion) **and** `cfw-marketing/creatives/productions/fnb-split-screen-short/gen-rich-cards.py`: grid + glow + vignette background, GSAP eased + staggered elements, brand palette, depth (shadows/shine). **Make it as rich and premium as possible — a title-only card is a defect.**
 
 # p-reels-spotlight — Full-Frame Premium Reel (continuous-audio bed + kinetic captions + optional b-roll)
+
+## Execution and reporting
+
+Read [Recipe stage reporting](../../docs/RECIPE-STAGE-REPORTING.md) before a tracked
+run. Managed work uses the installed worker/harness and the exact claimed manifest;
+its stage IDs select `steps/_shared.md` plus the referenced step file. The harness
+alone reports stages; step assistants must not call `complete_render_order` or
+emit competing MCP events. Standalone use does not report to CFW Social.
+
+Catalog presence and declared checks do not prove validator coverage or readiness.
+Missing validators/evidence block gates. See
+[reporting coverage](../../docs/RECIPE-REPORTING-COVERAGE.md) before claiming tracked
+execution is ready; local checkpoint eligibility is independently restricted.
 
 A vertical 9:16 reel built on **one continuous voice bed**: the speaker's narration audio plays
 unbroken for the entire reel and is **never cut or silenced**. Visually it is a premium edit —
@@ -295,7 +308,7 @@ json.dump(words, open(sys.argv[2], 'w'))
 PY
 elif command -v mlx_whisper >/dev/null 2>&1; then
   echo "[spotlight] local transcription: mlx_whisper"
-  mlx_whisper "$W/base.mp4" --model mlx-community/whisper-small --output-dir "$W" --output-format json
+  mlx_whisper "$W/base.mp4" --model mlx-community/whisper-small-mlx --output-dir "$W" --output-format json
   python3 -c "import json; d=json.load(open('$W/base.json')); words=[{'text':s['text'],'start':s['start'],'end':s['end']} for s in d.get('segments',[])] ; json.dump(words,open('$W/words.json','w'))"
 elif command -v whisper >/dev/null 2>&1; then
   echo "[spotlight] local transcription: whisper CLI"

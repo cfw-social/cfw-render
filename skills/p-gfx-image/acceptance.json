@@ -11,7 +11,7 @@
     { "id": "legible_contrast",   "kind": "perceptual", "type": "perceptual",
       "desc": "(b) Text-to-background contrast is strong and legible at thumbnail size — no light-grey-on-dark, no same-hue collisions, no color-on-busy-image failures." },
     { "id": "on_brand_palette",   "kind": "perceptual", "type": "perceptual",
-      "desc": "(c) Palette matches the brand navy/green scheme — not generic stock-template colors (#3b82f6, #333, plain white/grey)." },
+      "desc": "(c) Palette matches the brand's own palette (brief.json.brand.palette; with no brand palette, the dark studio navy/green default) — not generic stock-template colors (#333, plain white/grey); the stock template blue #3b82f6 is off-brand only when it is not in brief.json.brand.palette." },
     { "id": "premium_hierarchy",  "kind": "perceptual", "type": "perceptual",
       "desc": "(d) Clear premium visual hierarchy — one dominant focal element (headline, stat, or illustration), supporting copy clearly subordinate; depth present (shadows, elevation, rounded cards, deliberate spacing) — not a bare title on a plain background." },
     { "id": "consistent_margins", "kind": "perceptual", "type": "perceptual",

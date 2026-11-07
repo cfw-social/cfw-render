@@ -40,7 +40,7 @@
       "id": "on_brand_palette",
       "kind": "perceptual",
       "type": "perceptual",
-      "desc": "(d) Colors are on-brand — no generic placeholder colors (e.g. #3b82f6, #333, stock grey); accent, ink, and card-surface values match the brand palette injected into the CSS vars in Step 3."
+      "desc": "(d) Colors are on-brand, judged against the brand's own palette (brief.json.brand.palette, injected into the CSS vars in Step 3): accent, ink, and card-surface values match it. No generic placeholder colors (#333, stock grey); the stock template blue #3b82f6 is off-brand only when it is not in brief.json.brand.palette."
     },
     {
       "id": "premium_hierarchy",

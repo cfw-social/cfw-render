@@ -6,7 +6,8 @@ reel is NOT delivered.
 
 ## You receive
 
-- `prior/assembled_video.mp4` — the finished reel (background + PIP + end card + captions).
+- `prior/assembled_video.mp4` — the finished reel (background + PIP + at most one end card +
+  captions; two CTAs stacked on the last seconds is a step 05 defect).
 - `prior/beat_list.json` — `cover_at`, `beats[]` (b-roll windows for the continuity proof).
 - `prior/transcripts.json` — `.words` (source for the post captions).
 - `inputs/cta/cta.json` — CTA text / brand name / handle when supplied; else `brief.json.brand`.
@@ -70,9 +71,15 @@ done
 
 Per frame: (a) the face is whole inside the ringed PIP card, bottom-centre, never cropped;
 (b) captions sit above the PIP zone (nothing textual below y≈1240), accent on the emphasis word;
-(c) Latin script only; (d) graphics beats show a rich illustrative card, b-roll beats show the
-planned clip; (e) grade subtle, skin natural; (f) no black/empty frame. A failed item means you
-stop and report which — do not "fix" the picture here (that is a rerun of an earlier step).
+(c) Latin script only; (d) graphics beats show the card step 04 builds ("What a graphics beat
+shows"): the `c-typing-ui` typing or hook scene, or the brand motion card — the headline restating
+what is said in that window (with its eyebrow when the scene has one) and the accent rule, on the
+brand background. These are text cards by design: fail a graphics beat only when its card is
+blank, its headline is missing or cut off, or its content enters the PIP band — never for having no
+illustration, icon, chart or image, nor for a faint ghost mark, grid or glow (a frame in a card's
+first second may catch the copy still sliding in; that passes). B-roll beats show the planned clip;
+(e) grade subtle, skin natural; (f) no black/empty frame. A failed item means you stop and report
+which — do not "fix" the picture here (that is a rerun of an earlier step).
 
 ### 3. First-frame cover (mandatory)
 

@@ -77,6 +77,8 @@ ask). When the owner answers, the harness reruns the step from scratch.
   CSS vars of every card. Without a brand palette use the dark studio default: navy
   `#0B1220` background, card `#131C2E`, ink `#F4F6FA`, muted `#9AA6B8`, accent green
   `#22C55E`. Never ship stock defaults (`#3b82f6`, `#333`); off-brand colour is a QA fail.
+  A colour that is in `brief.json.brand.palette` is the brand's own, never stock (a blue
+  brand keeps its `#3B82F6`).
 - **Latin script only**; prefer HTML entities (`&rarr;`, `&mdash;`) over raw Unicode symbols;
   every HTML head carries `<meta charset="UTF-8">`. Emoji break without it — avoid them.
 - **Fonts:** the brand's typography when known, else Inter for body and Oswald for display.

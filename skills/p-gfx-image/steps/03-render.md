@@ -67,7 +67,18 @@ bash "$SKILL_DIR/.hub/c-vision-qa/scripts/precheck.sh" work/img-*.png --aspect "
 ```bash
 cp work/img-1.png saves/image_1.png
 COLS=$(( N <= 1 ? 1 : 2 ))
-montage $(ls -v work/img-*.png) -tile "${COLS}x" -geometry "${W}x${H}+0+0" -background black saves/contact_sheet.png
+# The sheet has no text, so it is tiled with plain appends that need no font. (`montage` always
+# loads a font and exits 1, "unable to read font `'", where ImageMagick has no default font.)
+SHEET=()
+for ((r = 0; r * COLS < N; r++)); do
+  SHEET+=( '(' )
+  for ((c = 1; c <= COLS; c++)); do
+    i=$(( r * COLS + c ))
+    if [ "$i" -le "$N" ]; then SHEET+=( "work/img-$i.png" ); else SHEET+=( -size "${W}x${H}" xc:black ); fi
+  done
+  SHEET+=( +append ')' )
+done
+convert "${SHEET[@]}" -append saves/contact_sheet.png
 python3 - "$W" "$H" "$COLS" <<'PY'
 import glob, hashlib, json, os, re, sys
 W, H, cols = map(int, sys.argv[1:4])

@@ -38,7 +38,8 @@ read -r W H N COLS < <(python3 -c "import json;d=json.load(open('prior/images.js
 
 ```bash
 cp prior/image_1.png work/img-1.png
-for i in $(seq 2 "$N"); do
+# Count up with shell arithmetic, not `seq 2 "$N"`: macOS seq prints "2 1" for one card.
+for ((i = 2; i <= N; i++)); do
   r=$(( (i-1) / COLS )); c=$(( (i-1) % COLS ))
   convert prior/contact_sheet.png -crop "${W}x${H}+$((c*W))+$((r*H))" +repage "work/img-$i.png"
 done

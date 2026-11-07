@@ -71,7 +71,11 @@ assert len(c["slides"]) == n, "copy count"
 assert '<meta charset="UTF-8">' in html, "charset"
 for v in ("--accent", "--ink", "--bg", "--card"):
     assert re.search(v + r"\s*:\s*#[0-9a-fA-F]{6}", html), f"{v} not set to a 6-digit hex"
-assert "#3b82f6" not in html.lower(), "stock blue left in template"
+# #3b82f6 is the stock template blue, unless the brand's own palette uses it (a blue brand).
+pal = (json.load(open('brief.json')).get("brand") or {}).get("palette")
+brand_hexes = {v.strip().lower() for v in (pal.values() if isinstance(pal, dict) else []) if isinstance(v, str)}
+if "#3b82f6" not in brand_hexes:
+    assert "#3b82f6" not in html.lower(), "stock blue left in template"
 json.dump(c, open('saves/slide_copy.json', 'w'), indent=1)
 print(f"[carousel] html: {n} sections, aspect {c['aspect_ratio']}")
 PY
@@ -88,4 +92,5 @@ failure: exit non-zero with one plain line.
 - `html_has_slides` — `saves/carousel_html.md` contains `<section class="slide" id="sN">` for
   exactly N = 1…`num_slides` from `prior/outline.json`.
 - `brand_vars_set` — the `:root` vars `--accent`, `--ink`, `--bg`, `--card` are 6-digit hexes
-  and no stock colour (`#3b82f6`) remains.
+  and no stock colour (`#3b82f6`) remains, unless `brief.json.brand.palette` itself uses
+  `#3b82f6` (then it is the brand's own colour, not stock).

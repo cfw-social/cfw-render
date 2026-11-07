@@ -78,6 +78,24 @@ curl -s -X POST "https://api.elevenlabs.io/v1/text-to-speech/$VOICE_ID" \
   }" --output "$OUTPUT_PATH"
 ```
 
+## Word-level transcription, offline — `scripts/transcribe.sh`
+
+Local whisper.cpp (`whisper-cli`) with the cached `ggml-base.en.bin` model. No network, no API key.
+Recipes call it as `bash "$CFW_RENDER_SKILLS_DIR/<recipe>/.hub/c-audio/scripts/transcribe.sh"`.
+
+```bash
+bash scripts/transcribe.sh INPUT [OUTPUT_JSON] [LANGUAGE]   # INPUT: any audio or video file
+# -> {"duration", "text", "wpm", "words": [{"w", "start", "end"}], "engine", "model", "language"}
+```
+
+Times are seconds and good to about 0.1–0.2 s. OUTPUT_JSON omitted or `-` prints to stdout.
+`WHISPER_GGML` names another ggml model (needed for any language other than English). Exit codes: 0 ok;
+2 local speech-to-text is not available: `whisper-cli`, `ffmpeg`, `ffprobe`, `python3` or the model
+is missing, or a non-English language was asked of an English-only model (nothing falls back to a
+hosted service); 1 anything else: no input given or found, not media, no audio stream, ffmpeg or
+whisper failed.
+No speech gives `"words": []` and a stderr warning; the calling step decides if that is an error.
+
 <!-- 05-STT removed: see cfw-transcribe -->
 ## Transcription — `cfw-transcribe` (Gemini cloud, MLX fast-path on macOS)
 

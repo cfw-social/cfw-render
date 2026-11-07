@@ -19,7 +19,7 @@ requires: node, chromium
 
 > ## ⚡ PREMIUM HTML CARDS + VISION QA (MANDATORY — 2026-06-17)
 > - **Slides are authored as RICH HTML and rendered to PNG via headless Chromium.** Use `template.html` in this skill as the quality floor — premium type hierarchy, depth (shadows, rounded cards), generous margins. **NOT** AI-generated background images with text drawn on top. **NOT** bare title-on-plain-background cards. A flat, templated-looking card is a defect.
-> - **Inject the brand palette + fonts** (`get_brand_dna`) into the template's CSS vars. **Never** ship generic `#3b82f6` / `#333` / stock colors — off-brand color is a QA failure.
+> - **Inject the brand palette + fonts** (`get_brand_dna`) into the template's CSS vars. **Never** ship generic `#3b82f6` / `#333` / stock colors — off-brand color is a QA failure. The stock template blue `#3b82f6` is refused unless it is in `brief.json.brand.palette` (a blue brand keeps its own `#3B82F6`); color is judged against the brand's own palette.
 > - **EVERY rendered slide MUST pass `c-vision-qa` before assembly.** Render → look → fix the HTML → re-render → look again, until every slide PASSes. An unseen slide is a defect. The cover slide is the brightest, strongest beat; no black or blank first/last slide.
 
 # pipeline-carousel — Premium HTML Carousel (PDF)

@@ -56,13 +56,17 @@ python3 - "$W" "$H" "$FMT" <<'PY'
 import json, re, sys
 W, H, fmt = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
 plan = json.load(open('prior/plan.json')); cards = []
+# #3b82f6 is the stock template blue, unless the brand's own palette uses it (a blue brand).
+pal = (json.load(open('brief.json')).get("brand") or {}).get("palette")
+brand_hexes = {v.strip().lower() for v in (pal.values() if isinstance(pal, dict) else []) if isinstance(v, str)}
 for c in plan["cards"]:
     html = open(f"work/card-{c['n']}.html").read()
     assert '<meta charset="UTF-8">' in html, f"card {c['n']}: charset"
     assert re.search(rf"width:\s*{W}px", html) and re.search(rf"height:\s*{H}px", html), f"card {c['n']}: canvas"
     for v in ("--bg", "--accent", "--ink"):
         assert re.search(v + r"\s*:\s*#[0-9a-fA-F]{6}", html), f"card {c['n']}: {v} not a 6-digit hex"
-    assert "#3b82f6" not in html.lower(), f"card {c['n']}: stock blue"
+    if "#3b82f6" not in brand_hexes:
+        assert "#3b82f6" not in html.lower(), f"card {c['n']}: stock blue"
     assert c["headline"] in html, f"card {c['n']}: headline missing from html"
     assert not re.search(r'src="(?!data:)', html), f"card {c['n']}: external src"
     cards.append({"n": c["n"], "html": html})
