@@ -1,5 +1,13 @@
 # cfw-render bundled skills
 
+> **Retired as a recipe source (owner decision, 2026-11-10).**
+> - Recipes are written only in `~/ecosystem/harness/skills` (owner, 2026-11-06 and 2026-11-10).
+> - Customer bots get recipes from Social's recipe library, not from this folder.
+> - `skills/` is frozen at its current bytes. It is never synced again.
+> - `scripts/sync-skills.sh` is used only with `--out-dir <scratch>`, to build a bundle for cfw-social's `scripts/recipe-library/publish.mjs`. It refuses to write into `skills/`.
+> - Do not promote `develop` to `main` while cfw-social's `/install-bot.md` still clones this repo's `main`. `main` and `develop` differ in about 101 recipe files under the same version numbers, and old-guide bots claim by version with no hash check.
+> - The CFW Render worker (`com.cfw.render`) stays off.
+
 The renderer's **self-contained** recipe closure. Each top-level folder is one
 ready-to-run recipe (`SKILL.md` + its vendored `.hub/` dependency closure) that
 `bin/cfw-render.sh` renders from directly — the box carries no separate render

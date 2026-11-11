@@ -1,5 +1,13 @@
 # cfw-render — guide for coding assistants
 
+> **Retired as a recipe source (owner decision, 2026-11-10).**
+> - Recipes are written only in `~/ecosystem/harness/skills` (owner, 2026-11-06 and 2026-11-10).
+> - Customer bots get recipes from Social's recipe library, not from this folder.
+> - `skills/` is frozen at its current bytes. It is never synced again.
+> - `scripts/sync-skills.sh` is used only with `--out-dir <scratch>`, to build a bundle for cfw-social's `scripts/recipe-library/publish.mjs`. It refuses to write into `skills/`.
+> - Do not promote `develop` to `main` while cfw-social's `/install-bot.md` still clones this repo's `main`. `main` and `develop` differ in about 101 recipe files under the same version numbers, and old-guide bots claim by version with no hash check.
+> - The CFW Render worker (`com.cfw.render`) stays off.
+
 This file is for any coding assistant (Codex, Claude Code, Cursor, Gemini CLI, …)
 working in a cfw-render checkout **or** in an installed copy (on an owner's
 computer: `~/CFW Render/app`). `CLAUDE.md` points here.
