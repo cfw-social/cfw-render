@@ -45,16 +45,21 @@
 #
 # Idempotent — safe to re-run; each recipe's target dir is cleared before copy.
 #
+# RETIRED AS A RECIPE SOURCE (owner decision 2026-11-10): this repo's skills/ is
+# frozen and is never synced again. This script is only a bundle builder for
+# cfw-social's scripts/recipe-library/publish.mjs, so --out-dir is REQUIRED and
+# the script exits non-zero if it is missing or resolves (realpath, so relative
+# paths and symlinks count) to this repo's own skills/ directory or inside it.
+#
 # Usage:
-#   CFW_SKILLS_SRC=/Users/vasanth/ecosystem/harness/skills scripts/sync-skills.sh
 #   CFW_SKILLS_SRC=/Users/vasanth/ecosystem/harness/skills scripts/sync-skills.sh --out-dir /tmp/scratch-skills
 #
 # Options:
 #   --recipes FILE       path to the recipe allowlist (default: <repo>/config/recipes.json,
 #                        cfw-render's own internal allowlist — cfw-skills-pack retired).
-#   --out-dir DIR        where to write the synced bundle (default: <repo>/skills).
-#                        Point this at a scratch dir to dry-run without
-#                        touching the committed bundle.
+#   --out-dir DIR        REQUIRED. Where to write the synced bundle. Use a
+#                        scratch dir. Refused if it is, or is inside, this
+#                        repo's skills/ (the committed bundle is frozen).
 #   --skip-manifest      don't refresh config/skills-version.json even when
 #                        --out-dir is the real skills/ dir.
 #
@@ -68,7 +73,7 @@ set -euo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SELF_DIR/.." && pwd)"
 
-OUT_DIR="$REPO_DIR/skills"
+OUT_DIR=""
 RECIPES_CONFIG="$REPO_DIR/config/recipes.json"
 SKIP_MANIFEST=0
 
@@ -81,6 +86,21 @@ while (( $# )); do
     *) echo "sync-skills.sh: unexpected arg $1" >&2; exit 2 ;;
   esac
 done
+
+# ---- --out-dir: required, and never this repo's own (frozen) skills/ ----
+if [[ -z "$OUT_DIR" ]]; then
+  echo "sync-skills.sh: ERROR — --out-dir is required." >&2
+  echo "  skills/ in this repo is retired as a recipe source (owner decision 2026-11-10) and is never synced." >&2
+  echo "  Build a bundle into a scratch dir: CFW_SKILLS_SRC=<src> $0 --out-dir <scratch>" >&2
+  exit 2
+fi
+OUT_REAL="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$OUT_DIR")"
+SKILLS_REAL="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$REPO_DIR/skills")"
+if [[ "$OUT_REAL" == "$SKILLS_REAL" || "$OUT_REAL" == "$SKILLS_REAL"/* ]]; then
+  echo "sync-skills.sh: ERROR — --out-dir '$OUT_DIR' resolves to '$OUT_REAL', inside this repo's skills/." >&2
+  echo "  skills/ is frozen (retired as a recipe source, owner decision 2026-11-10). Use a scratch dir." >&2
+  exit 2
+fi
 
 # ---- CFW_SKILLS_SRC: required, fail loudly, no silent fallback ----
 if [[ -z "${CFW_SKILLS_SRC:-}" ]]; then
