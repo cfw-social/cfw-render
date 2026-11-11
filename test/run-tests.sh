@@ -2538,6 +2538,30 @@ else
   fail "check-no-host-paths.sh: fixture bundle" "expected exit 0 after rewrite"
 fi
 
+if "$REPO_DIR/scripts/check-no-duplicate-steps.sh" --skills-dir "$REPO_DIR/skills" >/dev/null 2>&1; then
+  pass "check-no-duplicate-steps.sh: the shipped bundle has no duplicated step (WI31.10)"
+else
+  fail "check-no-duplicate-steps.sh: shipped bundle" "a recipe carries the same step twice"
+fi
+
+c_dup_dir="$(mktemp -d)"
+mkdir -p "$c_dup_dir/p-dup/steps"
+printf '### 4b. Tail\n\n```bash\n# not a heading\n# not a heading\n```\n\n### 4b. Tail\n' > "$c_dup_dir/p-dup/steps/01-a.md"
+"$REPO_DIR/scripts/check-no-duplicate-steps.sh" --skills-dir "$c_dup_dir" >/dev/null 2>&1
+c_dup_rc=$?
+if [[ "$c_dup_rc" == "1" ]]; then
+  pass "check-no-duplicate-steps.sh: catches a repeated step heading (WI31.10)"
+else
+  fail "check-no-duplicate-steps.sh: repeated heading" "expected exit 1, got $c_dup_rc"
+fi
+sed -i '' '$d' "$c_dup_dir/p-dup/steps/01-a.md"
+if "$REPO_DIR/scripts/check-no-duplicate-steps.sh" --skills-dir "$c_dup_dir" >/dev/null 2>&1; then
+  pass "check-no-duplicate-steps.sh: a repeated bash comment is not a step (WI31.10)"
+else
+  fail "check-no-duplicate-steps.sh: code fence" "a comment inside a code fence was read as a heading"
+fi
+rm -rf "$c_dup_dir"
+
 c318_sha="$(python3 -c "import json; print(json.load(open('$c318_out/index.json'))['sourceSha'])" 2>/dev/null)"
 if [[ "$c318_sha" == "None" ]]; then
   pass "sync-skills.py: index.json sourceSha stays null for a non-git fixture source (soft-fail path, CFW-318)"

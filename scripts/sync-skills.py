@@ -162,7 +162,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-IGNORE_NAMES = {".DS_Store", "__pycache__", ".git", ".hub"}
+# "test" and "tests": recipe/component test folders are dev-only and carry fixture handles such as
+# "@acme" that the handle-default gate rejects. WI28.16 added "tests"; WI28.16 follow-up adds "test"
+# (p-reels-spotlight/test/test_cta_copy.py). Checked against the source at 9cbc177: no step, script or
+# check names a test/ path at run time (only SKILL.md/LEARNINGS.md prose does), and no file is named
+# exactly "test". Matches at any depth, .hub copies included.
+IGNORE_NAMES = {".DS_Store", "__pycache__", ".git", ".hub", "test", "tests"}
 
 
 def read_frontmatter(skill_md: Path) -> dict:
@@ -2408,41 +2413,13 @@ def apply_typing_hold(directory: Path, recipe: str) -> int:
 # (typingWindow(duration, speed), WI2.73) and the proxy counter instead of a #char-count element the
 # template never had. Its usage block also writes newlines as &#10; (a raw newline inside the
 # template's JS string literal is a syntax error), fills BOTTOM_TAG_DISPLAY and copies gsap.min.js.
-_STEP_TYPING_RENDER_EDITS = {
-    "04-build-background.md": (
-        "- **`graphics`, typing / hook scene** — `VARIANT=pip-safe` with `c-typing-ui`:\n"
-        "  `bash \"$TYPING_UI_DIR/scripts/render.sh\" --text \"<copy>\" --duration \"$DUR\" --brand work/brand.json"
-        " --variant pip-safe --out work/bg_beats/bg_beat$i.mp4` (see `$TYPING_UI_DIR/SKILL.md` for the exact flags).\n",
-        "- **`graphics`, typing / hook scene** — `c-typing-ui` ships templates, not a render script (its\n"
-        "  `scripts/render-sample.sh` only renders a fixed demo). Fill the template the way\n"
-        "  `$TYPING_UI_DIR/SKILL.md` \"Usage — standalone render (one beat)\" does: take\n"
-        "  `$TYPING_UI_DIR/templates/typing-scene.html` (typing) or `hook-scene.html` (hook), strip the\n"
-        "  `<template>` wrapper, fill every `{{FIELD}}` in it, wrap it in a full 1080×1920 document and\n"
-        "  write `work/gfx_$i/index.html`. Typing: `DURATION=$DUR`, `PROMPT` = the copy HTML-escaped with\n"
-        "  `&#10;` for each newline, `VARIANT=pip-safe`, `ACCENT` = `work/brand.json` accent without `#`,\n"
-        "  `LABEL`, `TYPING_SPEED` (`1.0`), `BOTTOM_TAG` and `BOTTOM_TAG_DISPLAY` (`display:none` when the\n"
-        "  tag is blank, else empty). Hook: `DURATION`, `EYEBROW`, `LINE1`–`LINE3`, `SUBHEAD`, `ACCENT` (the\n"
-        "  hook template has no `VARIANT`). Copy `$GSAP` in as `gsap.min.js`; then\n"
-        "  `( cd work/gfx_$i && npx hyperframes@0.7.5 lint && npx hyperframes@0.7.5 render --output"
-        " ../bg_beats/bg_beat$i.mp4 --quality high --fps 30 )`.\n",
-    ),
-    "04-build-top.md": (
-        "- **`graphics`, typing / hook scene** — `bash \"$TYPING_UI_DIR/scripts/render.sh\" --text \"<copy>\""
-        " --duration \"$DUR\" --brand work/brand.json --variant top-half --out work/top_beats/top_beat$i.mp4`"
-        " (see `$TYPING_UI_DIR/SKILL.md`); if `top-half` is unsupported, render `pip-safe` and crop:"
-        " `-vf crop=1080:960:0:0`.\n",
-        "- **`graphics`, typing / hook scene** — `c-typing-ui` ships templates, not a render script (its\n"
-        "  `scripts/render-sample.sh` only renders a fixed demo), and it has no `top-half` variant. Fill\n"
-        "  `$TYPING_UI_DIR/templates/typing-scene.html` (typing: `VARIANT=pip-safe`, `BOTTOM_TAG` blank —\n"
-        "  the pip-safe tag sits at y=980, below the crop) or `hook-scene.html` (hook) into\n"
-        "  `work/gfx_$i/index.html` exactly as `$TYPING_UI_DIR/SKILL.md` \"Usage — standalone render (one\n"
-        "  beat)\" shows, copy `$GSAP` in as `gsap.min.js`, render it at 1080×1920 with\n"
-        "  `( cd work/gfx_$i && npx hyperframes@0.7.5 lint && npx hyperframes@0.7.5 render --output"
-        " ../top_beats/_full$i.mp4 --quality high --fps 30 )`, then keep the top half:\n"
-        "  `ffmpeg -y -i work/top_beats/_full$i.mp4 -vf crop=1080:960:0:0,format=yuv420p -an -c:v libx264"
-        " -preset medium -crf 20 work/top_beats/top_beat$i.mp4`.\n",
-    ),
-}
+# WI28.4 / WI28.7: the recipe source (ecosystem harness/skills) now authors these step 04 bullets
+# itself, so both entries were retired: p-reels-pip and p-reels-pip-heygen 04-build-background.md
+# already hold the real c-typing-ui render text (and name $SKILL_DIR/scripts/typing_prompt.py for the
+# prompt, which this transform's old text did not), and 04-build-top.md existed only in the retired
+# p-reels-split recipe, so no source copy has it. Re-adding an entry here would overwrite the
+# source's own text; fix the step in the source instead.
+_STEP_TYPING_RENDER_EDITS = {}
 # (old, new) pairs for every c-typing-ui SKILL.md copy. Each pair is applied once: a copy that
 # already has `new` is left alone, a copy with neither fails fast.
 _TYPING_SKILL_RENDER_EDITS = (
@@ -2453,22 +2430,11 @@ _TYPING_SKILL_RENDER_EDITS = (
         " always typed: `typingWindow(duration, speed)` starts at 0.5 s and ends at"
         " `duration × 0.88 / speed`, never later than 0.6 s before the clip ends. |\n",
     ),
-    (
-        "## Usage — standalone render (one beat)\n\n",
-        "## Usage — standalone render (one beat)\n\n"
-        "There is no per-beat render script: `scripts/render-sample.sh` renders a fixed demo only (it takes\n"
-        "just an output folder). To render a beat, fill the template, put `gsap.min.js` beside it, then lint\n"
-        "and render with HyperFrames:\n\n",
-    ),
-    (
-        "No fake compliments.\"),\n",
-        "No fake compliments.\").replace(\"\\n\", \"&#10;\"),  # newlines as &#10; (JS string literal)\n",
-    ),
-    (
-        "    \"BOTTOM_TAG\":   \"research · personalise · send\",\n",
-        "    \"BOTTOM_TAG\":   \"research · personalise · send\",\n"
-        "    \"BOTTOM_TAG_DISPLAY\": \"\",  # \"display:none\" when BOTTOM_TAG is blank\n",
-    ),
+    # WI28.4 / WI28.7 retired three edits here (the "## Usage - standalone render" lead-in, the
+    # `No fake compliments.` .replace("\\n", "&#10;") line and the BOTTOM_TAG_DISPLAY key). The
+    # source SKILL.md now carries its own standalone-render block, which fills the template with
+    # scripts/typing_fill.py and an escaped prompt FILE; the old text would have duplicated that
+    # lead-in. Fix the block in the source, not here.
     (
         "cd \"$BEAT_DIR\" && npx hyperframes@0.7.5 lint",
         "cp \"$SKILL_DIR/../f-gsap/vendor/gsap.min.js\" \"$BEAT_DIR/\"  # the template loads gsap.min.js from its folder\n"
@@ -2656,7 +2622,7 @@ SPOTLIGHT_CTA_PRODUCE = """  duration: graded picture, captions burned, SFX unde
   `cta_duration` seconds, but never before the last spoken word ends (WI2.86). No cover frame
   yet — that is the final step.
 """
-_SPOTLIGHT_CTA_DOC_OLD = """Resolve the copy: `inputs/cta/cta.json` wins; otherwise `brief.json.brand`. **No handle → no
+_SPOTLIGHT_CTA_DOC_OLD = """Resolve the copy: `inputs/cta/cta.json` wins, then `inputs/cta/cta.md` / `cta.txt`; otherwise `brief.json.brand`. **No handle → no
 handle line.** Never invent a handle or reuse another brand's.
 """
 SPOTLIGHT_CTA_DOC = _SPOTLIGHT_CTA_DOC_OLD + """
@@ -2786,7 +2752,8 @@ left as it is. The tail is part of the sealed bed: captions, takeovers, checks a
 time against it, and the end card then shows in full right after the last word.
 """
 _SPOTLIGHT_SEAL_OLD = "### 5. Seal and save\n"
-SPOTLIGHT_TAIL_STEP = ("### 4b. Give the end card a silent tail (WI2.89)\n\n" + SPOTLIGHT_TAIL_PROSE + """
+_SPOTLIGHT_TAIL_HEADING = "### 4b. Give the end card a silent tail (WI2.89)\n"
+SPOTLIGHT_TAIL_STEP = (_SPOTLIGHT_TAIL_HEADING + "\n" + SPOTLIGHT_TAIL_PROSE + """
 ```bash
 opt () { python3 -c "import json; print(json.load(open('brief.json')).get('options',{}).get('$1','$2'))"; }
 python3 - work/base.mp4 "$(opt cta_card on)" "$(opt cta_duration 3.0)" <<'PY' || exit 1
@@ -2923,11 +2890,18 @@ def apply_spotlight_bed_tail(directory: Path, recipe: str) -> int:
             for old, new in edits:
                 if new in new_text:
                     continue
+                # WI31.10: the source recipe now owns step 4b (it has the no-CTA guard). Adding this older
+                # copy beside it undoes the guard: a reel with no CTA ends in dead air (R-8HZS).
+                if old == _SPOTLIGHT_SEAL_OLD and _SPOTLIGHT_TAIL_HEADING in new_text:
+                    continue
                 if new_text.count(old) != 1:
                     raise SystemExit(f"sync-skills.py: ERROR - end-card tail anchor {old.strip().splitlines()[0][:60]!r} "
                                      f"found {new_text.count(old)} time(s) in {path} ({recipe}); "
                                      "the WI2.89 transform cannot apply")
                 new_text = new_text.replace(old, new, 1)
+            if path.name == "01-prepare-footage.md" and new_text.count(_SPOTLIGHT_TAIL_HEADING) != 1:
+                raise SystemExit(f"sync-skills.py: ERROR - {path} ({recipe}) has "
+                                 f"{new_text.count(_SPOTLIGHT_TAIL_HEADING)} step 4b sections, expected 1")
             if new_text != text:
                 path.write_text(new_text, encoding="utf-8")
                 changed += 1
@@ -3276,6 +3250,9 @@ def apply_spotlight_end_card_render(directory: Path, recipe: str) -> int:
             text = path.read_text(encoding="utf-8")
             new_text = text
             for old, new in edits:
+                if root.name != "p-reels-spotlight" and new is SPOTLIGHT_CTA_HF_STEP_RENDER:
+                    # WI31.10: the HeyGen wrapper's bundle holds the base recipe's scripts under .hub.
+                    old, new = (s.replace("$SKILL_DIR/scripts/", "$SKILL_DIR/.hub/p-reels-spotlight/scripts/") for s in (old, new))
                 if new in new_text:
                     continue
                 # WI2.96 upgrades the hero / fit code inside write_project, so a later transform can leave this
@@ -4092,10 +4069,14 @@ SPOTLIGHT_TK_BRAND_PY = r'''# WI2.95: takeover text names only the order's brand
 #        python3 work/takeover_brand.py --check PLAN.json WORDS.json [BRAND]  (exit 1 on a foreign name)
 # BRAND is the order's brand name ("" = the order has none). Without it the brand comes from the
 # step workdir: inputs/cta/cta.json brandName, else brief.json brand.name (as the end card does).
-# A foreign name is a brand-like word the speech says that the order does not own: an acronym (CFW,
-# also spelled out "C F W") or a CamelCase word (HubSpot). It is never a generic acronym (AI, CAC,
-# MLS, HOA, NYC, PhD, ...), a channel or tool (Instagram, iPhone, ...), a word that starts lower case
-# (iOS, eBay) or a Mc/Mac/O'/De/Le name (McKenzie). A line of 3+ words that is an exact run of
+# A foreign name is a brand-like word the speech says that the order does not own: an acronym with no
+# vowel (CFW, also spelled out "C F W") or a CamelCase word whose first part has 3+ letters (HubSpot).
+# It is never a generic acronym (AI, CAC, MLS, HOA, NYC, PhD, ...), a regulator or firm (SEC, FINRA,
+# KPMG, ...), a channel or tool (Instagram, iPhone, ...), a word that starts lower case (iOS, eBay), a
+# person's name or initials (McKenzie, DeShawn, JoAnn, JT, ANNA), or capitals used for emphasis (INSANE,
+# BOOM): a 2-letter acronym, an all-caps word with a vowel and a CamelCase word with a 2-letter first
+# part are all left alone (WI28.9). tk-quote ATTR credits a person or company, so it is never touched.
+# A line of 3+ words that is an exact run of
 # transcript words (case and punctuation aside) is a quote and keeps its words, unless the foreign
 # name is most of it. Otherwise the name becomes the order's brand; with no order brand it is dropped.
 # A brand is never invented. When in doubt a word is left alone: rule 5 asks the planner for the rest.
@@ -4104,8 +4085,9 @@ import html, json, os, re, sys
 TOKEN = re.compile(r"[A-Za-z0-9]+(?:['’.&-][A-Za-z0-9]+)*")
 TAG = re.compile(r"(<[^>]*>)")
 POSS = re.compile(r"['’]s$", re.I)
+VOWEL = re.compile(r"[AEIOUYaeiouy]")
 NAME_PREFIX = re.compile(r"^(?:Mc|Mac|O['’]|D['’]|De|Di|Da|Du|Le|La|Van|Von|St)[A-Z]")
-SKIP = {"tk-typing-ui": {"LABEL", "TYPING_SPEED"}}
+SKIP = {"tk-typing-ui": {"LABEL", "TYPING_SPEED"}, "tk-quote": {"ATTR"}}   # ATTR names who said it (WI28.9)
 HTML_KEYS = {"TITLE", "QUOTE"}
 MIN_QUOTE = 3
 # Never a competing brand: generic business, marketing, finance, real-estate, place and tech
@@ -4124,6 +4106,8 @@ btc eth qr id ip sdk ui ux js css html sql aws gcp
 instagram ig tiktok youtube yt linkedin facebook fb threads pinterest reddit x twitter whatsapp
 snapchat google gmail chatgpt claude gemini openai anthropic iphone ipad android macbook mac zoom
 slack excel outlook zillow
+sec finra fdic fda ftc fcc cfpb doj fbi cia nsa epa osha hhs dol sba nasdaq nyse cboe cme
+kpmg pwc deloitte ey bcg hsbc ubs ibm sap amd bbc cnn cnbc nbc abc cbs espn hbo
 """.split())
 # Common words a transcript may put in capitals for emphasis ("NO", "STOP"): never a brand name.
 COMMON = set("""
@@ -4148,9 +4132,10 @@ def shaped(t):
     if not b[:1].isupper() or NAME_PREFIX.match(b):
         return False
     letters = re.sub(r"[^A-Za-z]", "", b)
-    if 2 <= len(letters) <= 6 and letters.isupper():
-        return True
-    return bool(re.fullmatch(r"[A-Z][a-z]+(?:[A-Z][a-z0-9]*)+", b))
+    if 3 <= len(letters) <= 6 and letters.isupper():
+        return not VOWEL.search(letters)   # an acronym cannot be read as a word; INSANE, ANNA, BOOM can
+    m = re.fullmatch(r"([A-Z][a-z]+)(?:[A-Z][a-z0-9]*)+", b)
+    return bool(m) and len(m.group(1)) >= 3   # HubSpot; not the names JoAnn, DeShawn
 
 
 def plain(v):
@@ -4163,13 +4148,18 @@ def stop(msg):
 
 
 def order_brand():
-    cta = {}
-    if os.path.isfile("inputs/cta/cta.json"):
-        cta = json.load(open("inputs/cta/cta.json"))
+    cta, brief = {}, {}
+    try:
+        if os.path.isfile("inputs/cta/cta.json"):
+            cta = json.load(open("inputs/cta/cta.json"))
+        if os.path.isfile("brief.json"):
+            brief = json.load(open("brief.json"))
+    except ValueError as exc:
+        stop("inputs/cta/cta.json or brief.json is not valid JSON (%s) (WI2.95)" % exc)
     if not os.path.isfile("brief.json") and not cta:
         stop("no order brand: pass BRAND, or run in the step workdir with brief.json (WI2.95)")
-    brief = json.load(open("brief.json")) if os.path.isfile("brief.json") else {}
-    b = (brief.get("brand") or {}) if isinstance(brief, dict) else {}
+    b = brief.get("brand") if isinstance(brief, dict) else None
+    b = b if isinstance(b, dict) else {}
     return str((cta.get("brandName") if isinstance(cta, dict) else "") or b.get("name") or "").strip()
 
 
@@ -4223,7 +4213,7 @@ def foreign(value, names, spelled, own):
         if not bare[:1].isupper() or NAME_PREFIX.match(bare):
             continue
         upper = re.sub(r"[^A-Za-z]", "", bare).isupper()
-        if (b in names and (upper or shaped(bare))) or (b in spelled and upper and len(b) >= 3):
+        if (b in names and (upper or shaped(bare))) or (b in spelled and upper and len(b) >= 3 and not VOWEL.search(b)):
             out.append(tok)
     return out
 
@@ -4316,6 +4306,8 @@ def main(argv):
         words = words.get("words") or []
     if not isinstance(plan, dict) or not isinstance(words, list):
         stop("plan must be a JSON object and words a JSON list (WI2.95)")
+    if not any(str(w.get("text", w.get("w", w.get("word", "")))).strip() if isinstance(w, dict) else str(w).strip() for w in words):
+        stop("%s holds no words to compare the takeovers with (WI28.9)" % wpath)
     said, names, spelled = transcript(words)
     own = {base(t) for t in TOKEN.findall(brand)}
     bad = problems(plan, said, names, spelled, own)

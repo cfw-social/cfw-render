@@ -129,6 +129,10 @@ python3 "$SELF_DIR/sync-skills.py" \
 # not ship a bundle that leaks the author's own filesystem layout.
 "$SELF_DIR/check-no-host-paths.sh" --skills-dir "$OUT_DIR"
 
+# WI31.10 bundle gate — abort the sync if a transform or a source edit left
+# a recipe with the same step twice (R-8HZS: two copies of spotlight's 4b).
+"$SELF_DIR/check-no-duplicate-steps.sh" --skills-dir "$OUT_DIR"
+
 # CFW-354 bundle gate — abort the sync if any skill ships a literal handle
 # default — another brand's handle or a placeholder — because the end card
 # must be per-brand. One brand's `@mr.growthguide` once shipped on every
