@@ -2538,6 +2538,30 @@ else
   fail "check-no-host-paths.sh: fixture bundle" "expected exit 0 after rewrite"
 fi
 
+if "$REPO_DIR/scripts/check-no-duplicate-steps.sh" --skills-dir "$REPO_DIR/skills" >/dev/null 2>&1; then
+  pass "check-no-duplicate-steps.sh: the shipped bundle has no duplicated step (WI31.10)"
+else
+  fail "check-no-duplicate-steps.sh: shipped bundle" "a recipe carries the same step twice"
+fi
+
+c_dup_dir="$(mktemp -d)"
+mkdir -p "$c_dup_dir/p-dup/steps"
+printf '### 4b. Tail\n\n```bash\n# not a heading\n# not a heading\n```\n\n### 4b. Tail\n' > "$c_dup_dir/p-dup/steps/01-a.md"
+"$REPO_DIR/scripts/check-no-duplicate-steps.sh" --skills-dir "$c_dup_dir" >/dev/null 2>&1
+c_dup_rc=$?
+if [[ "$c_dup_rc" == "1" ]]; then
+  pass "check-no-duplicate-steps.sh: catches a repeated step heading (WI31.10)"
+else
+  fail "check-no-duplicate-steps.sh: repeated heading" "expected exit 1, got $c_dup_rc"
+fi
+sed -i '' '$d' "$c_dup_dir/p-dup/steps/01-a.md"
+if "$REPO_DIR/scripts/check-no-duplicate-steps.sh" --skills-dir "$c_dup_dir" >/dev/null 2>&1; then
+  pass "check-no-duplicate-steps.sh: a repeated bash comment is not a step (WI31.10)"
+else
+  fail "check-no-duplicate-steps.sh: code fence" "a comment inside a code fence was read as a heading"
+fi
+rm -rf "$c_dup_dir"
+
 c318_sha="$(python3 -c "import json; print(json.load(open('$c318_out/index.json'))['sourceSha'])" 2>/dev/null)"
 if [[ "$c318_sha" == "None" ]]; then
   pass "sync-skills.py: index.json sourceSha stays null for a non-git fixture source (soft-fail path, CFW-318)"
@@ -11963,6 +11987,9 @@ echo "=== Case 58: WI2.80 — every scripts/<file> a recipe step names ships in 
 # render out by hand. Step 04 now names the real usage (fill the template + hyperframes render), and
 # every c-typing-ui SKILL.md describes the shipped typingWindow() timing, not "text.length × speed"
 # or a #char-count element the template never had.
+# skills/ is frozen (WI28); transform tests build their input in a temp folder. The step-04 table
+# (_STEP_TYPING_RENDER_EDITS) was retired by WI28.4/WI28.7, so this case asserts it stays empty and runs the
+# live c-typing-ui SKILL.md transform on text built from the bundler's own (old, new) constants.
 wi280_root="$(mktemp -d)"
 wi280_detail="$(python3 - "$REPO_DIR" "$wi280_root" <<'PY'
 import importlib.util, re, shutil, sys
@@ -12001,17 +12028,13 @@ try:
     stale = sorted(KNOWN_GAPS - got)
     if stale:
         bad.append("KNOWN_GAPS entry now resolves; remove it: " + ", ".join("%s/%s" % g[:2] for g in stale))
-    for need in ("p-reels-pip", "p-reels-pip-heygen", "p-reels-split", "p-reels-split-heygen"):
+    for need in ("p-reels-pip", "p-reels-pip-heygen"):
         if not list((skills / need).rglob("steps/04-build-*.md")):
             bad.append("%s: no step 04 found" % need)
-    steps04 = [p for p in sorted(skills.glob("*/steps/04-build-*.md")) + sorted(skills.glob("*/.hub/*/steps/04-build-*.md"))
-               if p.name in ss._STEP_TYPING_RENDER_EDITS]
-    if len(steps04) != 6:
-        bad.append("expected 6 pip/split step 04 copies, found %d" % len(steps04))
-    for step in steps04:
-        body = step.read_text(encoding="utf-8")
-        if "typing-scene.html" not in body or "npx hyperframes@0.7.5 render" not in body:
-            bad.append("%s: step 04 does not name the typing template + hyperframes render" % step.relative_to(repo))
+    # WI28.4 / WI28.7 retired both step-04 entries (the source authors those bullets itself). Re-adding one would
+    # overwrite the source's text, so the table must stay empty.
+    if ss._STEP_TYPING_RENDER_EDITS != {}:
+        bad.append("_STEP_TYPING_RENDER_EDITS is not empty (WI28.4/WI28.7 retired it): %r" % sorted(ss._STEP_TYPING_RENDER_EDITS))
     docs = sorted(skills.glob("*/.hub/c-typing-ui/SKILL.md"))
     if len(docs) < 8:
         bad.append("expected 8 vendored c-typing-ui SKILL.md copies, found %d" % len(docs))
@@ -12029,39 +12052,43 @@ try:
                 bad.append("%s: names #%s, which typing-scene.html does not have" % (doc.relative_to(repo), el))
         if '.replace("\\n", "&#10;")' not in body or "gsap.min.js" not in body or "BOTTOM_TAG_DISPLAY" not in body:
             bad.append("%s: standalone usage misses &#10; newlines, BOTTOM_TAG_DISPLAY or gsap.min.js" % doc.relative_to(repo))
-    # The check really catches the old step: restore the pre-WI2.80 text in a copy and scan it.
-    up = root / "skills"
-    for rec in ("p-reels-pip", "p-reels-split-heygen"):
-        shutil.copytree(skills / rec, up / rec)
-    for name, (old, newtxt) in ss._STEP_TYPING_RENDER_EDITS.items():
-        for step in up.rglob(name):
-            step.write_text(step.read_text(encoding="utf-8").replace(newtxt, old), encoding="utf-8")
-    old_miss = missing_refs(up)
-    for want in (("p-reels-pip", "steps/04-build-background.md", "render.sh"),
-                 ("p-reels-split-heygen", "steps/04-build-top.md", "render.sh"),
-                 ("p-reels-split-heygen", ".hub/p-reels-split/steps/04-build-top.md", "render.sh")):
-        if want not in old_miss:
-            bad.append("sanity: the old step text was not caught (%s/%s)" % want[:2])
-    # Restore the old c-typing-ui SKILL.md text too; the transform upgrades both once, then is a no-op.
-    for doc in up.rglob(".hub/c-typing-ui/SKILL.md"):
-        text = doc.read_text(encoding="utf-8")
-        for old, newtxt in ss._TYPING_SKILL_RENDER_EDITS:
-            text = text.replace(newtxt, old)
-        doc.write_text(text, encoding="utf-8")
-    for rec in ("p-reels-pip", "p-reels-split-heygen"):
-        n1 = ss.apply_typing_render_usage(up / rec, rec); n2 = ss.apply_typing_render_usage(up / rec, rec)
-        want = 2 if rec == "p-reels-pip" else 3
-        if (n1, n2) != (want, 0):
-            bad.append("transform on %s changed (%d, %d) file(s), expected (%d, 0)" % (rec, n1, n2, want))
-        for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
-            if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
-                bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
-    step = up / "p-reels-pip" / "steps" / "04-build-background.md"
-    step.write_text(step.read_text(encoding="utf-8").replace(ss._STEP_TYPING_RENDER_EDITS["04-build-background.md"][1],
-                                                           "- drifted typing bullet\n"), encoding="utf-8")
+    # The live c-typing-ui SKILL.md transform, on a temp input made from the bundler's own (old, new) pairs.
+    up = root / "skills" / "p-reels-pip"
+    doc_dirs = [up / ".hub" / "c-typing-ui", up / ".hub" / "p-carousel" / ".hub" / "c-typing-ui"]
+    old_text = "# c-typing-ui (input built from sync-skills.py's own text)\n\n" + "\nfiller\n".join(o for o, _n in ss._TYPING_SKILL_RENDER_EDITS) + "\nend\n"
+    for d in doc_dirs:
+        d.mkdir(parents=True); (d / "SKILL.md").write_text(old_text, encoding="utf-8")
+    # Step 04 text built from the bundler's own text: the pre-WI2.80 usage line the retired entries replaced, plus
+    # every (old, new) pair the live transform knows. No step-04 edit is applied any more, so it must come back byte-identical.
+    step_text = ("# Step 04 (input built from sync-skills.py's own text)\n\n"
+                 "Run `$TYPING_UI_DIR/scripts/render.sh --text ... --duration ...`.\n\n"
+                 + "\n".join(o + n for o, n in ss._TYPING_SKILL_RENDER_EDITS) + "\nend\n")
+    step_files = [up / "steps" / "04-build-background.md", up / ".hub" / "p-reels-pip" / "steps" / "04-build-background.md",
+                  up / ".hub" / "p-reels-pip" / "steps" / "04-build-top.md"]
+    for sf in step_files:
+        sf.parent.mkdir(parents=True, exist_ok=True); sf.write_text(step_text, encoding="utf-8")
+    if "text.length × speed" not in old_text:
+        bad.append("sanity: the temp input does not hold the old c-typing-ui text")
+    n1 = ss.apply_typing_render_usage(up, "p-reels-pip"); n2 = ss.apply_typing_render_usage(up, "p-reels-pip")
+    if (n1, n2) != (2, 0):
+        bad.append("transform changed (%d, %d) c-typing-ui SKILL.md file(s), expected (2, 0)" % (n1, n2))
+    for d in doc_dirs:
+        body = (d / "SKILL.md").read_text(encoding="utf-8")
+        if "text.length × speed" in body or any(n not in body for _o, n in ss._TYPING_SKILL_RENDER_EDITS):
+            bad.append("transform output of %s is missing a new text or keeps the old one" % d.relative_to(up))
+        back = body
+        for o, n in reversed(ss._TYPING_SKILL_RENDER_EDITS):
+            back = back.replace(n, o)
+        if back != old_text:
+            bad.append("round trip of %s does not equal the temp input" % d.relative_to(up))
+    for sf in step_files:
+        if sf.read_text(encoding="utf-8") != step_text:
+            bad.append("the bundler changed %s (no step-04 edit is applied any more)" % sf.relative_to(up))
+    doc = doc_dirs[0] / "SKILL.md"
+    doc.write_text(old_text.replace("Multiplier (0.5 = slow, 2.0 = fast).", "Multiplier (0.5 = slower, 2.0 = fast)."), encoding="utf-8")
     try:
-        ss.apply_typing_render_usage(up / "p-reels-pip", "fixture")
-        bad.append("transform did not fail on a step 04 without its anchor")
+        ss.apply_typing_render_usage(up, "fixture")
+        bad.append("transform did not fail on a SKILL.md with neither the old nor the new text")
     except SystemExit:
         pass
 except Exception as exc:
@@ -12070,7 +12097,7 @@ print("ok" if not bad else "; ".join(bad))
 PY
 )"
 if [[ "$wi280_detail" == "ok" ]]; then
-  pass "WI2.80 recipe steps name only scripts their bundle ships; step 04 names the real typing render"
+  pass "WI2.80 recipe steps name only scripts their bundle ships; the step-04 table stays retired; the c-typing-ui SKILL.md transform is once-only and fails fast on drift"
 else
   fail "WI2.80 recipe steps name only shipped scripts" "$wi280_detail"
 fi
@@ -12325,6 +12352,9 @@ echo "=== Case 61: WI2.86 — the spotlight end card starts only after the last 
 # at max(bed - cta_duration, last word end) and renders it at the shorter length; under 1.0 s left
 # it now fails the step with the reason (WI2.90; it used to skip the card). The section-4 bash block of each copy runs under bash with a
 # stub ffmpeg/npx (the overlay window is read from the ffmpeg call) and the real cta-card.py.
+# skills/ is frozen (WI28); transform tests build their input in a temp folder. The shipped copies are still run
+# above (they test the frozen copy itself); the WI2.86 transform runs on a step 06 built from the bundler's own
+# (old, new) text, and its round trip equals that temp input.
 wi286_root="$(mktemp -d)"
 wi286_detail="$(python3 - "$REPO_DIR" "$wi286_root" <<'PY'
 import importlib.util, json, os, re, shutil, subprocess, sys
@@ -12340,7 +12370,7 @@ def block(step):
     sec = text.split("### 4. CTA end card", 1)[1].split("### 5.", 1)[0]
     m = re.search(r"```bash\n(.*?)```", sec, re.S)
     return m.group(1) if m else None
-def run(step, case, bed, cta, words_end, caption_end, card="on", sh="bash"):
+def run(step, case, bed, cta, words_end, caption_end, card="on", sh="bash", skill_dir=None):
     work = root / case; shutil.rmtree(work, ignore_errors=True); (work / "work").mkdir(parents=True)
     words = [{"text": "built", "start": words_end - 0.4, "end": words_end - 0.2},
              {"text": "you.", "start": words_end - 0.2, "end": words_end}]
@@ -12355,7 +12385,7 @@ def run(step, case, bed, cta, words_end, caption_end, card="on", sh="bash"):
     if code is None:
         return {"error": "no bash block in section 4"}
     (work / "s4.sh").write_text("set -u\nCTA_CARD=%s; CTA_DURATION=%s; BED_DUR=%s\nSKILL_DIR=%s\n%s"
-                                % (card, cta, bed, repo / "skills" / "p-reels-spotlight", code))
+                                % (card, cta, bed, skill_dir or repo / "skills" / "p-reels-spotlight", code))
     log = work / "ffmpeg.log"
     env = dict(os.environ, PATH="%s:%s" % (bin_dir, os.environ["PATH"]), WI286_LOG=str(log))
     p = subprocess.run([sh, "s4.sh"], cwd=work, env=env, capture_output=True, text=True, timeout=60)
@@ -12407,43 +12437,65 @@ try:
     if edits is None or not hasattr(ss, "apply_spotlight_end_card"):
         bad.append("sync-skills.py does not carry the WI2.86 apply_spotlight_end_card transform")
     else:
-        # From the 503d906 step the transform adds the rule once and matches the committed bundle.
-        # WI2.90 (apply_spotlight_end_card_room) runs after it on step 06, so it is reverted first and re-applied.
-        room = [e for rel, _f, eds in getattr(ss, "_SPOTLIGHT_CTA_ROOM_FILES", ()) if rel == ss.SPOTLIGHT_ASSEMBLE_FILE for e in eds]
-        def unroom(text):
-            for old, new in reversed(room):
-                text = text.replace(new, old)
-            return text
+        # A step 06 in its 503d906 form, made from the transform's own `old` text plus a small runnable section 4.
+        old_step = ("# Step 06 - assemble (input built from sync-skills.py's own text)\n\n"
+                    + ss._SPOTLIGHT_CTA_PRODUCE_OLD + "\n" + ss._SPOTLIGHT_CTA_DOC_OLD + "\n"
+                    + "### 4. CTA end card\n\n```bash\nCTA_TEXT=\"Try it\"\n"
+                    + ss._SPOTLIGHT_CTA_IF_OLD + "true\n"
+                    + ss._SPOTLIGHT_CTA_START_OLD
+                    + "  ffmpeg -y -i work/polished.mp4 -filter_complex \"[0:v]overlay=enable='between(t,${CTA_START},${BED_DUR})'\" work/assembled.mp4\n"
+                    + "fi\n[ -f work/assembled.mp4 ] || cp work/polished.mp4 work/assembled.mp4\n```\n\n### 5. Seal\n\n"
+                    + ss._SPOTLIGHT_CTA_CHECK_OLD + "end\n")
         up = root / "skills"
-        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
-            shutil.copytree(skills / rec, up / rec)
-        for t in up.rglob("06-assemble.md"):
-            if t.parent.name != "steps" or not t.parent.parent.name.startswith("p-reels-spotlight"):
-                continue
-            text = unroom(t.read_text(encoding="utf-8"))
-            for old, new in reversed(edits):
-                text = text.replace(new, old)
-            t.write_text(text, encoding="utf-8")
-            r = run(t, "restored", 44.0, 3.0, 41.6, 41.6)
-            if r.get("start") is None or r["start"] >= 41.6 - 1e-6:
-                bad.append("sanity: the restored 503d906 step was not caught (%r)" % r)
+        def put(rel, text):
+            f = up / rel; f.parent.mkdir(parents=True, exist_ok=True); f.write_text(text, encoding="utf-8"); return f
+        plain = put("p-reels-spotlight/steps/06-assemble.md", old_step)
+        put("p-reels-spotlight-heygen/steps/06-assemble.md", old_step)
+        put("p-reels-spotlight-heygen/.hub/p-reels-spotlight/steps/06-assemble.md", old_step)
+        r = run(plain, "restored", 44.0, 3.0, 41.6, 41.6, skill_dir=root)
+        if r.get("start") is None or r["start"] >= 41.6 - 1e-6:
+            bad.append("sanity: the old step does not start the card over the last words (%r)" % r)
         for rec, n in (("p-reels-spotlight", 1), ("p-reels-spotlight-heygen", 2)):
             n1 = ss.apply_spotlight_end_card(up / rec, rec); n2 = ss.apply_spotlight_end_card(up / rec, rec)
             if (n1, n2) != (n, 0):
                 bad.append("transform on %s changed (%d, %d) file(s), expected (%d, 0)" % (rec, n1, n2, n))
-            if room:
-                ss.apply_spotlight_end_card_room(up / rec, rec)
-            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
-                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
-                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
-        t = up / "p-reels-spotlight" / "steps" / "06-assemble.md"
-        text = unroom(t.read_text(encoding="utf-8"))
-        for old, new in reversed(edits):
-            text = text.replace(new, old)
-        t.write_text(text.replace("print(${BED_DUR} - ${CTA_DURATION})", "print(${BED_DUR} - ${CTA_DURATION} - 0.5)"), encoding="utf-8")
+            for f in sorted(up.glob(rec + "/**/06-assemble.md")):
+                back = f.read_text(encoding="utf-8")
+                if any(new not in back for _o, new in edits):
+                    bad.append("%s is missing a WI2.86 text after the transform" % f.relative_to(up))
+                for old, new in reversed(edits):
+                    back = back.replace(new, old)
+                if back != old_step:
+                    bad.append("round trip of %s does not equal the temp input" % f.relative_to(up))
+        # the transformed step: the card waits for the last spoken word, and a bed with no room skips it (WI2.86)
+        for sh in shells:
+            r = run(plain, "t-late", 44.0, 3.0, 41.6, 41.6, sh=sh, skill_dir=root)
+            if r.get("rc") != 0 or r.get("start") is None or r["start"] < 41.6 - 1e-6 or abs(r["end"] - 44.0) > 1e-6:
+                bad.append("transformed step (%s): card over speech, bed 44.0 / last word 41.6: %r" % (sh, r))
+            r = run(plain, "t-room", 45.0, 3.0, 41.6, 41.6, sh=sh, skill_dir=root)
+            if r.get("rc") != 0 or r.get("start") is None or abs(r["start"] - 42.0) > 1e-6:
+                bad.append("transformed step (%s): card did not start at bed - cta_duration with room: %r" % (sh, r))
+            r = run(plain, "t-caption", 44.0, 3.0, 41.2, 41.8, sh=sh, skill_dir=root)
+            if r.get("rc") != 0 or r.get("start") is None or r["start"] < 41.8 - 1e-6:
+                bad.append("transformed step (%s): card starts before the last caption word ends: %r" % (sh, r))
+            r = run(plain, "t-smoke", 41.67, 3.0, 41.6, 41.6, sh=sh, skill_dir=root)
+            if r.get("rc") != 0 or r.get("start") is not None or not r.get("assembled") or "end card skipped" not in r.get("out", ""):
+                bad.append("transformed step (%s): under 1.0 s after the last word the card is not skipped with a log line: %r" % (sh, r))
+            r = run(plain, "t-off", 44.0, 3.0, 41.6, 41.6, card="off", sh=sh, skill_dir=root)
+            if r.get("rc") != 0 or r.get("start") is not None or not r.get("assembled"):
+                bad.append("transformed step (%s): cta_card off still overlays a card: %r" % (sh, r))
+        # fail fast on drift: neither the old nor the new CTA_START text
+        drift = put("drift/p-reels-spotlight/steps/06-assemble.md",
+                    old_step.replace("print(${BED_DUR} - ${CTA_DURATION})", "print(${BED_DUR} - ${CTA_DURATION} - 0.5)"))
         try:
-            ss.apply_spotlight_end_card(up / "p-reels-spotlight", "fixture")
+            ss.apply_spotlight_end_card(drift.parents[1], "fixture")
             bad.append("transform did not fail on a drifted CTA_START line")
+        except SystemExit:
+            pass
+        (up / "empty" / "p-reels-spotlight").mkdir(parents=True)
+        try:
+            ss.apply_spotlight_end_card(up / "empty" / "p-reels-spotlight", "p-reels-spotlight")
+            bad.append("transform did not fail on a spotlight recipe with no steps/06-assemble.md")
         except SystemExit:
             pass
 except Exception as exc:
@@ -12452,7 +12504,7 @@ print("ok" if not bad else "; ".join(bad))
 PY
 )"
 if [[ "$wi286_detail" == "ok" ]]; then
-  pass "WI2.86 spotlight end card starts at max(bed - cta_duration, last word end); under 1.0 s fails the step (WI2.90, every copy)"
+  pass "WI2.86 spotlight end card starts at max(bed - cta_duration, last word end); the shipped copies fail the step under 1.0 s (WI2.90); the transform is once-only and fails fast on drift"
 else
   fail "WI2.86 spotlight end card starts only after the last spoken word ends" "$wi286_detail"
 fi
@@ -12833,6 +12885,9 @@ echo "=== Case 64: WI2.93 — the spotlight end card renders through hyperframes
 # non-zero. The section-4 bash block of each copy runs under bash with a stub ffmpeg and a stub npx
 # that refuses a non-directory exactly as hyperframes 0.7.5 does; the SKILL.md Step 8 copies,
 # cta-card.py copies and the sync transform (idempotent, fail-fast) are checked too.
+# skills/ is frozen (WI28); transform tests build their input in a temp folder. The shipped copies are still checked
+# above (they test the frozen copy itself); the WI2.93 transform runs on files built from the bundler's own
+# (old, new) text, and its round trip equals that temp input.
 wi293_root="$(mktemp -d)"
 wi293_detail="$(python3 - "$REPO_DIR" "$wi293_root" <<'PY'
 import importlib.util, json, os, re, shutil, subprocess, sys
@@ -12853,7 +12908,7 @@ def block(step):
     sec = step.read_text(encoding="utf-8").split("### 4. CTA end card", 1)[1].split("### 5.", 1)[0]
     m = re.search(r"```bash\n(.*?)```", sec, re.S)
     return m.group(1) if m else None
-def run(step, case, fail_render=False):
+def run(step, case, fail_render=False, skill_dir=None):
     work = root / case; shutil.rmtree(work, ignore_errors=True); (work / "work").mkdir(parents=True)
     (work / "work" / "words.json").write_text(json.dumps([{"text": "you.", "start": 41.3, "end": 41.6}]))
     (work / "work" / "plan.json").write_text(json.dumps({"brand": {"bg": "#0F172A", "accent": "#F97316", "fg": "#F1F5F9"},
@@ -12864,7 +12919,7 @@ def run(step, case, fail_render=False):
     if code is None:
         return {"error": "no bash block in section 4"}
     (work / "s4.sh").write_text("set -u\nCTA_CARD=on; CTA_DURATION=3.0; BED_DUR=45.0\nSKILL_DIR=%s\n%s"
-                                % (repo / "skills" / "p-reels-spotlight", code))
+                                % (skill_dir or repo / "skills" / "p-reels-spotlight", code))
     log = work / "calls.log"
     env = dict(os.environ, PATH="%s:%s" % (bin_dir, os.environ["PATH"]), WI293_LOG=str(log))
     env.pop("WI293_FAIL", None)
@@ -12927,36 +12982,85 @@ try:
         bad.append("sync-skills.py has no apply_spotlight_end_card_render (WI2.93)")
     else:
         up = root / "skills"
-        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
-            shutil.copytree(skills / rec, up / rec)
-        def revert(base):
+        HUB = "$SKILL_DIR/.hub/p-reels-spotlight/scripts/"
+        def swap(text, wrapper):
+            return text.replace("$SKILL_DIR/scripts/", HUB) if wrapper else text
+        def input_for(rel, edits, wrapper):
+            if rel == ss.SPOTLIGHT_ASSEMBLE_FILE:   # the 69bc5ce step 06, with a small runnable section 4
+                return ("# Step 06 (input built from sync-skills.py's own text)\n\n" + ss._SPOTLIGHT_CTA_HF_STEP_FAIL_OLD
+                        + "\n### 4. CTA end card\n\n```bash\nCTA_TEXT=\"Try it\"; CTA_HANDLE=\"@test\"\nif [ \"$CTA_CARD\" = \"on\" ]; then\n"
+                        + swap(ss._SPOTLIGHT_CTA_HF_STEP_RENDER_OLD, wrapper)
+                        + "  ffmpeg -y -i work/polished.mp4 -filter_complex \"[0:v]overlay=enable='between(t,42,45)'\" work/assembled.mp4\nfi\n```\n\n### 5. Seal\n")
+            return "# %s (input built from sync-skills.py's own text)\n" % rel.as_posix() + "\nfiller\n".join(o for o, _n in edits) + "\nend\n"
+        want_files = {}   # path -> (text, rel, edits, wrapper)
+        def build(base, wrapper_root, full):
             for rel, full_only, edits in files:
-                if full_only and base.name != "p-reels-spotlight":
+                if full_only and not full:
                     continue
-                t = (base / rel).read_text(encoding="utf-8")
-                for old, new in reversed(edits):
-                    t = t.replace(new, old)
-                (base / rel).write_text(t, encoding="utf-8")
-        for base in (up / "p-reels-spotlight", up / "p-reels-spotlight-heygen",
-                     up / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight"):
-            revert(base)
-        r = run(up / "p-reels-spotlight" / "steps" / "06-assemble.md", "restored")
-        if r.get("rc") == 0 and not r.get("still"):
-            bad.append("sanity: the restored 69bc5ce step was not caught (%r)" % {k: r.get(k) for k in ("rc", "renders")})
+                text = input_for(rel, edits, wrapper_root)
+                f = base / rel; f.parent.mkdir(parents=True, exist_ok=True); f.write_text(text, encoding="utf-8")
+                want_files[f] = (text, rel, edits, wrapper_root)
+        build(up / "p-reels-spotlight", False, True)
+        build(up / "p-reels-spotlight-heygen", True, False)
+        build(up / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight", False, True)
+        # a stub cta-card.py, where each step's SKILL_DIR points: it writes the .json and, given a project dir, an index.html
+        STUB = ("import os, sys\nopen(sys.argv[2], 'w').write('{}')\nif len(sys.argv) == 5:\n"
+                "    os.makedirs(sys.argv[3], exist_ok=True); open(os.path.join(sys.argv[3], 'index.html'), 'w').write('<html></html>')\n")
+        for d in (root / "scripts", root / ".hub" / "p-reels-spotlight" / "scripts"):
+            d.mkdir(parents=True); (d / "cta-card.py").write_text(STUB)
+        r = run(up / "p-reels-spotlight" / "steps" / "06-assemble.md", "restored", skill_dir=root)
+        if r.get("rc") != 0 or not r.get("still"):
+            bad.append("sanity: the old 69bc5ce step is not the still-card fallback (%r)" % {k: r.get(k) for k in ("rc", "renders", "still")})
         for rec, want in (("p-reels-spotlight", (3, 0)), ("p-reels-spotlight-heygen", (4, 0))):
             got = (fn(up / rec, rec), fn(up / rec, rec))
             if got != want:
                 bad.append("transform on %s changed %r file(s), expected %r" % (rec, got, want))
-            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
-                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
-                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
-        revert(up / "p-reels-spotlight")
-        t = up / "p-reels-spotlight" / "steps" / "06-assemble.md"
-        t.write_text(t.read_text(encoding="utf-8").replace("work/cta-card.json --output work/cta-card.mp4",
-                                                           "work/cta-card.json -o work/cta-card.mp4"), encoding="utf-8")
+        for f, (text, rel, edits, wrapper) in want_files.items():
+            body = f.read_text(encoding="utf-8")
+            back = body
+            for old, new in reversed(edits):
+                back = back.replace(*(swap(x, wrapper) if new is ss.SPOTLIGHT_CTA_HF_STEP_RENDER else x for x in (new, old)))
+            if back != text:
+                bad.append("round trip of %s does not equal the temp input" % f.relative_to(up))
+            if rel.name == "SKILL.md" and ("drawtext=" in body or 'render "$W/cta-card.json"' in body or 'render "$W/cta-card" ' not in body):
+                bad.append("%s: Step 8 still renders the .json spec or keeps the drawtext card" % f.relative_to(up))
+            if rel.name == "cta-card.py" and ("len(argv) not in (3, 5)" not in body or "def write_project(" not in body):
+                bad.append("%s: cta-card.py does not write a project dir" % f.relative_to(up))
+        # the transformed steps (full copy and heygen wrapper): the card renders from a directory, a failed render fails the step
+        for label, step, sdir in (("full", up / "p-reels-spotlight" / "steps" / "06-assemble.md", root),
+                                  ("wrapper", up / "p-reels-spotlight-heygen" / "steps" / "06-assemble.md", root)):
+            r = run(step, "t-ok-" + label, skill_dir=sdir)
+            if r.get("rc") != 0 or not r.get("renders") or r.get("still") or not r.get("overlay") \
+                    or not (r["work"] / r["renders"][0] / "index.html").is_file():
+                bad.append("transformed %s step: hyperframes render did not go through a project dir (rc %s, renders %r, still %r): %s"
+                           % (label, r.get("rc"), r.get("renders"), (r.get("still") or [])[:1], r.get("out")))
+            r = run(step, "t-fail-" + label, fail_render=True, skill_dir=sdir)
+            if r.get("rc") == 0 or r.get("still") or r.get("overlay") or "end card" not in r.get("out", ""):
+                bad.append("transformed %s step: a failed render did not stop the step loudly (rc %s): %s" % (label, r.get("rc"), r.get("out")))
+        # fail fast on drift: neither the old nor the new step 06 render text
+        drift_dir = root / "drift" / "p-reels-spotlight"
+        text, rel, edits, _w = next(v for k, v in want_files.items() if k == up / "p-reels-spotlight" / "steps" / "06-assemble.md")
+        for old, new in reversed(edits):
+            text = text.replace(new, old)
+        (drift_dir / "steps").mkdir(parents=True)
+        (drift_dir / "steps" / "06-assemble.md").write_text(text.replace("work/cta-card.json --output work/cta-card.mp4",
+                                                                        "work/cta-card.json -o work/cta-card.mp4"), encoding="utf-8")
         try:
-            fn(up / "p-reels-spotlight", "fixture")
+            fn(drift_dir, "fixture")
             bad.append("transform did not fail on a drifted step 06 anchor")
+        except SystemExit:
+            pass
+        # fail fast on a missing file, and on a spotlight recipe with no step 06
+        (up / "p-reels-spotlight" / "SKILL.md").unlink()
+        try:
+            fn(up / "p-reels-spotlight", "p-reels-spotlight")
+            bad.append("transform did not fail on a missing SKILL.md")
+        except SystemExit:
+            pass
+        (root / "empty" / "p-reels-spotlight").mkdir(parents=True)
+        try:
+            fn(root / "empty" / "p-reels-spotlight", "p-reels-spotlight")
+            bad.append("transform did not fail on a spotlight recipe with no steps/06-assemble.md")
         except SystemExit:
             pass
 except (Exception, SystemExit) as exc:
@@ -13981,6 +14085,9 @@ echo "=== Case 71: WI2.96 — the spotlight end card keeps the brand name on one
 # font when none does; a brand still too wide at 60 px shrinks on its own; the kicker stays on one line
 # inside 960 px; it refits once fonts load. The real cta-card.py writes the page; its script runs in node
 # with a fake DOM whose text width grows with font size (a fallback font until fonts load).
+# skills/ is frozen (WI28); transform tests build their input in a temp folder. The shipped cta-card.py copies are
+# still run above (they test the frozen copy itself); the WI2.96 transform runs on a cta-card.py built from the
+# bundler's own WI2.93 text, the transformed page is run through the same checks, and the round trip equals that input.
 wi296_root="$(mktemp -d)"
 wi296_detail="$(python3 - "$REPO_DIR" "$wi296_root" <<'PY'
 import html, importlib.util, json, os, re, shutil, subprocess, sys
@@ -14041,11 +14148,11 @@ console.log(JSON.stringify({ heroSize: hs, lines, readies: readies.length,
 GSAP = repo / "skills" / "p-reels-spotlight" / ".hub" / "f-gsap" / "vendor" / "gsap.min.js"
 LONG = "The Very Long Artisan Sourdough Bakery Company"
 EVIL = "Ben & Jerry's <img src=x onerror=alert(1)>"
-def card(script, name, brand, text):
+def card(script, name, brand, text, gsap=None):
     out = root / name
     shutil.rmtree(out, ignore_errors=True)
     env = dict(os.environ, BRAND_NAME=brand, CTA_TEXT=text, CTA_HANDLE="@handle", CTA_DURATION="3.0")
-    p = subprocess.run([sys.executable, str(script), str(root / "plan.json"), str(root / (name + ".json")), str(out), str(GSAP)],
+    p = subprocess.run([sys.executable, str(script), str(root / "plan.json"), str(root / (name + ".json")), str(out), str(gsap or GSAP)],
                        env=env, capture_output=True, text=True, timeout=60)
     if p.returncode != 0:
         return None, "cta-card.py failed: " + (p.stdout + p.stderr)[-200:]
@@ -14056,11 +14163,11 @@ def sim(page, em, fallback):
     if p.returncode != 0:
         return {"error": p.stderr.strip()[-300:]}
     return json.loads(p.stdout)
-def check(script, label):
+def check(script, label, gsap=None):
     found = []
     for name, brand, text in (("smoke", "Test Brand", "Follow Test Brand for more"), ("long", LONG, "Follow %s for more" % LONG),
                               ("evil", EVIL, "Follow %s for more" % EVIL), ("nobrand", "", "Follow for more")):
-        page, err = card(script, name, brand, text)
+        page, err = card(script, name, brand, text, gsap)
         if err:
             found.append("%s %s: %s" % (label, name, err)); continue
         body = page.read_text(encoding="utf-8")
@@ -14114,38 +14221,58 @@ try:
     if fn is None or edits is None:
         bad.append("sync-skills.py has no apply_spotlight_end_card_fit transform (WI2.96)")
     else:
-        # Restore the WI2.93 cta-card.py in a copy; the transform upgrades it once, then is a no-op, and its
-        # output is byte-identical to the committed bundle. The WI2.93 transform leaves the upgrade alone.
+        # A cta-card.py in its WI2.93 form, made from the bundler's own WI2.93 text (write_project and the usage,
+        # argument and tail hunks) around a small main that builds the card spec from the environment.
+        main_body = (
+            '    plan = json.load(open(plan_path))\n'
+            '    brand, text, handle = os.environ.get("BRAND_NAME", ""), os.environ.get("CTA_TEXT", ""), os.environ.get("CTA_HANDLE", "")\n'
+            '    acc = plan["brand"]["accent"]\n'
+            '    layers = ([{"type": "kicker", "text": brand, "y": 640, "color": acc, "fontSize": 52}] if brand else [])\n'
+            '    layers += [{"type": "hero", "text": text, "y": 760, "color": plan["brand"]["fg"], "fontSize": 110}]\n'
+            '    layers += ([{"type": "handle", "text": handle, "y": 1100, "color": acc, "fontSize": 48}] if handle else [])\n'
+            '    layers += [{"type": "arrow", "from": [540, 1250], "to": [540, 1450], "color": acc, "appearAt": 0.5}]\n'
+            '    card = {"duration": float(os.environ.get("CTA_DURATION", "3.0")), "size": [1080, 1920],\n'
+            '            "background": plan["brand"]["bg"], "layers": layers}\n'
+            '    json.dump(card, open(out_path, "w"))\n')
+        old_cta = ('"""cta-card.py (input built from sync-skills.py\'s own text)\nUsage:\n' + ss.SPOTLIGHT_CTA_HF_CTA_USAGE + '"""\n'
+                   'import json, os, sys\n' + ss.SPOTLIGHT_CTA_HF_CTA_FN + ss.SPOTLIGHT_CTA_HF_CTA_ARGS + main_body
+                   + ss.SPOTLIGHT_CTA_HF_CTA_TAIL + '\n\nif __name__ == "__main__":\n    sys.exit(main(sys.argv))\n')
+        gsap_stub = root / "gsap-stub.js"; gsap_stub.write_text("/* stub */\n", encoding="utf-8")
         up = root / "skills"
-        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
-            shutil.copytree(skills / rec, up / rec)
-        def revert(t):
-            text = t.read_text(encoding="utf-8")
-            for old, new in reversed(edits):
-                text = text.replace(new, old)
-            t.write_text(text, encoding="utf-8")
-        for t in up.rglob("cta-card.py"):
-            revert(t)
-        if not check(up / "p-reels-spotlight" / "scripts" / "cta-card.py", "restored"):
-            bad.append("sanity: the restored WI2.93 cta-card.py was not caught")
+        news = {rel: "".join(n for _o, n in es) for rel, _f, es in ss._SPOTLIGHT_CTA_HF_FILES}
+        def tree(base, cta=old_cta):
+            for rel, text in ((ss.SPOTLIGHT_ASSEMBLE_FILE, news[ss.SPOTLIGHT_ASSEMBLE_FILE]), (Path("SKILL.md"), news[Path("SKILL.md")]),
+                              (ss.SPOTLIGHT_CTA_SCRIPT, cta)):
+                f = base / rel; f.parent.mkdir(parents=True, exist_ok=True); f.write_text(text, encoding="utf-8")
+            return base / ss.SPOTLIGHT_CTA_SCRIPT
+        top = tree(up / "p-reels-spotlight")
+        hub = tree(up / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight")
+        if not check(top, "restored", gsap_stub):
+            bad.append("sanity: the WI2.93 cta-card.py (unfitted headline) was not caught")
         for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
             got = (fn(up / rec, rec), fn(up / rec, rec), ss.apply_spotlight_end_card_render(up / rec, rec))
             if got != (1, 0, 0):
                 bad.append("transforms on %s changed %r file(s), expected (1, 0, 0)" % (rec, got))
-            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
-                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
-                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
-        t = up / "p-reels-spotlight" / "scripts" / "cta-card.py"
-        revert(t)
-        t.write_text(t.read_text(encoding="utf-8").replace("#cta-card .word {{ display: inline-block; }}",
-                                                           "#cta-card .word {{ display: inline; }}"), encoding="utf-8")
+        for f in (top, hub):
+            body = f.read_text(encoding="utf-8")
+            back = body
+            for old, new in reversed(edits):
+                back = back.replace(new, old)
+            if back != old_cta:
+                bad.append("round trip of %s does not equal the temp input" % f.relative_to(up))
+        found = check(top, "transformed", gsap_stub)
+        if found:
+            bad += found
+        # fail fast on drift (neither the old nor the new text), and on a missing cta-card.py
+        drift = tree(root / "drift" / "p-reels-spotlight",
+                     old_cta.replace("#cta-card .word {{ display: inline-block; }}", "#cta-card .word {{ display: inline; }}"))
         try:
-            fn(up / "p-reels-spotlight", "fixture"); bad.append("transform did not fail on a drifted cta-card.py")
+            fn(drift.parents[1], "fixture"); bad.append("transform did not fail on a drifted cta-card.py")
         except SystemExit:
             pass
-        t.unlink()
+        drift.unlink()
         try:
-            fn(up / "p-reels-spotlight", "p-reels-spotlight"); bad.append("transform did not fail on a missing cta-card.py")
+            fn(drift.parents[1], "p-reels-spotlight"); bad.append("transform did not fail on a missing cta-card.py")
         except SystemExit:
             pass
 except (Exception, SystemExit) as exc:
@@ -14168,6 +14295,10 @@ echo "=== Case 72: WI2.95 — spotlight takeover text names the order's brand or
 # work/takeover_brand.py and runs it: a word-for-word quote stays; any other line's spoken acronym /
 # CamelCase name the order does not own becomes the order's brand (or is dropped when it has none). The
 # step's own plan guard runs its --check. The real helper and guard run on the smoke-26 plan.
+# skills/ is frozen (WI28); transform tests build their input in a temp folder. The shipped copies are still checked
+# above (they test the frozen copy itself); the WI2.95 transform runs on plan steps and SKILL.md files built from the
+# bundler's own (old, new) text, the helper it ships is run through the same behaviour checks, and the round trip
+# equals that temp input.
 wi295_root="$(mktemp -d)"
 wi295_detail="$(python3 - "$REPO_DIR" "$wi295_root" <<'PY'
 import importlib.util, json, os, re, shutil, subprocess, sys
@@ -14330,32 +14461,57 @@ try:
     if fn is None or files is None:
         bad.append("sync-skills.py has no apply_spotlight_takeover_brand transform (WI2.95)")
     else:
+        # the helper the transform ships, through the same behaviour checks as the shipped copy above
+        bp = root / "takeover_brand-bundler.py"
+        bp.write_text(ss.SPOTLIGHT_TK_BRAND_PY, encoding="utf-8")
+        bad += behave(bp, "bundler-helper")
+        # a plan step and a SKILL.md in their pre-WI2.95 form, from the transform's own `old` anchors
+        step_old = ("# Step 03 (input built from sync-skills.py's own text)\n\n" + ss._SPOTLIGHT_TK_BRAND_RULE_OLD + "\nmiddle\n\n"
+                    + ss._SPOTLIGHT_TK_BRAND_GUARD_ANCHOR
+                    + "```bash\npython3 - saves/edit_plan.json \"$DUR\" <<'PY'\nimport json, sys\np = json.load(open(sys.argv[1]))\ntks = p.get(\"takeovers\", [])\n"
+                    + ss._SPOTLIGHT_TK_BRAND_PRINT + "\")\nPY\n```\n")
+        skill_old = ("# SKILL (input built from sync-skills.py's own text)\n\n" + ss._SPOTLIGHT_TK_BRAND_SKILL_RULE_OLD + "\nmiddle\n\n"
+                     + ss._SPOTLIGHT_TK_BRAND_SKILL_GUARD_OLD + "import json, sys\np = json.load(open(sys.argv[1]))\n"
+                     + ss._SPOTLIGHT_TK_BRAND_SKILL_PRINT + "      \"x\")\nPY\n")
+        olds = {ss.SPOTLIGHT_PLAN_FILE: step_old, Path("SKILL.md"): skill_old}
         up = root / "skills"
-        for rec in ("p-reels-spotlight", "p-reels-spotlight-heygen"):
-            shutil.copytree(skills / rec, up / rec)
-        def revert(t, edits):
-            text = t.read_text(encoding="utf-8")
-            for old, new, before, *_ in reversed(edits):
-                text = text.replace(new + old, old) if before else text.replace(new, old)
-            t.write_text(text, encoding="utf-8")
-        for rel, full_only, edits in files:
-            for t in up.rglob(str(rel)):
-                if "p-reels-spotlight" in t.parents[len(rel.parts) - 1].name:
-                    revert(t, edits)
-        if helper_of((up / "p-reels-spotlight" / "steps" / "03-plan-edit.md").read_text(encoding="utf-8")):
-            bad.append("sanity: the restored step still writes the helper")
+        def put(base, rel, text):
+            f = base / rel; f.parent.mkdir(parents=True, exist_ok=True); f.write_text(text, encoding="utf-8"); return f
+        for base, rels in ((up / "p-reels-spotlight", (ss.SPOTLIGHT_PLAN_FILE, Path("SKILL.md"))),
+                           (up / "p-reels-spotlight-heygen", (ss.SPOTLIGHT_PLAN_FILE,)),
+                           (up / "p-reels-spotlight-heygen" / ".hub" / "p-reels-spotlight", (ss.SPOTLIGHT_PLAN_FILE, Path("SKILL.md")))):
+            for rel in rels:
+                put(base, rel, olds[rel])
+        if helper_of(step_old) or helper_of(skill_old):
+            bad.append("sanity: the temp input already writes the helper")
         for rec, want in (("p-reels-spotlight", 2), ("p-reels-spotlight-heygen", 3)):
             got = (fn(up / rec, rec), fn(up / rec, rec))
             if got != (want, 0):
                 bad.append("transform on %s changed %r file(s), expected (%d, 0)" % (rec, got, want))
-            for f in sorted(p for p in (up / rec).rglob("*") if p.is_file()):
-                if f.read_bytes() != (skills / rec / f.relative_to(up / rec)).read_bytes():
-                    bad.append("transform output differs from the committed %s/%s" % (rec, f.relative_to(up / rec)))
-        t = up / "p-reels-spotlight" / "steps" / "03-plan-edit.md"
-        revert(t, files[0][2])
-        t.write_text(t.read_text(encoding="utf-8").replace("Then run the mechanical guard", "Then run the guard"), encoding="utf-8")
+        def revert(text, edits):
+            for old, new, before, *_ in reversed(edits):
+                text = text.replace(new + old, old) if before else text.replace(new, old)
+            return text
+        for f in sorted(up.rglob("*.md")):
+            rel = Path(*f.relative_to(up).parts[-2:]) if f.name != "SKILL.md" else Path("SKILL.md")
+            edits = next(e for r, _fo, e in files if r == rel)
+            body = f.read_text(encoding="utf-8")
+            if revert(body, edits) != olds[rel]:
+                bad.append("round trip of %s does not equal the temp input" % f.relative_to(up))
+            if "Takeover text names only the order's brand" not in body:
+                bad.append("%s: rule 5 does not tell the planner to keep the order's brand" % f.relative_to(up))
+            if rel == ss.SPOTLIGHT_PLAN_FILE:
+                if helper_of(body) != ss.SPOTLIGHT_TK_BRAND_PY:
+                    bad.append("%s: the helper written is not the bundler's SPOTLIGHT_TK_BRAND_PY" % f.relative_to(up))
+                else:
+                    bad += guard_runs(body, ss.SPOTLIGHT_TK_BRAND_PY, "transformed " + str(f.relative_to(up)))
+            elif ('python3 "$W/takeover_brand.py" "$W/plan.json" "$W/words.json" "$BRAND_NAME" || exit 1' not in body
+                  or '"takeover_brand.py"), "--check"' not in body):
+                bad.append("%s: Step 4 does not run the takeover brand repair and its --check" % f.relative_to(up))
+        # fail fast on drift (neither the old nor the new text), and on a missing SKILL.md
+        put(root / "drift" / "p-reels-spotlight", ss.SPOTLIGHT_PLAN_FILE, step_old.replace("Then run the mechanical guard", "Then run the guard"))
         try:
-            fn(up / "p-reels-spotlight", "p-reels-spotlight"); bad.append("transform did not fail on a drifted plan step")
+            fn(root / "drift" / "p-reels-spotlight", "p-reels-spotlight"); bad.append("transform did not fail on a drifted plan step")
         except SystemExit:
             pass
         (up / "p-reels-spotlight" / "SKILL.md").unlink()
@@ -15459,6 +15615,18 @@ for wi109_engine in claude-code codex; do
   rm -f "/tmp/cfw-wi2109-$$-$wi109_engine"
 done
 rm -rf "$wi109_root"
+
+echo "=== Case WI28-out-dir: sync-skills.sh refuses this repo's frozen skills/ (by file identity) and a run with no --recipes ==="
+# WI28 (owner decision 2026-11-10): skills/ is frozen. The standalone test builds into its own temp folder, writes
+# nothing else, starts no process, and checks skills/ and config/ are unchanged. It runs here without
+# CFW_SKILLS_SRC (the real-source build is skipped; the fixture build still runs).
+wi28od_log="$(mktemp)"
+if env -u CFW_SKILLS_SRC bash "$TEST_DIR/sync-skills-out-dir.test.sh" >"$wi28od_log" 2>&1; then
+  pass "sync-skills.sh out-dir refusals (rc 2, by file identity) and required --recipes: $(tail -1 "$wi28od_log")"
+else
+  fail "sync-skills.sh out-dir refusals" "$(grep -E 'FAIL|failed' "$wi28od_log" | head -5 | tr '\n' ' ')"
+fi
+rm -f "$wi28od_log"
 
 echo "=== Case WI17.3.13: preflight functions with a read-only TMPDIR ==="
 # Bash stores a here-string, a heredoc, or a process substitution in a file

@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# scripts/sync-skills.sh — sync recipe skills directly from the private source
-# repo into this repo's skills/ dir, replacing the git-subtree-of-public-
-# cfw-skills pipeline (cfw-skills-pack build/publish + `git subtree pull`).
+# scripts/sync-skills.sh — build a bundle of recipe skills from the private source
+# repo into a scratch --out-dir (for cfw-social's scripts/recipe-library/publish.mjs).
+# It never writes into this repo's own skills/ (frozen, WI28; see below).
 #
 # Runtime-free repo: bash + python3 only. NO node, NO npm — this script must
 # never introduce a node-runtime dependency into cfw-render.
 #
 # Behavior:
 #   1. Requires $CFW_SKILLS_SRC (no fallback — see below).
-#   2. Reads the recipe allowlist from cfw-render's own config/recipes.json
-#      (cfw-skills-pack retired — the allowlist now lives in this repo).
+#   2. Reads the recipe allowlist from the file named by --recipes (REQUIRED).
+#      Name only the recipes you publish; config/recipes.json describes the
+#      frozen skills/ copy.
 #   3. For each allowlisted recipe, copies the recipe's own files AS-IS from
 #      $CFW_SKILLS_SRC/<recipe>/ into <out-dir>/<recipe>/, then computes the
 #      transitive closure of its `dependsOn` graph (cycle-safe) and copies
@@ -38,25 +39,37 @@
 #      placeholder (`${CTA_HANDLE:-@…}`, `"handle": "@…"` outside
 #      brand-overrides/<slug>/brand.json, `@mr.growthguide`) — because the end
 #      card must be per-brand (CFW-354).
-#   8. Unless --skip-manifest or --out-dir points somewhere other than the
-#      real <repo>/skills, refreshes config/skills-version.json (rollup via
-#      gen-skills-manifest.sh, then provenance fields patched to point at the
-#      private source instead of the retired git-subtree).
 #
-# Idempotent — safe to re-run; each recipe's target dir is cleared before copy.
+# Use a fresh folder for each run: each recipe's target dir inside --out-dir is cleared before copy, so an
+# --out-dir that already holds anything is refused.
+#
+# RETIRED AS A RECIPE SOURCE (owner decision 2026-11-10): this repo's skills/ is
+# frozen and is never synced again. This script is only a bundle builder for
+# cfw-social's scripts/recipe-library/publish.mjs, so --out-dir is REQUIRED and
+# the script exits 2 if it is missing, or if it is not a fresh folder: it must be absent or EMPTY, and must not
+# be, or lie inside, this repo (skills/, config/, test/ ...), a parent of this repo, or the source library
+# (CFW_SKILLS_SRC). That is decided by file identity (device + inode), not by path text: the walk starts at
+# realpath(--out-dir) and checks it and each parent, so a case variant (SKILLS on a case-insensitive disk), a
+# firmlink path, a symlinked parent or a symlink plus `..` is refused too. Recipe and dependency names must be
+# plain names (^[A-Za-z0-9][A-Za-z0-9._-]*$, no `..`, at most 64 characters), checked before anything is written.
+# --recipes is also REQUIRED (exit 2): name only the recipes you publish;
+# config/recipes.json describes the frozen skills/ copy. The refusals run before
+# anything is written. skills/ and config/ are never changed by this script.
 #
 # Usage:
-#   CFW_SKILLS_SRC=/Users/vasanth/ecosystem/harness/skills scripts/sync-skills.sh
-#   CFW_SKILLS_SRC=/Users/vasanth/ecosystem/harness/skills scripts/sync-skills.sh --out-dir /tmp/scratch-skills
+#   CFW_SKILLS_SRC=/Users/vasanth/ecosystem/harness/skills scripts/sync-skills.sh \
+#     --recipes /tmp/my-recipes.json --out-dir /tmp/scratch-skills
 #
 # Options:
-#   --recipes FILE       path to the recipe allowlist (default: <repo>/config/recipes.json,
-#                        cfw-render's own internal allowlist — cfw-skills-pack retired).
-#   --out-dir DIR        where to write the synced bundle (default: <repo>/skills).
-#                        Point this at a scratch dir to dry-run without
-#                        touching the committed bundle.
-#   --skip-manifest      don't refresh config/skills-version.json even when
-#                        --out-dir is the real skills/ dir.
+#   --recipes FILE       REQUIRED. The recipe allowlist (JSON, same shape as
+#                        config/recipes.json). Name only the recipes you publish;
+#                        config/recipes.json describes the frozen skills/ copy.
+#   --out-dir DIR        REQUIRED. Where to write the synced bundle. Use a
+#                        fresh scratch folder (absent or empty). Refused if it is,
+#                        or is inside, this repo (skills/ is frozen), a parent of
+#                        this repo, or the source library.
+#   --skip-manifest      accepted and ignored (kept so older callers still work;
+#                        this script no longer writes config/skills-version.json).
 #
 # Env:
 #   CFW_SKILLS_SRC   REQUIRED. Absolute path to the private source skills repo
@@ -66,27 +79,45 @@
 set -euo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SELF_DIR/.." && pwd)"
 
-OUT_DIR="$REPO_DIR/skills"
-RECIPES_CONFIG="$REPO_DIR/config/recipes.json"
-SKIP_MANIFEST=0
+OUT_DIR=""
+RECIPES_CONFIG=""
 
 while (( $# )); do
   case "$1" in
-    --recipes) RECIPES_CONFIG="$2"; shift 2 ;;
-    --out-dir) OUT_DIR="$2"; shift 2 ;;
-    --skip-manifest) SKIP_MANIFEST=1; shift ;;
+    --recipes) [[ $# -ge 2 ]] || { echo "sync-skills.sh: --recipes needs a file" >&2; exit 2; }; RECIPES_CONFIG="$2"; shift 2 ;;
+    --out-dir) [[ $# -ge 2 ]] || { echo "sync-skills.sh: --out-dir needs a folder" >&2; exit 2; }; OUT_DIR="$2"; shift 2 ;;
+    --skip-manifest) shift ;;   # accepted and ignored: nothing here writes config/skills-version.json
     -*) echo "sync-skills.sh: unknown flag $1" >&2; exit 2 ;;
     *) echo "sync-skills.sh: unexpected arg $1" >&2; exit 2 ;;
   esac
 done
 
+# ---- --out-dir: required, and never this repo's own (frozen) skills/ ----
+if [[ -z "$OUT_DIR" ]]; then
+  echo "sync-skills.sh: ERROR — --out-dir is required." >&2
+  echo "  skills/ in this repo is retired as a recipe source (owner decision 2026-11-10) and is never synced." >&2
+  echo "  Build a bundle into a scratch dir: CFW_SKILLS_SRC=<src> $0 --recipes <file> --out-dir <scratch>" >&2
+  exit 2
+fi
+# The one out-dir guard lives in sync-skills.py (guard_out_dir); --check-only runs just that, before anything
+# is made or written, and sync-skills.py runs it again before its first write. It refuses (exit 2) by file
+# identity: this repo, anything inside it (skills/, config/, ...), a parent of it, the source library
+# (CFW_SKILLS_SRC) and anything inside it, and any out-dir that exists and is not an empty folder.
+python3 "$SELF_DIR/sync-skills.py" --check-only --out-dir="$OUT_DIR" --src="${CFW_SKILLS_SRC:-}" || exit $?
+
+# ---- --recipes: required (WI28). config/recipes.json lists the frozen skills/ copy, which the
+# source library no longer matches, so there is no default.
+if [[ -z "$RECIPES_CONFIG" ]]; then
+  echo "sync-skills.sh: ERROR — --recipes <file> is required: name only the recipes you publish; config/recipes.json describes the frozen skills/ copy." >&2
+  exit 2
+fi
+
 # ---- CFW_SKILLS_SRC: required, fail loudly, no silent fallback ----
 if [[ -z "${CFW_SKILLS_SRC:-}" ]]; then
   echo "sync-skills.sh: ERROR — CFW_SKILLS_SRC is not set." >&2
   echo "  Point it at the private source skills repo, e.g.:" >&2
-  echo "    CFW_SKILLS_SRC=/Users/vasanth/ecosystem/harness/skills $0" >&2
+  echo "    CFW_SKILLS_SRC=/Users/vasanth/ecosystem/harness/skills $0 --recipes <file> --out-dir <scratch>" >&2
   echo "  There is no default — this script will NOT fall back to any other path." >&2
   exit 1
 fi
@@ -96,10 +127,9 @@ if [[ ! -d "$CFW_SKILLS_SRC" ]]; then
 fi
 CFW_SKILLS_SRC="$(cd "$CFW_SKILLS_SRC" && pwd)"
 
-# ---- recipe allowlist (cfw-render's own config/recipes.json) ----
+# ---- recipe allowlist (the file named by --recipes) ----
 if [[ ! -f "$RECIPES_CONFIG" ]]; then
   echo "sync-skills.sh: ERROR — recipe allowlist not found at '$RECIPES_CONFIG'." >&2
-  echo "  Expected cfw-render's config/recipes.json, or pass --recipes <path> explicitly." >&2
   exit 1
 fi
 
@@ -107,12 +137,12 @@ echo "sync-skills.sh: source   = $CFW_SKILLS_SRC"
 echo "sync-skills.sh: recipes  = $RECIPES_CONFIG"
 echo "sync-skills.sh: out-dir  = $OUT_DIR"
 
-mkdir -p "$OUT_DIR"
+# (sync-skills.py makes --out-dir itself, after it has validated every name, so a refusal creates nothing.)
 
 python3 "$SELF_DIR/sync-skills.py" \
   --src "$CFW_SKILLS_SRC" \
   --recipes "$RECIPES_CONFIG" \
-  --out-dir "$OUT_DIR"
+  --out-dir="$OUT_DIR"
 
 # CFW-312 bundle gate — abort the sync if any recipe still resolves a
 # sub-skill (or itself) via a host-path `find` instead of the bundle's own
@@ -129,52 +159,15 @@ python3 "$SELF_DIR/sync-skills.py" \
 # not ship a bundle that leaks the author's own filesystem layout.
 "$SELF_DIR/check-no-host-paths.sh" --skills-dir "$OUT_DIR"
 
+# WI31.10 bundle gate — abort the sync if a transform or a source edit left
+# a recipe with the same step twice (R-8HZS: two copies of spotlight's 4b).
+"$SELF_DIR/check-no-duplicate-steps.sh" --skills-dir "$OUT_DIR"
+
 # CFW-354 bundle gate — abort the sync if any skill ships a literal handle
 # default — another brand's handle or a placeholder — because the end card
 # must be per-brand. One brand's `@mr.growthguide` once shipped on every
 # brand's Spotlight reels via `CTA_HANDLE="${CTA_HANDLE:-…}"`; a future recipe
 # that re-introduces that shape must fail HERE, loudly, at sync time.
 "$SELF_DIR/check-no-handle-defaults.sh" --skills-dir "$OUT_DIR"
-
-if (( SKIP_MANIFEST == 0 )) && [[ "$OUT_DIR" == "$REPO_DIR/skills" ]]; then
-  SOURCE_COMMIT="$(git -C "$CFW_SKILLS_SRC" rev-parse HEAD 2>/dev/null || echo unknown)"
-  SOURCE_REMOTE="$(git -C "$CFW_SKILLS_SRC" remote get-url origin 2>/dev/null || echo "")"
-  # Prefer the source repo's own origin slug; if it has no remote configured,
-  # fall back to config/recipes.json's "source" field (default "ecosystem/harness/skills").
-  SOURCE_REPO_SLUG="$(python3 -c '
-import re, sys, json
-url = sys.argv[1]
-m = re.search(r"[:/]([^/]+/[^/]+?)(\.git)?$", url) if url else None
-if m:
-    print(m.group(1))
-else:
-    try:
-        cfg = json.load(open(sys.argv[2]))
-        print(cfg.get("source") or "ecosystem/harness/skills")
-    except Exception:
-        print("ecosystem/harness/skills")
-' "$SOURCE_REMOTE" "$RECIPES_CONFIG")"
-
-  "$SELF_DIR/gen-skills-manifest.sh" --skills-dir "$OUT_DIR" --manifest "$REPO_DIR/config/skills-version.json"
-
-  python3 - "$REPO_DIR/config/skills-version.json" "$SOURCE_REPO_SLUG" "$SOURCE_COMMIT" <<'PY'
-import json, sys
-path, repo_slug, source_commit = sys.argv[1], sys.argv[2], sys.argv[3]
-m = json.load(open(path))
-m["source"] = repo_slug
-m.pop("sourceBranch", None)
-m["sourceCommit"] = source_commit
-m["sourceSha"] = source_commit
-m.pop("sourceRelease", None)
-m["bundleMethod"] = "scripts/sync-skills.sh (direct copy from private source repo; git-subtree retired)"
-m["updateCommand"] = "CFW_SKILLS_SRC=<path-to-private-skills-repo> scripts/sync-skills.sh"
-with open(path, "w") as f:
-    json.dump(m, f, indent=2)
-    f.write("\n")
-print(f"sync-skills.sh: refreshed provenance fields in {path}")
-PY
-else
-  echo "sync-skills.sh: skipping config/skills-version.json refresh (--skip-manifest or scratch out-dir)"
-fi
 
 echo "sync-skills.sh: done."

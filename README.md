@@ -1,5 +1,13 @@
 # cfw-render
 
+> **Retired as a recipe source (owner decision, 2026-11-10).**
+> - Recipes are written only in `~/ecosystem/harness/skills` (owner, 2026-11-06 and 2026-11-10).
+> - Customer bots get recipes from Social's recipe library, not from this folder.
+> - `skills/` is frozen at its current bytes. It is never synced again.
+> - `scripts/sync-skills.sh` is used only with `--recipes <file> --out-dir <scratch>`, to build a bundle for cfw-social's `scripts/recipe-library/publish.mjs`. It refuses to write into `skills/` (checked by file identity), and `--recipes` is required: name only the recipes you publish; `config/recipes.json` describes the frozen `skills/` copy.
+> - Do not promote `develop` to `main` while cfw-social's `/install-bot.md` still clones this repo's `main`. `main` and `develop` differ in about 101 recipe files under the same version numbers, and old-guide bots claim by version with no hash check.
+> - The CFW Render worker (`com.cfw.render`) stays off.
+
 The CFW Social render worker — runs on the brand's own computer (a Mac), drains `RenderOrder` rows
 (Postgres, cfw-social system of record), spawns a headless Claude Creative Director with
 GLM/Kimi fan-out, renders un-timeboxed, and writes the dish back via the narrow render-worker
@@ -37,9 +45,9 @@ the source commit recorded in `config/skills-version.json`. Installing this
 repo (`install/install.sh`) installs both the worker and the exact skills
 closure it renders with — no separate pull, no shared directory, no second
 moving part to drift out of sync. Authoring still happens upstream in `~/ecosystem/skills`
-(the `c-*`/`p-*`/`r-*` library); this repo vendors a pinned copy via
-`scripts/sync-skills.sh` (git-subtree + the old `cfw-skills-pack` build were
-retired 2026-09-01).
+(the `c-*`/`p-*`/`r-*` library); this repo vendors a pinned copy, now frozen
+(WI28, owner decision 2026-11-10): it is no longer synced (git-subtree + the old
+`cfw-skills-pack` build were retired 2026-09-01).
 
 - **Default resolution:** `CFW_RENDER_SKILLS_DIR` unset/blank → bundled
   `skills/` in this repo (resolved relative to the repo/install root, not
@@ -53,16 +61,14 @@ retired 2026-09-01).
   (`cr_log_skills_version` in `bin/cfw-render-lib.sh`) — check
   `~/.cfw-render/cfw-render.log` (or `$CFW_RENDER_STATE_DIR`) to see which
   bundle a run served.
-- **Bumping the pin / changing the recipe set:**
-  ```bash
-  # edit config/recipes.json to add/remove a bundled recipe, then:
-  scripts/sync-skills.sh            # copy recipes from ~/ecosystem/skills into skills/,
-                                    # regenerate skills/index.json + config/skills-version.json
-  scripts/verify-skills-bundle.sh   # confirm the tree matches the manifest (checksum gate)
-  ```
-  `scripts/sync-skills.sh` reads `CFW_SKILLS_SRC` (default `~/ecosystem/skills`)
-  as the source of truth; `config/skills-version.json` is regenerated, not
-  hand-edited.
+- **The pin is frozen (WI28):** `skills/`, `skills/index.json` and
+  `config/skills-version.json` are not synced or regenerated any more, and are not
+  hand-edited. `scripts/sync-skills.sh` only builds a bundle into a scratch folder
+  (`--recipes <file> --out-dir <scratch>`, `CFW_SKILLS_SRC` required, no default)
+  and refuses to write into `skills/`. Name only the recipes you publish in
+  `--recipes`; `config/recipes.json` describes the frozen `skills/` copy.
+  `scripts/verify-skills-bundle.sh` still confirms the tree matches the manifest
+  (checksum gate).
 - **Integrity verification (doc §5):** `config/skills-version.json` records, per
   recipe, `version` + aggregate `checksum` + `fileCount`, plus an
   `aggregateChecksum` over the whole bundle. `scripts/verify-skills-bundle.sh`

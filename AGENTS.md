@@ -1,5 +1,13 @@
 # cfw-render — guide for coding assistants
 
+> **Retired as a recipe source (owner decision, 2026-11-10).**
+> - Recipes are written only in `~/ecosystem/harness/skills` (owner, 2026-11-06 and 2026-11-10).
+> - Customer bots get recipes from Social's recipe library, not from this folder.
+> - `skills/` is frozen at its current bytes. It is never synced again.
+> - `scripts/sync-skills.sh` is used only with `--recipes <file> --out-dir <scratch>`, to build a bundle for cfw-social's `scripts/recipe-library/publish.mjs`. It refuses to write into `skills/` (checked by file identity), and `--recipes` is required: name only the recipes you publish; `config/recipes.json` describes the frozen `skills/` copy.
+> - Do not promote `develop` to `main` while cfw-social's `/install-bot.md` still clones this repo's `main`. `main` and `develop` differ in about 101 recipe files under the same version numbers, and old-guide bots claim by version with no hash check.
+> - The CFW Render worker (`com.cfw.render`) stays off.
+
 This file is for any coding assistant (Codex, Claude Code, Cursor, Gemini CLI, …)
 working in a cfw-render checkout **or** in an installed copy (on an owner's
 computer: `~/CFW Render/app`). `CLAUDE.md` points here.
@@ -128,9 +136,10 @@ Things to know when running a recipe without CFW:
 
 ## Rules for editing this repo
 
-- `skills/` is a **generated, pinned copy**. Do not hand-edit recipe folders —
-  `scripts/sync-skills.sh` overwrites them and `scripts/verify-skills-bundle.sh`
-  fails on any drift. Recipe changes are made upstream, then synced.
+- `skills/` is a **frozen, pinned copy** (WI28). Do not hand-edit recipe folders
+  and do not sync into it: `scripts/sync-skills.sh` refuses an `--out-dir` that is
+  `skills/`, and `scripts/verify-skills-bundle.sh` fails on any drift. Recipe changes
+  are made upstream and published from a scratch bundle.
 - Bash only, no JS toolchain in the renderer itself. Lint: `scripts/lint.sh`.
   Tests (no live services): `test/run-tests.sh`.
 - Never put a CFW key, brand key or render pass in a file you commit or in a
