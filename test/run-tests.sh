@@ -12058,8 +12058,15 @@ try:
     old_text = "# c-typing-ui (input built from sync-skills.py's own text)\n\n" + "\nfiller\n".join(o for o, _n in ss._TYPING_SKILL_RENDER_EDITS) + "\nend\n"
     for d in doc_dirs:
         d.mkdir(parents=True); (d / "SKILL.md").write_text(old_text, encoding="utf-8")
-    step_text = "Step 04 text the source authors itself.\n"
-    (up / "steps").mkdir(); (up / "steps" / "04-build-background.md").write_text(step_text, encoding="utf-8")
+    # Step 04 text built from the bundler's own text: the pre-WI2.80 usage line the retired entries replaced, plus
+    # every (old, new) pair the live transform knows. No step-04 edit is applied any more, so it must come back byte-identical.
+    step_text = ("# Step 04 (input built from sync-skills.py's own text)\n\n"
+                 "Run `$TYPING_UI_DIR/scripts/render.sh --text ... --duration ...`.\n\n"
+                 + "\n".join(o + n for o, n in ss._TYPING_SKILL_RENDER_EDITS) + "\nend\n")
+    step_files = [up / "steps" / "04-build-background.md", up / ".hub" / "p-reels-pip" / "steps" / "04-build-background.md",
+                  up / ".hub" / "p-reels-pip" / "steps" / "04-build-top.md"]
+    for sf in step_files:
+        sf.parent.mkdir(parents=True, exist_ok=True); sf.write_text(step_text, encoding="utf-8")
     if "text.length × speed" not in old_text:
         bad.append("sanity: the temp input does not hold the old c-typing-ui text")
     n1 = ss.apply_typing_render_usage(up, "p-reels-pip"); n2 = ss.apply_typing_render_usage(up, "p-reels-pip")
@@ -12074,8 +12081,9 @@ try:
             back = back.replace(n, o)
         if back != old_text:
             bad.append("round trip of %s does not equal the temp input" % d.relative_to(up))
-    if (up / "steps" / "04-build-background.md").read_text(encoding="utf-8") != step_text:
-        bad.append("the transform changed a step 04 file (the step-04 table is retired)")
+    for sf in step_files:
+        if sf.read_text(encoding="utf-8") != step_text:
+            bad.append("the bundler changed %s (no step-04 edit is applied any more)" % sf.relative_to(up))
     doc = doc_dirs[0] / "SKILL.md"
     doc.write_text(old_text.replace("Multiplier (0.5 = slow, 2.0 = fast).", "Multiplier (0.5 = slower, 2.0 = fast)."), encoding="utf-8")
     try:
