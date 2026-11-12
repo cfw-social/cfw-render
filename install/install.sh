@@ -377,8 +377,7 @@ if [[ -d "$REPO_DIR/skills" ]]; then
   cp -a "$REPO_DIR/skills" "$PREFIX/skills"
 else
   echo "install.sh: ERROR — $REPO_DIR/skills not found. cfw-render carries its skills bundle" >&2
-  echo "  in-repo; a checkout without skills/ is broken. Re-clone/pull the repo (or run" >&2
-  echo "  CFW_SKILLS_SRC=<source> scripts/sync-skills.sh) before installing." >&2
+  echo "  in-repo; a checkout without skills/ is broken. Re-clone/pull the repo before installing." >&2
   exit 1
 fi
 [[ -f "$REPO_DIR/config/skills-version.json" ]] && cp -a "$REPO_DIR/config/skills-version.json" "$PREFIX/config/skills-version.json"
