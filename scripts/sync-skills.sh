@@ -79,7 +79,6 @@
 set -euo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SELF_DIR/.." && pwd)"
 
 OUT_DIR=""
 RECIPES_CONFIG=""
