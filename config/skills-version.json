@@ -8,7 +8,7 @@
   "aggregateChecksum": "sha256:7095e5ed5bbd2f46cc7776a76d3850172e1cd2df2504344cca720a441def6da7",
   "bundledAt": "2026-11-07T01:52:24Z",
   "bundleMethod": "scripts/sync-skills.sh (direct copy from private source repo; git-subtree retired)",
-  "updateCommand": "CFW_SKILLS_SRC=<path-to-private-skills-repo> scripts/sync-skills.sh",
+  "updateCommand": "none: this bundle is frozen (WI28). To build a bundle for publishing, use a fresh scratch folder: CFW_SKILLS_SRC=<path-to-private-skills-repo> scripts/sync-skills.sh --recipes <file> --out-dir <scratch>",
   "recipes": {
     "c-composio": {
       "version": "1.0.0",

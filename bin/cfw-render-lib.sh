@@ -19,7 +19,7 @@ _CR_REPO_ROOT="$(cd "$_CR_LIB_DIR/.." && pwd)"
 
 # ---------------------------------------------------------------------------
 # cr_default_skills_dir — the in-repo bundled skills/ (pinned via
-# config/skills-version.json, source-synced by scripts/sync-skills.sh). This is
+# config/skills-version.json; a frozen copy, WI28: no longer synced). This is
 # cfw-render's ONLY skills source: the old /data/shared/cfw-skills/cfw shared-box
 # path (another assistant's bundle, never cfw-render's) was dropped 2026-09-01 —
 # cfw-render shares skills with nothing else. This is ONLY the default;
