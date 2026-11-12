@@ -156,6 +156,7 @@ No third-party deps — stdlib only (json, re, hashlib, shutil, subprocess, path
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -4505,6 +4506,7 @@ def walk_closure(src_root: Path, start_deps: list[str]) -> list[str]:
         dep = queue.pop(0)
         if dep in visited:
             continue
+        check_name(dep, "dependsOn")   # before src_root / dep is joined: a bad name is never read
         visited.add(dep)
         order.append(dep)
         dep_dir = src_root / dep
@@ -4538,22 +4540,139 @@ def list_files(root: Path) -> list[str]:
     return sorted(out)
 
 
+_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+NAME_MAX = 64
+
+
+def check_name(name, what: str) -> None:
+    """A recipe or dependency name becomes a folder name under the out-dir (and is joined to the source
+    root), so it must be a plain name: no slash, no leading dot, no `..`, at most NAME_MAX characters.
+    Refuses with exit 2 and the repr() of the name, before anything is written."""
+    if not (isinstance(name, str) and _NAME_RE.match(name) and ".." not in name and len(name) <= NAME_MAX):
+        print(f"sync-skills.py: ERROR - invalid {what} name {name!r}: a name must match "
+              f"^[A-Za-z0-9][A-Za-z0-9._-]*$, contain no '..' and be at most {NAME_MAX} characters.", file=sys.stderr)
+        sys.exit(2)
+
+
+def _identity(path):
+    st = os.stat(path)
+    return (st.st_dev, st.st_ino)
+
+
+def guard_out_dir(out_dir: str, src: str = "") -> None:
+    """The ONE out-dir guard (WI28). Refuses, with exit 2 and before anything is written:
+      - this repo's skills/ or anything inside it, the repo root or anything inside it (config/, test/, ...),
+        or a parent of the repo root;
+      - the private source library (CFW_SKILLS_SRC) or anything inside it (skipped when it does not exist);
+      - an out-dir that exists and is not an EMPTY directory (copy_tree deletes <out-dir>/<name>).
+    Identity is (st_dev, st_ino) along realpath(out_dir) and its parents, so case variants, firmlinks,
+    symlinked parents and symlink-plus-`..` paths are all caught. A missing path or a dangling link counts
+    as not there: go to its parent, stop at /."""
+    repo = Path(__file__).resolve().parent.parent
+
+    def refuse(msg: str):
+        print(f"sync-skills.py: ERROR - {msg}", file=sys.stderr)
+        sys.exit(2)
+
+    try:
+        skills_id, repo_id = _identity(repo / "skills"), _identity(repo)
+    except OSError as exc:
+        refuse(f"cannot stat this repo's skills/ ({exc}). This check protects skills/; update it when skills/ is removed.")
+    real = os.path.realpath(out_dir)
+    skills_real = os.path.realpath(repo / "skills")
+    if real == skills_real or real.startswith(skills_real + os.sep):
+        refuse(f"--out-dir '{out_dir}' resolves to '{real}', inside this repo's skills/. "
+               "skills/ is frozen (retired as a recipe source, owner decision 2026-11-10). Use a fresh scratch folder.")
+    src_id = None
+    if src and os.path.isdir(src):
+        try:
+            src_id = _identity(src)
+        except OSError:
+            src_id = None
+    p = real
+    while True:
+        try:
+            ident = _identity(p)
+        except OSError:
+            ident = None
+        if ident is not None:
+            if ident == skills_id:
+                refuse(f"--out-dir '{out_dir}' resolves to '{real}', inside this repo's skills/ (same folder as '{p}'). "
+                       "skills/ is frozen (retired as a recipe source, owner decision 2026-11-10). Use a fresh scratch folder.")
+            if ident == repo_id:
+                refuse(f"--out-dir '{out_dir}' resolves to '{real}', inside this repo (same folder as '{p}'): "
+                       "this script never writes into the repo, including skills/ and config/. Use a fresh scratch folder.")
+            if src_id is not None and ident == src_id:
+                refuse(f"--out-dir '{out_dir}' resolves to '{real}', inside the source library '{src}'. "
+                       "A bundle never lands in the source. Use a fresh scratch folder.")
+        parent = os.path.dirname(p)
+        if parent == p:
+            break
+        p = parent
+    # a parent of the repo root (a parent is never empty either, but say so plainly)
+    try:
+        out_id = _identity(real)
+    except OSError:
+        out_id = None
+    if out_id is not None:
+        q = str(repo)
+        while True:
+            try:
+                if _identity(q) == out_id:
+                    refuse(f"--out-dir '{out_dir}' is the repo root or a parent of this repo ('{q}'). Use a fresh scratch folder.")
+            except OSError:
+                pass
+            up = os.path.dirname(q)
+            if up == q:
+                break
+            q = up
+    if os.path.lexists(real):
+        if not os.path.isdir(real):
+            refuse(f"--out-dir '{out_dir}' exists and is not a directory. Use a fresh scratch folder.")
+        if os.listdir(real):
+            refuse(f"--out-dir '{out_dir}' exists and is not empty ('{real}'): each recipe's folder in it is deleted "
+                   "before it is copied, so use a fresh folder for each run.")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--src", required=True, help="private source skills repo root")
-    ap.add_argument("--recipes", required=True, help="path to cfw-render's config/recipes.json (allowlist)")
+    ap.add_argument("--src", default="", help="private source skills repo root")
+    ap.add_argument("--recipes", default="", help="path to the recipe allowlist (JSON)")
     ap.add_argument("--out-dir", required=True, help="output skills/ dir")
+    ap.add_argument("--check-only", action="store_true",
+                    help="only run the out-dir guard (exit 2 if refused, 0 if the folder is safe to use); write nothing")
     args = ap.parse_args()
+
+    # The one out-dir guard. sync-skills.sh runs it with --check-only before it makes the folder; it runs again
+    # here, before the first write (the folder could have changed in between).
+    guard_out_dir(args.out_dir, args.src)
+    if args.check_only:
+        return
+    if not args.src or not args.recipes:
+        ap.error("--src and --recipes are required")
 
     src_root = Path(args.src)
     out_root = Path(args.out_dir)
-    out_root.mkdir(parents=True, exist_ok=True)
 
     recipes_config = json.loads(Path(args.recipes).read_text(encoding="utf-8"))
     allowlist = [r["name"] for r in recipes_config.get("recipes", [])]
     if not allowlist:
         print("sync-skills.py: ERROR — no recipes found in config/recipes.json", file=sys.stderr)
         sys.exit(1)
+    for name in allowlist:
+        check_name(name, "recipe")
+
+    # Read-only pre-pass: every recipe and every dependsOn closure is walked (names checked before any path is
+    # joined) before the first write, so a refusal on a later recipe leaves the out-dir untouched.
+    closures: dict[str, list[str]] = {}
+    for recipe in allowlist:
+        recipe_src = src_root / recipe
+        if not recipe_src.is_dir():
+            print(f"sync-skills.py: ERROR — allowlisted recipe '{recipe}' not found at {recipe_src}", file=sys.stderr)
+            sys.exit(1)
+        closures[recipe] = walk_closure(src_root, read_frontmatter(recipe_src / "SKILL.md").get("dependsOn", []) or [])
+
+    out_root.mkdir(parents=True, exist_ok=True)
 
     print(f"sync-skills.py: {len(allowlist)} enabled recipe(s): {', '.join(allowlist)}")
 
@@ -4576,10 +4695,6 @@ def main():
 
     for recipe in allowlist:
         recipe_src = src_root / recipe
-        if not recipe_src.is_dir():
-            print(f"sync-skills.py: ERROR — allowlisted recipe '{recipe}' not found at {recipe_src}", file=sys.stderr)
-            sys.exit(1)
-
         recipe_dest = out_root / recipe
         copy_tree(recipe_src, recipe_dest)
         rewrite_host_path_resolvers(recipe_dest, recipe, is_nested=False)
@@ -4591,9 +4706,7 @@ def main():
         if recipe == "p-carousel":
             apply_p_carousel_contract(recipe_dest)
 
-        recipe_fm = read_frontmatter(recipe_src / "SKILL.md")
-        start_deps = recipe_fm.get("dependsOn", []) or []
-        closure = walk_closure(src_root, start_deps)
+        closure = closures[recipe]
 
         hub_dir = recipe_dest / ".hub"
         if hub_dir.exists():
