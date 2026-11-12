@@ -15484,6 +15484,18 @@ for wi109_engine in claude-code codex; do
 done
 rm -rf "$wi109_root"
 
+echo "=== Case WI28-out-dir: sync-skills.sh refuses this repo's frozen skills/ (by file identity) and a run with no --recipes ==="
+# WI28 (owner decision 2026-11-10): skills/ is frozen. The standalone test builds into its own temp folder, writes
+# nothing else, starts no process, and checks skills/ and config/ are unchanged. It runs here without
+# CFW_SKILLS_SRC (the real-source build is skipped; the fixture build still runs).
+wi28od_log="$(mktemp)"
+if env -u CFW_SKILLS_SRC bash "$TEST_DIR/sync-skills-out-dir.test.sh" >"$wi28od_log" 2>&1; then
+  pass "sync-skills.sh out-dir refusals (rc 2, by file identity) and required --recipes: $(tail -1 "$wi28od_log")"
+else
+  fail "sync-skills.sh out-dir refusals" "$(grep -E 'FAIL|failed' "$wi28od_log" | head -5 | tr '\n' ' ')"
+fi
+rm -f "$wi28od_log"
+
 echo "=== Case WI17.3.13: preflight functions with a read-only TMPDIR ==="
 # Bash stores a here-string, a heredoc, or a process substitution in a file
 # under $TMPDIR. The confined gate refuses that write. WI17's preflight helpers
