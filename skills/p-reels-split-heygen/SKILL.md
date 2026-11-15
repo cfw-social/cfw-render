@@ -74,7 +74,7 @@ avatar and pixelates after the bottom-zone crop + cut-zoom upscale.
 |---|---|---|---|
 | `script` | YES | — | Full narration script. Rendered to the avatar via ElevenLabs+HeyGen, and forwarded as `known_transcript` to `p-reels-split` so the core skips re-transcription. |
 | `voice` | YES | — | ElevenLabs voice_id from the order's brand folder (`orders/<id>/brand/`). Model is `eleven_v3`. No default (WI41). |
-| `avatar_id` | No | `9273e994f1ed484d9031afa3725676c5` | HeyGen avatar id — **Avatar III "GG-4k"**. Do NOT swap to an Avatar IV/V id; the generation is set by the id itself (no version param exists in the API). |
+| `avatar_id` | YES | — | HeyGen Avatar III id from the order's brand folder (`orders/<id>/brand/`). Do NOT use an Avatar IV/V id; the generation is set by the id itself. No default (WI41). |
 | `broll[]` | No | `[]` | B-roll clips for the TOP half. Passed through unchanged to `p-reels-split`. |
 | `broll_style` | No | `card` | TOP-zone b-roll rendering (`card` wowx canvas-wrap / `blurred-fill`). Passed through to `p-reels-split`. |
 | `bottom_cutzoom` | No | `true` | Cut-zoom the avatar face on every beat. Recommended `true` for a single continuous avatar read (adds short-form energy). Passed through to `p-reels-split`. |
@@ -94,7 +94,7 @@ downloads the MP4. It prints the finished path as its last line.
 SCRIPT="<the narration script text>"
 PRODUCTION="{production}"
 VOICE_ID="${voice:?voice is required: the brand ElevenLabs voice_id}"
-AVATAR_ID="${avatar_id:-9273e994f1ed484d9031afa3725676c5}"
+AVATAR_ID="${avatar_id:?avatar_id is required: the brand HeyGen Avatar III id}"
 CACHE_DIR="$PRODUCTION/interim/heygen-cache"
 mkdir -p "$CACHE_DIR"
 

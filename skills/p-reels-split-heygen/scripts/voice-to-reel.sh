@@ -31,7 +31,7 @@
 # Usage:
 #   bash voice-to-reel.sh "Script text here" /path/to/out/th.mp4
 #   SCRIPT="..." OUT=/path/th.mp4 bash voice-to-reel.sh
-# Required env: EL_VOICE (the brand voice_id). Optional env overrides: EL_MODEL, HG_AVATAR, WORK, RENDER_STATE_DIR, FORCE_RENDER
+# Required env: EL_VOICE (the brand voice_id), HG_AVATAR (the brand HeyGen Avatar III id). Optional env overrides: EL_MODEL, WORK, RENDER_STATE_DIR, FORCE_RENDER
 #
 # Prints the absolute path of the finished MP4 as its LAST line.
 set -euo pipefail
@@ -49,10 +49,9 @@ fi
 
 EL_VOICE="${EL_VOICE:?set EL_VOICE to the brand ElevenLabs voice_id (orders/<id>/brand/)}"
 EL_MODEL="${EL_MODEL:-eleven_v3}"
-# DEFAULT = Avatar III "GG-4k" (id confirmed Avatar III via preview path /avatar/v3/).
 # Do NOT swap to an Avatar IV/V avatar — generation is set by the avatar_id itself
-# (no version param exists in the API). Keep an Avatar-III avatar_id here.
-HG_AVATAR="${HG_AVATAR:-9273e994f1ed484d9031afa3725676c5}"  # HeyGen Growth Guide (GG-4k, Avatar III)
+# (no version param exists in the API). HG_AVATAR must be an Avatar-III avatar_id.
+HG_AVATAR="${HG_AVATAR:?set HG_AVATAR to the brand HeyGen Avatar III id (orders/<id>/brand/)}"
 
 SCRIPT="${SCRIPT:-${1:-}}"
 [ -z "$SCRIPT" ] && { echo "[voice-to-reel] No script. Pass as arg 1 or set SCRIPT=." >&2; exit 1; }
