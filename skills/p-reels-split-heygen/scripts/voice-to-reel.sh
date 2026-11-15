@@ -31,7 +31,7 @@
 # Usage:
 #   bash voice-to-reel.sh "Script text here" /path/to/out/th.mp4
 #   SCRIPT="..." OUT=/path/th.mp4 bash voice-to-reel.sh
-# Optional env overrides: EL_VOICE, EL_MODEL, HG_AVATAR, WORK, RENDER_STATE_DIR, FORCE_RENDER
+# Required env: EL_VOICE (the brand voice_id). Optional env overrides: EL_MODEL, HG_AVATAR, WORK, RENDER_STATE_DIR, FORCE_RENDER
 #
 # Prints the absolute path of the finished MP4 as its LAST line.
 set -euo pipefail
@@ -47,7 +47,7 @@ fi
 : "${ELEVENLABS_API_KEY:?set ELEVENLABS_API_KEY (env or $SECRETS_FILE)}"
 : "${HEYGEN_API_KEY:?set HEYGEN_API_KEY (env or $SECRETS_FILE)}"
 
-EL_VOICE="${EL_VOICE:-qfNHzU5pVyzMLm53FhzY}"          # ElevenLabs cloned "Vasanth-042026"
+EL_VOICE="${EL_VOICE:?set EL_VOICE to the brand ElevenLabs voice_id (orders/<id>/brand/)}"
 EL_MODEL="${EL_MODEL:-eleven_v3}"
 # DEFAULT = Avatar III "GG-4k" (id confirmed Avatar III via preview path /avatar/v3/).
 # Do NOT swap to an Avatar IV/V avatar — generation is set by the avatar_id itself
