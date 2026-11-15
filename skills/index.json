@@ -271,7 +271,7 @@
     },
     "p-clone-reel": {
       "version": "1.0.0",
-      "checksum": "sha256:2fc64c54bd83c2af412e3f88134bf18eea4a8c1dc8ca58330e44a0ef525d5806",
+      "checksum": "sha256:58bee21bafceca650c4aa5d3e541dc1e6c2f114aa7942f455fce54f741c4e517",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -460,7 +460,7 @@
     },
     "p-carousel": {
       "version": "2026.10.3",
-      "checksum": "sha256:de6f241f3c8681745f252d7a132695be5f560be1fb17346409137142ef50cda9",
+      "checksum": "sha256:fb928c4ce7f2f6b77456ca2dba99d2dba3c3290a2f75a70ed586f207d52f4515",
       "files": [
         ".hub/c-eval-runner/LEARNINGS.md",
         ".hub/c-eval-runner/SKILL.md",
@@ -669,7 +669,7 @@
     },
     "p-longform": {
       "version": "1.0.0",
-      "checksum": "sha256:023f79164a2609be8f2b18a3288ad0dd732466828f3a329dd822837b6f0cf0c2",
+      "checksum": "sha256:59494bd6acceeed2f188211923084cb2d4f89694779176f806b10225fd45ea56",
       "files": [
         ".hub/c-ai-media/LEARNINGS.md",
         ".hub/c-ai-media/SKILL.md",
@@ -1546,7 +1546,7 @@
     },
     "p-reels-faceless": {
       "version": "1.0.0",
-      "checksum": "sha256:b363a0cfdbeccb0d0a8e087b5bc45e4578a0d9908027556ee51717cd2f481110",
+      "checksum": "sha256:01bdc8d66819bbf740a8202427a7157eea6c78a407fb1dd38dbdc35474a1a6a9",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -1789,7 +1789,7 @@
     },
     "p-reels-split": {
       "version": "1.0.0",
-      "checksum": "sha256:ebb914fe8868c7e479b824e49274531c45ae343f257cf99ba3c54a95bfc03e89",
+      "checksum": "sha256:d18cbf9c6d7ae7f002e1db3e1f31099b6c914c15e5848b84a7eac4f24b6e88ae",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -2031,7 +2031,7 @@
     },
     "p-reels-pip-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:44cffb2b23f9577e641f5ccff82e60fcbb1446ef93788f205d5bc59dd8930876",
+      "checksum": "sha256:a4d2536e895f75086c407174f6b27b28b672f5e3b6c1f46e216c030d4637d59b",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
@@ -2292,7 +2292,7 @@
     },
     "p-reels-spotlight-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:dbc19a1ffde8533f28c368f2dc3c79318ba14416fa2274a6dc34b8ec21220339",
+      "checksum": "sha256:9f95defc1e6d121d025db6a6a0527253396bfdb5d651494f766cba9235a17ba6",
       "files": [
         ".hub/c-broll-sync/SCENE-PLAN.md",
         ".hub/c-broll-sync/SKILL.md",
@@ -2590,7 +2590,7 @@
     },
     "p-reels-split-heygen": {
       "version": "1.0.0",
-      "checksum": "sha256:e2d5679f2c6616ead86ba6bf85a658099ba17c21b5cc7137f0c658507aa8020a",
+      "checksum": "sha256:60dcbc4b7c4f78a41fc4d604ce9224a23ea579745689178480fddf8d5d20c9b8",
       "files": [
         ".hub/c-audio/LEARNINGS.md",
         ".hub/c-audio/SKILL.md",
