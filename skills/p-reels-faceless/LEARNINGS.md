@@ -59,7 +59,7 @@
 - **Step 8 b-roll filter is invalid:** it passes a labelled `[0:v]split…[bv]` graph to `-vf` → ffmpeg "Output with label 'bv' does not exist". Use `-filter_complex`.
 - `c-broll-sync/plan.js` emits graphics beats with EMPTY `eyebrow/ghost/title_html` and windows of 10–17 s. The Director must split them into 4–6 s sub-beats and author every card's copy (`scene_plan`) — nothing in the chain writes card text.
 - `repeat: -1` is rejected by `hyperframes lint` — compute a finite repeat from the beat duration.
-- `voice_id` must be passed explicitly: the vault `ELEVENLABS_DEFAULT_VOICE_ID` is the superseded clone; the pin lives in `brand-overrides/<slug>/brand.json` (`qfNHzU5pVyzMLm53FhzY`, `eleven_v3`).
+- `voice_id` must be passed explicitly: the vault `ELEVENLABS_DEFAULT_VOICE_ID` is the superseded clone. The voice now comes from the order's brand folder (`orders/<id>/brand/`), not from this pack (WI41).
 - MGG has **no video b-roll on disk** (`creatives/brolls/recordings/` is gone) — Ken-Burns clips from `brolls/images/*.png` (`zoompan`) work as on-brand b-roll.
 
 ### 2026-09-05 — CFW-131 fleet-blocker fixes (applied to this SKILL.md)
