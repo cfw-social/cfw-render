@@ -7873,16 +7873,17 @@ else
   fail "carousel work fallback mismatch" "expected empty, got: $wi245_work_bad"
 fi
 
-# Finding 3: sync-skills.py re-applies the p-carousel contract after copy_tree.
-# Plant an upstream-shaped p-carousel (no slide_N saves, old step wording) and
-# show the synced tree gains slide_1..slide_10, recipeVersion 2026.10.3, and the
-# render/captions delivery wording.
+# Finding 3 (WI41): the WI2.45 rewrite is retired. The source p-carousel now carries the
+# slide saves and delivery wording itself, so the bundle must keep the source bytes and take
+# p-carousel's version from the source manifest (manifest.json and index.json), never a
+# bundler pin. A source with no recipeVersion must fail the bundle.
+# (The committed skills/ copy checked above and below is the retired 2026.10.3 copy.)
 wi245_src="$(mktemp -d)"
 wi245_sync="$(mktemp -d)"
 wi245_recipes="$wi245_src/recipes.json"
 mkdir -p "$wi245_src/p-carousel/steps"
 printf '%s\n' '{' \
-  '  "source": "test-wi245",' \
+  '  "source": "test-wi41",' \
   '  "recipes": [ { "name": "p-carousel", "version": "1.0.0", "providers": [] } ]' \
   '}' > "$wi245_recipes"
 cat > "$wi245_src/p-carousel/SKILL.md" <<'EOF'
@@ -7890,68 +7891,38 @@ cat > "$wi245_src/p-carousel/SKILL.md" <<'EOF'
 name: p-carousel
 dependsOn: []
 ---
-# p-carousel (WI2.45 sync fixture — upstream shape)
+# p-carousel (WI41 sync fixture: source already carries the slide-save contract)
 
 ### Step 8 — Deliver ⛔ CHECKPOINT
 
-Deliver: slide PNGs (cover first, in order) + PDF last + `final/captions.json`
-**Gate: User approves caption before scheduling.**
+Deliver the ordered slide PNGs `saves/slide_1.png` … in order. Never deliver cover.png or the sheet.
 
 ## Self-Improvement Feedback Loop
 
-After completing this skill's task:
-1. Ask the user for feedback.
+A wording the bundler must not replace.
 EOF
 python3 - "$wi245_src/p-carousel/manifest.json" <<'PY'
 import json, sys
+saves = [{"id": "slide_%d" % n, "kind": "image", "preview": False} for n in range(1, 11)] + [
+  {"id": "cover", "kind": "image", "preview": True},
+  {"id": "slide_sheet", "kind": "image", "preview": True},
+  {"id": "slides", "kind": "json", "preview": False},
+  {"id": "qa_report", "kind": "json", "preview": False}]
 json.dump({
   "manifestFormat": 1,
   "recipe": "p-carousel",
-  "recipeVersion": "2026.10.2",
+  "recipeVersion": "2026.11.1",
   "label": "Carousel",
   "deliverable": {"kind": "image", "aspect": "4:5", "width": 1080, "height": 1350},
   "needs": {"os": ["macos"], "engines": ["codex"], "tools": ["python3"], "providers": []},
   "inputs": [],
   "steps": [
-    {"id": "outline", "label": "Outline", "weight": 15, "runsOn": "computer",
-     "when": "always", "instructions": "steps/01-outline.md",
-     "saves": [{"id": "outline", "kind": "json", "preview": False}]},
-    {"id": "author_slides", "label": "Author", "weight": 25, "runsOn": "computer",
-     "when": "always", "instructions": "steps/02-author-slides.md",
-     "saves": [{"id": "carousel_html", "kind": "text", "preview": False}]},
-    {"id": "render_slides", "label": "Render", "weight": 40, "runsOn": "computer",
-     "when": "always", "instructions": "steps/03-render-slides.md",
-     "saves": [
-       {"id": "cover", "kind": "image", "preview": True},
-       {"id": "slide_sheet", "kind": "image", "preview": True},
-       {"id": "slides", "kind": "json", "preview": False},
-       {"id": "qa_report", "kind": "json", "preview": False}
-     ]},
-    {"id": "captions", "label": "Captions", "weight": 20, "runsOn": "computer",
-     "when": "always", "instructions": "steps/04-captions.md",
-     "saves": [{"id": "captions", "kind": "json", "preview": False}]},
+    {"id": "render_slides", "label": "Render", "weight": 100, "runsOn": "computer",
+     "when": "always", "instructions": "steps/03-render-slides.md", "saves": saves},
   ],
 }, open(sys.argv[1], "w"), indent=2)
-open(sys.argv[1].replace("manifest.json", "steps/01-outline.md"), "w").write("# outline\n")
-open(sys.argv[1].replace("manifest.json", "steps/02-author-slides.md"), "w").write("# author\n")
 open(sys.argv[1].replace("manifest.json", "steps/03-render-slides.md"), "w").write(
-  "# Render\n\n## You must produce\n\n"
-  "- `saves/cover.png` — slide 1.\n"
-  "- `saves/slide_sheet.png` — contact sheet.\n"
-  "- `saves/slides.json` — metadata.\n"
-  "- `saves/qa_report.json` — QA.\n\n"
-  "## How\n\n```bash\nmkdir -p work saves\n```\n\n"
-  "### 4. Write the saves\n\n```bash\n"
-  "cp work/slides/slide-1.png saves/cover.png\n"
-  "```\n\n"
-  "Keep `work/qa_report.json` up to date.\n\n"
-  "## If you cannot proceed\n\nFail.\n"
-)
-open(sys.argv[1].replace("manifest.json", "steps/04-captions.md"), "w").write(
-  "# Write the post captions\n\n"
-  "Write captions.\n\n"
-  "## You receive\n\n- `prior/slides.json`\n\n"
-  "## You must produce\n\n- `saves/captions.json`\n"
+  "# Render\n\n## You must produce\n\n- `saves/slide_1.png` … `saves/slide_10.png`; pad any unused.\n"
 )
 PY
 wi245_sync_rc=0
@@ -7959,39 +7930,43 @@ wi245_sync_log="$(
   CFW_SKILLS_SRC="$wi245_src" "$REPO_DIR/scripts/sync-skills.sh" \
     --recipes "$wi245_recipes" --out-dir "$wi245_sync" --skip-manifest 2>&1
 )" || wi245_sync_rc=$?
-wi245_sync_check="$(python3 - "$wi245_sync" <<'PY'
+wi245_sync_check="$(python3 - "$wi245_src" "$wi245_sync" <<'PY'
 import json, os, sys
-root = sys.argv[1]
-man = json.load(open(os.path.join(root, "p-carousel", "manifest.json")))
+src, root = sys.argv[1], sys.argv[2]
 bad = []
-if man.get("recipeVersion") != "2026.10.3":
+man = json.load(open(os.path.join(root, "p-carousel", "manifest.json")))
+if man.get("recipeVersion") != "2026.11.1":
     bad.append("recipeVersion=%r" % man.get("recipeVersion"))
-step = next(s for s in man["steps"] if s["id"] == "render_slides")
-ids = [s["id"] for s in step["saves"]]
-want = ["slide_%d" % n for n in range(1, 11)]
-if ids[:10] != want:
-    bad.append("saves=%r" % ids)
-render = open(os.path.join(root, "p-carousel", "steps", "03-render-slides.md")).read()
-if "saves/slide_1.png" not in render or "pad any unused" not in render.lower():
-    bad.append("03-render-slides missing slide_1/pad wording")
-if "MAX_SLIDES = 10" not in render:
-    bad.append("03-render-slides missing pad-to-10 save writer")
-cap = open(os.path.join(root, "p-carousel", "steps", "04-captions.md")).read()
-if "## Delivery boundary" not in cap or "saves/slide_1.png" not in cap:
-    bad.append("04-captions missing Delivery boundary")
-skill = open(os.path.join(root, "p-carousel", "SKILL.md")).read()
-if "cover.png" not in skill or "Never" not in skill:
-    bad.append("SKILL.md missing never-cover delivery wording")
 idx = json.load(open(os.path.join(root, "index.json")))
-if idx["recipes"]["p-carousel"]["version"] != "2026.10.3":
+if idx["recipes"]["p-carousel"]["version"] != "2026.11.1":
     bad.append("index.version=%r" % idx["recipes"]["p-carousel"]["version"])
+for rel in ("SKILL.md", "manifest.json", "steps/03-render-slides.md"):
+    if open(os.path.join(src, "p-carousel", rel), "rb").read() != open(os.path.join(root, "p-carousel", rel), "rb").read():
+        bad.append("bytes changed: " + rel)
 print("ok" if not bad else "; ".join(bad))
 PY
 )"
 if [[ "$wi245_sync_rc" == "0" && "$wi245_sync_check" == "ok" ]]; then
-  pass "sync-skills.py re-applies p-carousel slide saves and delivery wording after copy"
+  pass "sync-skills.py keeps p-carousel's source version (manifest + index) and source bytes"
 else
-  fail "sync-skills p-carousel contract" "rc=$wi245_sync_rc check=$wi245_sync_check log=${wi245_sync_log:0:500}"
+  fail "sync-skills p-carousel source version" "rc=$wi245_sync_rc check=$wi245_sync_check log=${wi245_sync_log:0:500}"
+fi
+# The same source with no recipeVersion fails the bundle and writes no index.json.
+rm -rf "$wi245_sync"; wi245_sync="$(mktemp -d)"
+python3 - "$wi245_src/p-carousel/manifest.json" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1])); del m["recipeVersion"]
+json.dump(m, open(sys.argv[1], "w"), indent=2)
+PY
+wi245_sync_rc=0
+wi245_sync_log="$(
+  CFW_SKILLS_SRC="$wi245_src" "$REPO_DIR/scripts/sync-skills.sh" \
+    --recipes "$wi245_recipes" --out-dir "$wi245_sync" --skip-manifest 2>&1
+)" || wi245_sync_rc=$?
+if [[ "$wi245_sync_rc" != "0" && "$wi245_sync_log" == *"recipeVersion is missing or malformed"* && ! -e "$wi245_sync/index.json" ]]; then
+  pass "sync-skills.py fails a p-carousel source with no recipeVersion (no default)"
+else
+  fail "sync-skills p-carousel missing version" "rc=$wi245_sync_rc log=${wi245_sync_log:0:500}"
 fi
 rm -rf "$wi245_src" "$wi245_sync"
 
