@@ -55,42 +55,6 @@ def shell(text: str, cwd: Path) -> None:
 
 
 def upstream_fixture(root: Path) -> None:
-    put(root, "p-carousel/LEARNINGS.md", """# Carousel learnings
-
-## Active Feedback (apply on every run)
-
-*None yet — add feedback below and it becomes part of this skill's behavior.*
-
----
-
-## Feedback Log
-
-### 2026-05-08 — Initial template
-- Skill created. No feedback yet.
-""")
-    put(root, "p-carousel/manifest.json", json.dumps({
-        "recipe": "p-carousel", "recipeVersion": "2026.10.2",
-        "steps": [{"id": "render_slides", "saves": [
-            {"id": "cover", "kind": "image", "preview": True},
-            {"id": "slide_sheet", "kind": "image", "preview": True},
-            {"id": "slides", "kind": "json", "preview": False},
-            {"id": "qa_report", "kind": "json", "preview": False}]}]}))
-    put(root, "p-carousel/steps/03-render-slides.md", """# Render slides
-
-## You must produce
-
-- cover and sheet
-
-## How
-
-### 4. Write the saves
-
-Old save block.
-
-Keep `work/qa_report.json` up to date.
-""")
-    put(root, "p-carousel/steps/04-captions.md", "# Captions\n\n## You receive\n\n- slides\n")
-    put(root, "p-carousel/SKILL.md", "### Step 8 — Deliver ⛔ CHECKPOINT\n\nOld delivery.\n\n## Self-Improvement Feedback Loop\n")
     # Minimal upstream P1/P2 section with the actual pre-WI2.64 anchors. No inverse transform.
     pip = '''### 5. Kinetic captions + grade + SFX — `c-reel-premium`, EXACTLY ONCE, pip-safe
 
@@ -129,8 +93,7 @@ def sequence(text: str) -> tuple[str, str]:
 def generation(repo: Path, temp: Path, sync: ModuleType, source: Path | None) -> None:
     root = temp / "source"
     if source:
-        paths = {"p-carousel": ("LEARNINGS.md", "manifest.json", "SKILL.md", "steps/03-render-slides.md", "steps/04-captions.md"),
-                 "p-reels-pip": ("steps/05-composite.md",), "p-reels-pip-heygen": ("steps/05-composite.md",)}
+        paths = {"p-reels-pip": ("steps/05-composite.md",), "p-reels-pip-heygen": ("steps/05-composite.md",)}
         for name, files in paths.items():
             for rel in files:
                 put(root, f"{name}/{rel}", (source / name / rel).read_text(encoding="utf-8"))
@@ -138,10 +101,7 @@ def generation(repo: Path, temp: Path, sync: ModuleType, source: Path | None) ->
             (root / "p-reels-pip/steps/05-composite.md").read_text())
     else:
         upstream_fixture(root)
-    before = snapshot(root)
-    assert "WI2.45" not in before["p-carousel/LEARNINGS.md"].decode()
     for _ in range(2):
-        sync.apply_p_carousel_contract(root / "p-carousel")
         for name in ("p-reels-pip", "p-reels-pip-heygen"):
             sync.apply_p_reels_pip_tail(root / name)
             sync.apply_reel_caption_phrases(root / name, name)
@@ -150,39 +110,83 @@ def generation(repo: Path, temp: Path, sync: ModuleType, source: Path | None) ->
             first = once
         else:
             assert once == first, "generation is not byte-idempotent"
-    learned = (root / "p-carousel/LEARNINGS.md").read_text()
-    for content in (sync._P_CAROUSEL_FEEDBACK, sync._P_CAROUSEL_HISTORY, sync._P_CAROUSEL_LOG):
-        assert learned.count(content) == 1
-    assert "### 2026-05-08 — Initial template" in learned
-    assert "None yet" not in learned
-    if source:
-        assert learned == (repo / "skills/p-carousel/LEARNINGS.md").read_text(), "upstream feedback not reproduced"
-    # New upstream feedback must survive too.
-    learned = learned.replace("## Active Feedback (apply on every run)\n", "## Active Feedback (apply on every run)\n\n- Keep future feedback.\n")
-    put(root, "p-carousel/LEARNINGS.md", learned)
-    assert sync.apply_p_carousel_contract(root / "p-carousel") == 0
-    man = root / "p-carousel/manifest.json"
-    canonical = man.read_bytes()
-    data = json.loads(canonical)
-    assert data["recipeVersion"] == "2026.10.3"
-    saves = next(s["saves"] for s in data["steps"] if s["id"] == "render_slides")
-    assert [s["id"] for s in saves] == [f"slide_{i}" for i in range(1, 11)] + ["cover", "slide_sheet", "slides", "qa_report"]
-    man.write_text(json.dumps(data))
-    sync.apply_p_carousel_contract(root / "p-carousel")
-    assert man.read_bytes() == canonical, "already-contracted manifest not canonicalized"
+    # WI41: the WI2.45 p-carousel rewrite is retired. Nothing in the bundler may rewrite p-carousel's
+    # text or pin its version again; carousel_version() below proves the bundle keeps the source bytes.
+    for retired in ("apply_p_carousel_contract", "P_CAROUSEL_RECIPE_VERSION"):
+        assert not hasattr(sync, retired), f"retired WI2.45 name is back: {retired}"
     for rel in ("p-reels-pip", "p-reels-pip-heygen", "p-reels-pip-heygen/.hub/p-reels-pip"):
         sequence((root / rel / "steps/05-composite.md").read_text())
     # Existing generated trees stay byte-identical, including the nested PIP copy.
-    for name in ("p-carousel", "p-reels-pip", "p-reels-pip-heygen"):
+    for name in ("p-reels-pip", "p-reels-pip-heygen"):
         copied = temp / "shipped" / name
         shutil.copytree(repo / "skills" / name, copied)
         old = snapshot(copied)
-        if name == "p-carousel":
-            assert sync.apply_p_carousel_contract(copied) == 0
-        else:
-            assert sync.apply_p_reels_pip_tail(copied) == 0
-            assert sync.apply_reel_caption_phrases(copied, name) == 0
+        assert sync.apply_p_reels_pip_tail(copied) == 0
+        assert sync.apply_reel_caption_phrases(copied, name) == 0
         assert snapshot(copied) == old
+
+
+CAROUSEL_SAVES = [f"slide_{i}" for i in range(1, 11)] + ["cover", "slide_sheet", "slides", "qa_report"]
+
+
+def carousel_fixture(root: Path, version: object) -> None:
+    """A p-carousel source with no host paths, Playwright loaders or WI2.45 anchors, so every generic
+    rewrite is a no-op and the bundled bytes must equal these bytes exactly. version None = no field."""
+    put(root, "p-carousel/SKILL.md", "---\nname: p-carousel\nkind: pipeline\nvisibility: catalog\n---\n\n"
+        "# p-carousel (WI41 fixture)\n\nOrdered slides are the deliverables.\n")
+    put(root, "p-carousel/LEARNINGS.md", "# Carousel learnings\n\n## Active Feedback (apply on every run)\n\n"
+        "- A new wording the bundler must not replace.\n\n## Feedback Log\n")
+    put(root, "p-carousel/steps/03-render-slides.md", "# Render slides\n\n## You must produce\n\n- slide_1 to slide_10\n")
+    data: dict[str, object] = {"recipe": "p-carousel", "steps": [{"id": "render_slides", "saves": [
+        {"id": sid, "kind": "json" if sid in ("slides", "qa_report") else "image", "preview": sid in ("cover", "slide_sheet")}
+        for sid in CAROUSEL_SAVES]}]}
+    if version is not None:
+        data["recipeVersion"] = version
+    put(root, "p-carousel/manifest.json", json.dumps(data, indent=2) + "\n")
+
+
+def bundle_carousel(repo: Path, temp: Path, label: str, version: object) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+    src = temp / f"{label}-src"
+    carousel_fixture(src, version)
+    recipes = temp / f"{label}-recipes.json"
+    # The allowlist's "version" is the bundler's own entry; p-carousel's published version comes from its manifest.
+    recipes.write_text(json.dumps({"recipes": [{"name": "p-carousel", "version": "1.0.0", "providers": []}]}))
+    out = temp / f"{label}-out"
+    env = dict(os.environ, CFW_SKILLS_SRC=str(src), PYTHONDONTWRITEBYTECODE="1")
+    result = subprocess.run(["bash", str(repo / "scripts/sync-skills.sh"), "--recipes", str(recipes), "--out-dir", str(out)],
+                            cwd=temp, env=env, capture_output=True, text=True, timeout=30 * LOAD_WAIT_SCALE)
+    return result, src, out
+
+
+def carousel_version(repo: Path, temp: Path, sync: ModuleType, source: Path | None) -> None:
+    # 1. The source version reaches both files, and the recipe bytes are the source bytes.
+    result, src, out = bundle_carousel(repo, temp, "c11", "2026.11.1")
+    assert result.returncode == 0, result.stdout[-600:] + result.stderr[-600:]
+    assert json.loads((out / "p-carousel/manifest.json").read_text())["recipeVersion"] == "2026.11.1"
+    assert json.loads((out / "index.json").read_text())["recipes"]["p-carousel"]["version"] == "2026.11.1"
+    assert snapshot(out / "p-carousel") == snapshot(src / "p-carousel"), "bundle changed p-carousel bytes"
+    # 2. A missing or malformed recipeVersion fails the bundle; there is no default.
+    for label, bad in (("c-none", None), ("c-blank", ""), ("c-space", "2026 11 1"), ("c-number", 2026.11)):
+        result, _, out = bundle_carousel(repo, temp, label, bad)
+        text = result.stdout + result.stderr
+        assert result.returncode != 0, f"{label}: bundle passed with recipeVersion {bad!r}"
+        assert "recipeVersion is missing or malformed" in text, f"{label}: {text[-400:]}"
+        assert not (out / "index.json").exists(), f"{label}: index.json written after a refusal"
+    # The helper alone, on a folder with no manifest.
+    try:
+        sync.recipe_version_from_manifest(temp / "no-such-recipe")
+    except SystemExit as exc:
+        assert "is missing" in str(exc)
+    else:
+        raise AssertionError("no manifest.json did not fail")
+    # 3. Read-only: the source render_slides declares slide_1..slide_10 (upload and resume need every save).
+    if source:
+        man = source / "p-carousel/manifest.json"
+        before = man.read_bytes()
+        steps = json.loads(before)["steps"]
+        saves = [s["id"] for s in next(s for s in steps if s["id"] == "render_slides")["saves"]]
+        assert saves[:10] == [f"slide_{i}" for i in range(1, 11)], f"source render_slides saves: {saves}"
+        assert man.read_bytes() == before
 
 
 def clamp_cases(repo: Path, temp: Path) -> None:
@@ -279,9 +283,12 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="recipe-landing-") as directory:
         temp = Path(directory)
         generation(repo, temp, sync, args.source_skills)
+        carousel_version(repo, temp, sync, args.source_skills)
         clamp_cases(repo, temp)
         rollups(repo, temp, sync)
-    print("PASS: generation/history/canonical bytes; 18 P1/clamp cases; complete bundle/config rollups")
+    slides = "source slide saves checked" if args.source_skills else "source slide saves skipped (no --source-skills)"
+    print("PASS: generation/canonical bytes; p-carousel version from manifest (1 bundle, 4 refusals; " + slides + "); "
+          "18 P1/clamp cases; complete bundle/config rollups")
 
 
 if __name__ == "__main__":
